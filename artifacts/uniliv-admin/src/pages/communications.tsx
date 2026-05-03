@@ -169,7 +169,7 @@ function AnnouncementsTab() {
             </div>
             {form.watch("target") === "SPECIFIC" && (
               <div className="border rounded p-3 bg-surface max-h-40 overflow-y-auto space-y-2">
-                <FormLabel className="mb-2 block">Select Properties</FormLabel>
+                <Label className="mb-2 block">Select Properties</Label>
                 {properties.map(p => (
                   <div key={p.id} className="flex items-center space-x-2">
                     <Checkbox id={`p-${p.id}`} checked={form.watch("propertyIds").includes(p.id)} onCheckedChange={(c) => {
@@ -181,12 +181,12 @@ function AnnouncementsTab() {
                 ))}
               </div>
             )}
-            <FormItem>
-              <FormLabel>Content</FormLabel>
+            <div className="space-y-2">
+              <Label>Content</Label>
               <div className="border rounded-md min-h-[150px] p-2 bg-card prose prose-sm max-w-none">
                 <EditorContent editor={editor} />
               </div>
-            </FormItem>
+            </div>
           </form>
         </Form>
       </FormModal>
