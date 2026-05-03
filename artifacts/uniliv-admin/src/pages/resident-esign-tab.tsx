@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { FormModal } from "@/components/ui/form-modal";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
-import { FileSignature, Plus, Copy, ExternalLink, X } from "lucide-react";
+import { FileSignature, Plus, Copy, ExternalLink, X, Download } from "lucide-react";
 
 type EsignRow = {
   id: string;
@@ -259,6 +259,15 @@ function EsignDetailSheet({ id, onClose }: { id: string; onClose: () => void }) 
                   Signed by <strong>{r.signerName}</strong> on {new Date(r.signedAt!).toLocaleString()}
                 </p>
                 {r.signerIp && <p className="text-[11px] text-muted-foreground">IP: {r.signerIp}</p>}
+                <a
+                  href={`/api/esign/${id}/pdf`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 mt-2 text-xs text-primary underline"
+                  data-testid={`link-download-pdf-${id}`}
+                >
+                  <Download className="h-3 w-3" /> Download signed PDF
+                </a>
               </div>
             )}
 

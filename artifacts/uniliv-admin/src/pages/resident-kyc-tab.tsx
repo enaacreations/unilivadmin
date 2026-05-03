@@ -16,12 +16,26 @@ type KycRow = {
   id: string;
   idType: string;
   idNumber: string;
+  idImageFront?: string | null;
+  idImageBack?: string | null;
+  selfieImage?: string | null;
   status: "PENDING" | "VERIFIED" | "REJECTED";
   provider?: string | null;
   rejectionReason?: string | null;
   reviewedAt?: string | null;
   createdAt: string;
 };
+
+type KycEvent = { id: string; type: string; ip: string | null; userAgent: string | null; createdAt: string };
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error("File read failed"));
+    r.readAsDataURL(file);
+  });
+}
 
 const ID_TYPES = ["AADHAAR", "PAN", "PASSPORT", "DRIVING_LICENSE", "VOTER_ID", "COLLEGE_ID"];
 
@@ -90,6 +104,14 @@ export function ResidentKycTab({ residentId }: { residentId: string }) {
                     Submitted {new Date(r.createdAt).toLocaleString()}
                     {r.reviewedAt && ` · Reviewed ${new Date(r.reviewedAt).toLocaleString()}`}
                   </p>
+                  {(r.idImageFront || r.idImageBack || r.selfieImage) && (
+                    <div className="flex gap-2 mt-2">
+                      {r.idImageFront && <img src={r.idImageFront} alt="ID front" className="h-16 rounded border" data-testid={`kyc-img-front-${r.id}`} />}
+                      {r.idImageBack && <img src={r.idImageBack} alt="ID back" className="h-16 rounded border" />}
+                      {r.selfieImage && <img src={r.selfieImage} alt="Selfie" className="h-16 rounded border" />}
+                    </div>
+                  )}
+                  <KycEventsList kycId={r.id} />
                 </div>
                 {r.status !== "VERIFIED" && (
                   <Button
@@ -146,16 +168,35 @@ function CreateKycModal({
   const { toast } = useToast();
   const [idType, setIdType] = React.useState("AADHAAR");
   const [idNumber, setIdNumber] = React.useState("");
+  const [idImageFront, setIdImageFront] = React.useState<string | null>(null);
+  const [idImageBack, setIdImageBack] = React.useState<string | null>(null);
+  const [selfieImage, setSelfieImage] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (open) { setIdType("AADHAAR"); setIdNumber(""); }
+    if (open) {
+      setIdType("AADHAAR"); setIdNumber("");
+      setIdImageFront(null); setIdImageBack(null); setSelfieImage(null);
+    }
   }, [open]);
+
+  const handleFile = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    setter: (s: string | null) => void,
+  ) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 4 * 1024 * 1024) {
+      toast({ title: "File too large (max 4 MB)", variant: "destructive" });
+      return;
+    }
+    setter(await readFileAsDataUrl(f));
+  };
 
   const create = useMutation({
     mutationFn: () =>
       apiFetch(`/residents/${residentId}/kyc`, {
         method: "POST",
-        body: JSON.stringify({ idType, idNumber, provider: "MANUAL" }),
+        body: JSON.stringify({ idType, idNumber, idImageFront, idImageBack, selfieImage, provider: "MANUAL" }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kyc", residentId] });
@@ -196,10 +237,60 @@ function CreateKycModal({
             data-testid="input-id-number"
           />
         </div>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <Label className="text-xs">ID Front</Label>
+            <Input type="file" accept="image/*" onChange={(e) => handleFile(e, setIdImageFront)} data-testid="input-id-image-front" />
+            {idImageFront && <img src={idImageFront} alt="front" className="mt-1 h-14 rounded border" />}
+          </div>
+          <div>
+            <Label className="text-xs">ID Back</Label>
+            <Input type="file" accept="image/*" onChange={(e) => handleFile(e, setIdImageBack)} />
+            {idImageBack && <img src={idImageBack} alt="back" className="mt-1 h-14 rounded border" />}
+          </div>
+          <div>
+            <Label className="text-xs">Selfie</Label>
+            <Input type="file" accept="image/*" onChange={(e) => handleFile(e, setSelfieImage)} />
+            {selfieImage && <img src={selfieImage} alt="selfie" className="mt-1 h-14 rounded border" />}
+          </div>
+        </div>
         <p className="text-xs text-muted-foreground">
           Default provider is <strong>Manual</strong> — request stays Pending until an admin verifies. DigiLocker / Aadhaar OTP provider can be plugged in later.
         </p>
       </div>
     </FormModal>
+  );
+}
+
+function KycEventsList({ kycId }: { kycId: string }) {
+  const [open, setOpen] = React.useState(false);
+  const { data } = useQuery<{ data: KycEvent[] }>({
+    queryKey: ["kyc-events", kycId],
+    queryFn: () => apiFetch(`/kyc/${kycId}/events`),
+    enabled: open,
+  });
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        className="text-[11px] text-primary underline"
+        onClick={() => setOpen((o) => !o)}
+        data-testid={`button-kyc-events-${kycId}`}
+      >
+        {open ? "Hide audit trail" : "Show audit trail"}
+      </button>
+      {open && (
+        <div className="mt-1 space-y-1">
+          {(data?.data || []).map((e) => (
+            <div key={e.id} className="text-[11px] border-l-2 border-primary pl-2">
+              <span className="font-medium">{e.type}</span>{" · "}
+              <span className="text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+              {e.ip && <span className="text-muted-foreground"> · {e.ip}</span>}
+            </div>
+          ))}
+          {(data?.data || []).length === 0 && <p className="text-[11px] text-muted-foreground">No events.</p>}
+        </div>
+      )}
+    </div>
   );
 }

@@ -37,9 +37,21 @@ export const esignRequestsTable = pgTable("esign_requests", {
   signatureSvg: text("signature_svg"),
   signerIp: text("signer_ip"),
   signerUserAgent: text("signer_user_agent"),
+  signedPdf: text("signed_pdf"),
   createdBy: text("created_by").references(() => usersTable.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const kycEventsTable = pgTable("kyc_events", {
+  id: text("id").primaryKey(),
+  kycRequestId: text("kyc_request_id").notNull().references(() => kycRequestsTable.id, { onDelete: "cascade" }),
+  type: text("type").notNull(),
+  actorId: text("actor_id").references(() => usersTable.id),
+  ip: text("ip"),
+  userAgent: text("user_agent"),
+  payload: json("payload"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const esignEventsTable = pgTable("esign_events", {
