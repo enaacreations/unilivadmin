@@ -25,7 +25,7 @@
   --color-secondary: var(--surface);
   --color-secondary-foreground: var(--primary);
   
-  --color-muted: var(--muted);
+  --color-muted: var(--muted-bg);
   --color-muted-foreground: var(--muted);
   
   --color-accent: var(--accent);
@@ -70,6 +70,7 @@
   --card: #FFFFFF;
   --border: #E2E8F0;
   --muted: #64748B;
+  --muted-bg: #F1F5F9;
 
   --app-font-sans: 'DM Sans', sans-serif;
   --app-font-display: 'Sora', sans-serif;
