@@ -1,60 +1,65 @@
+import * as React from "react"
 import { useGetPurchaseOrders, getGetPurchaseOrdersQueryKey } from "@workspace/api-client-react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
+import { DataTable } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
+import { format } from "date-fns";
 
 export default function PurchaseOrders() {
   const { data: posRes, isLoading } = useGetPurchaseOrders({ query: { queryKey: getGetPurchaseOrdersQueryKey() } });
   
   const pos = posRes?.data || [];
 
+  const columns = [
+    {
+      accessorKey: "poNumber",
+      header: "PO Number",
+      cell: ({ row }: any) => <span className="font-mono text-sm bg-muted/20 px-2 py-1 rounded">{row.original.poNumber}</span>
+    },
+    {
+      accessorKey: "vendorName",
+      header: "Vendor",
+      cell: ({ row }: any) => <span className="font-medium text-primary">{row.original.vendorName || 'Unknown Vendor'}</span>
+    },
+    {
+      accessorKey: "createdAt",
+      header: "Date",
+      cell: ({ row }: any) => format(new Date(row.original.createdAt), "dd MMM yyyy")
+    },
+    {
+      accessorKey: "totalAmount",
+      header: "Amount",
+      cell: ({ row }: any) => <span className="font-medium">₹{row.original.totalAmount.toLocaleString()}</span>
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }: any) => <StatusBadge status={row.original.status} />
+    }
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight">Purchase Orders</h1>
-      </div>
+      <PageHeader 
+        title="Purchase Orders" 
+        subtitle="Manage external orders and vendor fulfillment"
+        action={
+          <Button className="bg-accent hover:bg-accent/90 text-white">
+            <Plus className="w-4 h-4 mr-2" />
+            Create PO
+          </Button>
+        }
+      />
 
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>PO Number</TableHead>
-                <TableHead>Vendor</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Amount</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5}><Skeleton className="h-10 w-full" /></TableCell>
-                </TableRow>
-              ) : pos.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No purchase orders found</TableCell>
-                </TableRow>
-              ) : (
-                pos.map((po) => (
-                  <TableRow key={po.id}>
-                    <TableCell className="font-medium font-mono">{po.poNumber}</TableCell>
-                    <TableCell>{po.vendorName || 'Unknown Vendor'}</TableCell>
-                    <TableCell>{new Date(po.createdAt).toLocaleDateString()}</TableCell>
-                    <TableCell className="font-medium">₹{po.totalAmount.toLocaleString()}</TableCell>
-                    <TableCell>
-                      <Badge variant={po.status === 'DELIVERED' ? 'default' : po.status === 'CANCELLED' ? 'destructive' : 'secondary'}>
-                        {po.status}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <DataTable 
+        columns={columns}
+        data={pos}
+        isLoading={isLoading}
+        searchKey="poNumber"
+        searchPlaceholder="Search PO numbers..."
+      />
     </div>
   );
 }

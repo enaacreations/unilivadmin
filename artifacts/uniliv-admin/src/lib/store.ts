@@ -18,3 +18,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
   isAuthenticated: () => !!get().token,
 }));
+
+interface AppState {
+  propertyId: string | null;
+  setPropertyId: (id: string | null) => void;
+}
+
+export const useAppStore = create<AppState>((set) => ({
+  propertyId: null,
+  setPropertyId: (id) => set({ propertyId: id }),
+}));

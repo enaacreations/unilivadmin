@@ -1,0 +1,151 @@
+Build the complete UI shell for the Uniliv Admin Portal.
+  
+  ═══════════════════════════════════════════════════════
+  DESIGN SYSTEM
+  ═══════════════════════════════════════════════════════
+  Color palette (add to tailwind.config.js and CSS variables):
+    primary: #0F172A  (dark navy — main brand)
+    accent:  #F97316  (orange — CTA, active states)
+    success: #16A34A  (green)
+    warning: #D97706  (amber)
+    danger:  #DC2626  (red)
+    surface: #F8FAFC  (page background)
+    card:    #FFFFFF  (card background)
+    border:  #E2E8F0  (borders)
+    muted:   #64748B  (secondary text)
+  
+  Typography:
+    Headings: 'Sora' (Google Font) — bold, modern
+    Body: 'DM Sans' (Google Font) — clean, readable
+    Mono: 'JetBrains Mono' — for codes, IDs
+  
+  ═══════════════════════════════════════════════════════
+  LOGIN PAGE  (/login)
+  ═══════════════════════════════════════════════════════
+  - Split layout: left side is brand panel (dark navy, orange logo, tagline)
+  - Right side: centered login form
+  - Fields: Email, Password (show/hide toggle)
+  - Forgot password link → shows email input modal → sends reset email
+  - Validates with React Hook Form + Zod
+  - On success: stores accessToken in memory (Zustand), redirects to /dashboard
+  - Auto-refresh token on 401 using axios interceptor
+  
+  ═══════════════════════════════════════════════════════
+  MAIN LAYOUT (authenticated routes)
+  ═══════════════════════════════════════════════════════
+  Structure: Fixed sidebar (240px) + main content area with topbar
+  
+  SIDEBAR:
+  - Uniliv logo at top (orange U icon + 'Uniliv Admin' text)
+  - Property selector dropdown: 'All Properties' or specific property
+    (stored in Zustand, filters all data globally)
+  - Navigation grouped by section:
+  
+    OVERVIEW
+      Dashboard          icon: LayoutDashboard
+  
+    OPERATIONS
+      Properties         icon: Building2
+      Residents          icon: Users
+      Complaints         icon: AlertCircle
+      Laundry            icon: WashingMachine
+      Communications     icon: MessageSquare
+  
+    PEOPLE
+      Employees          icon: UserCheck
+      Recruitment        icon: Briefcase
+      Learning & Dev     icon: GraduationCap
+  
+    SUPPLY CHAIN
+      Vendors            icon: Truck
+      Indents            icon: ClipboardList
+      Purchase Orders    icon: ShoppingCart
+      GRN                icon: PackageCheck
+      Inventory          icon: Boxes
+  
+    FOOD
+      Recipes            icon: ChefHat
+      Menu Planning      icon: CalendarDays
+  
+    GROWTH
+      Sales CRM          icon: TrendingUp
+      Property Leads     icon: MapPin
+  
+    FINANCE
+      Ledger             icon: BookOpen
+      Payments           icon: CreditCard
+  
+    SETTINGS
+      Users & Roles      icon: Shield
+      Configuration      icon: Settings
+  
+  - Active nav item: orange left border + orange text + light orange bg
+  - Collapsed sections with group labels in small caps muted text
+  - Bottom: logged-in user avatar, name, role chip, logout button
+  
+  TOPBAR:
+  - Page title (dynamic, matches current route)
+  - Global search bar (searches across residents, complaints, employees — placeholder for now)
+  - Notification bell with unread count badge
+    → Dropdown shows last 5 notifications: complaint SLA breach, overdue payment, etc.
+  - User avatar → dropdown: Profile, Settings, Logout
+  
+  ═══════════════════════════════════════════════════════
+  REUSABLE COMPONENTS — build all of these
+  ═══════════════════════════════════════════════════════
+  DataTable: wraps TanStack Table with:
+    - Search input, column visibility toggle, export CSV button
+    - Pagination: prev/next, page size selector (10/20/50)
+    - Loading skeleton rows, empty state illustration
+    - Row click handler prop, checkbox selection
+  
+  StatCard: displays a KPI metric
+    - Icon (colored), title, value, change% (green up / red down arrow)
+    - Optional mini sparkline chart (Recharts)
+  
+  PageHeader: top of each page
+    - Title, subtitle, breadcrumb, action button slot
+  
+  StatusBadge: colored pill for any status
+    - Accepts: status string → maps to color automatically
+    - OPEN=blue, RESOLVED=green, BREACH=red, PENDING=yellow, etc.
+  
+  FormModal: slide-over panel from right (not a centered modal)
+    - Title, close button, form slot, footer with Cancel/Save buttons
+    - Loading state on submit button
+  
+  ConfirmDialog: standard shadcn AlertDialog for delete confirmations
+  
+  FileUpload: drag-and-drop zone
+    - Shows file preview for images, name+size for docs
+    - Uploads to Supabase Storage on select, returns URL
+    - Accepts file types and max size as props
+  
+  Avatar: initials fallback if no photo URL
+  
+  EmptyState: illustration + heading + subtext + optional CTA button
+  
+  ═══════════════════════════════════════════════════════
+  DASHBOARD PAGE (/dashboard)
+  ═══════════════════════════════════════════════════════
+  Fetch from GET /api/dashboard/stats and /api/dashboard/charts
+  
+  Row 1 — 4 stat cards:
+    Total Residents (active) | Occupancy Rate % | Open Complaints | Overdue Payments count
+  
+  Row 2 — 2 charts side by side:
+    Left: Line chart — Resident count per month (12 months)
+    Right: Bar chart — Complaints by category (current month)
+  
+  Row 3 — 2 tables side by side:
+    Left: Recent Complaints (last 5) — with status badge, SLA timer
+    Right: Overdue Residents (top 5) — name, property, amount overdue
+  
+  Row 4 — full width:
+    Occupancy by Property — horizontal bar chart per property
+  
+  All charts use Recharts with brand colors. Responsive. Loading skeletons.
+  
+  Build the login page, layout, all reusable components, and dashboard.
+  Use real API calls to the backend built in Prompt 1.
+  Make the UI pixel-perfect, consistent, and production-ready.

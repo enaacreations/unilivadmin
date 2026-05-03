@@ -1,69 +1,61 @@
+import * as React from "react"
 import { useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Link } from "wouter";
+import { DataTable } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
+import { useLocation } from "wouter";
 
 export default function Properties() {
+  const [, setLocation] = useLocation();
   const { data: propertiesRes, isLoading } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
   
   const properties = propertiesRes?.data || [];
 
+  const columns = [
+    {
+      accessorKey: "name",
+      header: "Property Name",
+    },
+    {
+      accessorKey: "city",
+      header: "Location",
+      cell: ({ row }: any) => `${row.original.city}, ${row.original.state}`
+    },
+    {
+      accessorKey: "totalBeds",
+      header: "Beds",
+      cell: ({ row }: any) => `${row.original.occupiedBeds || 0} / ${row.original.totalBeds || 0}`
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }: any) => <StatusBadge status={row.original.status} />
+    }
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight">Properties</h1>
-      </div>
+      <PageHeader 
+        title="Properties" 
+        subtitle="Manage all co-living properties and buildings"
+        action={
+          <Button className="bg-accent hover:bg-accent/90 text-white">
+            <Plus className="w-4 h-4 mr-2" />
+            Add Property
+          </Button>
+        }
+      />
 
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Location</TableHead>
-                <TableHead>Beds</TableHead>
-                <TableHead>Occupancy</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5}><Skeleton className="h-10 w-full" /></TableCell>
-                </TableRow>
-              ) : properties.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No properties found</TableCell>
-                </TableRow>
-              ) : (
-                properties.map((property) => (
-                  <TableRow key={property.id} className="cursor-pointer hover:bg-muted/50 transition-colors">
-                    <TableCell className="font-medium">
-                      <Link href={`/properties/${property.id}`} className="block">
-                        {property.name}
-                      </Link>
-                    </TableCell>
-                    <TableCell>{property.city}, {property.state}</TableCell>
-                    <TableCell>{property.occupiedBeds} / {property.totalBeds}</TableCell>
-                    <TableCell>
-                      <Badge variant={property.occupancyRate > 90 ? "default" : property.occupancyRate > 70 ? "secondary" : "destructive"}>
-                        {property.occupancyRate}%
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={property.status === 'ACTIVE' ? "default" : "outline"}>
-                        {property.status}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <DataTable 
+        columns={columns}
+        data={properties}
+        isLoading={isLoading}
+        searchKey="name"
+        searchPlaceholder="Search properties..."
+        onRowClick={(row) => setLocation(`/properties/${row.id}`)}
+      />
     </div>
   );
 }

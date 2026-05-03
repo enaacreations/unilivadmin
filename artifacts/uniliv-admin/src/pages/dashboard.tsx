@@ -1,152 +1,216 @@
-import { useGetDashboardStats, getGetDashboardStatsQueryKey, useGetDashboardCharts, getGetDashboardChartsQueryKey } from "@workspace/api-client-react";
+import { useGetDashboardStats, getGetDashboardStatsQueryKey, useGetDashboardCharts, getGetDashboardChartsQueryKey, useGetComplaints, getGetComplaintsQueryKey, useGetResidents, getGetResidentsQueryKey, useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Building, Users, AlertCircle, TrendingUp } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { StatCard } from "@/components/stat-card";
+import { DataTable } from "@/components/data-table";
+import { StatusBadge } from "@/components/status-badge";
+import { formatDistanceToNow } from "date-fns";
 
 export default function Dashboard() {
   const { data: statsRes, isLoading: statsLoading } = useGetDashboardStats({ query: { queryKey: getGetDashboardStatsQueryKey() } });
   const { data: chartsRes, isLoading: chartsLoading } = useGetDashboardCharts({ query: { queryKey: getGetDashboardChartsQueryKey() } });
+  const { data: complaintsRes, isLoading: complaintsLoading } = useGetComplaints({ limit: 5 } as any, { query: { queryKey: getGetComplaintsQueryKey({ limit: 5 } as any) } });
+  const { data: residentsRes, isLoading: residentsLoading } = useGetResidents({ limit: 5 } as any, { query: { queryKey: getGetResidentsQueryKey({ limit: 5 } as any) } });
+  const { data: propertiesRes, isLoading: propertiesLoading } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
 
   const stats = statsRes?.data;
   const charts = chartsRes?.data;
+  const complaints = complaintsRes?.data || [];
+  const residents = residentsRes?.data || [];
+  const properties = propertiesRes?.data || [];
 
-  const COLORS = ['hsl(var(--primary))', 'hsl(var(--chart-2))', 'hsl(var(--chart-3))', 'hsl(var(--chart-4))', 'hsl(var(--chart-5))'];
+  const COLORS = ['#F97316', '#0F172A', '#16A34A', '#D97706', '#DC2626'];
+
+  const complaintCols = [
+    {
+      accessorKey: "ticketNo",
+      header: "Ticket No",
+    },
+    {
+      accessorKey: "category",
+      header: "Category",
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }: any) => <StatusBadge status={row.original.status} />
+    },
+    {
+      accessorKey: "createdAt",
+      header: "Age",
+      cell: ({ row }: any) => {
+        try {
+          return formatDistanceToNow(new Date(row.original.createdAt), { addSuffix: true })
+        } catch(e) {
+          return "Unknown"
+        }
+      }
+    }
+  ];
+
+  const residentCols = [
+    {
+      accessorKey: "name",
+      header: "Resident",
+    },
+    {
+      accessorKey: "propertyName",
+      header: "Property",
+    },
+    {
+      accessorKey: "roomNumber",
+      header: "Room",
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }: any) => <StatusBadge status={row.original.status} />
+    }
+  ];
+
+  const propertyData = properties.map(p => ({
+    name: p.name,
+    Occupied: p.occupiedBeds || 0,
+    Total: p.totalBeds || 0,
+    rate: p.totalBeds ? Math.round((p.occupiedBeds / p.totalBeds) * 100) : 0
+  }));
 
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
       
-      <div className="grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Properties</CardTitle>
-            <Building className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {statsLoading ? <Skeleton className="h-8 w-16" /> : (
-              <div className="text-2xl font-bold">{stats?.totalProperties || 0}</div>
-            )}
-          </CardContent>
-        </Card>
-        
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Residents</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {statsLoading ? <Skeleton className="h-8 w-16" /> : (
-              <div className="text-2xl font-bold">{stats?.totalResidents || 0}</div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Occupancy Rate</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {statsLoading ? <Skeleton className="h-8 w-16" /> : (
-              <div className="text-2xl font-bold">{stats?.occupancyRate || 0}%</div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Open Complaints</CardTitle>
-            <AlertCircle className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {statsLoading ? <Skeleton className="h-8 w-16" /> : (
-              <div className="text-2xl font-bold text-destructive">{stats?.openComplaints || 0}</div>
-            )}
-          </CardContent>
-        </Card>
+      {/* Row 1: StatCards */}
+      <div className="grid gap-6 grid-cols-1 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          title="Total Residents (Active)"
+          value={statsLoading ? "..." : (stats?.totalResidents || 0)}
+          icon={Users}
+          change={2.5}
+        />
+        <StatCard
+          title="Occupancy Rate"
+          value={statsLoading ? "..." : `${stats?.occupancyRate || 0}%`}
+          icon={TrendingUp}
+          change={1.2}
+        />
+        <StatCard
+          title="Open Complaints"
+          value={statsLoading ? "..." : (stats?.openComplaints || 0)}
+          icon={AlertCircle}
+          change={-5.4}
+        />
+        <StatCard
+          title="Overdue Payments"
+          value={statsLoading ? "..." : (stats?.pendingPayments || 0)}
+          icon={Building}
+          change={8.1}
+        />
       </div>
 
+      {/* Row 2: Charts */}
       <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
-        <Card>
+        <Card className="shadow-sm">
           <CardHeader>
-            <CardTitle>Revenue Trend</CardTitle>
-          </CardHeader>
-          <CardContent className="h-[300px]">
-            {chartsLoading ? <Skeleton className="w-full h-full" /> : (
-              charts?.revenueTrend && charts.revenueTrend.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={charts.revenueTrend}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} dy={10} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} dx={-10} tickFormatter={(value) => `₹${value/1000}k`} />
-                    <Tooltip cursor={{fill: 'transparent'}} contentStyle={{backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px'}} />
-                    <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={3} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}} />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">No data available</div>
-              )
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Complaints by Category</CardTitle>
-          </CardHeader>
-          <CardContent className="h-[300px]">
-            {chartsLoading ? <Skeleton className="w-full h-full" /> : (
-              charts?.complaintsByCategory && charts.complaintsByCategory.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={charts.complaintsByCategory}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={80}
-                      paddingAngle={5}
-                      dataKey="value"
-                      nameKey="label"
-                    >
-                      {charts.complaintsByCategory.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip contentStyle={{backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px'}} />
-                  </PieChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">No data available</div>
-              )
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Occupancy Trend</CardTitle>
+            <CardTitle className="font-display">Resident Trend</CardTitle>
           </CardHeader>
           <CardContent className="h-[300px]">
             {chartsLoading ? <Skeleton className="w-full h-full" /> : (
               charts?.occupancyTrend && charts.occupancyTrend.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={charts.occupancyTrend} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} dy={10} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} dx={-10} tickFormatter={(value) => `${value}%`} />
-                    <Tooltip cursor={{fill: 'hsl(var(--muted))'}} contentStyle={{backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px'}} />
-                    <Bar dataKey="value" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} maxBarSize={50} />
+                  <LineChart data={charts.occupancyTrend}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{fill: 'var(--muted)', fontSize: 12}} dy={10} />
+                    <YAxis axisLine={false} tickLine={false} tick={{fill: 'var(--muted)', fontSize: 12}} dx={-10} />
+                    <RechartsTooltip cursor={{stroke: 'var(--border)'}} contentStyle={{backgroundColor: 'var(--card)', borderColor: 'var(--border)', borderRadius: '8px'}} />
+                    <Line type="monotone" dataKey="value" stroke="var(--accent)" strokeWidth={3} dot={{r: 4, strokeWidth: 2, fill: 'var(--card)'}} activeDot={{r: 6}} />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-muted text-sm border border-dashed rounded-lg">No data available</div>
+              )
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="shadow-sm">
+          <CardHeader>
+            <CardTitle className="font-display">Complaints by Category</CardTitle>
+          </CardHeader>
+          <CardContent className="h-[300px]">
+            {chartsLoading ? <Skeleton className="w-full h-full" /> : (
+              charts?.complaintsByCategory && charts.complaintsByCategory.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={charts.complaintsByCategory} layout="vertical" margin={{ left: 50 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="var(--border)" />
+                    <XAxis type="number" axisLine={false} tickLine={false} tick={{fill: 'var(--muted)', fontSize: 12}} />
+                    <YAxis dataKey="label" type="category" axisLine={false} tickLine={false} tick={{fill: 'var(--primary)', fontSize: 12}} dx={-10} />
+                    <RechartsTooltip cursor={{fill: 'var(--surface)'}} contentStyle={{backgroundColor: 'var(--card)', borderColor: 'var(--border)', borderRadius: '8px'}} />
+                    <Bar dataKey="value" fill="var(--primary)" radius={[0, 4, 4, 0]} barSize={24} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">No data available</div>
+                <div className="w-full h-full flex items-center justify-center text-muted text-sm border border-dashed rounded-lg">No data available</div>
               )
             )}
           </CardContent>
         </Card>
       </div>
+
+      {/* Row 3: Tables */}
+      <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
+        <Card className="shadow-sm overflow-hidden flex flex-col">
+          <CardHeader className="border-b bg-surface/50 pb-4">
+            <CardTitle className="font-display text-base">Recent Complaints</CardTitle>
+          </CardHeader>
+          <div className="p-0 flex-1">
+            <DataTable 
+              columns={complaintCols} 
+              data={complaints} 
+              isLoading={complaintsLoading}
+            />
+          </div>
+        </Card>
+        
+        <Card className="shadow-sm overflow-hidden flex flex-col">
+          <CardHeader className="border-b bg-surface/50 pb-4">
+            <CardTitle className="font-display text-base">Recent Residents</CardTitle>
+          </CardHeader>
+          <div className="p-0 flex-1">
+            <DataTable 
+              columns={residentCols} 
+              data={residents} 
+              isLoading={residentsLoading}
+            />
+          </div>
+        </Card>
+      </div>
+
+      {/* Row 4: Full width Property Occupancy */}
+      <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle className="font-display">Occupancy by Property</CardTitle>
+        </CardHeader>
+        <CardContent className="h-[400px]">
+          {propertiesLoading ? <Skeleton className="w-full h-full" /> : (
+            propertyData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={propertyData} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: 'var(--muted)', fontSize: 12}} dy={10} angle={-45} textAnchor="end" height={60} />
+                  <YAxis axisLine={false} tickLine={false} tick={{fill: 'var(--muted)', fontSize: 12}} dx={-10} />
+                  <RechartsTooltip cursor={{fill: 'var(--surface)'}} contentStyle={{backgroundColor: 'var(--card)', borderColor: 'var(--border)', borderRadius: '8px'}} />
+                  <Bar dataKey="Occupied" stackId="a" fill="var(--accent)" radius={[0, 0, 4, 4]} />
+                  <Bar dataKey="Total" stackId="a" fill="var(--primary)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-muted text-sm border border-dashed rounded-lg">No data available</div>
+            )
+          )}
+        </CardContent>
+      </Card>
+
     </div>
   );
 }

@@ -1,75 +1,81 @@
+import * as React from "react"
 import { useGetVendors, getGetVendorsQueryKey } from "@workspace/api-client-react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Card, CardContent } from "@/components/ui/card";
+import { DataTable } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
+import { Plus, Star } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Star } from "lucide-react";
 
 export default function Vendors() {
   const { data: vendorsRes, isLoading } = useGetVendors({ query: { queryKey: getGetVendorsQueryKey() } });
   
   const vendors = vendorsRes?.data || [];
 
+  const columns = [
+    {
+      accessorKey: "name",
+      header: "Name",
+      cell: ({ row }: any) => <span className="font-medium text-primary">{row.original.name}</span>
+    },
+    {
+      accessorKey: "categories",
+      header: "Categories",
+      cell: ({ row }: any) => (
+        <div className="flex gap-1 flex-wrap max-w-[200px]">
+          {row.original.categories.map((cat: string, i: number) => (
+            <Badge key={i} variant="secondary" className="text-[10px] uppercase tracking-wider bg-muted/20 text-muted-foreground">{cat}</Badge>
+          ))}
+        </div>
+      )
+    },
+    {
+      accessorKey: "contact",
+      header: "Contact",
+      cell: ({ row }: any) => (
+        <div>
+          <div className="text-sm font-medium">{row.original.phone}</div>
+          {row.original.email && <div className="text-xs text-muted-foreground">{row.original.email}</div>}
+        </div>
+      )
+    },
+    {
+      accessorKey: "rating",
+      header: "Rating",
+      cell: ({ row }: any) => (
+        <div className="flex items-center gap-1.5">
+          <Star className="w-4 h-4 fill-warning text-warning" />
+          <span className="font-medium text-sm">{row.original.rating || '-'}</span>
+        </div>
+      )
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }: any) => <StatusBadge status={row.original.status} />
+    }
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight">Vendors</h1>
-      </div>
+      <PageHeader 
+        title="Vendors" 
+        subtitle="Manage supplier relationships and ratings"
+        action={
+          <Button className="bg-accent hover:bg-accent/90 text-white">
+            <Plus className="w-4 h-4 mr-2" />
+            Add Vendor
+          </Button>
+        }
+      />
 
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Categories</TableHead>
-                <TableHead>Contact</TableHead>
-                <TableHead>Rating</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5}><Skeleton className="h-10 w-full" /></TableCell>
-                </TableRow>
-              ) : vendors.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No vendors found</TableCell>
-                </TableRow>
-              ) : (
-                vendors.map((vendor) => (
-                  <TableRow key={vendor.id}>
-                    <TableCell className="font-medium">{vendor.name}</TableCell>
-                    <TableCell>
-                      <div className="flex gap-1 flex-wrap">
-                        {vendor.categories.map((cat, i) => (
-                          <Badge key={i} variant="secondary" className="text-xs">{cat}</Badge>
-                        ))}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="text-sm">{vendor.phone}</div>
-                      {vendor.email && <div className="text-xs text-muted-foreground">{vendor.email}</div>}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        <Star className="w-4 h-4 fill-primary text-primary" />
-                        <span className="font-medium">{vendor.rating || '-'}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={vendor.status === 'ACTIVE' ? 'default' : 'outline'}>
-                        {vendor.status}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <DataTable 
+        columns={columns}
+        data={vendors}
+        isLoading={isLoading}
+        searchKey="name"
+        searchPlaceholder="Search vendors..."
+      />
     </div>
   );
 }

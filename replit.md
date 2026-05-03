@@ -123,6 +123,14 @@ pnpm --filter @workspace/scripts run seed
 pnpm --filter @workspace/api-spec run codegen
 ```
 
+## Design System (May 2026 overhaul)
+
+- **Colors** (CSS vars in `src/index.css`): primary `#0F172A` (dark navy), accent `#F97316` (orange), success `#16A34A`, warning `#D97706`, danger `#DC2626`, surface `#F8FAFC`, card `#FFFFFF`, border `#E2E8F0`, muted `#64748B`
+- **Fonts** (Google, loaded in `index.html`): Sora (display), DM Sans (body, default `--font-sans`), JetBrains Mono (codes/IDs). Use `.font-display` utility for headings.
+- **Layout**: 240px dark navy sidebar with 8 grouped nav sections (OVERVIEW, OPERATIONS, PEOPLE, SUPPLY CHAIN, FOOD, GROWTH, FINANCE, SETTINGS), property selector, user footer; topbar with page title, global search, notification bell, user dropdown.
+- **Reusable components** in `src/components/`: `PageHeader`, `DataTable` (TanStack Table wrapper), `StatCard`, `StatusBadge`, plus `ui/form-modal.tsx` (slide-over right), `ui/empty-state.tsx`, `ui/file-upload.tsx`, `ui/confirm-dialog.tsx`, `ui/avatar.tsx`.
+- **New routes**: `/laundry` (placeholder — no backend), `/communications` (announcements), `/grn`, `/menu-planning`, `/ledger`, `/payments`, `/recipes` (replaces `/kitchen`).
+
 ## Key Implementation Notes
 
 - `lib/api-zod/src/index.ts` must only export `from "./generated/api"` (not types) — orval codegen otherwise creates duplicate exports

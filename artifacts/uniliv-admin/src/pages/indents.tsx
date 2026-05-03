@@ -1,62 +1,62 @@
+import * as React from "react"
 import { useGetIndents, getGetIndentsQueryKey } from "@workspace/api-client-react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
+import { DataTable } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
+import { format } from "date-fns";
 
 export default function Indents() {
   const { data: indentsRes, isLoading } = useGetIndents({ query: { queryKey: getGetIndentsQueryKey() } });
   
   const indents = indentsRes?.data || [];
 
+  const columns = [
+    {
+      accessorKey: "createdAt",
+      header: "Date",
+      cell: ({ row }: any) => format(new Date(row.original.createdAt), "dd MMM yyyy")
+    },
+    {
+      accessorKey: "department",
+      header: "Department",
+    },
+    {
+      accessorKey: "items",
+      header: "Items",
+      cell: ({ row }: any) => <span className="font-medium">{row.original.items.length} items</span>
+    },
+    {
+      accessorKey: "urgency",
+      header: "Urgency",
+      cell: ({ row }: any) => <StatusBadge status={row.original.urgency} />
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }: any) => <StatusBadge status={row.original.status} />
+    }
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight">Indents</h1>
-      </div>
+      <PageHeader 
+        title="Material Indents" 
+        subtitle="Internal requests for materials and supplies"
+        action={
+          <Button className="bg-accent hover:bg-accent/90 text-white">
+            <Plus className="w-4 h-4 mr-2" />
+            Raise Indent
+          </Button>
+        }
+      />
 
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Department</TableHead>
-                <TableHead>Items</TableHead>
-                <TableHead>Urgency</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5}><Skeleton className="h-10 w-full" /></TableCell>
-                </TableRow>
-              ) : indents.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No indents found</TableCell>
-                </TableRow>
-              ) : (
-                indents.map((indent) => (
-                  <TableRow key={indent.id}>
-                    <TableCell className="font-medium">{new Date(indent.createdAt).toLocaleDateString()}</TableCell>
-                    <TableCell>{indent.department}</TableCell>
-                    <TableCell>{indent.items.length} items</TableCell>
-                    <TableCell>
-                      <Badge variant={indent.urgency === 'HIGH' ? 'destructive' : 'secondary'}>
-                        {indent.urgency}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{indent.status}</Badge>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <DataTable 
+        columns={columns}
+        data={indents}
+        isLoading={isLoading}
+      />
     </div>
   );
 }

@@ -1,65 +1,65 @@
+import * as React from "react"
 import { useGetResidents, getGetResidentsQueryKey } from "@workspace/api-client-react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Link } from "wouter";
+import { DataTable } from "@/components/data-table";
+import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
+import { useLocation } from "wouter";
 
 export default function Residents() {
+  const [, setLocation] = useLocation();
   const { data: residentsRes, isLoading } = useGetResidents({ query: { queryKey: getGetResidentsQueryKey() } });
   
   const residents = residentsRes?.data || [];
 
+  const columns = [
+    {
+      accessorKey: "name",
+      header: "Name",
+    },
+    {
+      accessorKey: "phone",
+      header: "Phone",
+    },
+    {
+      accessorKey: "propertyName",
+      header: "Property / Room",
+      cell: ({ row }: any) => `${row.original.propertyName || 'N/A'} / ${row.original.roomNumber || 'N/A'}`
+    },
+    {
+      accessorKey: "checkInDate",
+      header: "Check In",
+      cell: ({ row }: any) => row.original.checkInDate ? new Date(row.original.checkInDate).toLocaleDateString() : 'N/A'
+    },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }: any) => <StatusBadge status={row.original.status} />
+    }
+  ];
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight">Residents</h1>
-      </div>
+      <PageHeader 
+        title="Residents" 
+        subtitle="Manage resident profiles and lifecycle"
+        action={
+          <Button className="bg-accent hover:bg-accent/90 text-white">
+            <Plus className="w-4 h-4 mr-2" />
+            Add Resident
+          </Button>
+        }
+      />
 
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Property / Room</TableHead>
-                <TableHead>Phone</TableHead>
-                <TableHead>Check In</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5}><Skeleton className="h-10 w-full" /></TableCell>
-                </TableRow>
-              ) : residents.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No residents found</TableCell>
-                </TableRow>
-              ) : (
-                residents.map((resident) => (
-                  <TableRow key={resident.id} className="cursor-pointer hover:bg-muted/50 transition-colors">
-                    <TableCell className="font-medium">
-                      <Link href={`/residents/${resident.id}`} className="block">
-                        {resident.name}
-                      </Link>
-                    </TableCell>
-                    <TableCell>{resident.propertyName || 'N/A'} / {resident.roomNumber || 'N/A'}</TableCell>
-                    <TableCell>{resident.phone}</TableCell>
-                    <TableCell>{resident.checkInDate ? new Date(resident.checkInDate).toLocaleDateString() : 'N/A'}</TableCell>
-                    <TableCell>
-                      <Badge variant={resident.status === 'ACTIVE' ? 'default' : 'outline'}>
-                        {resident.status}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <DataTable 
+        columns={columns}
+        data={residents}
+        isLoading={isLoading}
+        searchKey="name"
+        searchPlaceholder="Search residents..."
+        onRowClick={(row) => setLocation(`/residents/${row.id}`)}
+      />
     </div>
   );
 }
