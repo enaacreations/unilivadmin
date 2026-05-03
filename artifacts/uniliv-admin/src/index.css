@@ -22,8 +22,9 @@
   --color-primary: var(--primary);
   --color-primary-foreground: #FFFFFF;
   
-  --color-secondary: var(--surface);
-  --color-secondary-foreground: var(--primary);
+  --color-secondary: #E2E8F0;
+  --color-secondary-foreground: #1E293B;
+  --color-secondary-border: #CBD5E1;
   
   --color-muted: var(--muted-bg);
   --color-muted-foreground: var(--muted);
@@ -69,8 +70,10 @@
   --surface: #F8FAFC;
   --card: #FFFFFF;
   --border: #E2E8F0;
-  --muted: #64748B;
+  --muted: #475569;
   --muted-bg: #F1F5F9;
+  --info: #2563EB;
+  --badge-outline: #CBD5E1;
 
   --app-font-sans: 'DM Sans', sans-serif;
   --app-font-display: 'Sora', sans-serif;

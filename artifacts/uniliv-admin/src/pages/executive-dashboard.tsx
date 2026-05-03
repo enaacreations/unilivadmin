@@ -17,8 +17,6 @@ function useEx<T>(path: string) {
 
 export default function ExecutiveDashboard() {
   const { can } = usePermissions();
-  if (!can("EXECUTIVE_DASHBOARD")) return <Forbidden />;
-
   const kpis = useEx<any>("/executive/kpis");
   const revenue = useEx<any[]>("/executive/revenue-trend");
   const occupancy = useEx<any[]>("/executive/occupancy-by-property");
@@ -27,6 +25,8 @@ export default function ExecutiveDashboard() {
   const headcount = useEx<any>("/executive/headcount");
   const overdue = useEx<any[]>("/executive/top-overdue");
   const breached = useEx<any[]>("/executive/top-sla-breached");
+
+  if (!can("EXECUTIVE_DASHBOARD")) return <Forbidden />;
 
   const k = kpis.data?.data || {};
   const resData = resolution.data?.data ? [

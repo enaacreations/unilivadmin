@@ -3,6 +3,15 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
+type BadgeVariant =
+  | "default"
+  | "secondary"
+  | "destructive"
+  | "outline"
+  | "success"
+  | "warning"
+  | "info";
+
 const badgeVariants = cva(
   // @replit
   // Whitespace-nowrap: Badges should never wrap.
@@ -21,7 +30,13 @@ const badgeVariants = cva(
           // @replit shadow-xs instead of shadow, no hover because we use hover-elevate
           "border-transparent bg-destructive text-destructive-foreground shadow-xs",
           // @replit shadow-xs" - use badge outline variable
-        outline: "text-foreground border [border-color:var(--badge-outline)]",
+        outline: "text-foreground border [border-color:var(--badge-outline,var(--border))]",
+        success:
+          "border-transparent bg-success text-success-foreground shadow-xs",
+        warning:
+          "border-transparent bg-warning text-warning-foreground shadow-xs",
+        info:
+          "border-transparent bg-[color:var(--info,#2563EB)] text-white shadow-xs",
       },
     },
     defaultVariants: {
@@ -32,7 +47,9 @@ const badgeVariants = cva(
 
 export interface BadgeProps
   extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof badgeVariants> {}
+    Omit<VariantProps<typeof badgeVariants>, "variant"> {
+  variant?: BadgeVariant;
+}
 
 function Badge({ className, variant, ...props }: BadgeProps) {
   return (

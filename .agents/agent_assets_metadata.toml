@@ -6,3 +6,9 @@ id = "ecgEyMvuMcAa_WRrViTCg"
 uri = "file://DOCUMENTATION.md"
 type = "text"
 title = "UNILIV Admin — Full Project Documentation"
+
+[[outputs]]
+id = "FtCbtmi_MXDjim28qBlQY"
+uri = "file://UX_AUDIT.md"
+type = "text"
+title = "UNILIV Admin — UX Audit & Recommendations"
