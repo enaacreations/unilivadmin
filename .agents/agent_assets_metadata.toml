@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "ecgEyMvuMcAa_WRrViTCg"
+uri = "file://DOCUMENTATION.md"
+type = "text"
+title = "UNILIV Admin — Full Project Documentation"
