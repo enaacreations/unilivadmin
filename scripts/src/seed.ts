@@ -31,6 +31,8 @@ import {
   facilityAssetsTable, facilitySchedulesTable, facilityLogsTable,
   electricityTariffsTable, electricityMetersTable, electricityReadingsTable,
   residentAttendanceTable, outPassesTable, iotDevicesTable, iotReadingsTable,
+  // wallet
+  walletsTable, walletTransactionsTable, walletConfigTable,
 } from "@workspace/db";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
@@ -1161,6 +1163,63 @@ async function main() {
       rawPayload: { raw: i * 1.5, unit: "Celsius", ts: Date.now() },
       recordedAt: daysAgo(i % 10),
     }).onConflictDoNothing();
+  }
+
+  // ── WALLET ──────────────────────────────────────────────
+  // wallet_config: one row per property
+  for (const propId of propIds) {
+    await db.insert(walletConfigTable).values({
+      id: id(), propertyId: propId,
+      minimumBalance: "-100",
+      lowBalanceAlert: "200",
+      isEnabled: true,
+      topupNotes: "Collect cash or UPI. Note denomination details in the Notes field.",
+    }).onConflictDoNothing();
+  }
+
+  // wallets + wallet_transactions: one wallet per resident with seeded balances
+  const txTypes = ["TOPUP", "PAYMENT", "TOPUP", "ADJUSTMENT_CREDIT", "PAYMENT"] as const;
+  const txDescs = [
+    "Cash top-up by staff",
+    "Rent payment via wallet",
+    "UPI top-up by resident",
+    "Security deposit credit",
+    "Utility charges deducted",
+  ];
+  for (let i = 0; i < residentIds.length; i++) {
+    const walletId = id();
+    const openingBalance = 500 + (i % 10) * 150;
+    await db.insert(walletsTable).values({
+      id: walletId,
+      residentId: residentIds[i]!,
+      balance: String(openingBalance),
+      isActive: true,
+    }).onConflictDoNothing();
+
+    // 2-3 transactions per resident
+    const txCount = 2 + (i % 2);
+    let runningBal = 0;
+    for (let t = 0; t < txCount; t++) {
+      const txType = txTypes[(i + t) % txTypes.length]!;
+      const isCreditTx = ["TOPUP", "ADJUSTMENT_CREDIT", "REFUND_WITHDRAWAL"].includes(txType);
+      const amount = 100 + ((i + t) % 8) * 50;
+      const balBefore = runningBal;
+      const balAfter = isCreditTx ? balBefore + amount : balBefore - amount;
+      runningBal = balAfter;
+      await db.insert(walletTransactionsTable).values({
+        id: id(),
+        walletId,
+        residentId: residentIds[i]!,
+        type: txType,
+        amount: String(amount),
+        balanceBefore: String(balBefore),
+        balanceAfter: String(balAfter),
+        description: txDescs[(i + t) % txDescs.length]!,
+        recordedBy: adminId,
+        propertyId: propIds[i % 5]!,
+        createdAt: daysAgo(txCount - t),
+      }).onConflictDoNothing();
+    }
   }
 
   console.log("✅ Seed complete! All tables populated with 50+ rows.");

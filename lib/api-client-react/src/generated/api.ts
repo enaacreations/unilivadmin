@@ -141,10 +141,12 @@ import type {
   GetRecipesParams,
   GetReminderLogsParams,
   GetResidentAttendanceParams,
+  GetResidentWalletTransactionsParams,
   GetResidentsParams,
   GetRoomsParams,
   GetUsersParams,
   GetVendorsParams,
+  GetWalletOverviewParams,
   HealthStatus,
   IndentResponse,
   IndentsListResponse,
@@ -196,6 +198,8 @@ import type {
   RunReminderRuleResponse,
   SendReminderBody,
   SuccessResponse,
+  ToggleResidentWallet200,
+  ToggleResidentWalletBody,
   TransitionExpenseBody,
   UpdateComplaintBody,
   UpdateEnrollmentBody,
@@ -207,6 +211,16 @@ import type {
   UsersListResponse,
   VendorResponse,
   VendorsListResponse,
+  WalletAdjustBody,
+  WalletConfigBody,
+  WalletConfigResponse,
+  WalletDetailResponse,
+  WalletOverviewListResponse,
+  WalletPayBody,
+  WalletReversalBody,
+  WalletTopupBody,
+  WalletTransactionListResponse,
+  WalletTransactionResponse,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -14288,3 +14302,948 @@ export function useGetIotLatest<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * @summary List all resident wallets
+ */
+export const getGetWalletOverviewUrl = (params?: GetWalletOverviewParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/wallet/overview?${stringifiedParams}`
+    : `/api/wallet/overview`;
+};
+
+export const getWalletOverview = async (
+  params?: GetWalletOverviewParams,
+  options?: RequestInit,
+): Promise<WalletOverviewListResponse> => {
+  return customFetch<WalletOverviewListResponse>(
+    getGetWalletOverviewUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetWalletOverviewQueryKey = (
+  params?: GetWalletOverviewParams,
+) => {
+  return [`/api/wallet/overview`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetWalletOverviewQueryOptions = <
+  TData = Awaited<ReturnType<typeof getWalletOverview>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetWalletOverviewParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getWalletOverview>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetWalletOverviewQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getWalletOverview>>
+  > = ({ signal }) => getWalletOverview(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getWalletOverview>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetWalletOverviewQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getWalletOverview>>
+>;
+export type GetWalletOverviewQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List all resident wallets
+ */
+
+export function useGetWalletOverview<
+  TData = Awaited<ReturnType<typeof getWalletOverview>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetWalletOverviewParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getWalletOverview>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetWalletOverviewQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get wallet for a resident
+ */
+export const getGetResidentWalletUrl = (residentId: string) => {
+  return `/api/wallet/residents/${residentId}`;
+};
+
+export const getResidentWallet = async (
+  residentId: string,
+  options?: RequestInit,
+): Promise<WalletDetailResponse> => {
+  return customFetch<WalletDetailResponse>(
+    getGetResidentWalletUrl(residentId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetResidentWalletQueryKey = (residentId: string) => {
+  return [`/api/wallet/residents/${residentId}`] as const;
+};
+
+export const getGetResidentWalletQueryOptions = <
+  TData = Awaited<ReturnType<typeof getResidentWallet>>,
+  TError = ErrorType<unknown>,
+>(
+  residentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getResidentWallet>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetResidentWalletQueryKey(residentId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getResidentWallet>>
+  > = ({ signal }) =>
+    getResidentWallet(residentId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!residentId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getResidentWallet>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetResidentWalletQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getResidentWallet>>
+>;
+export type GetResidentWalletQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get wallet for a resident
+ */
+
+export function useGetResidentWallet<
+  TData = Awaited<ReturnType<typeof getResidentWallet>>,
+  TError = ErrorType<unknown>,
+>(
+  residentId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getResidentWallet>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetResidentWalletQueryOptions(residentId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary List wallet transactions for a resident
+ */
+export const getGetResidentWalletTransactionsUrl = (
+  residentId: string,
+  params?: GetResidentWalletTransactionsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/wallet/residents/${residentId}/transactions?${stringifiedParams}`
+    : `/api/wallet/residents/${residentId}/transactions`;
+};
+
+export const getResidentWalletTransactions = async (
+  residentId: string,
+  params?: GetResidentWalletTransactionsParams,
+  options?: RequestInit,
+): Promise<WalletTransactionListResponse> => {
+  return customFetch<WalletTransactionListResponse>(
+    getGetResidentWalletTransactionsUrl(residentId, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetResidentWalletTransactionsQueryKey = (
+  residentId: string,
+  params?: GetResidentWalletTransactionsParams,
+) => {
+  return [
+    `/api/wallet/residents/${residentId}/transactions`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetResidentWalletTransactionsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getResidentWalletTransactions>>,
+  TError = ErrorType<unknown>,
+>(
+  residentId: string,
+  params?: GetResidentWalletTransactionsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getResidentWalletTransactions>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getGetResidentWalletTransactionsQueryKey(residentId, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getResidentWalletTransactions>>
+  > = ({ signal }) =>
+    getResidentWalletTransactions(residentId, params, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!residentId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getResidentWalletTransactions>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetResidentWalletTransactionsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getResidentWalletTransactions>>
+>;
+export type GetResidentWalletTransactionsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List wallet transactions for a resident
+ */
+
+export function useGetResidentWalletTransactions<
+  TData = Awaited<ReturnType<typeof getResidentWalletTransactions>>,
+  TError = ErrorType<unknown>,
+>(
+  residentId: string,
+  params?: GetResidentWalletTransactionsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getResidentWalletTransactions>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetResidentWalletTransactionsQueryOptions(
+    residentId,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Top-up resident wallet
+ */
+export const getTopupResidentWalletUrl = (residentId: string) => {
+  return `/api/wallet/residents/${residentId}/topup`;
+};
+
+export const topupResidentWallet = async (
+  residentId: string,
+  walletTopupBody: WalletTopupBody,
+  options?: RequestInit,
+): Promise<WalletTransactionResponse> => {
+  return customFetch<WalletTransactionResponse>(
+    getTopupResidentWalletUrl(residentId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(walletTopupBody),
+    },
+  );
+};
+
+export const getTopupResidentWalletMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof topupResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<WalletTopupBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof topupResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<WalletTopupBody> },
+  TContext
+> => {
+  const mutationKey = ["topupResidentWallet"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof topupResidentWallet>>,
+    { residentId: string; data: BodyType<WalletTopupBody> }
+  > = (props) => {
+    const { residentId, data } = props ?? {};
+
+    return topupResidentWallet(residentId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type TopupResidentWalletMutationResult = NonNullable<
+  Awaited<ReturnType<typeof topupResidentWallet>>
+>;
+export type TopupResidentWalletMutationBody = BodyType<WalletTopupBody>;
+export type TopupResidentWalletMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Top-up resident wallet
+ */
+export const useTopupResidentWallet = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof topupResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<WalletTopupBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof topupResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<WalletTopupBody> },
+  TContext
+> => {
+  return useMutation(getTopupResidentWalletMutationOptions(options));
+};
+
+/**
+ * @summary Manual credit or debit adjustment
+ */
+export const getAdjustResidentWalletUrl = (residentId: string) => {
+  return `/api/wallet/residents/${residentId}/adjust`;
+};
+
+export const adjustResidentWallet = async (
+  residentId: string,
+  walletAdjustBody: WalletAdjustBody,
+  options?: RequestInit,
+): Promise<WalletTransactionResponse> => {
+  return customFetch<WalletTransactionResponse>(
+    getAdjustResidentWalletUrl(residentId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(walletAdjustBody),
+    },
+  );
+};
+
+export const getAdjustResidentWalletMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof adjustResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<WalletAdjustBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof adjustResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<WalletAdjustBody> },
+  TContext
+> => {
+  const mutationKey = ["adjustResidentWallet"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof adjustResidentWallet>>,
+    { residentId: string; data: BodyType<WalletAdjustBody> }
+  > = (props) => {
+    const { residentId, data } = props ?? {};
+
+    return adjustResidentWallet(residentId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AdjustResidentWalletMutationResult = NonNullable<
+  Awaited<ReturnType<typeof adjustResidentWallet>>
+>;
+export type AdjustResidentWalletMutationBody = BodyType<WalletAdjustBody>;
+export type AdjustResidentWalletMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Manual credit or debit adjustment
+ */
+export const useAdjustResidentWallet = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof adjustResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<WalletAdjustBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof adjustResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<WalletAdjustBody> },
+  TContext
+> => {
+  return useMutation(getAdjustResidentWalletMutationOptions(options));
+};
+
+/**
+ * @summary Deduct payment from wallet
+ */
+export const getPayFromResidentWalletUrl = (residentId: string) => {
+  return `/api/wallet/residents/${residentId}/pay`;
+};
+
+export const payFromResidentWallet = async (
+  residentId: string,
+  walletPayBody: WalletPayBody,
+  options?: RequestInit,
+): Promise<WalletTransactionResponse> => {
+  return customFetch<WalletTransactionResponse>(
+    getPayFromResidentWalletUrl(residentId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(walletPayBody),
+    },
+  );
+};
+
+export const getPayFromResidentWalletMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof payFromResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<WalletPayBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof payFromResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<WalletPayBody> },
+  TContext
+> => {
+  const mutationKey = ["payFromResidentWallet"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof payFromResidentWallet>>,
+    { residentId: string; data: BodyType<WalletPayBody> }
+  > = (props) => {
+    const { residentId, data } = props ?? {};
+
+    return payFromResidentWallet(residentId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type PayFromResidentWalletMutationResult = NonNullable<
+  Awaited<ReturnType<typeof payFromResidentWallet>>
+>;
+export type PayFromResidentWalletMutationBody = BodyType<WalletPayBody>;
+export type PayFromResidentWalletMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Deduct payment from wallet
+ */
+export const usePayFromResidentWallet = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof payFromResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<WalletPayBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof payFromResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<WalletPayBody> },
+  TContext
+> => {
+  return useMutation(getPayFromResidentWalletMutationOptions(options));
+};
+
+/**
+ * @summary Reverse a wallet transaction
+ */
+export const getReverseWalletTransactionUrl = (residentId: string) => {
+  return `/api/wallet/residents/${residentId}/reversal`;
+};
+
+export const reverseWalletTransaction = async (
+  residentId: string,
+  walletReversalBody: WalletReversalBody,
+  options?: RequestInit,
+): Promise<WalletTransactionResponse> => {
+  return customFetch<WalletTransactionResponse>(
+    getReverseWalletTransactionUrl(residentId),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(walletReversalBody),
+    },
+  );
+};
+
+export const getReverseWalletTransactionMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reverseWalletTransaction>>,
+    TError,
+    { residentId: string; data: BodyType<WalletReversalBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof reverseWalletTransaction>>,
+  TError,
+  { residentId: string; data: BodyType<WalletReversalBody> },
+  TContext
+> => {
+  const mutationKey = ["reverseWalletTransaction"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof reverseWalletTransaction>>,
+    { residentId: string; data: BodyType<WalletReversalBody> }
+  > = (props) => {
+    const { residentId, data } = props ?? {};
+
+    return reverseWalletTransaction(residentId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ReverseWalletTransactionMutationResult = NonNullable<
+  Awaited<ReturnType<typeof reverseWalletTransaction>>
+>;
+export type ReverseWalletTransactionMutationBody = BodyType<WalletReversalBody>;
+export type ReverseWalletTransactionMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Reverse a wallet transaction
+ */
+export const useReverseWalletTransaction = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reverseWalletTransaction>>,
+    TError,
+    { residentId: string; data: BodyType<WalletReversalBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof reverseWalletTransaction>>,
+  TError,
+  { residentId: string; data: BodyType<WalletReversalBody> },
+  TContext
+> => {
+  return useMutation(getReverseWalletTransactionMutationOptions(options));
+};
+
+/**
+ * @summary Enable or disable wallet for a resident
+ */
+export const getToggleResidentWalletUrl = (residentId: string) => {
+  return `/api/wallet/residents/${residentId}/toggle`;
+};
+
+export const toggleResidentWallet = async (
+  residentId: string,
+  toggleResidentWalletBody: ToggleResidentWalletBody,
+  options?: RequestInit,
+): Promise<ToggleResidentWallet200> => {
+  return customFetch<ToggleResidentWallet200>(
+    getToggleResidentWalletUrl(residentId),
+    {
+      ...options,
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(toggleResidentWalletBody),
+    },
+  );
+};
+
+export const getToggleResidentWalletMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof toggleResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<ToggleResidentWalletBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof toggleResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<ToggleResidentWalletBody> },
+  TContext
+> => {
+  const mutationKey = ["toggleResidentWallet"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof toggleResidentWallet>>,
+    { residentId: string; data: BodyType<ToggleResidentWalletBody> }
+  > = (props) => {
+    const { residentId, data } = props ?? {};
+
+    return toggleResidentWallet(residentId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ToggleResidentWalletMutationResult = NonNullable<
+  Awaited<ReturnType<typeof toggleResidentWallet>>
+>;
+export type ToggleResidentWalletMutationBody =
+  BodyType<ToggleResidentWalletBody>;
+export type ToggleResidentWalletMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Enable or disable wallet for a resident
+ */
+export const useToggleResidentWallet = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof toggleResidentWallet>>,
+    TError,
+    { residentId: string; data: BodyType<ToggleResidentWalletBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof toggleResidentWallet>>,
+  TError,
+  { residentId: string; data: BodyType<ToggleResidentWalletBody> },
+  TContext
+> => {
+  return useMutation(getToggleResidentWalletMutationOptions(options));
+};
+
+/**
+ * @summary Get wallet config for a property
+ */
+export const getGetWalletConfigUrl = (propertyId: string) => {
+  return `/api/wallet/config/${propertyId}`;
+};
+
+export const getWalletConfig = async (
+  propertyId: string,
+  options?: RequestInit,
+): Promise<WalletConfigResponse> => {
+  return customFetch<WalletConfigResponse>(getGetWalletConfigUrl(propertyId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetWalletConfigQueryKey = (propertyId: string) => {
+  return [`/api/wallet/config/${propertyId}`] as const;
+};
+
+export const getGetWalletConfigQueryOptions = <
+  TData = Awaited<ReturnType<typeof getWalletConfig>>,
+  TError = ErrorType<unknown>,
+>(
+  propertyId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getWalletConfig>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetWalletConfigQueryKey(propertyId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getWalletConfig>>> = ({
+    signal,
+  }) => getWalletConfig(propertyId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!propertyId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getWalletConfig>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetWalletConfigQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getWalletConfig>>
+>;
+export type GetWalletConfigQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get wallet config for a property
+ */
+
+export function useGetWalletConfig<
+  TData = Awaited<ReturnType<typeof getWalletConfig>>,
+  TError = ErrorType<unknown>,
+>(
+  propertyId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getWalletConfig>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetWalletConfigQueryOptions(propertyId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Update wallet config for a property
+ */
+export const getUpdateWalletConfigUrl = (propertyId: string) => {
+  return `/api/wallet/config/${propertyId}`;
+};
+
+export const updateWalletConfig = async (
+  propertyId: string,
+  walletConfigBody: WalletConfigBody,
+  options?: RequestInit,
+): Promise<WalletConfigResponse> => {
+  return customFetch<WalletConfigResponse>(
+    getUpdateWalletConfigUrl(propertyId),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(walletConfigBody),
+    },
+  );
+};
+
+export const getUpdateWalletConfigMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateWalletConfig>>,
+    TError,
+    { propertyId: string; data: BodyType<WalletConfigBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateWalletConfig>>,
+  TError,
+  { propertyId: string; data: BodyType<WalletConfigBody> },
+  TContext
+> => {
+  const mutationKey = ["updateWalletConfig"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateWalletConfig>>,
+    { propertyId: string; data: BodyType<WalletConfigBody> }
+  > = (props) => {
+    const { propertyId, data } = props ?? {};
+
+    return updateWalletConfig(propertyId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateWalletConfigMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateWalletConfig>>
+>;
+export type UpdateWalletConfigMutationBody = BodyType<WalletConfigBody>;
+export type UpdateWalletConfigMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Update wallet config for a property
+ */
+export const useUpdateWalletConfig = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateWalletConfig>>,
+    TError,
+    { propertyId: string; data: BodyType<WalletConfigBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateWalletConfig>>,
+  TError,
+  { propertyId: string; data: BodyType<WalletConfigBody> },
+  TContext
+> => {
+  return useMutation(getUpdateWalletConfigMutationOptions(options));
+};

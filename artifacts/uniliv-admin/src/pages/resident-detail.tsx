@@ -56,7 +56,7 @@ import { ResidentKycTab } from "./resident-kyc-tab";
 import { ResidentEsignTab } from "./resident-esign-tab";
 import { CheckoutModal } from "@/components/checkout-modal";
 import jsPDF from "jspdf";
-import { BellRing, RefreshCw } from "lucide-react";
+import { BellRing, RefreshCw, ArrowUpCircle } from "lucide-react";
 
 const LEDGER_TYPES = ["RENT", "UTILITY", "FOOD", "LAUNDRY", "PENALTY", "ADJUSTMENT", "DEPOSIT", "INCENTIVE"];
 const PAYMENT_MODES = ["CASH", "UPI", "BANK_TRANSFER", "CARD", "CHEQUE"];
@@ -273,6 +273,7 @@ export default function ResidentDetail() {
             )}
           </TabsTrigger>
           <TabsTrigger value="attendance" data-testid="tab-attendance-history">Attendance</TabsTrigger>
+          <TabsTrigger value="wallet" data-testid="tab-wallet">Wallet</TabsTrigger>
         </TabsList>
         <TabsContent value="attendance" className="mt-6">
           <ResidentAttendanceHistory residentId={id} />
@@ -448,6 +449,10 @@ export default function ResidentDetail() {
         <TabsContent value="reminders" className="mt-6">
           <ResidentRemindersTab residentId={id} ledger={ledger} />
         </TabsContent>
+
+        <TabsContent value="wallet" className="mt-6">
+          <ResidentWalletTab residentId={id} />
+        </TabsContent>
       </Tabs>
 
       <AddLedgerModal open={ledgerModalOpen} onOpenChange={setLedgerModalOpen} residentId={id} />
@@ -542,6 +547,172 @@ function ResidentRemindersTab({ residentId, ledger }: { residentId: string; ledg
         data={logs}
         isLoading={isLoading}
       />
+    </div>
+  );
+}
+
+function ResidentWalletTab({ residentId }: { residentId: string }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  const { data: walletRes, isLoading } = useQuery<{
+    success: boolean;
+    data: { id: string; balance: number; isActive: boolean; walletEnabled: boolean; transactionCount: number };
+  }>({
+    queryKey: ["resident-wallet", residentId],
+    queryFn: () => apiFetch(`/wallet/residents/${residentId}`),
+    enabled: !!residentId,
+  });
+
+  const { data: txRes } = useQuery<{
+    success: boolean;
+    data: Array<{ id: string; type: string; amount: number; balanceBefore: number; balanceAfter: number; description: string; createdAt: string; notes?: string | null }>;
+    meta: { total: number };
+  }>({
+    queryKey: ["resident-wallet-txns", residentId],
+    queryFn: () => apiFetch(`/wallet/residents/${residentId}/transactions?limit=30`),
+    enabled: !!residentId,
+  });
+
+  const wallet = walletRes?.data;
+  const txns = txRes?.data || [];
+
+  const [topupOpen, setTopupOpen] = React.useState(false);
+  const [adjustOpen, setAdjustOpen] = React.useState(false);
+  const [topupAmount, setTopupAmount] = React.useState("");
+  const [topupDesc, setTopupDesc] = React.useState("Cash top-up by staff");
+  const [topupNotes, setTopupNotes] = React.useState("");
+  const [adjustAmount, setAdjustAmount] = React.useState("");
+  const [adjustType, setAdjustType] = React.useState<"ADJUSTMENT_CREDIT" | "ADJUSTMENT_DEBIT">("ADJUSTMENT_CREDIT");
+  const [adjustDesc, setAdjustDesc] = React.useState("");
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["resident-wallet", residentId] });
+    qc.invalidateQueries({ queryKey: ["resident-wallet-txns", residentId] });
+  };
+
+  const topupMut = useMutation({
+    mutationFn: (body: object) => apiFetch(`/wallet/residents/${residentId}/topup`, { method: "POST", body: JSON.stringify(body) }),
+    onSuccess: () => { toast({ title: "Top-up successful" }); invalidate(); setTopupOpen(false); setTopupAmount(""); setTopupNotes(""); },
+    onError: (e: Error) => toast({ title: "Top-up failed", description: e.message, variant: "destructive" }),
+  });
+
+  const adjustMut = useMutation({
+    mutationFn: (body: object) => apiFetch(`/wallet/residents/${residentId}/adjust`, { method: "POST", body: JSON.stringify(body) }),
+    onSuccess: () => { toast({ title: "Adjustment applied" }); invalidate(); setAdjustOpen(false); setAdjustAmount(""); setAdjustDesc(""); },
+    onError: (e: Error) => toast({ title: "Adjustment failed", description: e.message, variant: "destructive" }),
+  });
+
+  function txTypeBadge(type: string) {
+    const colorMap: Record<string, string> = {
+      TOPUP: "text-green-700",
+      ADJUSTMENT_CREDIT: "text-green-600",
+      REFUND_WITHDRAWAL: "text-green-600",
+      PAYMENT: "text-red-600",
+      PARTIAL_PAYMENT: "text-orange-600",
+      ADJUSTMENT_DEBIT: "text-red-500",
+      REVERSAL: "text-purple-600",
+    };
+    return <Badge variant="outline" className={colorMap[type] || ""}>{type.replace(/_/g, " ")}</Badge>;
+  }
+
+  if (isLoading) return <Skeleton className="h-40 w-full" />;
+
+  const isCredit = (type: string) => ["TOPUP", "ADJUSTMENT_CREDIT", "REFUND_WITHDRAWAL"].includes(type);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-xs text-muted-foreground uppercase mb-1">Current Balance</div>
+          <div className={`text-3xl font-display font-bold ${(wallet?.balance ?? 0) < 0 ? "text-destructive" : (wallet?.balance ?? 0) < 200 ? "text-yellow-600" : "text-green-600"}`}>
+            ₹{(wallet?.balance ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+          </div>
+          {wallet && !wallet.walletEnabled && (
+            <Badge variant="outline" className="text-muted-foreground mt-1">Wallet disabled for this resident</Badge>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => setTopupOpen(true)} disabled={!wallet?.walletEnabled}>
+            <ArrowUpCircle className="w-3.5 h-3.5 mr-1" /> Top-up
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setAdjustOpen(true)}>
+            Adjust
+          </Button>
+          <Button size="sm" variant="ghost" onClick={invalidate}>
+            <RefreshCw className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          {txns.length === 0 ? (
+            <div className="p-12 text-center text-muted-foreground">No transactions yet</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="text-right">Balance After</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {txns.map((t) => (
+                  <TableRow key={t.id}>
+                    <TableCell className="text-xs">{format(new Date(t.createdAt), "dd MMM yy HH:mm")}</TableCell>
+                    <TableCell>{txTypeBadge(t.type)}</TableCell>
+                    <TableCell className="text-sm">{t.description}</TableCell>
+                    <TableCell className={`text-right font-mono text-sm ${isCredit(t.type) ? "text-green-600" : "text-red-600"}`}>
+                      {isCredit(t.type) ? "+" : "−"}₹{t.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">
+                      ₹{t.balanceAfter.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <FormModal open={topupOpen} onClose={() => setTopupOpen(false)} title="Top-up Wallet" onSubmit={() => {
+        const amt = parseFloat(topupAmount);
+        if (isNaN(amt) || amt <= 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
+        topupMut.mutate({ amount: amt, description: topupDesc, notes: topupNotes });
+      }} isLoading={topupMut.isPending}>
+        <div className="space-y-3">
+          <div><Label>Amount (₹)</Label><Input type="number" min="1" value={topupAmount} onChange={(e) => setTopupAmount(e.target.value)} placeholder="500" /></div>
+          <div><Label>Description</Label><Input value={topupDesc} onChange={(e) => setTopupDesc(e.target.value)} /></div>
+          <div><Label>Notes (optional)</Label><Textarea rows={2} value={topupNotes} onChange={(e) => setTopupNotes(e.target.value)} /></div>
+        </div>
+      </FormModal>
+
+      <FormModal open={adjustOpen} onClose={() => setAdjustOpen(false)} title="Manual Adjustment" onSubmit={() => {
+        const amt = parseFloat(adjustAmount);
+        if (isNaN(amt) || amt <= 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
+        if (!adjustDesc) { toast({ title: "Description required", variant: "destructive" }); return; }
+        adjustMut.mutate({ type: adjustType, amount: amt, description: adjustDesc });
+      }} isLoading={adjustMut.isPending}>
+        <div className="space-y-3">
+          <div>
+            <Label>Type</Label>
+            <Select value={adjustType} onValueChange={(v) => setAdjustType(v as typeof adjustType)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ADJUSTMENT_CREDIT">Credit (add funds)</SelectItem>
+                <SelectItem value="ADJUSTMENT_DEBIT">Debit (remove funds)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div><Label>Amount (₹)</Label><Input type="number" min="1" value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} /></div>
+          <div><Label>Reason / Description</Label><Input value={adjustDesc} onChange={(e) => setAdjustDesc(e.target.value)} placeholder="Correction for..." /></div>
+        </div>
+      </FormModal>
     </div>
   );
 }

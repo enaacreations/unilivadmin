@@ -64,6 +64,8 @@ export const paymentModeEnum = pgEnum("payment_mode", [
   "CARD",
   "CASH",
   "BANK_TRANSFER",
+  "WALLET",
+  "WALLET_PARTIAL",
 ]);
 export const paymentStatusEnum = pgEnum("payment_status", [
   "PENDING",
@@ -209,6 +211,7 @@ export const residentsTable = pgTable("residents", {
   monthlyRent: numeric("monthly_rent"),
   securityDeposit: numeric("security_deposit"),
   status: residentStatusEnum("status").default("ACTIVE").notNull(),
+  walletEnabled: boolean("wallet_enabled").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

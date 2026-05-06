@@ -1,0 +1,149 @@
+// ═══════════════════════════════════════════════════════════════
+  // UNILIV WALLET — API ROUTES & SERVICE LAYER
+  // File: artifacts/api-server/src/routes/wallet.ts
+  // Register: app.use('/wallet', walletRouter) in routes/index.ts
+  // ═══════════════════════════════════════════════════════════════
+  
+  // ──────────────────────────────────────────────────────────────
+  // WALLET SERVICE LAYER (wallet-service.ts — import in routes)
+  // Put atomic operations here so routes stay thin.
+  // ──────────────────────────────────────────────────────────────
+  
+  // CORE HELPER: getWalletWithConfig(residentId, db)
+  // 1. SELECT wallet WHERE residentId = :id
+  // 2. SELECT walletConfig WHERE propertyId = resident.propertyId
+  // 3. Return { wallet, config } — throw 404 if either missing
+  
+  // CREDIT HELPER: creditWallet(walletId, amount, type, meta, db)
+  // Must run inside a db.transaction()
+  // 1. SELECT wallet FOR UPDATE (lock the row)
+  // 2. const balanceBefore = Number(wallet.balance)
+  // 3. const balanceAfter = balanceBefore + amount
+  // 4. UPDATE wallets SET balance = balanceAfter WHERE id = walletId
+  // 5. INSERT walletTransactions { type, amount, balanceBefore, balanceAfter, ...meta }
+  // 6. Return inserted transaction row
+  
+  // DEBIT HELPER: debitWallet(walletId, amount, type, meta, db)
+  // Must run inside a db.transaction()
+  // 1. SELECT wallet + walletConfig FOR UPDATE
+  // 2. const projectedBalance = Number(wallet.balance) - amount
+  // 3. if projectedBalance < Number(config.minimumBalance):
+  //    throw new AppError(422, 'Insufficient wallet balance')
+  //    Include in error: { currentBalance, requestedDebit: amount,
+  //      minimumBalance, maxAllowedDebit: balance - minimumBalance }
+  // 4. UPDATE wallets SET balance = projectedBalance
+  // 5. INSERT walletTransactions { type, amount, balanceBefore, balanceAfter, ...meta }
+  // 6. Return inserted transaction row
+  
+  // ──────────────────────────────────────────────────────────────
+  // ROUTE: POST /wallet/:residentId/topup
+  // ──────────────────────────────────────────────────────────────
+  // Validation (Zod):
+  //   amount: z.number().positive().max(50000)  // max single topup ₹50k
+  //   notes: z.string().max(500).optional()
+  //   propertyId: z.string()
+  
+  // Logic:
+  // 1. Validate amount > 0
+  // 2. Verify wallet.isActive = true
+  // 3. db.transaction(async tx => {
+  //      const txn = await creditWallet(wallet.id, amount, 'TOPUP', {
+  //        description: `Cash top-up by ${req.user.name}`,
+  //        recordedBy: req.user.id,
+  //        propertyId: resident.propertyId,
+  //        notes,
+  //      }, tx);
+  //    });
+  // 4. Create WALLET_TOPUP notification for resident
+  //    title: 'Wallet topped up', body: `₹${amount} added to your wallet`
+  // 5. awardXP(residentId, 'WALLET_TOPUP', 'Wallet credited', db)  // +30 XP
+  // 6. Send push notification to resident.pushToken (use push.ts utility)
+  // 7. Log to auditLog: entity='wallet', action='TOPUP', changes={amount}
+  // 8. Return { success: true, data: { transaction, newBalance } }
+  
+  // ──────────────────────────────────────────────────────────────
+  // ROUTE: POST /wallet/:residentId/pay
+  // Pay one or more ledger entries fully from wallet
+  // ──────────────────────────────────────────────────────────────
+  // Validation:
+  //   ledgerEntryIds: z.array(z.string()).min(1).max(50)
+  //   notes: z.string().optional()
+  
+  // Logic (ALL inside a single db.transaction):
+  // 1. SELECT ledgerEntries WHERE id IN ledgerEntryIds AND residentId = :id
+  //    Verify all entries belong to this resident
+  //    Verify all entries have isPaid = false
+  // 2. const totalAmount = sum of entry.amount for all entries
+  // 3. debitWallet(wallet.id, totalAmount, 'PAYMENT', {
+  //      description: `Payment for ${entries.length} ledger entries`,
+  //      recordedBy: req.user.id || residentId,
+  //      propertyId: resident.propertyId,
+  //      notes,
+  //    }, tx);
+  // 4. INSERT INTO payments {
+  //      residentId, amount: totalAmount, mode: 'WALLET',
+  //      status: 'SUCCESS', reference: walletTransaction.id
+  //    }
+  // 5. UPDATE ledgerEntries SET isPaid=true, paidOn=now() WHERE id IN ids
+  // 6. UPDATE walletTransactions SET referenceId=payment.id,
+  //                                   referenceType='PAYMENT'
+  // 7. End transaction
+  // 8. createNotification(residentId, WALLET_PAYMENT, ...)  // outside tx
+  // 9. awardXP(residentId, 'WALLET_PAYMENT', '...', db)  // +25 XP
+  // 10. Return { success: true, data: { payment, walletTransaction, newBalance } }
+  
+  // ──────────────────────────────────────────────────────────────
+  // ROUTE: POST /wallet/:residentId/partial-pay
+  // Split: wallet pays part, another mode pays the rest
+  // ──────────────────────────────────────────────────────────────
+  // Validation:
+  //   walletAmount:    z.number().positive()
+  //   otherAmount:     z.number().positive()
+  //   otherMode:       z.enum(['UPI','NETBANKING','CARD','CASH','BANK_TRANSFER'])
+  //   ledgerEntryIds:  z.array(z.string()).min(1)
+  //   reference:       z.string().optional()  // e.g. UPI reference
+  
+  // Logic (ALL inside a single db.transaction):
+  // 1. Verify walletAmount + otherAmount = total of ledgerEntries
+  //    If not equal → 422 'Amounts do not sum to ledger total'
+  // 2. debitWallet(wallet.id, walletAmount, 'PARTIAL_PAYMENT', {...}, tx)
+  // 3. INSERT INTO payments { amount: walletAmount, mode: 'WALLET_PARTIAL', status: 'SUCCESS' }
+  // 4. INSERT INTO payments { amount: otherAmount, mode: otherMode,
+  //      status: 'SUCCESS', reference: reference }
+  // 5. UPDATE ledgerEntries SET isPaid=true, paidOn=now() WHERE id IN ids
+  // 6. End transaction
+  // 7. Notifications + XP for wallet portion
+  // 8. Return { success: true, data: { walletPayment, otherPayment, newBalance } }
+  
+  // ──────────────────────────────────────────────────────────────
+  // ROUTE: POST /wallet/:residentId/checkout-refund
+  // Called during resident checkout flow
+  // ──────────────────────────────────────────────────────────────
+  // Logic (ALL inside a single db.transaction):
+  // 1. Get all unpaid ledgerEntries for this resident
+  // 2. Get current wallet balance
+  // 3. If balance is NEGATIVE:
+  //    Return 422 { negativeAmount: Math.abs(balance) }  // must clear first
+  // 4. Apply wallet to outstanding dues (as PAYMENT transactions)
+  //    Loop entries until wallet balance runs out:
+  //    debitWallet for each entry amount (stop when balance = 0)
+  // 5. If wallet.balance > 0 after clearing dues:
+  //    debitWallet(remaining, 'REFUND_WITHDRAWAL', {...}, tx)
+  //    Record refundAmount for staff to hand back cash
+  // 6. UPDATE wallets SET isActive = false
+  // 7. End transaction
+  // 8. Return { success: true, data: { duesCleared, refundAmount, transactions[] } }
+  //    Staff UI shows: 'Hand back ₹X to resident'
+  
+  // ──────────────────────────────────────────────────────────────
+  // ROUTE: GET /wallet/overview?propertyId=
+  // Admin: all resident balances for a property
+  // ──────────────────────────────────────────────────────────────
+  // Query:
+  // SELECT w.balance, w.isActive, r.name, r.roomNumber, r.phone
+  // FROM wallets w JOIN residents r ON w.residentId = r.id
+  // WHERE r.propertyId = :propertyId AND r.status = 'ACTIVE'
+  // ORDER BY w.balance ASC  // negatives first
+  
+  // Return: { negativeCount, totalBalance, residents: [...] }
+  // Flag each resident: isNegative, isLowBalance (< config.lowBalanceAlert)

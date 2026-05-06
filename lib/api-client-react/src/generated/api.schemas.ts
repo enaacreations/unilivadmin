@@ -1967,6 +1967,180 @@ export interface IotLatestListResponse {
   data: IotLatestDto[];
 }
 
+export interface WalletDto {
+  id: string;
+  residentId: string;
+  balance: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WalletDetailDto {
+  id: string;
+  residentId: string;
+  balance: number;
+  isActive: boolean;
+  residentName: string;
+  walletEnabled: boolean;
+  transactionCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface WalletDetailResponse {
+  success: boolean;
+  data: WalletDetailDto;
+}
+
+export interface WalletOverviewDto {
+  walletId: string;
+  residentId: string;
+  residentName: string;
+  residentEmail: string;
+  residentStatus?: string;
+  walletEnabled: boolean;
+  balance: number;
+  isActive: boolean;
+  propertyId?: string | null;
+  propertyName?: string | null;
+  updatedAt?: string;
+}
+
+export type WalletOverviewListResponseMeta = {
+  total?: number;
+  limit?: number;
+  offset?: number;
+};
+
+export interface WalletOverviewListResponse {
+  success: boolean;
+  data: WalletOverviewDto[];
+  meta?: WalletOverviewListResponseMeta;
+}
+
+export type WalletTransactionDtoType =
+  (typeof WalletTransactionDtoType)[keyof typeof WalletTransactionDtoType];
+
+export const WalletTransactionDtoType = {
+  TOPUP: "TOPUP",
+  PAYMENT: "PAYMENT",
+  PARTIAL_PAYMENT: "PARTIAL_PAYMENT",
+  ADJUSTMENT_CREDIT: "ADJUSTMENT_CREDIT",
+  ADJUSTMENT_DEBIT: "ADJUSTMENT_DEBIT",
+  REFUND_WITHDRAWAL: "REFUND_WITHDRAWAL",
+  REVERSAL: "REVERSAL",
+} as const;
+
+export interface WalletTransactionDto {
+  id: string;
+  walletId: string;
+  residentId: string;
+  type: WalletTransactionDtoType;
+  amount: number;
+  balanceBefore: number;
+  balanceAfter: number;
+  description: string;
+  referenceId?: string | null;
+  referenceType?: string | null;
+  reversalOf?: string | null;
+  recordedBy: string;
+  notes?: string | null;
+  propertyId?: string | null;
+  createdAt: string;
+}
+
+export interface WalletTransactionResultDto {
+  id: string;
+  walletId: string;
+  residentId: string;
+  type: string;
+  amount: number;
+  balanceBefore: number;
+  balanceAfter: number;
+  newBalance: number;
+  description: string;
+  recordedBy: string;
+  createdAt?: string;
+}
+
+export interface WalletTransactionResponse {
+  success: boolean;
+  data: WalletTransactionResultDto;
+}
+
+export type WalletTransactionListResponseMeta = {
+  total?: number;
+  limit?: number;
+  offset?: number;
+};
+
+export interface WalletTransactionListResponse {
+  success: boolean;
+  data: WalletTransactionDto[];
+  meta?: WalletTransactionListResponseMeta;
+}
+
+export interface WalletTopupBody {
+  amount: number;
+  description?: string;
+  notes?: string | null;
+  referenceId?: string | null;
+  referenceType?: string | null;
+}
+
+export type WalletAdjustBodyType =
+  (typeof WalletAdjustBodyType)[keyof typeof WalletAdjustBodyType];
+
+export const WalletAdjustBodyType = {
+  ADJUSTMENT_CREDIT: "ADJUSTMENT_CREDIT",
+  ADJUSTMENT_DEBIT: "ADJUSTMENT_DEBIT",
+} as const;
+
+export interface WalletAdjustBody {
+  type: WalletAdjustBodyType;
+  amount: number;
+  description: string;
+  notes?: string | null;
+}
+
+export interface WalletPayBody {
+  amount: number;
+  description: string;
+  notes?: string | null;
+  referenceId?: string | null;
+  referenceType?: string | null;
+}
+
+export interface WalletReversalBody {
+  reversalOf: string;
+  description?: string | null;
+  notes?: string | null;
+}
+
+export interface WalletConfigDto {
+  id: string;
+  propertyId: string;
+  minimumBalance: number;
+  lowBalanceAlert: number;
+  isEnabled: boolean;
+  topupNotes?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface WalletConfigResponse {
+  success: boolean;
+  data: WalletConfigDto;
+}
+
+export interface WalletConfigBody {
+  minimumBalance?: number | null;
+  lowBalanceAlert?: number | null;
+  isEnabled?: boolean | null;
+  topupNotes?: string | null;
+}
+
 export type PageParamParameter = number;
 
 export type LimitParamParameter = number;
@@ -2211,4 +2385,30 @@ export type GetIotReadingsParams = {
 export type GetIotLatestParams = {
   propertyId?: PropertyIdParamParameter;
   roomId?: string;
+};
+
+export type GetWalletOverviewParams = {
+  propertyId?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type GetResidentWalletTransactionsParams = {
+  limit?: number;
+  offset?: number;
+};
+
+export type ToggleResidentWalletBody = {
+  walletEnabled?: boolean;
+};
+
+export type ToggleResidentWallet200Data = {
+  residentId?: string;
+  walletEnabled?: boolean;
+};
+
+export type ToggleResidentWallet200 = {
+  success?: boolean;
+  data?: ToggleResidentWallet200Data;
 };

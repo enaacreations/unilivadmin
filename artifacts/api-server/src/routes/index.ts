@@ -21,6 +21,7 @@ import { settingsRouter } from "./settings.js";
 import { kycRouter, esignRouter, esignPublicRouter } from "./kyc-esign.js";
 import { financeRouter } from "./finance.js";
 import { facilityRouter, electricityRouter, residentAttendanceRouter, outPassRouter, iotRouter, iotIngestionRouter } from "./operations.js";
+import { walletRouter } from "./wallet.js";
 
 const router: IRouter = Router();
 
@@ -68,5 +69,6 @@ router.use("/resident-attendance", residentAttendanceRouter);
 router.use("/out-passes", outPassRouter);
 router.use("/iot", iotRouter);
 router.use("/iot", iotIngestionRouter);
+router.use(walletRouter);
 
 export default router;

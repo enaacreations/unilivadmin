@@ -32,6 +32,7 @@ tags:
   - name: residentAttendance
   - name: outPass
   - name: iot
+  - name: wallet
 
 paths:
   /healthz:
@@ -2827,6 +2828,230 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/IotLatestListResponse" }
+
+  # ─── WALLET ──────────────────────────────────────────
+  /wallet/overview:
+    get:
+      operationId: getWalletOverview
+      tags: [wallet]
+      summary: List all resident wallets
+      parameters:
+        - in: query
+          name: propertyId
+          schema: { type: string }
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer }
+        - in: query
+          name: offset
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Wallet list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletOverviewListResponse" }
+
+  /wallet/residents/{residentId}:
+    get:
+      operationId: getResidentWallet
+      tags: [wallet]
+      summary: Get wallet for a resident
+      parameters:
+        - in: path
+          name: residentId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Wallet detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletDetailResponse" }
+
+  /wallet/residents/{residentId}/transactions:
+    get:
+      operationId: getResidentWalletTransactions
+      tags: [wallet]
+      summary: List wallet transactions for a resident
+      parameters:
+        - in: path
+          name: residentId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer }
+        - in: query
+          name: offset
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletTransactionListResponse" }
+
+  /wallet/residents/{residentId}/topup:
+    post:
+      operationId: topupResidentWallet
+      tags: [wallet]
+      summary: Top-up resident wallet
+      parameters:
+        - in: path
+          name: residentId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WalletTopupBody" }
+      responses:
+        "200":
+          description: Top-up result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletTransactionResponse" }
+
+  /wallet/residents/{residentId}/adjust:
+    post:
+      operationId: adjustResidentWallet
+      tags: [wallet]
+      summary: Manual credit or debit adjustment
+      parameters:
+        - in: path
+          name: residentId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WalletAdjustBody" }
+      responses:
+        "200":
+          description: Adjustment result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletTransactionResponse" }
+
+  /wallet/residents/{residentId}/pay:
+    post:
+      operationId: payFromResidentWallet
+      tags: [wallet]
+      summary: Deduct payment from wallet
+      parameters:
+        - in: path
+          name: residentId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WalletPayBody" }
+      responses:
+        "200":
+          description: Payment result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletTransactionResponse" }
+
+  /wallet/residents/{residentId}/reversal:
+    post:
+      operationId: reverseWalletTransaction
+      tags: [wallet]
+      summary: Reverse a wallet transaction
+      parameters:
+        - in: path
+          name: residentId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WalletReversalBody" }
+      responses:
+        "200":
+          description: Reversal result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletTransactionResponse" }
+
+  /wallet/residents/{residentId}/toggle:
+    patch:
+      operationId: toggleResidentWallet
+      tags: [wallet]
+      summary: Enable or disable wallet for a resident
+      parameters:
+        - in: path
+          name: residentId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                walletEnabled: { type: boolean }
+      responses:
+        "200":
+          description: Toggle result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      residentId: { type: string }
+                      walletEnabled: { type: boolean }
+
+  /wallet/config/{propertyId}:
+    get:
+      operationId: getWalletConfig
+      tags: [wallet]
+      summary: Get wallet config for a property
+      parameters:
+        - in: path
+          name: propertyId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Wallet config
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletConfigResponse" }
+    put:
+      operationId: updateWalletConfig
+      tags: [wallet]
+      summary: Update wallet config for a property
+      parameters:
+        - in: path
+          name: propertyId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WalletConfigBody" }
+      responses:
+        "200":
+          description: Updated wallet config
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletConfigResponse" }
 
 components:
   parameters:
@@ -6138,3 +6363,194 @@ components:
           type: array
           items: { $ref: "#/components/schemas/IotLatestDto" }
       required: [success, data]
+
+    # ─── WALLET SCHEMAS ────────────────────────────────
+    WalletDto:
+      type: object
+      properties:
+        id: { type: string }
+        residentId: { type: string }
+        balance: { type: number }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      required: [id, residentId, balance, isActive, createdAt, updatedAt]
+
+    WalletDetailDto:
+      type: object
+      properties:
+        id: { type: string }
+        residentId: { type: string }
+        balance: { type: number }
+        isActive: { type: boolean }
+        residentName: { type: string }
+        walletEnabled: { type: boolean }
+        transactionCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      required: [id, residentId, balance, isActive, residentName, walletEnabled, transactionCount]
+
+    WalletDetailResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data: { $ref: "#/components/schemas/WalletDetailDto" }
+      required: [success, data]
+
+    WalletOverviewDto:
+      type: object
+      properties:
+        walletId: { type: string }
+        residentId: { type: string }
+        residentName: { type: string }
+        residentEmail: { type: string }
+        residentStatus: { type: string }
+        walletEnabled: { type: boolean }
+        balance: { type: number }
+        isActive: { type: boolean }
+        propertyId: { type: string, nullable: true }
+        propertyName: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time }
+      required: [walletId, residentId, residentName, residentEmail, balance, isActive, walletEnabled]
+
+    WalletOverviewListResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/WalletOverviewDto" }
+        meta:
+          type: object
+          properties:
+            total: { type: integer }
+            limit: { type: integer }
+            offset: { type: integer }
+      required: [success, data]
+
+    WalletTransactionDto:
+      type: object
+      properties:
+        id: { type: string }
+        walletId: { type: string }
+        residentId: { type: string }
+        type:
+          type: string
+          enum: [TOPUP, PAYMENT, PARTIAL_PAYMENT, ADJUSTMENT_CREDIT, ADJUSTMENT_DEBIT, REFUND_WITHDRAWAL, REVERSAL]
+        amount: { type: number }
+        balanceBefore: { type: number }
+        balanceAfter: { type: number }
+        description: { type: string }
+        referenceId: { type: string, nullable: true }
+        referenceType: { type: string, nullable: true }
+        reversalOf: { type: string, nullable: true }
+        recordedBy: { type: string }
+        notes: { type: string, nullable: true }
+        propertyId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+      required: [id, walletId, residentId, type, amount, balanceBefore, balanceAfter, description, recordedBy, createdAt]
+
+    WalletTransactionResultDto:
+      type: object
+      properties:
+        id: { type: string }
+        walletId: { type: string }
+        residentId: { type: string }
+        type: { type: string }
+        amount: { type: number }
+        balanceBefore: { type: number }
+        balanceAfter: { type: number }
+        newBalance: { type: number }
+        description: { type: string }
+        recordedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+      required: [id, walletId, residentId, type, amount, balanceBefore, balanceAfter, newBalance, description, recordedBy]
+
+    WalletTransactionResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data: { $ref: "#/components/schemas/WalletTransactionResultDto" }
+      required: [success, data]
+
+    WalletTransactionListResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/WalletTransactionDto" }
+        meta:
+          type: object
+          properties:
+            total: { type: integer }
+            limit: { type: integer }
+            offset: { type: integer }
+      required: [success, data]
+
+    WalletTopupBody:
+      type: object
+      properties:
+        amount: { type: number }
+        description: { type: string }
+        notes: { type: string, nullable: true }
+        referenceId: { type: string, nullable: true }
+        referenceType: { type: string, nullable: true }
+      required: [amount]
+
+    WalletAdjustBody:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [ADJUSTMENT_CREDIT, ADJUSTMENT_DEBIT]
+        amount: { type: number }
+        description: { type: string }
+        notes: { type: string, nullable: true }
+      required: [type, amount, description]
+
+    WalletPayBody:
+      type: object
+      properties:
+        amount: { type: number }
+        description: { type: string }
+        notes: { type: string, nullable: true }
+        referenceId: { type: string, nullable: true }
+        referenceType: { type: string, nullable: true }
+      required: [amount, description]
+
+    WalletReversalBody:
+      type: object
+      properties:
+        reversalOf: { type: string }
+        description: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+      required: [reversalOf]
+
+    WalletConfigDto:
+      type: object
+      properties:
+        id: { type: string }
+        propertyId: { type: string }
+        minimumBalance: { type: number }
+        lowBalanceAlert: { type: number }
+        isEnabled: { type: boolean }
+        topupNotes: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+      required: [id, propertyId, minimumBalance, lowBalanceAlert, isEnabled]
+
+    WalletConfigResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data: { $ref: "#/components/schemas/WalletConfigDto" }
+      required: [success, data]
+
+    WalletConfigBody:
+      type: object
+      properties:
+        minimumBalance: { type: number, nullable: true }
+        lowBalanceAlert: { type: number, nullable: true }
+        isEnabled: { type: boolean, nullable: true }
+        topupNotes: { type: string, nullable: true }

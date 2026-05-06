@@ -4362,3 +4362,306 @@ export const GetIotLatestResponse = zod.object({
     }),
   ),
 });
+
+/**
+ * @summary List all resident wallets
+ */
+export const GetWalletOverviewQueryParams = zod.object({
+  propertyId: zod.coerce.string().optional(),
+  search: zod.coerce.string().optional(),
+  limit: zod.coerce.number().optional(),
+  offset: zod.coerce.number().optional(),
+});
+
+export const GetWalletOverviewResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      walletId: zod.string(),
+      residentId: zod.string(),
+      residentName: zod.string(),
+      residentEmail: zod.string(),
+      residentStatus: zod.string().optional(),
+      walletEnabled: zod.boolean(),
+      balance: zod.number(),
+      isActive: zod.boolean(),
+      propertyId: zod.string().nullish(),
+      propertyName: zod.string().nullish(),
+      updatedAt: zod.coerce.date().optional(),
+    }),
+  ),
+  meta: zod
+    .object({
+      total: zod.number().optional(),
+      limit: zod.number().optional(),
+      offset: zod.number().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Get wallet for a resident
+ */
+export const GetResidentWalletParams = zod.object({
+  residentId: zod.coerce.string(),
+});
+
+export const GetResidentWalletResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    residentId: zod.string(),
+    balance: zod.number(),
+    isActive: zod.boolean(),
+    residentName: zod.string(),
+    walletEnabled: zod.boolean(),
+    transactionCount: zod.number(),
+    createdAt: zod.coerce.date().optional(),
+    updatedAt: zod.coerce.date().optional(),
+  }),
+});
+
+/**
+ * @summary List wallet transactions for a resident
+ */
+export const GetResidentWalletTransactionsParams = zod.object({
+  residentId: zod.coerce.string(),
+});
+
+export const GetResidentWalletTransactionsQueryParams = zod.object({
+  limit: zod.coerce.number().optional(),
+  offset: zod.coerce.number().optional(),
+});
+
+export const GetResidentWalletTransactionsResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      walletId: zod.string(),
+      residentId: zod.string(),
+      type: zod.enum([
+        "TOPUP",
+        "PAYMENT",
+        "PARTIAL_PAYMENT",
+        "ADJUSTMENT_CREDIT",
+        "ADJUSTMENT_DEBIT",
+        "REFUND_WITHDRAWAL",
+        "REVERSAL",
+      ]),
+      amount: zod.number(),
+      balanceBefore: zod.number(),
+      balanceAfter: zod.number(),
+      description: zod.string(),
+      referenceId: zod.string().nullish(),
+      referenceType: zod.string().nullish(),
+      reversalOf: zod.string().nullish(),
+      recordedBy: zod.string(),
+      notes: zod.string().nullish(),
+      propertyId: zod.string().nullish(),
+      createdAt: zod.coerce.date(),
+    }),
+  ),
+  meta: zod
+    .object({
+      total: zod.number().optional(),
+      limit: zod.number().optional(),
+      offset: zod.number().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Top-up resident wallet
+ */
+export const TopupResidentWalletParams = zod.object({
+  residentId: zod.coerce.string(),
+});
+
+export const TopupResidentWalletBody = zod.object({
+  amount: zod.number(),
+  description: zod.string().optional(),
+  notes: zod.string().nullish(),
+  referenceId: zod.string().nullish(),
+  referenceType: zod.string().nullish(),
+});
+
+export const TopupResidentWalletResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    walletId: zod.string(),
+    residentId: zod.string(),
+    type: zod.string(),
+    amount: zod.number(),
+    balanceBefore: zod.number(),
+    balanceAfter: zod.number(),
+    newBalance: zod.number(),
+    description: zod.string(),
+    recordedBy: zod.string(),
+    createdAt: zod.coerce.date().optional(),
+  }),
+});
+
+/**
+ * @summary Manual credit or debit adjustment
+ */
+export const AdjustResidentWalletParams = zod.object({
+  residentId: zod.coerce.string(),
+});
+
+export const AdjustResidentWalletBody = zod.object({
+  type: zod.enum(["ADJUSTMENT_CREDIT", "ADJUSTMENT_DEBIT"]),
+  amount: zod.number(),
+  description: zod.string(),
+  notes: zod.string().nullish(),
+});
+
+export const AdjustResidentWalletResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    walletId: zod.string(),
+    residentId: zod.string(),
+    type: zod.string(),
+    amount: zod.number(),
+    balanceBefore: zod.number(),
+    balanceAfter: zod.number(),
+    newBalance: zod.number(),
+    description: zod.string(),
+    recordedBy: zod.string(),
+    createdAt: zod.coerce.date().optional(),
+  }),
+});
+
+/**
+ * @summary Deduct payment from wallet
+ */
+export const PayFromResidentWalletParams = zod.object({
+  residentId: zod.coerce.string(),
+});
+
+export const PayFromResidentWalletBody = zod.object({
+  amount: zod.number(),
+  description: zod.string(),
+  notes: zod.string().nullish(),
+  referenceId: zod.string().nullish(),
+  referenceType: zod.string().nullish(),
+});
+
+export const PayFromResidentWalletResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    walletId: zod.string(),
+    residentId: zod.string(),
+    type: zod.string(),
+    amount: zod.number(),
+    balanceBefore: zod.number(),
+    balanceAfter: zod.number(),
+    newBalance: zod.number(),
+    description: zod.string(),
+    recordedBy: zod.string(),
+    createdAt: zod.coerce.date().optional(),
+  }),
+});
+
+/**
+ * @summary Reverse a wallet transaction
+ */
+export const ReverseWalletTransactionParams = zod.object({
+  residentId: zod.coerce.string(),
+});
+
+export const ReverseWalletTransactionBody = zod.object({
+  reversalOf: zod.string(),
+  description: zod.string().nullish(),
+  notes: zod.string().nullish(),
+});
+
+export const ReverseWalletTransactionResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    walletId: zod.string(),
+    residentId: zod.string(),
+    type: zod.string(),
+    amount: zod.number(),
+    balanceBefore: zod.number(),
+    balanceAfter: zod.number(),
+    newBalance: zod.number(),
+    description: zod.string(),
+    recordedBy: zod.string(),
+    createdAt: zod.coerce.date().optional(),
+  }),
+});
+
+/**
+ * @summary Enable or disable wallet for a resident
+ */
+export const ToggleResidentWalletParams = zod.object({
+  residentId: zod.coerce.string(),
+});
+
+export const ToggleResidentWalletBody = zod.object({
+  walletEnabled: zod.boolean().optional(),
+});
+
+export const ToggleResidentWalletResponse = zod.object({
+  success: zod.boolean().optional(),
+  data: zod
+    .object({
+      residentId: zod.string().optional(),
+      walletEnabled: zod.boolean().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Get wallet config for a property
+ */
+export const GetWalletConfigParams = zod.object({
+  propertyId: zod.coerce.string(),
+});
+
+export const GetWalletConfigResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    propertyId: zod.string(),
+    minimumBalance: zod.number(),
+    lowBalanceAlert: zod.number(),
+    isEnabled: zod.boolean(),
+    topupNotes: zod.string().nullish(),
+    createdAt: zod.coerce.date().optional(),
+    updatedAt: zod.coerce.date().optional(),
+  }),
+});
+
+/**
+ * @summary Update wallet config for a property
+ */
+export const UpdateWalletConfigParams = zod.object({
+  propertyId: zod.coerce.string(),
+});
+
+export const UpdateWalletConfigBody = zod.object({
+  minimumBalance: zod.number().nullish(),
+  lowBalanceAlert: zod.number().nullish(),
+  isEnabled: zod.boolean().nullish(),
+  topupNotes: zod.string().nullish(),
+});
+
+export const UpdateWalletConfigResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    propertyId: zod.string(),
+    minimumBalance: zod.number(),
+    lowBalanceAlert: zod.number(),
+    isEnabled: zod.boolean(),
+    topupNotes: zod.string().nullish(),
+    createdAt: zod.coerce.date().optional(),
+    updatedAt: zod.coerce.date().optional(),
+  }),
+});
