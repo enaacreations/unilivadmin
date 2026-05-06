@@ -4,6 +4,8 @@ import { PageHeader } from "@/components/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +13,7 @@ import { Check, X } from "lucide-react";
 import { apiFetch } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
 import { useToast } from "@/hooks/use-toast";
+import { useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react";
 
 const COMPLAINT_CATEGORIES = ["ELECTRICAL","PLUMBING","HOUSEKEEPING","INTERNET","SECURITY","FOOD","LAUNDRY","OTHER"];
 
@@ -237,6 +240,135 @@ function KycGateTab({ canEdit }: { canEdit: boolean }) {
   );
 }
 
+function WalletConfigTab({ canEdit }: { canEdit: boolean }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data: propertiesRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } } as any);
+  const properties = (propertiesRes as any)?.data || [];
+  const [propertyId, setPropertyId] = React.useState<string>("");
+
+  React.useEffect(() => {
+    if (properties.length > 0 && !propertyId) setPropertyId(properties[0].id);
+  }, [properties, propertyId]);
+
+  const configQK = ["/wallet/config", propertyId];
+  const { data: configRes } = useQuery<{
+    data: { minimumBalance: number; lowBalanceAlert: number; isEnabled: boolean; topupNotes: string | null };
+  }>({
+    queryKey: configQK,
+    queryFn: () => apiFetch(`/wallet/config/${propertyId}`),
+    enabled: !!propertyId,
+  });
+  const cfg = configRes?.data;
+
+  const [form, setForm] = React.useState({ isEnabled: true, minimumBalance: "0", lowBalanceAlert: "200", topupNotes: "" });
+
+  React.useEffect(() => {
+    if (cfg) {
+      setForm({
+        isEnabled: cfg.isEnabled,
+        minimumBalance: String(cfg.minimumBalance ?? 0),
+        lowBalanceAlert: String(cfg.lowBalanceAlert ?? 200),
+        topupNotes: cfg.topupNotes || "",
+      });
+    }
+  }, [cfg]);
+
+  const save = useMutation({
+    mutationFn: () => apiFetch(`/wallet/config/${propertyId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        isEnabled: form.isEnabled,
+        minimumBalance: Number(form.minimumBalance),
+        lowBalanceAlert: Number(form.lowBalanceAlert),
+        topupNotes: form.topupNotes || null,
+      }),
+    }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: configQK }); toast({ title: "Wallet config saved" }); },
+    onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader><CardTitle>Wallet Settings</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">Configure wallet behaviour per property — minimum balance enforcement, low-balance alert threshold, and top-up instructions shown to staff.</p>
+          <div>
+            <Label>Property</Label>
+            <Select value={propertyId} onValueChange={setPropertyId}>
+              <SelectTrigger className="w-64"><SelectValue placeholder="Select property" /></SelectTrigger>
+              <SelectContent>
+                {properties.map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          {propertyId && (
+            <div className="space-y-4 pt-2">
+              <div className="flex items-center justify-between p-3 border rounded">
+                <div>
+                  <div className="font-medium text-sm">Wallet Enabled</div>
+                  <div className="text-xs text-muted-foreground">Residents at this property can use the wallet system.</div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Badge variant={form.isEnabled ? "default" : "outline"}>{form.isEnabled ? "Enabled" : "Disabled"}</Badge>
+                  {canEdit && (
+                    <Button size="sm" variant={form.isEnabled ? "destructive" : "default"} onClick={() => setForm((f) => ({ ...f, isEnabled: !f.isEnabled }))}>
+                      {form.isEnabled ? "Disable" : "Enable"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label>Minimum Balance (₹)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={form.minimumBalance}
+                    onChange={(e) => setForm((f) => ({ ...f, minimumBalance: e.target.value }))}
+                    disabled={!canEdit}
+                    data-testid="input-wallet-min-balance"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">Wallet pay will be blocked if balance would fall below this amount.</p>
+                </div>
+                <div>
+                  <Label>Low Balance Alert Threshold (₹)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={form.lowBalanceAlert}
+                    onChange={(e) => setForm((f) => ({ ...f, lowBalanceAlert: e.target.value }))}
+                    disabled={!canEdit}
+                    data-testid="input-wallet-low-alert"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">Wallets below this threshold are flagged as Low Balance in the overview.</p>
+                </div>
+              </div>
+              <div>
+                <Label>Top-up Notes (shown to staff during top-up)</Label>
+                <Textarea
+                  rows={3}
+                  value={form.topupNotes}
+                  onChange={(e) => setForm((f) => ({ ...f, topupNotes: e.target.value }))}
+                  disabled={!canEdit}
+                  placeholder="e.g. Accept cash only. Issue a handwritten receipt..."
+                  data-testid="textarea-wallet-topup-notes"
+                />
+              </div>
+              {canEdit && (
+                <Button onClick={() => save.mutate()} disabled={save.isPending} data-testid="button-save-wallet-config">
+                  {save.isPending ? "Saving…" : "Save Wallet Config"}
+                </Button>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function ElectricityTariffsTab({ canEdit }: { canEdit: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -304,6 +436,7 @@ export default function Settings() {
           <TabsTrigger value="integrations">Integrations</TabsTrigger>
           <TabsTrigger value="kyc-gate" data-testid="tab-kyc-gate">KYC Gate</TabsTrigger>
           <TabsTrigger value="electricity-tariffs" data-testid="tab-electricity-tariffs">Electricity Tariffs</TabsTrigger>
+          <TabsTrigger value="wallet" data-testid="tab-wallet-settings">Wallet</TabsTrigger>
         </TabsList>
         <TabsContent value="general"><GeneralTab /></TabsContent>
         <TabsContent value="sla"><SLATab canEdit={canEdit} /></TabsContent>
@@ -312,6 +445,7 @@ export default function Settings() {
         <TabsContent value="integrations"><IntegrationsTab /></TabsContent>
         <TabsContent value="kyc-gate"><KycGateTab canEdit={canEdit} /></TabsContent>
         <TabsContent value="electricity-tariffs"><ElectricityTariffsTab canEdit={canEditElectricity} /></TabsContent>
+        <TabsContent value="wallet"><WalletConfigTab canEdit={canEdit} /></TabsContent>
       </Tabs>
     </>
   );

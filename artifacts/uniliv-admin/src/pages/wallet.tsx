@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { type ColumnDef } from "@tanstack/react-table";
 import { apiFetch } from "@/lib/api-fetch";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
@@ -15,14 +16,13 @@ import { StatusBadge } from "@/components/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react";
-import { Wallet, ArrowUpCircle, ArrowDownCircle, Search, SlidersHorizontal, RefreshCw } from "lucide-react";
+import {
+  Wallet, ArrowUpCircle, ArrowDownCircle, Search, SlidersHorizontal,
+  RefreshCw, Download, AlertTriangle,
+} from "lucide-react";
 import { useLocation } from "wouter";
 
 interface WalletRow {
@@ -31,9 +31,12 @@ interface WalletRow {
   residentName: string;
   residentEmail: string;
   residentStatus: string;
+  roomNumber?: string | null;
   walletEnabled: boolean;
   balance: number;
   isActive: boolean;
+  isNegative: boolean;
+  isLowBalance: boolean;
   propertyId: string | null;
   propertyName: string | null;
   updatedAt: string;
@@ -42,7 +45,23 @@ interface WalletRow {
 interface WalletOverviewResponse {
   success: boolean;
   data: WalletRow[];
-  meta: { total: number; limit: number; offset: number };
+  meta: { total: number; limit: number; offset: number; negativeCount: number; totalBalance: number };
+}
+
+type WalletStatus = "ALL" | "NEGATIVE" | "LOW" | "HEALTHY" | "INACTIVE";
+
+function walletStatusBadge(row: WalletRow) {
+  if (!row.walletEnabled) return <Badge variant="outline" className="text-muted-foreground">Inactive</Badge>;
+  if (row.isNegative) return <Badge variant="destructive">Negative</Badge>;
+  if (row.isLowBalance) return <Badge variant="outline" className="text-yellow-700 border-yellow-400">Low Balance</Badge>;
+  return <Badge variant="secondary" className="text-green-700">Healthy</Badge>;
+}
+
+function balanceBadge(row: WalletRow) {
+  const fmt = row.balance.toLocaleString("en-IN", { minimumFractionDigits: 2 });
+  if (row.isNegative) return <span className="font-mono text-sm font-semibold text-destructive">₹{fmt}</span>;
+  if (row.isLowBalance) return <span className="font-mono text-sm font-semibold text-yellow-600">₹{fmt}</span>;
+  return <span className="font-mono text-sm font-semibold text-green-700">₹{fmt}</span>;
 }
 
 export default function WalletPage() {
@@ -52,35 +71,64 @@ export default function WalletPage() {
   const queryClient = useQueryClient();
 
   const [search, setSearch] = React.useState("");
+  const [debouncedSearch, setDebouncedSearch] = React.useState("");
   const [propertyId, setPropertyId] = React.useState("ALL");
+  const [statusFilter, setStatusFilter] = React.useState<WalletStatus>("ALL");
+
   const [topupOpen, setTopupOpen] = React.useState(false);
+  const [adjustOpen, setAdjustOpen] = React.useState(false);
   const [selectedRow, setSelectedRow] = React.useState<WalletRow | null>(null);
+
   const [topupAmount, setTopupAmount] = React.useState("");
-  const [topupDesc, setTopupDesc] = React.useState("");
+  const [topupDesc, setTopupDesc] = React.useState("Cash top-up by staff");
   const [topupNotes, setTopupNotes] = React.useState("");
 
-  const { data: propertiesRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
-  const properties = propertiesRes?.data || [];
+  const [adjustType, setAdjustType] = React.useState<"ADJUSTMENT_CREDIT" | "ADJUSTMENT_DEBIT">("ADJUSTMENT_CREDIT");
+  const [adjustAmount, setAdjustAmount] = React.useState("");
+  const [adjustDesc, setAdjustDesc] = React.useState("");
 
-  const queryKey = ["wallet-overview", propertyId, search];
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const { data: propertiesRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } } as any);
+  const properties = (propertiesRes as any)?.data || [];
+
+  const queryKey = ["wallet-overview", propertyId, debouncedSearch];
   const { data, isLoading } = useQuery<WalletOverviewResponse>({
     queryKey,
     queryFn: () => {
-      const params = new URLSearchParams({ limit: "100" });
+      const params = new URLSearchParams({ limit: "200" });
       if (propertyId !== "ALL") params.set("propertyId", propertyId);
-      if (search) params.set("search", search);
+      if (debouncedSearch) params.set("search", debouncedSearch);
       return apiFetch(`/wallet/overview?${params}`);
     },
   });
 
-  const wallets = data?.data || [];
+  const allWallets = data?.data || [];
+  const meta = data?.meta;
 
-  const totalBalance = wallets.reduce((s, w) => s + w.balance, 0);
-  const positiveCount = wallets.filter((w) => w.balance > 0).length;
-  const lowCount = wallets.filter((w) => w.balance < 200 && w.balance >= 0).length;
-  const negativeCount = wallets.filter((w) => w.balance < 0).length;
+  const wallets = React.useMemo(() => {
+    if (statusFilter === "ALL") return allWallets;
+    if (statusFilter === "NEGATIVE") return allWallets.filter((w) => w.isNegative);
+    if (statusFilter === "LOW") return allWallets.filter((w) => w.isLowBalance && !w.isNegative);
+    if (statusFilter === "HEALTHY") return allWallets.filter((w) => !w.isNegative && !w.isLowBalance && w.walletEnabled);
+    if (statusFilter === "INACTIVE") return allWallets.filter((w) => !w.walletEnabled);
+    return allWallets;
+  }, [allWallets, statusFilter]);
 
-  const topupMutation = useMutation({
+  const totalLoadedBalance = allWallets.filter((w) => w.balance > 0).reduce((s, w) => s + w.balance, 0);
+  const negativeCount = meta?.negativeCount ?? allWallets.filter((w) => w.isNegative).length;
+  const lowCount = allWallets.filter((w) => w.isLowBalance && !w.isNegative).length;
+  const inactiveCount = allWallets.filter((w) => !w.walletEnabled).length;
+
+  const canEdit = can("WALLET", "edit");
+  const canCreate = can("WALLET", "create");
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey });
+
+  const topupMut = useMutation({
     mutationFn: (payload: { residentId: string; amount: number; description: string; notes: string }) =>
       apiFetch(`/wallet/residents/${payload.residentId}/topup`, {
         method: "POST",
@@ -88,93 +136,147 @@ export default function WalletPage() {
       }),
     onSuccess: () => {
       toast({ title: "Top-up successful" });
-      queryClient.invalidateQueries({ queryKey });
+      invalidate();
       setTopupOpen(false);
       setTopupAmount("");
-      setTopupDesc("");
+      setTopupDesc("Cash top-up by staff");
       setTopupNotes("");
       setSelectedRow(null);
     },
     onError: (err: Error) => toast({ title: "Top-up failed", description: err.message, variant: "destructive" }),
   });
 
-  function openTopup(row: WalletRow) {
+  const adjustMut = useMutation({
+    mutationFn: (payload: { residentId: string; type: string; amount: number; description: string }) =>
+      apiFetch(`/wallet/residents/${payload.residentId}/adjust`, {
+        method: "POST",
+        body: JSON.stringify({ type: payload.type, amount: payload.amount, description: payload.description }),
+      }),
+    onSuccess: () => {
+      toast({ title: "Adjustment applied" });
+      invalidate();
+      setAdjustOpen(false);
+      setAdjustAmount("");
+      setAdjustDesc("");
+      setSelectedRow(null);
+    },
+    onError: (err: Error) => toast({ title: "Adjustment failed", description: err.message, variant: "destructive" }),
+  });
+
+  function openTopup(e: React.MouseEvent, row: WalletRow) {
+    e.stopPropagation();
     setSelectedRow(row);
     setTopupDesc("Cash top-up by staff");
+    setTopupAmount("");
+    setTopupNotes("");
     setTopupOpen(true);
   }
 
-  function handleTopupSubmit() {
-    const amt = parseFloat(topupAmount);
-    if (!selectedRow || isNaN(amt) || amt <= 0) {
-      toast({ title: "Enter a valid amount", variant: "destructive" });
-      return;
-    }
-    topupMutation.mutate({
-      residentId: selectedRow.residentId,
-      amount: amt,
-      description: topupDesc,
-      notes: topupNotes,
-    });
+  function openAdjust(e: React.MouseEvent, row: WalletRow) {
+    e.stopPropagation();
+    setSelectedRow(row);
+    setAdjustAmount("");
+    setAdjustDesc("");
+    setAdjustType("ADJUSTMENT_CREDIT");
+    setAdjustOpen(true);
   }
 
-  function balanceBadge(balance: number) {
-    if (balance < 0) return <Badge variant="destructive">₹{balance.toFixed(2)}</Badge>;
-    if (balance < 200) return <Badge variant="outline" className="text-yellow-600 border-yellow-400">₹{balance.toFixed(2)}</Badge>;
-    return <Badge variant="secondary" className="text-green-700">₹{balance.toFixed(2)}</Badge>;
+  function exportCsv() {
+    const rows = [
+      ["Resident", "Email", "Room", "Property", "Balance", "Status", "Wallet Enabled", "Last Updated"].join(","),
+      ...wallets.map((w) =>
+        [
+          `"${w.residentName}"`,
+          w.residentEmail,
+          w.roomNumber || "",
+          `"${w.propertyName || ""}"`,
+          w.balance.toFixed(2),
+          w.isNegative ? "NEGATIVE" : w.isLowBalance ? "LOW" : w.walletEnabled ? "HEALTHY" : "INACTIVE",
+          w.walletEnabled ? "Yes" : "No",
+          new Date(w.updatedAt).toLocaleDateString(),
+        ].join(",")
+      ),
+    ];
+    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `wallet_overview_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
-  const columns = [
+  const projectedBalance = selectedRow
+    ? selectedRow.balance + (parseFloat(topupAmount) || 0)
+    : 0;
+
+  const STATUS_OPTIONS: { value: WalletStatus; label: string }[] = [
+    { value: "ALL", label: "All Statuses" },
+    { value: "NEGATIVE", label: `Negative (${negativeCount})` },
+    { value: "LOW", label: `Low Balance (${lowCount})` },
+    { value: "HEALTHY", label: "Healthy" },
+    { value: "INACTIVE", label: `Inactive (${inactiveCount})` },
+  ];
+
+  const columns: ColumnDef<WalletRow>[] = [
     {
-      key: "residentName",
-      label: "Resident",
-      render: (row: WalletRow) => (
+      accessorKey: "residentName",
+      header: "Resident",
+      cell: ({ row }) => (
         <div>
-          <div className="font-medium">{row.residentName}</div>
-          <div className="text-xs text-muted-foreground">{row.residentEmail}</div>
+          <div className="font-medium">{row.original.residentName}</div>
+          <div className="text-xs text-muted-foreground">{row.original.residentEmail}</div>
         </div>
       ),
     },
-    { key: "propertyName", label: "Property", render: (row: WalletRow) => row.propertyName || "—" },
     {
-      key: "balance",
-      label: "Balance",
-      render: (row: WalletRow) => balanceBadge(row.balance),
+      accessorKey: "roomNumber",
+      header: "Room",
+      cell: ({ row }) =>
+        row.original.roomNumber
+          ? <Badge variant="outline">{row.original.roomNumber}</Badge>
+          : <span className="text-muted-foreground">—</span>,
     },
     {
-      key: "walletEnabled",
-      label: "Status",
-      render: (row: WalletRow) =>
-        row.walletEnabled ? (
-          <Badge variant="secondary" className="text-green-700">Active</Badge>
-        ) : (
-          <Badge variant="outline" className="text-muted-foreground">Disabled</Badge>
-        ),
+      accessorKey: "propertyName",
+      header: "Property",
+      cell: ({ row }) => row.original.propertyName || "—",
     },
     {
-      key: "residentStatus",
-      label: "Resident",
-      render: (row: WalletRow) => <StatusBadge status={row.residentStatus} />,
+      accessorKey: "balance",
+      header: "Balance",
+      cell: ({ row }) => balanceBadge(row.original),
     },
     {
-      key: "actions",
-      label: "",
-      render: (row: WalletRow) => (
-        <div className="flex gap-2 justify-end">
+      id: "walletStatus",
+      header: "Wallet Status",
+      cell: ({ row }) => walletStatusBadge(row.original),
+    },
+    {
+      accessorKey: "residentStatus",
+      header: "Resident",
+      cell: ({ row }) => <StatusBadge status={row.original.residentStatus} />,
+    },
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) => (
+        <div className="flex gap-1 justify-end">
           <Button
             size="sm"
             variant="ghost"
-            onClick={(e) => { e.stopPropagation(); setLocation(`/residents/${row.residentId}`); }}
+            onClick={(e) => { e.stopPropagation(); setLocation(`/wallet/${row.original.residentId}`); }}
           >
-            View
+            Transactions
           </Button>
-          {can("WALLET", "create") && row.walletEnabled && (
-            <Button
-              size="sm"
-              onClick={(e) => { e.stopPropagation(); openTopup(row); }}
-            >
-              <ArrowUpCircle className="w-3.5 h-3.5 mr-1" />
-              Top-up
+          {canCreate && row.original.walletEnabled && (
+            <Button size="sm" variant="outline" onClick={(e) => openTopup(e, row.original)}>
+              <ArrowUpCircle className="w-3.5 h-3.5 mr-1" /> Top-up
+            </Button>
+          )}
+          {canEdit && (
+            <Button size="sm" variant="ghost" onClick={(e) => openAdjust(e, row.original)}>
+              Adjust
             </Button>
           )}
         </div>
@@ -186,24 +288,40 @@ export default function WalletPage() {
     <div className="space-y-6">
       <PageHeader
         title="Wallet"
-        description="Resident wallet balances and transaction management"
-        actions={
-          <Button variant="outline" size="sm" onClick={() => queryClient.invalidateQueries({ queryKey })}>
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
-          </Button>
+        subtitle="Resident wallet balances and transaction management"
+        action={
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={exportCsv}>
+              <Download className="w-4 h-4 mr-2" /> Export CSV
+            </Button>
+            <Button variant="outline" size="sm" onClick={invalidate}>
+              <RefreshCw className="w-4 h-4 mr-2" /> Refresh
+            </Button>
+          </div>
         }
       />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
-          title="Total Wallet Balance"
-          value={`₹${totalBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`}
+          title="Total Loaded Balance"
+          value={`₹${totalLoadedBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`}
           icon={Wallet}
         />
-        <StatCard title="Positive Balance" value={positiveCount} icon={ArrowUpCircle} />
-        <StatCard title="Low Balance (<₹200)" value={lowCount} icon={SlidersHorizontal} />
-        <StatCard title="Negative Balance" value={negativeCount} icon={ArrowDownCircle} />
+        <StatCard
+          title="Negative Balances"
+          value={negativeCount}
+          icon={ArrowDownCircle}
+        />
+        <StatCard
+          title="Low Balance Alerts"
+          value={lowCount}
+          icon={AlertTriangle}
+        />
+        <StatCard
+          title="Inactive Wallets"
+          value={inactiveCount}
+          icon={SlidersHorizontal}
+        />
       </div>
 
       <Card>
@@ -228,6 +346,16 @@ export default function WalletPage() {
               ))}
             </SelectContent>
           </Select>
+          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as WalletStatus)}>
+            <SelectTrigger className="w-48">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUS_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </CardContent>
       </Card>
 
@@ -235,19 +363,28 @@ export default function WalletPage() {
         columns={columns}
         data={wallets}
         isLoading={isLoading}
-        onRowClick={(row) => setLocation(`/residents/${row.residentId}`)}
-        emptyMessage="No wallets found"
+        onRowClick={(row) => setLocation(`/wallet/${row.residentId}`)}
       />
 
       <FormModal
         open={topupOpen}
-        onClose={() => { setTopupOpen(false); setSelectedRow(null); }}
-        title={`Top-up Wallet — ${selectedRow?.residentName}`}
-        description={`Current balance: ₹${selectedRow?.balance?.toFixed(2) ?? "0.00"}`}
-        onSubmit={handleTopupSubmit}
-        isLoading={topupMutation.isPending}
+        onOpenChange={(o) => { if (!o) { setTopupOpen(false); setSelectedRow(null); } }}
+        title={`Top-up — ${selectedRow?.residentName ?? ""}`}
+        onSave={() => {
+          const amt = parseFloat(topupAmount);
+          if (!selectedRow || isNaN(amt) || amt <= 0) {
+            toast({ title: "Enter a valid amount", variant: "destructive" });
+            return;
+          }
+          topupMut.mutate({ residentId: selectedRow.residentId, amount: amt, description: topupDesc, notes: topupNotes });
+        }}
+        isSaving={topupMut.isPending}
+        saveLabel="Top-up"
       >
         <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Current balance: ₹{selectedRow?.balance?.toLocaleString("en-IN", { minimumFractionDigits: 2 }) ?? "0.00"}
+          </p>
           <div className="space-y-1.5">
             <Label>Amount (₹)</Label>
             <Input
@@ -259,13 +396,17 @@ export default function WalletPage() {
               onChange={(e) => setTopupAmount(e.target.value)}
             />
           </div>
+          {topupAmount && parseFloat(topupAmount) > 0 && (
+            <div className="p-3 rounded-lg bg-surface border text-sm">
+              Projected balance:{" "}
+              <span className={projectedBalance < 0 ? "text-destructive font-semibold" : "text-green-600 font-semibold"}>
+                ₹{projectedBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label>Description</Label>
-            <Input
-              value={topupDesc}
-              onChange={(e) => setTopupDesc(e.target.value)}
-              placeholder="Cash top-up by staff"
-            />
+            <Input value={topupDesc} onChange={(e) => setTopupDesc(e.target.value)} />
           </div>
           <div className="space-y-1.5">
             <Label>Notes (optional)</Label>
@@ -274,6 +415,54 @@ export default function WalletPage() {
               onChange={(e) => setTopupNotes(e.target.value)}
               placeholder="Denomination details, reason, etc."
               rows={2}
+            />
+          </div>
+        </div>
+      </FormModal>
+
+      <FormModal
+        open={adjustOpen}
+        onOpenChange={(o) => { if (!o) { setAdjustOpen(false); setSelectedRow(null); } }}
+        title={`Manual Adjustment — ${selectedRow?.residentName ?? ""}`}
+        onSave={() => {
+          const amt = parseFloat(adjustAmount);
+          if (!selectedRow || isNaN(amt) || amt <= 0) {
+            toast({ title: "Enter a valid amount", variant: "destructive" });
+            return;
+          }
+          if (adjustDesc.length < 5) {
+            toast({ title: "Description must be at least 5 characters", variant: "destructive" });
+            return;
+          }
+          adjustMut.mutate({ residentId: selectedRow.residentId, type: adjustType, amount: amt, description: adjustDesc });
+        }}
+        isSaving={adjustMut.isPending}
+        saveLabel="Apply Adjustment"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Current balance: ₹{selectedRow?.balance?.toLocaleString("en-IN", { minimumFractionDigits: 2 }) ?? "0.00"}
+          </p>
+          <div>
+            <Label>Type</Label>
+            <Select value={adjustType} onValueChange={(v) => setAdjustType(v as typeof adjustType)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ADJUSTMENT_CREDIT">Credit — add funds</SelectItem>
+                <SelectItem value="ADJUSTMENT_DEBIT">Debit — remove funds</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Amount (₹)</Label>
+            <Input type="number" min="1" value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
+          </div>
+          <div>
+            <Label>Reason / Description</Label>
+            <Input
+              value={adjustDesc}
+              onChange={(e) => setAdjustDesc(e.target.value)}
+              placeholder="Correction for..."
             />
           </div>
         </div>

@@ -52,6 +52,7 @@ import Electricity from "@/pages/electricity";
 import ResidentAttendance from "@/pages/resident-attendance";
 import IoT from "@/pages/iot";
 import Wallet from "@/pages/wallet";
+import WalletDetail from "@/pages/wallet-detail";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -129,6 +130,7 @@ function Router() {
       <Route path="/out-passes">{() => <ProtectedRoute component={ResidentAttendance} />}</Route>
       <Route path="/iot">{() => <ProtectedRoute component={IoT} />}</Route>
       <Route path="/wallet">{() => <ProtectedRoute component={Wallet} />}</Route>
+      <Route path="/wallet/:residentId">{() => <ProtectedRoute component={WalletDetail} />}</Route>
       
       <Route path="/users">{() => <ProtectedRoute component={Users} />}</Route>
       <Route path="/settings">{() => <ProtectedRoute component={Settings} />}</Route>

@@ -1,0 +1,128 @@
+// ═══════════════════════════════════════════════════════════════
+  // UNILIV WALLET — ADMIN PORTAL UI
+  // All files in artifacts/uniliv-admin/src/
+  // Use existing apiFetch, TanStack Query, shadcn, Tailwind patterns
+  // ═══════════════════════════════════════════════════════════════
+  
+  // ──────────────────────────────────────────────────────────────
+  // 1. ADD WALLET TO SIDEBAR NAVIGATION
+  // File: artifacts/uniliv-admin/src/components/layout.tsx
+  // ──────────────────────────────────────────────────────────────
+  // Add under FINANCE section:
+  { href: '/wallet',  label: 'Wallet',  icon: Wallet,  module: 'WALLET' }
+  // Use lucide-react Wallet icon
+  // Add WALLET to the module list in lib/permissions.ts:
+  //   WALLET: { view, create, edit, delete }
+  //   WARDEN: { WALLET: { view: true, create: true } }
+  //   OPERATIONS_MANAGER: { WALLET: { view: true, create: true } }
+  //   FINANCE: { WALLET: { view: true, create: true, edit: true } }
+  //   SUPER_ADMIN: all true
+  
+  // ──────────────────────────────────────────────────────────────
+  // 2. WALLET OVERVIEW PAGE  /wallet
+  // File: artifacts/uniliv-admin/src/pages/wallet.tsx
+  // ──────────────────────────────────────────────────────────────
+  
+  // PAGE HEADER:
+  // Title: 'Wallet Management'
+  // Property selector (uses existing global propertyId from useAppStore)
+  // 'Top Up Resident Wallet' button → opens TopUpModal
+  
+  // STAT CARDS ROW (4 cards):
+  // 1. Total Loaded — sum of all positive balances in this property
+  // 2. Negative Balances — count of residents below 0 (red card)
+  // 3. Low Balance Alerts — count below lowBalanceAlert threshold (amber card)
+  // 4. Today's Top-ups — sum of TOPUP transactions today
+  
+  // WALLET BALANCES TABLE:
+  // Columns: Resident, Room, Balance, Status, Last Transaction, Actions
+  // Balance cell: green if > 0, red if negative, amber if below alert
+  // Status badges: HEALTHY / LOW / NEGATIVE / INACTIVE
+  // Sort: negatives first by default
+  // Actions per row:
+  //   Top Up (opens TopUpModal pre-filled with this resident)
+  //   View Transactions (navigates to /wallet/[residentId])
+  //   Adjust (opens AdjustModal — FINANCE/SUPER_ADMIN only)
+  // Search: filter by resident name or room number
+  // Export CSV button
+  
+  // TOP UP MODAL:
+  // Fields:
+  //   Resident (searchable dropdown — autocomplete from residents list)
+  //   Amount (number input, min 1, max 50000, required)
+  //     Show current balance below input: 'Current balance: ₹X'
+  //     Show projected balance: 'After top-up: ₹Y' (live, updates as typed)
+  //   Notes (textarea, optional — for denomination details)
+  // Submit → POST /api/wallet/:residentId/topup
+  // On success: green toast 'Wallet credited ₹X', refresh table
+  // Print receipt option after success (jsPDF, matches existing receipt style)
+  
+  // ADJUST MODAL (FINANCE/SUPER_ADMIN only):
+  // Fields:
+  //   Type: ADJUSTMENT_CREDIT | ADJUSTMENT_DEBIT (segmented control)
+  //   Amount (number input)
+  //   Reason (textarea, required, min 10 chars)
+  // Submit → POST /api/wallet/:residentId/adjust
+  
+  // ──────────────────────────────────────────────────────────────
+  // 3. WALLET TRANSACTION DETAIL PAGE  /wallet/[residentId]
+  // File: artifacts/uniliv-admin/src/pages/wallet-detail.tsx
+  // ──────────────────────────────────────────────────────────────
+  
+  // HEADER:
+  // Resident avatar + name + room badge
+  // Current balance (large, coloured)
+  // isActive badge | minimumBalance from config
+  // 'Top Up' button | 'Reverse Transaction' button (SUPER_ADMIN)
+  
+  // TRANSACTION TABLE:
+  // Columns: Date/Time, Type Badge, Description, Amount (±₹), Balance After, Recorded By
+  // Amount: green '+₹X' for credits, red '−₹X' for debits
+  // Type badges use existing Badge component with custom status map:
+  //   TOPUP=green  PAYMENT=blue  PARTIAL_PAYMENT=indigo
+  //   ADJUSTMENT_CREDIT=teal  ADJUSTMENT_DEBIT=orange
+  //   REFUND_WITHDRAWAL=purple  REVERSAL=red
+  // REVERSAL rows: show crossed-out original amount + 'Reversal of #TXNID'
+  // Paginated: 20 per page
+  // Export full history as CSV
+  // Print statement: jsPDF export showing all transactions for a date range
+  
+  // REVERSAL MODAL (SUPER_ADMIN only):
+  // Pick a transaction to reverse (dropdown of last 20)
+  // Reason (required)
+  // Shows impact: 'This will [credit/debit] ₹X to wallet'
+  // Submit → POST /api/wallet/:residentId/reversal
+  
+  // ──────────────────────────────────────────────────────────────
+  // 4. ADD WALLET TAB TO RESIDENT DETAIL PAGE
+  // File: artifacts/uniliv-admin/src/pages/residents.tsx (detail view)
+  // ──────────────────────────────────────────────────────────────
+  // Add 'Wallet' tab alongside existing Ledger | Payments | Complaints | Documents
+  
+  // WALLET TAB CONTENT:
+  // Balance summary card: large balance number + status badge + minimumBalance
+  // Quick actions: 'Top Up' | 'Adjust' | 'View Full History →'
+  // Recent transactions: last 10 in compact table
+  
+  // UPDATE existing /residents/:id/checkout flow:
+  // After the existing checkout steps, add a 'Wallet Settlement' step:
+  //   Show: wallet balance, outstanding dues, projected refund amount
+  //   'Settle & Close Wallet' button → POST /api/wallet/:id/checkout-refund
+  //   Display returned data: { duesCleared, refundAmount }
+  //   Print receipt showing refund details
+  
+  // ──────────────────────────────────────────────────────────────
+  // 5. WALLET CONFIG IN SETTINGS PAGE
+  // File: artifacts/uniliv-admin/src/pages/settings.tsx
+  // ──────────────────────────────────────────────────────────────
+  // Add a new 'Wallet' tab to the existing 5-tab Settings page:
+  // Tabs: General | SLA | Routing | Notifications | Integrations | Tariff | KYC | Wallet
+  
+  // WALLET SETTINGS TAB:
+  // Property selector (if SUPER_ADMIN — shows all properties)
+  // Fields:
+  //   Wallet enabled (toggle)
+  //   Minimum balance (number input, default -100, saves as text)
+  //   Low balance alert threshold (number input, default 200)
+  //   Top-up instructions (textarea, shown to staff on top-up screen)
+  // Save → PUT /api/wallet/config/:propertyId

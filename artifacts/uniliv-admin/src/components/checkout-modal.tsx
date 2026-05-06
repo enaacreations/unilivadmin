@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
   getGetResidentQueryKey,
@@ -14,8 +14,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
+import { Wallet } from "lucide-react";
 
 interface CheckoutModalProps {
   open: boolean;
@@ -38,6 +41,20 @@ export function CheckoutModal({ open, onOpenChange, resident, ledger }: Checkout
   const [deductions, setDeductions] = React.useState(0);
   const [refundAmount, setRefundAmount] = React.useState(0);
   const [submitting, setSubmitting] = React.useState(false);
+  const [walletSettled, setWalletSettled] = React.useState(false);
+  const [settlingWallet, setSettlingWallet] = React.useState(false);
+
+  const { data: walletRes } = useQuery<{
+    success: boolean;
+    data: { id: string; balance: number; isActive: boolean; walletEnabled: boolean };
+  }>({
+    queryKey: ["checkout-wallet", resident.id],
+    queryFn: () => apiFetch(`/wallet/residents/${resident.id}`),
+    enabled: open,
+  });
+  const wallet = walletRes?.data;
+  const walletBalance = wallet?.balance ?? 0;
+  const hasPositiveWalletBalance = walletBalance > 0 && wallet?.walletEnabled;
 
   React.useEffect(() => {
     if (open) {
@@ -47,12 +64,27 @@ export function CheckoutModal({ open, onOpenChange, resident, ledger }: Checkout
       setRoomConditionNote("");
       setDeductions(0);
       setRefundAmount((resident.securityDeposit || 0) - 0);
+      setWalletSettled(false);
     }
   }, [open, resident]);
 
   React.useEffect(() => {
     setRefundAmount((resident.securityDeposit || 0) - deductions);
   }, [deductions, resident.securityDeposit]);
+
+  const handleSettleWallet = async () => {
+    setSettlingWallet(true);
+    try {
+      await apiFetch(`/wallet/residents/${resident.id}/checkout-refund`, { method: "POST" });
+      toast({ title: `Wallet balance ₹${walletBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })} settled` });
+      qc.invalidateQueries({ queryKey: ["checkout-wallet", resident.id] });
+      setWalletSettled(true);
+    } catch (e: any) {
+      toast({ title: e?.message || "Wallet settlement failed", variant: "destructive" });
+    } finally {
+      setSettlingWallet(false);
+    }
+  };
 
   const onConfirm = async () => {
     setSubmitting(true);
@@ -97,6 +129,46 @@ export function CheckoutModal({ open, onOpenChange, resident, ledger }: Checkout
             <p className="text-2xl font-display font-bold text-destructive">₹{dues.toLocaleString("en-IN")}</p>
           </CardContent>
         </Card>
+
+        {wallet && (
+          <Card className={walletSettled ? "bg-success/5 border-success/20" : hasPositiveWalletBalance ? "bg-yellow-50 border-yellow-200 dark:bg-yellow-900/10 dark:border-yellow-800" : "bg-surface"}>
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <Wallet className="w-4 h-4 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground uppercase">Wallet Balance</p>
+                  </div>
+                  <p className={`text-xl font-display font-bold ${walletBalance < 0 ? "text-destructive" : walletBalance > 0 ? "text-green-600" : "text-primary"}`}>
+                    ₹{walletBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                  </p>
+                  {walletSettled && (
+                    <Badge variant="secondary" className="text-green-700 mt-1">Settled</Badge>
+                  )}
+                  {!wallet.walletEnabled && (
+                    <Badge variant="outline" className="text-muted-foreground mt-1">Wallet inactive</Badge>
+                  )}
+                </div>
+                {hasPositiveWalletBalance && !walletSettled && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleSettleWallet}
+                    disabled={settlingWallet}
+                  >
+                    {settlingWallet ? "Settling…" : "Settle & Refund Wallet"}
+                  </Button>
+                )}
+              </div>
+              {hasPositiveWalletBalance && !walletSettled && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  The wallet balance will be refunded to the resident before closing their account.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         <div>
           <Label>Checkout Date *</Label>
           <Input type="date" value={checkoutDate} onChange={(e) => setCheckoutDate(e.target.value)} data-testid="input-checkout-date" />
@@ -124,7 +196,7 @@ export function CheckoutModal({ open, onOpenChange, resident, ledger }: Checkout
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          Auto-suggested refund = Security Deposit (₹{(resident.securityDeposit || 0).toLocaleString("en-IN")}) - Deductions
+          Auto-suggested refund = Security Deposit (₹{(resident.securityDeposit || 0).toLocaleString("en-IN")}) − Deductions
         </p>
       </div>
     </FormModal>

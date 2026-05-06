@@ -15,7 +15,7 @@ import {
   type ReminderRuleDto,
   type ReminderLogDto,
 } from "@workspace/api-client-react";
-import { useParams, Link } from "wouter";
+import { useParams, Link, useLocation } from "wouter";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-fetch";
 import { format } from "date-fns";
@@ -552,6 +552,7 @@ function ResidentRemindersTab({ residentId, ledger }: { residentId: string; ledg
 }
 
 function ResidentWalletTab({ residentId }: { residentId: string }) {
+  const [, setLocation] = useLocation();
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -570,7 +571,7 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
     meta: { total: number };
   }>({
     queryKey: ["resident-wallet-txns", residentId],
-    queryFn: () => apiFetch(`/wallet/residents/${residentId}/transactions?limit=30`),
+    queryFn: () => apiFetch(`/wallet/residents/${residentId}/transactions?limit=10`),
     enabled: !!residentId,
   });
 
@@ -632,12 +633,15 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
             <Badge variant="outline" className="text-muted-foreground mt-1">Wallet disabled for this resident</Badge>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button size="sm" onClick={() => setTopupOpen(true)} disabled={!wallet?.walletEnabled}>
             <ArrowUpCircle className="w-3.5 h-3.5 mr-1" /> Top-up
           </Button>
           <Button size="sm" variant="outline" onClick={() => setAdjustOpen(true)}>
             Adjust
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => setLocation(`/wallet/${residentId}`)}>
+            Full History →
           </Button>
           <Button size="sm" variant="ghost" onClick={invalidate}>
             <RefreshCw className="w-4 h-4" />
@@ -680,11 +684,11 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
         </CardContent>
       </Card>
 
-      <FormModal open={topupOpen} onClose={() => setTopupOpen(false)} title="Top-up Wallet" onSubmit={() => {
+      <FormModal open={topupOpen} onOpenChange={(o) => { if (!o) setTopupOpen(false); }} title="Top-up Wallet" onSave={() => {
         const amt = parseFloat(topupAmount);
         if (isNaN(amt) || amt <= 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
         topupMut.mutate({ amount: amt, description: topupDesc, notes: topupNotes });
-      }} isLoading={topupMut.isPending}>
+      }} isSaving={topupMut.isPending}>
         <div className="space-y-3">
           <div><Label>Amount (₹)</Label><Input type="number" min="1" value={topupAmount} onChange={(e) => setTopupAmount(e.target.value)} placeholder="500" /></div>
           <div><Label>Description</Label><Input value={topupDesc} onChange={(e) => setTopupDesc(e.target.value)} /></div>
@@ -692,12 +696,12 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
         </div>
       </FormModal>
 
-      <FormModal open={adjustOpen} onClose={() => setAdjustOpen(false)} title="Manual Adjustment" onSubmit={() => {
+      <FormModal open={adjustOpen} onOpenChange={(o) => { if (!o) setAdjustOpen(false); }} title="Manual Adjustment" onSave={() => {
         const amt = parseFloat(adjustAmount);
         if (isNaN(amt) || amt <= 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
         if (!adjustDesc) { toast({ title: "Description required", variant: "destructive" }); return; }
         adjustMut.mutate({ type: adjustType, amount: amt, description: adjustDesc });
-      }} isLoading={adjustMut.isPending}>
+      }} isSaving={adjustMut.isPending}>
         <div className="space-y-3">
           <div>
             <Label>Type</Label>
