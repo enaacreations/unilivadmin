@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
+import { useAppStore } from "@/lib/store";
 
 const CATEGORIES = ["ELECTRICAL", "PLUMBING", "INTERNET", "HOUSEKEEPING", "SECURITY", "FOOD", "LAUNDRY", "OTHER"];
 const SLA_MAP: Record<string, number> = {
@@ -55,10 +56,17 @@ export default function Complaints() {
   const [loc, setLocation] = useLocation();
   const qc = useQueryClient();
   const { toast } = useToast();
-  
-  const [propertyId, setPropertyId] = React.useState("ALL");
+  const { propertyId: globalPropertyId } = useAppStore();
+  const { data: propsRes } = useGetProperties();
+  const properties = propsRes?.data || [];
+
+  const [propertyId, setPropertyId] = React.useState(globalPropertyId || "ALL");
   const [category, setCategory] = React.useState("ALL");
   const [status, setStatus] = React.useState("ALL");
+
+  React.useEffect(() => {
+    setPropertyId(globalPropertyId || "ALL");
+  }, [globalPropertyId]);
   
   const { data: statsRes } = useQuery({
     queryKey: ["complaints-stats", propertyId],
@@ -121,6 +129,9 @@ export default function Complaints() {
               <SelectTrigger className="w-[180px]"><SelectValue placeholder="Property" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL">All Properties</SelectItem>
+                {properties.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Select value={category} onValueChange={setCategory}>

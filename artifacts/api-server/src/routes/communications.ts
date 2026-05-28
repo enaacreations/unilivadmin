@@ -93,9 +93,13 @@ commsRouter.post("/bulk-send", authenticate, async (req, res) => {
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
+function mergeTpl(tpl: string, vars: Record<string, string>): string {
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, key: string) => vars[key] ?? `{{${key}}}`);
+}
+
 commsRouter.post("/preview", authenticate, async (req, res) => {
   try {
-    const { propertyId, status } = req.body;
+    const { propertyId, status, body: bodyTpl = "", subject: subjectTpl = "" } = req.body;
     const conditions = [];
     if (propertyId) conditions.push(eq(residentsTable.propertyId, propertyId));
     if (status === "ACTIVE" || status === "NOTICE_PERIOD" || status === "CHECKED_OUT") {
@@ -106,6 +110,35 @@ commsRouter.post("/preview", authenticate, async (req, res) => {
       id: residentsTable.id, name: residentsTable.name, phone: residentsTable.phone, email: residentsTable.email,
     }).from(residentsTable).where(where).limit(3);
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(where);
-    res.json({ success: true, data: { sample: recipients, total: countResult?.count || 0 } });
+
+    const sample = await Promise.all(recipients.map(async (r) => {
+      const outstanding = await db.select({
+        amount: ledgerEntriesTable.amount,
+        dueDate: ledgerEntriesTable.dueDate,
+      }).from(ledgerEntriesTable)
+        .where(and(eq(ledgerEntriesTable.residentId, r.id), eq(ledgerEntriesTable.isPaid, false)))
+        .orderBy(ledgerEntriesTable.dueDate)
+        .limit(1);
+
+      const totalAmount = outstanding.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+      const nearestDue = outstanding[0]?.dueDate;
+
+      const vars: Record<string, string> = {
+        name: r.name,
+        amount: totalAmount > 0 ? `₹${totalAmount.toLocaleString("en-IN")}` : "₹0",
+        dueDate: nearestDue
+          ? new Date(nearestDue).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+          : "N/A",
+      };
+
+      return {
+        to: r.phone || r.email,
+        name: r.name,
+        body: mergeTpl(bodyTpl, vars),
+        ...(subjectTpl ? { subject: mergeTpl(subjectTpl, vars) } : {}),
+      };
+    }));
+
+    res.json({ success: true, data: { sample, total: countResult?.count || 0 } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

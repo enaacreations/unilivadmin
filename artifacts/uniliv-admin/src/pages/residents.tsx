@@ -26,30 +26,38 @@ import { Badge } from "@/components/ui/badge";
 import { useLocation } from "wouter";
 import { ResidentFormModal } from "@/components/resident-form-modal";
 import { BulkRentModal } from "@/components/bulk-rent-modal";
+import { useAppStore } from "@/lib/store";
 
 export default function Residents() {
   const [, setLocation] = useLocation();
-  const { data: residentsRes, isLoading } = useGetResidents(undefined, {
-    query: { queryKey: getGetResidentsQueryKey() },
-  });
-  const residents = residentsRes?.data || [];
-  const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
-  const properties = propsRes?.data || [];
+  const { propertyId: globalPropertyId } = useAppStore();
 
-  const [propertyId, setPropertyId] = React.useState("ALL");
+  const [propertyId, setPropertyId] = React.useState(globalPropertyId || "ALL");
   const [status, setStatus] = React.useState("ALL");
   const [search, setSearch] = React.useState("");
   const [createOpen, setCreateOpen] = React.useState(false);
   const [bulkOpen, setBulkOpen] = React.useState(false);
 
-  const filtered = React.useMemo(() => {
-    return residents.filter((r) => {
-      if (propertyId !== "ALL" && r.propertyId !== propertyId) return false;
-      if (status !== "ALL" && r.status !== status) return false;
-      if (search && !r.name.toLowerCase().includes(search.toLowerCase())) return false;
-      return true;
-    });
-  }, [residents, propertyId, status, search]);
+  // Sync local filter when global property selector changes
+  React.useEffect(() => {
+    setPropertyId(globalPropertyId || "ALL");
+  }, [globalPropertyId]);
+
+  const apiPropertyId = propertyId !== "ALL" ? propertyId : undefined;
+  const apiStatus = status !== "ALL" ? status : undefined;
+
+  const { data: residentsRes, isLoading } = useGetResidents({
+    propertyId: apiPropertyId,
+    status: apiStatus as any,
+    search: search || undefined,
+    limit: 200,
+  } as any, {
+    query: { queryKey: getGetResidentsQueryKey({ propertyId: apiPropertyId, status: apiStatus, search: search || undefined, limit: 200 } as any) },
+  });
+  const residents = residentsRes?.data || [];
+
+  const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
+  const properties = propsRes?.data || [];
 
   const now = new Date();
   const checkedOutThisMonth = residents.filter((r) => {
@@ -62,7 +70,7 @@ export default function Residents() {
 
   const exportCsv = () => {
     const headers = ["Name", "Email", "Phone", "Property", "Room", "Plan", "Monthly Rent", "Status"];
-    const rows = filtered.map((r) => [
+    const rows = residents.map((r) => [
       r.name,
       r.email,
       r.phone,
@@ -185,7 +193,7 @@ export default function Residents() {
         </div>
       </div>
 
-      <DataTable columns={columns as any} data={filtered} isLoading={isLoading} />
+      <DataTable columns={columns as any} data={residents} isLoading={isLoading} />
 
       <ResidentFormModal open={createOpen} onOpenChange={setCreateOpen} />
       <BulkRentModal open={bulkOpen} onOpenChange={setBulkOpen} />
