@@ -9,8 +9,18 @@
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
   "private": true,
+  "pnpm": {
+    "overrides": {
+      "@types/express-serve-static-core": "5.0.7"
+    }
+  },
   "devDependencies": {
-    "typescript": "~5.9.2",
-    "prettier": "^3.8.1"
+    "prettier": "^3.8.1",
+    "typescript": "~5.9.2"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-darwin-arm64": "4.59.0",
+    "lightningcss-darwin-arm64": "1.31.1",
+    "@tailwindcss/oxide-darwin-arm64": "4.2.1"
   }
 }

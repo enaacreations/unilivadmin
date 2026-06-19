@@ -6,7 +6,7 @@ import propertiesRouter from "./properties.js";
 import roomsRouter from "./rooms.js";
 import bookingsRouter from "./bookings.js";
 import residentsRouter from "./residents.js";
-import complaintsRouter from "./complaints.js";
+import complaintsRouter, { escalationsRouter } from "./complaints.js";
 import { employeeRouter, attendanceRouter, leavesRouter, recruitmentRouter } from "./employees.js";
 import { vendorRouter, indentRouter, poRouter, grnRouter, inventoryRouter } from "./procurement.js";
 import { recipesRouter, menuPlansRouter, productionRouter, kitchenAnalyticsRouter } from "./kitchen.js";
@@ -22,6 +22,7 @@ import { kycRouter, esignRouter, esignPublicRouter } from "./kyc-esign.js";
 import { financeRouter } from "./finance.js";
 import { facilityRouter, electricityRouter, residentAttendanceRouter, outPassRouter, iotRouter, iotIngestionRouter } from "./operations.js";
 import { walletRouter } from "./wallet.js";
+import foodRouter from "./food.js";
 
 const router: IRouter = Router();
 
@@ -33,7 +34,7 @@ router.use("/rooms", roomsRouter);
 router.use("/bookings", bookingsRouter);
 router.use("/residents", residentsRouter);
 router.use("/complaints", complaintsRouter);
-router.use("/escalations", complaintsRouter);
+router.use("/escalations", escalationsRouter);
 router.use("/employees", employeeRouter);
 router.use("/attendance", attendanceRouter);
 router.use("/leaves", leavesRouter);
@@ -70,5 +71,6 @@ router.use("/out-passes", outPassRouter);
 router.use("/iot", iotRouter);
 router.use("/iot", iotIngestionRouter);
 router.use(walletRouter);
+router.use("/food", foodRouter);
 
 export default router;

@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { formatDistanceToNow } from "date-fns";
 
 export default function Users() {
-  const { data: usersRes, isLoading } = useGetUsers({ query: { queryKey: getGetUsersQueryKey() } });
+  const { data: usersRes, isLoading } = useGetUsers(undefined, { query: { queryKey: getGetUsersQueryKey() } });
   
   const users = usersRes?.data || [];
 

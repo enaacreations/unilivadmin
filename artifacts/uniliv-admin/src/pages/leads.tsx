@@ -88,14 +88,36 @@ export default function Leads() {
   });
 
   const moveStage = async (id: string, stage: string) => {
-    await apiFetch(`/leads/${id}`, { method: "PUT", body: JSON.stringify({ stage }) });
-    qc.invalidateQueries({ queryKey: ["leads"] });
+    try {
+      await apiFetch(`/leads/${id}`, { method: "PUT", body: JSON.stringify({ stage }) });
+      qc.invalidateQueries({ queryKey: ["leads"] });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const onDragStart = (e: React.DragEvent, id: string) => e.dataTransfer.setData("text/plain", id);
   const onDrop = (e: React.DragEvent, stage: string) => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (id) moveStage(id, stage); };
 
-  const exportCsv = () => { window.open(`/api/leads/export-csv?_t=${Date.now()}`, "_blank"); };
+  const exportCsv = async () => {
+    // Authenticated download: the export route requires a Bearer token, which
+    // window.open cannot attach — fetch with the header then save the blob.
+    try {
+      const res = await fetch(`/api/leads/export-csv?_t=${Date.now()}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("uniliv_token") || ""}` },
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "leads.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      toast({ title: e?.message || "Export failed", variant: "destructive" });
+    }
+  };
 
   const cols = [
     { accessorKey: "name", header: "Name", cell: ({ row }: any) => <button className="font-medium text-primary" onClick={() => setActiveId(row.original.id)}>{row.original.name}</button> },
@@ -214,8 +236,10 @@ function LeadDetail({ id, onClose, properties }: { id: string; onClose: () => vo
 
   const addNote = async () => {
     if (!noteText.trim()) return;
-    await apiFetch(`/leads/${id}/activities`, { method: "POST", body: JSON.stringify({ type: "NOTE", note: noteText }) });
-    setNoteText(""); refresh(); toast({ title: "Note added" });
+    try {
+      await apiFetch(`/leads/${id}/activities`, { method: "POST", body: JSON.stringify({ type: "NOTE", note: noteText }) });
+      setNoteText(""); refresh(); toast({ title: "Note added" });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const generateQuote = () => {
@@ -298,8 +322,10 @@ function ScheduleVisitDialog({ id, onClose, onDone }: any) {
   return (
     <FormModal open={true} onOpenChange={(o) => !o && onClose()} title="Schedule Visit" onSave={async () => {
       if (!dt) return;
-      await apiFetch(`/leads/${id}/schedule-visit`, { method: "POST", body: JSON.stringify({ visitDate: new Date(dt).toISOString() }) });
-      toast({ title: "Visit scheduled — confirmation SMS queued" }); onClose(); onDone();
+      try {
+        await apiFetch(`/leads/${id}/schedule-visit`, { method: "POST", body: JSON.stringify({ visitDate: new Date(dt).toISOString() }) });
+        toast({ title: "Visit scheduled — confirmation SMS queued" }); onClose(); onDone();
+      } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <Label>Visit date &amp; time</Label><Input type="datetime-local" value={dt} onChange={(e) => setDt(e.target.value)} />
     </FormModal>
@@ -313,8 +339,10 @@ function VisitOutcomeDialog({ id, onClose, onDone }: any) {
   const { toast } = useToast();
   return (
     <FormModal open={true} onOpenChange={(o) => !o && onClose()} title="Visit Outcome" onSave={async () => {
-      await apiFetch(`/leads/${id}/visit-outcome`, { method: "POST", body: JSON.stringify({ outcome, feedback, lostReason: outcome === "NO" ? lostReason : undefined }) });
-      toast({ title: "Outcome recorded" }); onClose(); onDone();
+      try {
+        await apiFetch(`/leads/${id}/visit-outcome`, { method: "POST", body: JSON.stringify({ outcome, feedback, lostReason: outcome === "NO" ? lostReason : undefined }) });
+        toast({ title: "Outcome recorded" }); onClose(); onDone();
+      } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <div className="space-y-3">
         <div><Label>Interested?</Label>
@@ -336,8 +364,10 @@ function FollowUpDialog({ id, onClose, onDone }: any) {
   return (
     <FormModal open={true} onOpenChange={(o) => !o && onClose()} title="Set Follow-up" onSave={async () => {
       if (!dt) return;
-      await apiFetch(`/leads/${id}/follow-up`, { method: "POST", body: JSON.stringify({ followUpAt: new Date(dt).toISOString(), followUpNote: note }) });
-      toast({ title: "Follow-up set" }); onClose(); onDone();
+      try {
+        await apiFetch(`/leads/${id}/follow-up`, { method: "POST", body: JSON.stringify({ followUpAt: new Date(dt).toISOString(), followUpNote: note }) });
+        toast({ title: "Follow-up set" }); onClose(); onDone();
+      } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <div className="space-y-3"><div><Label>When</Label><Input type="datetime-local" value={dt} onChange={(e) => setDt(e.target.value)} /></div><div><Label>Reminder note</Label><Textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} /></div></div>
     </FormModal>
@@ -349,8 +379,10 @@ function MarkLostDialog({ id, onClose, onDone }: any) {
   const { toast } = useToast();
   return (
     <FormModal open={true} onOpenChange={(o) => !o && onClose()} title="Mark Lead Lost" onSave={async () => {
-      await apiFetch(`/leads/${id}/mark-lost`, { method: "POST", body: JSON.stringify({ lostReason: reason }) });
-      toast({ title: "Lead marked lost" }); onClose(); onDone();
+      try {
+        await apiFetch(`/leads/${id}/mark-lost`, { method: "POST", body: JSON.stringify({ lostReason: reason }) });
+        toast({ title: "Lead marked lost" }); onClose(); onDone();
+      } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <Label>Reason *</Label>
       <Select value={reason} onValueChange={setReason}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{LOST_REASONS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent></Select>

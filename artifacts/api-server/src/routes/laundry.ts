@@ -8,7 +8,20 @@ import { newId } from "../lib/id.js";
 
 const router = Router();
 
-let batchCounter = 1000;
+// Next batch number derived from the DB so it survives server restarts
+// (an in-memory counter reset to 1000 each restart and collided with the
+// unique batch_no constraint). Combined with the insert retry in POST /.
+async function nextBatchNo(): Promise<string> {
+  const [row] = await db
+    .select({ max: sql<string | null>`max(${laundryBatchesTable.batchNo})` })
+    .from(laundryBatchesTable);
+  let n = 1000;
+  if (row?.max) {
+    const parsed = parseInt(String(row.max).replace(/\D/g, ""), 10);
+    if (!Number.isNaN(parsed)) n = parsed;
+  }
+  return `LB-${String(n + 1).padStart(5, "0")}`;
+}
 
 async function enrichBatch(b: typeof laundryBatchesTable.$inferSelect) {
   const [r] = await db.select({ name: residentsTable.name, phone: residentsTable.phone }).from(residentsTable).where(eq(residentsTable.id, b.residentId));
@@ -36,23 +49,32 @@ router.get("/", authenticate, async (req, res) => {
 router.post("/", authenticate, async (req, res) => {
   try {
     const body = req.body;
-    batchCounter++;
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, body.residentId));
     if (!resident) { res.status(400).json({ success: false, error: "Resident not found" }); return; }
-    const [row] = await db.insert(laundryBatchesTable).values({
-      id: newId(),
-      batchNo: `LB-${String(batchCounter).padStart(5, "0")}`,
-      residentId: body.residentId,
-      propertyId: resident.propertyId,
-      dropDate: body.dropDate ? new Date(body.dropDate) : new Date(),
-      commitTatDays: body.commitTatDays || 2,
-      items: body.items || {},
-      specialInstructions: body.specialInstructions,
-      damageNote: body.damageNote,
-      status: body.status || "RECEIVED",
-      createdBy: req.user?.id,
-      updatedAt: new Date(),
-    }).returning();
+    const rid = newId();
+    let row!: typeof laundryBatchesTable.$inferSelect;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        [row] = await db.insert(laundryBatchesTable).values({
+          id: rid,
+          batchNo: await nextBatchNo(),
+          residentId: body.residentId,
+          propertyId: resident.propertyId,
+          dropDate: body.dropDate ? new Date(body.dropDate) : new Date(),
+          commitTatDays: body.commitTatDays || 2,
+          items: body.items || {},
+          specialInstructions: body.specialInstructions,
+          damageNote: body.damageNote,
+          status: body.status || "RECEIVED",
+          createdBy: req.user?.id,
+          updatedAt: new Date(),
+        }).returning();
+        break;
+      } catch (e: any) {
+        if (attempt < 5 && /unique|duplicate/i.test(String(e?.message || e))) continue;
+        throw e;
+      }
+    }
     res.status(201).json({ success: true, data: await enrichBatch(row) });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

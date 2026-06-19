@@ -592,7 +592,12 @@ grnRouter.get("/:id", authenticate, async (req, res) => {
     const [row] = await db.select().from(grnTable).where(eq(grnTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const [po] = await db.select().from(purchaseOrdersTable).where(eq(purchaseOrdersTable.id, row.poId));
-    res.json({ success: true, data: { ...row, po: po ? { ...po, totalAmount: Number(po.totalAmount) } : null } });
+    let poEnriched: Record<string, unknown> | null = null;
+    if (po) {
+      const [v] = await db.select({ name: vendorsTable.name }).from(vendorsTable).where(eq(vendorsTable.id, po.vendorId));
+      poEnriched = { ...po, totalAmount: Number(po.totalAmount), vendorName: v?.name || null };
+    }
+    res.json({ success: true, data: { ...row, po: poEnriched } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 

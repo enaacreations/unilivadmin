@@ -77,9 +77,11 @@ export default function Kitchen() {
 
   const onDelete = async (id: string) => {
     if (!confirm("Delete this recipe?")) return;
-    await del.mutateAsync({ id });
-    toast({ title: "Recipe deleted" });
-    qc.invalidateQueries({ queryKey: getGetRecipesQueryKey() });
+    try {
+      await del.mutateAsync({ id });
+      toast({ title: "Recipe deleted" });
+      qc.invalidateQueries({ queryKey: getGetRecipesQueryKey() });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const columns = [

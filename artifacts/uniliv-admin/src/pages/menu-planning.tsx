@@ -53,29 +53,35 @@ export default function MenuPlanning() {
 
   const setSlot = async (day: number, slot: string, recipeId: string) => {
     const newSlots = { ...slots, [`${day}-${slot}`]: recipeId };
-    if (plan) {
-      await apiFetch(`/menu-plans/${plan.id}`, { method: "PUT", body: JSON.stringify({ slots: newSlots }) });
-    } else {
-      await apiFetch("/menu-plans", { method: "POST", body: JSON.stringify({ propertyId, weekStart: weekStart.toISOString(), slots: newSlots, status: "DRAFT" }) });
-    }
-    qc.invalidateQueries({ queryKey: planKey });
+    try {
+      if (plan) {
+        await apiFetch(`/menu-plans/${plan.id}`, { method: "PUT", body: JSON.stringify({ slots: newSlots }) });
+      } else {
+        await apiFetch("/menu-plans", { method: "POST", body: JSON.stringify({ propertyId, weekStart: weekStart.toISOString(), slots: newSlots, status: "DRAFT" }) });
+      }
+      qc.invalidateQueries({ queryKey: planKey });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const onPublish = async () => {
     if (!plan) { toast({ title: "Save first", description: "Add at least one recipe before publishing", variant: "destructive" }); return; }
-    await apiFetch(`/menu-plans/${plan.id}/publish`, { method: "POST" });
-    toast({ title: "Menu published — visible to residents" });
-    qc.invalidateQueries({ queryKey: planKey });
+    try {
+      await apiFetch(`/menu-plans/${plan.id}/publish`, { method: "POST" });
+      toast({ title: "Menu published — visible to residents" });
+      qc.invalidateQueries({ queryKey: planKey });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const onCopyLast = async () => {
-    const lastWeek = new Date(weekStart.getTime() - 7 * 86400000);
-    const lastRes = await apiFetch<any>(`/menu-plans/by-week?propertyId=${propertyId}&weekStart=${lastWeek.toISOString()}`);
-    if (!lastRes?.data) { toast({ title: "No previous week to copy", variant: "destructive" }); return; }
     if (plan) { toast({ title: "This week already has a plan", variant: "destructive" }); return; }
-    await apiFetch("/menu-plans/copy", { method: "POST", body: JSON.stringify({ sourcePlanId: lastRes.data.id, propertyId, weekStart: weekStart.toISOString() }) });
-    toast({ title: "Last week's plan copied as draft" });
-    qc.invalidateQueries({ queryKey: planKey });
+    try {
+      const lastWeek = new Date(weekStart.getTime() - 7 * 86400000);
+      const lastRes = await apiFetch<any>(`/menu-plans/by-week?propertyId=${propertyId}&weekStart=${lastWeek.toISOString()}`);
+      if (!lastRes?.data) { toast({ title: "No previous week to copy", variant: "destructive" }); return; }
+      await apiFetch("/menu-plans/copy", { method: "POST", body: JSON.stringify({ sourcePlanId: lastRes.data.id, propertyId, weekStart: weekStart.toISOString() }) });
+      toast({ title: "Last week's plan copied as draft" });
+      qc.invalidateQueries({ queryKey: planKey });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const onGenerateIndent = async () => {
@@ -206,9 +212,11 @@ function DailyProductionTab({ propertyId, recipes, slots }: { propertyId: string
   const todaysSlots = SLOTS.map((s) => ({ slot: s, recipeId: slots[`${dayIdx}-${s}`] || "" }));
 
   const update = async (key: "dispatches" | "wastage" | "receivings", arr: any[]) => {
-    await apiFetch("/daily-production", { method: "POST", body: JSON.stringify({ propertyId, date: today.toISOString(), [key]: arr }) });
-    qc.invalidateQueries({ queryKey: ["production", propertyId, todayKey] });
-    toast({ title: "Updated" });
+    try {
+      await apiFetch("/daily-production", { method: "POST", body: JSON.stringify({ propertyId, date: today.toISOString(), [key]: arr }) });
+      qc.invalidateQueries({ queryKey: ["production", propertyId, todayKey] });
+      toast({ title: "Updated" });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const dispatches = (prod.dispatches as any[]) || [];

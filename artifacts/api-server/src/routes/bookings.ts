@@ -126,7 +126,7 @@ router.get("/availability", authenticate, async (req, res) => {
       .where(
         and(
           eq(bookingsTable.propertyId, propertyId),
-          inArray(bookingsTable.status, ACTIVE_STATUSES as unknown as string[]),
+          inArray(bookingsTable.status, ACTIVE_STATUSES as unknown as ("CONFIRMED" | "CHECKED_IN")[]),
           lt(bookingsTable.checkInDate, to),
           gt(bookingsTable.checkOutDate, from),
         ),
@@ -243,7 +243,7 @@ router.post("/", authenticate, async (req, res) => {
         .where(
           and(
             eq(bookingsTable.roomId, roomId),
-            inArray(bookingsTable.status, ACTIVE_STATUSES as unknown as string[]),
+            inArray(bookingsTable.status, ACTIVE_STATUSES as unknown as ("CONFIRMED" | "CHECKED_IN")[]),
             lt(bookingsTable.checkInDate, checkOut),
             gt(bookingsTable.checkOutDate, checkIn),
           ),
@@ -344,7 +344,7 @@ router.put("/:id", authenticate, async (req, res) => {
           and(
             eq(bookingsTable.roomId, roomId),
             ne(bookingsTable.id, id),
-            inArray(bookingsTable.status, ACTIVE_STATUSES as unknown as string[]),
+            inArray(bookingsTable.status, ACTIVE_STATUSES as unknown as ("CONFIRMED" | "CHECKED_IN")[]),
             lt(bookingsTable.checkInDate, checkOut),
             gt(bookingsTable.checkOutDate, checkIn),
           ),

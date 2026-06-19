@@ -53,6 +53,16 @@ import ResidentAttendance from "@/pages/resident-attendance";
 import IoT from "@/pages/iot";
 import Wallet from "@/pages/wallet";
 import WalletDetail from "@/pages/wallet-detail";
+// Food Ordering & Kitchen Operations
+import FoodDashboard from "@/pages/food-dashboard";
+import FoodOrders from "@/pages/food-orders";
+import FoodPlaceOrder from "@/pages/food-place-order";
+import FoodKitchenSummary from "@/pages/food-kitchen-summary";
+import FoodDispatch from "@/pages/food-dispatch";
+import FoodConfirmDelivery from "@/pages/food-confirm-delivery";
+import FoodWaste from "@/pages/food-waste";
+import FoodReports from "@/pages/food-reports";
+import FoodSettings from "@/pages/food-settings";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -111,6 +121,18 @@ function Router() {
       <Route path="/recipes">{() => <ProtectedRoute component={Kitchen} />}</Route>
       <Route path="/kitchen">{() => <Redirect to="/recipes" />}</Route>
       <Route path="/menu-planning">{() => <ProtectedRoute component={MenuPlanning} />}</Route>
+
+      {/* Food Ordering & Kitchen Operations */}
+      <Route path="/food">{() => <Redirect to="/food/dashboard" />}</Route>
+      <Route path="/food/dashboard">{() => <ProtectedRoute component={FoodDashboard} />}</Route>
+      <Route path="/food/orders">{() => <ProtectedRoute component={FoodOrders} />}</Route>
+      <Route path="/food/place-order">{() => <ProtectedRoute component={FoodPlaceOrder} />}</Route>
+      <Route path="/food/kitchen-summary">{() => <ProtectedRoute component={FoodKitchenSummary} />}</Route>
+      <Route path="/food/dispatch">{() => <ProtectedRoute component={FoodDispatch} />}</Route>
+      <Route path="/food/confirm-delivery">{() => <ProtectedRoute component={FoodConfirmDelivery} />}</Route>
+      <Route path="/food/waste">{() => <ProtectedRoute component={FoodWaste} />}</Route>
+      <Route path="/food/reports">{() => <ProtectedRoute component={FoodReports} />}</Route>
+      <Route path="/food/settings">{() => <ProtectedRoute component={FoodSettings} />}</Route>
       
       <Route path="/leads">{() => <ProtectedRoute component={Leads} />}</Route>
       <Route path="/sales/dashboard">{() => <ProtectedRoute component={SalesDashboard} />}</Route>

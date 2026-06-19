@@ -382,7 +382,7 @@ export default function WalletDetail() {
             toast({ title: "Reason must be at least 10 characters", variant: "destructive" });
             return;
           }
-          reversalMut.mutate({ originalTransactionId: reversalTxId, reason: reversalReason });
+          reversalMut.mutate({ reversalOf: reversalTxId, notes: reversalReason });
         }}
         isSaving={reversalMut.isPending}
         saveLabel="Apply Reversal"

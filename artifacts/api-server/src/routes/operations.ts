@@ -437,17 +437,20 @@ electricityRouter.post("/readings/:id/post", authenticate, authorize("ELECTRICIT
     if (!meter?.residentId) { res.status(400).json({ success: false, error: "Meter has no resident; assign one before posting" }); return; }
     const amount = reading.amount ? Number(reading.amount) : 0;
     if (amount <= 0) { res.status(400).json({ success: false, error: "Amount is zero" }); return; }
-    const [ledger] = await db.insert(ledgerEntriesTable).values({
-      id: newId(),
-      residentId: meter.residentId,
-      type: "UTILITY",
-      amount: String(amount),
-      description: `Electricity • Meter ${meter.meterNo} • ${reading.unitsConsumed ?? 0} units`,
-      isPaid: false,
-      createdBy: req.user?.id,
-      updatedAt: new Date(),
-    }).returning();
-    await db.update(electricityReadingsTable).set({ posted: true, ledgerEntryId: ledger.id }).where(eq(electricityReadingsTable.id, reading.id));
+    const ledger = await db.transaction(async (tx) => {
+      const [entry] = await tx.insert(ledgerEntriesTable).values({
+        id: newId(),
+        residentId: meter.residentId!,
+        type: "UTILITY",
+        amount: String(amount),
+        description: `Electricity • Meter ${meter.meterNo} • ${reading.unitsConsumed ?? 0} units`,
+        isPaid: false,
+        createdBy: req.user?.id,
+        updatedAt: new Date(),
+      }).returning();
+      await tx.update(electricityReadingsTable).set({ posted: true, ledgerEntryId: entry.id }).where(eq(electricityReadingsTable.id, reading.id));
+      return entry;
+    });
     res.json({ success: true, data: { ledgerEntryId: ledger.id, amount } });
   } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });

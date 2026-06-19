@@ -42,6 +42,16 @@ export const userRoleEnum = pgEnum("user_role", [
   "WARDEN",
   "VENDOR_RESTRICTED",
   "AUDIT_READONLY",
+  // ── Food Ordering & Kitchen Operations roles (PRD §3) ──
+  "UNIT_LEAD",
+  "CLUSTER_MANAGER",
+  "CITY_HEAD",
+  "ZONAL_HEAD",
+  "OPS_EXCELLENCE",
+  "SENIOR_VICE_PRESIDENT",
+  "FNB_SUPERVISOR",
+  "FNB_MANAGER",
+  "FNB_ZONAL_HEAD",
 ]);
 export const residentStatusEnum = pgEnum("resident_status", [
   "ACTIVE",
@@ -139,6 +149,13 @@ export const propertiesTable = pgTable("properties", {
     .default({})
     .notNull(),
   wardenId: text("warden_id"),
+  /**
+   * Cluster in the food-ops geographic hierarchy (Zone → City → Cluster →
+   * Property). Nullable so existing properties remain valid until assigned.
+   * FK intentionally omitted here to avoid a core→food import cycle; integrity
+   * is enforced at the application layer (see food.ts clustersTable).
+   */
+  clusterId: text("cluster_id"),
   phone: text("phone"),
   email: text("email"),
   amenities: json("amenities").$type<string[]>().default([]).notNull(),

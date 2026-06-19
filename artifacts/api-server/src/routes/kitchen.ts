@@ -237,7 +237,7 @@ menuPlansRouter.post("/:id/generate-indent", authenticate, async (req, res) => {
       items,
       totalEstimatedValue: "0",
       status: "DRAFT",
-      notes: `Auto-generated from menu plan week ${plan.weekStart.toISOString().slice(0, 10)} × ${headcount} residents`,
+      purpose: `Auto-generated from menu plan week ${plan.weekStart.toISOString().slice(0, 10)} × ${headcount} residents`,
       updatedAt: new Date(),
     }).returning();
 

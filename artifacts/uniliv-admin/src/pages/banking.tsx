@@ -111,6 +111,7 @@ function ReconcilePanel({ importId }: { importId: string }) {
   const ignoreMut = useMutation({
     mutationFn: (id: string) => apiFetch(`/bank-lines/${id}/ignore`, { method: "POST" }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["bank-lines", importId] }); },
+    onError: (e: Error) => toast({ title: e.message || "Failed to ignore line", variant: "destructive" }),
   });
 
   if (isLoading) return <div className="text-muted-foreground">Loading…</div>;

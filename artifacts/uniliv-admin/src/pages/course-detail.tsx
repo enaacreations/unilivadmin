@@ -27,8 +27,10 @@ export default function CourseDetail() {
   const enrollments = enrRes?.data || [];
 
   const sendReminders = async () => {
-    const res = await apiFetch<any>(`/courses/${id}/remind`, { method: "POST" });
-    toast({ title: `Reminders sent to ${res.data.sent} employee(s)` });
+    try {
+      const res = await apiFetch<any>(`/courses/${id}/remind`, { method: "POST" });
+      toast({ title: `Reminders sent to ${res.data.sent} employee(s)` });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   if (!course) return <div className="p-8 text-muted-foreground">Loading...</div>;
@@ -148,9 +150,11 @@ function EnrollDialog({ courseId, onClose, onDone, existingIds }: { courseId: st
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button onClick={async () => {
             if (!selected.size) return;
-            const res = await apiFetch<any>(`/courses/${courseId}/enroll`, { method: "POST", body: JSON.stringify({ employeeIds: Array.from(selected) }) });
-            toast({ title: `${res.data.created} enrolled`, description: res.data.skipped ? `${res.data.skipped} already enrolled` : undefined });
-            onClose(); onDone();
+            try {
+              const res = await apiFetch<any>(`/courses/${courseId}/enroll`, { method: "POST", body: JSON.stringify({ employeeIds: Array.from(selected) }) });
+              toast({ title: `${res.data.created} enrolled`, description: res.data.skipped ? `${res.data.skipped} already enrolled` : undefined });
+              onClose(); onDone();
+            } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
           }}>Enroll {selected.size}</Button>
         </DialogFooter>
       </DialogContent>
@@ -167,9 +171,11 @@ function ContentViewer({ course, enrollment, onClose, onProgress }: { course: an
 
   const updateProgress = async (p: number) => {
     setProgress(p);
-    await apiFetch(`/enrollments/${enrollment.id}/progress`, { method: "POST", body: JSON.stringify({ progress: p }) });
-    if (p >= 80) toast({ title: "Marked complete!" });
-    onProgress();
+    try {
+      await apiFetch(`/enrollments/${enrollment.id}/progress`, { method: "POST", body: JSON.stringify({ progress: p }) });
+      if (p >= 80) toast({ title: "Marked complete!" });
+      onProgress();
+    } catch { /* progress updates fire frequently; avoid toast spam */ }
   };
 
   const watermark = `${user?.name || "User"} · ${user?.id?.slice(0, 8) || ""}`;
@@ -232,10 +238,12 @@ function QuizDialog({ course, enrollmentId, onClose, onDone }: { course: any; en
   const { toast } = useToast();
 
   const submit = async () => {
-    const res = await apiFetch<any>(`/enrollments/${enrollmentId}/quiz`, { method: "POST", body: JSON.stringify({ answers }) });
-    setResult(res.data);
-    if (res.data.passed) toast({ title: `Passed — ${res.data.score}%` });
-    else toast({ title: `Did not pass — ${res.data.score}%`, description: `Need ${res.data.passScore}%`, variant: "destructive" });
+    try {
+      const res = await apiFetch<any>(`/enrollments/${enrollmentId}/quiz`, { method: "POST", body: JSON.stringify({ answers }) });
+      setResult(res.data);
+      if (res.data.passed) toast({ title: `Passed — ${res.data.score}%` });
+      else toast({ title: `Did not pass — ${res.data.score}%`, description: `Need ${res.data.passScore}%`, variant: "destructive" });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   return (

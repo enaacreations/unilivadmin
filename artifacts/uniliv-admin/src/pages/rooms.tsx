@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
 
 export default function Rooms() {
-  const { data: roomsRes, isLoading } = useGetRooms({ query: { queryKey: getGetRoomsQueryKey() } });
+  const { data: roomsRes, isLoading } = useGetRooms(undefined, { query: { queryKey: getGetRoomsQueryKey() } });
   
   const rooms = roomsRes?.data || [];
 

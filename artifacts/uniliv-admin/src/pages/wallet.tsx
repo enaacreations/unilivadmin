@@ -92,7 +92,7 @@ export default function WalletPage() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const { data: propertiesRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } } as any);
+  const { data: propertiesRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
   const properties = (propertiesRes as any)?.data || [];
 
   const queryKey = ["wallet-overview", propertyId, debouncedSearch];

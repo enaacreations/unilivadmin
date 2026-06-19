@@ -59,7 +59,7 @@ export default function PropertyLeads() {
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [stageFilter, setStageFilter] = React.useState<string>("ALL");
 
-  const params = stageFilter !== "ALL" ? `?stage=${stageFilter}` : "?limit=200";
+  const params = stageFilter !== "ALL" ? `?stage=${stageFilter}&limit=200` : "?limit=200";
   const { data: leadsRes } = useQuery({ queryKey: ["plead", stageFilter], queryFn: () => apiFetch<any>(`/property-leads${params}`) });
   const leads = leadsRes?.data || [];
 
@@ -171,16 +171,20 @@ function PropertyLeadDetail({ id, onClose }: { id: string; onClose: () => void }
   const ebitda = monthlyRevenue - (via.opex || 0);
 
   const updateStage = async (stage: string) => {
-    await apiFetch(`/property-leads/${id}`, { method: "PUT", body: JSON.stringify({ stage }) });
-    qc.invalidateQueries({ queryKey: ["plead"] });
-    qc.invalidateQueries({ queryKey: ["plead-d", id] });
-    toast({ title: "Stage updated" });
+    try {
+      await apiFetch(`/property-leads/${id}`, { method: "PUT", body: JSON.stringify({ stage }) });
+      qc.invalidateQueries({ queryKey: ["plead"] });
+      qc.invalidateQueries({ queryKey: ["plead-d", id] });
+      toast({ title: "Stage updated" });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   const saveViability = async () => {
-    await apiFetch(`/property-leads/${id}`, { method: "PUT", body: JSON.stringify({ viabilityData: via }) });
-    qc.invalidateQueries({ queryKey: ["plead-d", id] });
-    toast({ title: "Viability saved" });
+    try {
+      await apiFetch(`/property-leads/${id}`, { method: "PUT", body: JSON.stringify({ viabilityData: via }) });
+      qc.invalidateQueries({ queryKey: ["plead-d", id] });
+      toast({ title: "Viability saved" });
+    } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   return (

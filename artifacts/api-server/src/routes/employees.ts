@@ -8,7 +8,7 @@ import {
 import { eq, sql, ilike, or, and, inArray, gte, lte } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
-import { newId } from "../lib/id.js";
+import { newId, withUniqueRetry } from "../lib/id.js";
 
 const router = Router();
 
@@ -47,10 +47,10 @@ router.get("/", authenticate, async (req, res) => {
 router.post("/", authenticate, async (req, res) => {
   try {
     const body = req.body;
-    const code = await nextEmpCode();
-    const [row] = await db.insert(employeesTable).values({
+    const row = await withUniqueRetry(async () => {
+      const [r] = await db.insert(employeesTable).values({
       id: newId(),
-      employeeCode: code,
+      employeeCode: await nextEmpCode(),
       name: body.name,
       email: body.email,
       phone: body.phone,
@@ -73,7 +73,9 @@ router.post("/", authenticate, async (req, res) => {
       esicNumber: body.esicNumber,
       status: body.status || "ACTIVE",
       updatedAt: new Date(),
-    }).returning();
+      }).returning();
+      return r;
+    });
     // Seed default leave balances for current year
     const year = new Date().getFullYear();
     const defaults = [{ type: "CL" as const, total: 12 }, { type: "SL" as const, total: 12 }, { type: "EL" as const, total: 15 }, { type: "PL" as const, total: 0 }];
@@ -230,7 +232,7 @@ router.post("/exits/:eid/finalize", authenticate, async (req, res) => {
 });
 
 // Stats
-router.get("/stats/overview", authenticate, async (_req, res) => {
+router.get("/stats/overview", authenticate, async (req, res) => {
   try {
     const all = await db.select().from(employeesTable);
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -448,7 +450,7 @@ leavesRouter.put("/:id", authenticate, async (req, res) => {
     // Reconcile balances: subtract prev contribution if it was APPROVED, then add new contribution if now APPROVED.
     const adjust = async (employeeId: string, year: number, type: string, delta: number) => {
       const [bal] = await db.select().from(leaveBalancesTable).where(and(
-        eq(leaveBalancesTable.employeeId, employeeId), eq(leaveBalancesTable.year, year), eq(leaveBalancesTable.type, type),
+        eq(leaveBalancesTable.employeeId, employeeId), eq(leaveBalancesTable.year, year), eq(leaveBalancesTable.type, type as never),
       ));
       if (bal) await db.update(leaveBalancesTable).set({ used: Math.max(0, bal.used + delta) }).where(eq(leaveBalancesTable.id, bal.id));
     };

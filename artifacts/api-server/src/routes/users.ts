@@ -29,15 +29,15 @@ usersRouter.get("/", authenticate, async (req, res) => {
 });
 usersRouter.post("/", authenticate, async (req, res) => {
   try {
-    const body = req.body;
-    const passwordHash = await bcrypt.hash(body.password || "TempPass@123", 12);
+    const { password, id: _ignoredId, passwordHash: _ignoredHash, ...body } = req.body ?? {};
+    const passwordHash = await bcrypt.hash(password || "TempPass@123", 12);
     const [row] = await db.insert(usersTable).values({ id: newId(), ...body, passwordHash, updatedAt: new Date() }).returning();
     res.status(201).json({ success: true, data: sanitizeUser(row) });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 usersRouter.put("/:id", authenticate, async (req, res) => {
   try {
-    const body = req.body;
+    const { password: _ignoredPw, id: _ignoredId, passwordHash: _ignoredHash, ...body } = req.body ?? {};
     const [row] = await db.update(usersTable).set({ ...body, updatedAt: new Date() }).where(eq(usersTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: sanitizeUser(row) });

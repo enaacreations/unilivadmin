@@ -1,4 +1,5 @@
 export * from "./core";
+export * from "./food";
 export * from "./hrms";
 export * from "./procurement";
 export * from "./kitchen";

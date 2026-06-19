@@ -68,11 +68,26 @@ export default function Complaints() {
     setPropertyId(globalPropertyId || "ALL");
   }, [globalPropertyId]);
   
+  type ComplaintStats = {
+    open: number;
+    breached: number;
+    resolvedToday: number;
+    avgHours: number;
+    byCategory: Record<string, number>;
+    trend: { month: string; count: number }[];
+    slaCompliance: { onTime: number; breach: number };
+    heatmap: { day: string; date: string; counts: Record<string, number> }[];
+    categories: string[];
+  };
   const { data: statsRes } = useQuery({
     queryKey: ["complaints-stats", propertyId],
-    queryFn: () => apiFetch(`/complaints/stats/overview${propertyId !== "ALL" ? `?propertyId=${propertyId}` : ""}`)
+    queryFn: () => apiFetch<{ success: boolean; data: ComplaintStats }>(`/complaints/stats/overview${propertyId !== "ALL" ? `?propertyId=${propertyId}` : ""}`)
   });
-  const stats = (statsRes as any)?.data || { totalOpen: 0, slaBreached: 0, resolvedToday: 0, avgResolutionHours: 0, heatmap: [], trend: [], slaCompliance: [], topCategories: [] };
+  const stats: ComplaintStats = statsRes?.data || { open: 0, breached: 0, resolvedToday: 0, avgHours: 0, byCategory: {}, heatmap: [], trend: [], slaCompliance: { onTime: 0, breach: 0 }, categories: [] };
+  const slaComplianceData = [
+    { name: "On Time", value: stats.slaCompliance?.onTime || 0 },
+    { name: "Breached", value: stats.slaCompliance?.breach || 0 },
+  ];
 
   const apiParams = {
     propertyId: propertyId !== "ALL" ? propertyId : undefined,
@@ -114,10 +129,10 @@ export default function Complaints() {
       />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Total Open" value={stats.totalOpen} icon={Ticket} />
-        <StatCard title="SLA Breached" value={stats.slaBreached} icon={AlertCircle} className={stats.slaBreached > 0 ? "border-destructive/50 bg-destructive/5" : ""} />
+        <StatCard title="Total Open" value={stats.open} icon={Ticket} />
+        <StatCard title="SLA Breached" value={stats.breached} icon={AlertCircle} className={stats.breached > 0 ? "border-destructive/50 bg-destructive/5" : ""} />
         <StatCard title="Resolved Today" value={stats.resolvedToday} icon={CheckCircle2} />
-        <StatCard title="Avg Resolution (Hrs)" value={stats.avgResolutionHours} icon={Clock} />
+        <StatCard title="Avg Resolution (Hrs)" value={stats.avgHours} icon={Clock} />
       </div>
 
       <Tabs defaultValue="tickets">
@@ -172,10 +187,10 @@ export default function Complaints() {
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={stats.trend || []}>
-                    <XAxis dataKey="label" fontSize={12} tickLine={false} axisLine={false} />
+                    <XAxis dataKey="month" fontSize={12} tickLine={false} axisLine={false} />
                     <YAxis fontSize={12} tickLine={false} axisLine={false} />
                     <Tooltip cursor={{fill: 'transparent'}} />
-                    <Line type="monotone" dataKey="value" stroke="var(--accent)" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="count" stroke="var(--accent)" strokeWidth={2} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -185,7 +200,7 @@ export default function Complaints() {
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie data={stats.slaCompliance || [{name: 'On Time', value: 80}, {name: 'Breached', value: 20}]} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={80}>
+                    <Pie data={slaComplianceData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={80}>
                       <Cell fill="var(--success)" />
                       <Cell fill="var(--danger)" />
                     </Pie>
@@ -215,7 +230,7 @@ function CreateComplaintModal({ open, onOpenChange }: { open: boolean, onOpenCha
   });
 
   const onSave = async () => {
-    if(!form.propertyId || !form.category || !form.title || !form.description) return toast({ title: "Fill required fields", variant: "destructive" });
+    if(!form.propertyId || !form.category || !form.title || !form.description) { toast({ title: "Fill required fields", variant: "destructive" }); return; }
     try {
       await mut.mutateAsync({ data: form });
       toast({ title: "Complaint raised" });

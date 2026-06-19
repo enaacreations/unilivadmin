@@ -32,7 +32,7 @@ export default function ResidentAttendancePage() {
   const [date, setDate] = React.useState(() => new Date().toISOString().slice(0, 10));
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
 
-  const { data: propsRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
+  const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
   const properties = propsRes?.data || [];
 
   const [localPropId, setLocalPropId] = React.useState<string | undefined>(undefined);
@@ -60,6 +60,7 @@ export default function ResidentAttendancePage() {
       return apiFetch(`/resident-attendance/mark`, { method: "POST", body: JSON.stringify({ items }) });
     },
     onSuccess: () => { toast({ title: "Marked unmarked residents present" }); qc.invalidateQueries({ queryKey: getGetResidentAttendanceQueryKey(attParams) }); },
+    onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
   // Out-pass
@@ -82,6 +83,7 @@ export default function ResidentAttendancePage() {
   const markReturn = useMutation({
     mutationFn: (id: string) => apiFetch(`/out-passes/${id}/return`, { method: "POST", body: "{}" }),
     onSuccess: () => { toast({ title: "Returned" }); qc.invalidateQueries({ queryKey: getGetOutPassesQueryKey(opParams) }); },
+    onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
   const allSelected = rows.length > 0 && rows.every((r) => selected[r.residentId]);

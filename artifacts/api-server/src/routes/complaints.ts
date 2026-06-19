@@ -4,7 +4,7 @@ import { complaintsTable, escalationsTable, residentsTable, propertiesTable, com
 import { eq, sql, ilike, or, and } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
-import { newId } from "../lib/id.js";
+import { newId, withUniqueRetry } from "../lib/id.js";
 
 const router = Router();
 
@@ -60,23 +60,25 @@ router.get("/", authenticate, async (req, res) => {
 router.post("/", authenticate, async (req, res) => {
   try {
     const body = req.body;
-    const ticketNo = await nextTicketNo();
     const slaDeadline = new Date(Date.now() + (body.slaHours || 24) * 60 * 60 * 1000);
-    const [row] = await db.insert(complaintsTable).values({
-      id: newId(),
-      propertyId: body.propertyId,
-      residentId: body.residentId,
-      ticketNo,
-      category: body.category,
-      subCategory: body.subCategory,
-      title: body.title,
-      description: body.description,
-      priority: body.priority || "MEDIUM",
-      assignedTo: body.assignedTo,
-      slaHours: body.slaHours || 24,
-      slaDeadline,
-      updatedAt: new Date(),
-    }).returning();
+    const row = await withUniqueRetry(async () => {
+      const [r] = await db.insert(complaintsTable).values({
+        id: newId(),
+        propertyId: body.propertyId,
+        residentId: body.residentId,
+        ticketNo: await nextTicketNo(),
+        category: body.category,
+        subCategory: body.subCategory,
+        title: body.title,
+        description: body.description,
+        priority: body.priority || "MEDIUM",
+        assignedTo: body.assignedTo,
+        slaHours: body.slaHours || 24,
+        slaDeadline,
+        updatedAt: new Date(),
+      }).returning();
+      return r;
+    });
     res.status(201).json({ success: true, data: await enrichComplaint(row) });
   } catch (err) {
     req.log.error(err);
@@ -198,10 +200,26 @@ router.get("/stats/overview", authenticate, async (req, res) => {
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-// Escalations (mounted at /escalations)
-router.post("/escalations", authenticate, async (req, res) => {
+// ── Escalations — dedicated router mounted at /escalations ──
+// Previously /escalations re-mounted the complaints router, so POST /escalations
+// resolved to the create-complaint handler and 500'd every time. This dedicated
+// router serves escalation create/list correctly.
+export const escalationsRouter: Router = Router();
+
+escalationsRouter.get("/", authenticate, async (req, res) => {
+  try {
+    const complaintId = req.query["complaintId"] as string | undefined;
+    const rows = complaintId
+      ? await db.select().from(escalationsTable).where(eq(escalationsTable.complaintId, complaintId)).orderBy(escalationsTable.createdAt)
+      : await db.select().from(escalationsTable).orderBy(escalationsTable.createdAt);
+    res.json({ success: true, data: rows });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+escalationsRouter.post("/", authenticate, async (req, res) => {
   try {
     const body = req.body;
+    if (!body.complaintId) { res.status(400).json({ success: false, error: "complaintId is required" }); return; }
     const [row] = await db.insert(escalationsTable).values({
       id: newId(),
       complaintId: body.complaintId,
@@ -209,11 +227,9 @@ router.post("/escalations", authenticate, async (req, res) => {
       escalatedTo: body.escalatedTo,
       reason: body.reason,
     }).returning();
-    if (body.complaintId) {
-      await db.insert(complaintEventsTable).values({
-        id: newId(), complaintId: body.complaintId, type: "ESCALATION", toValue: body.escalatedTo, note: body.reason, actorId: req.user?.id,
-      });
-    }
+    await db.insert(complaintEventsTable).values({
+      id: newId(), complaintId: body.complaintId, type: "ESCALATION", toValue: body.escalatedTo, note: body.reason, actorId: req.user?.id,
+    });
     res.status(201).json({ success: true, data: row });
   } catch (err) {
     req.log.error(err);

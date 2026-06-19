@@ -36,7 +36,7 @@ export default function ElectricityPage() {
   const { can } = usePermissions();
   const [tab, setTab] = React.useState("meters");
 
-  const { data: propsRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
+  const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
   const properties = propsRes?.data || [];
 
   const { data: roomsRes } = useGetRooms(
@@ -60,7 +60,7 @@ export default function ElectricityPage() {
   const meters = (metersRes?.data || []) as unknown as Meter[];
 
   const { data: readingsRes } = useGetElectricityReadings(readingParams, { query: { queryKey: getGetElectricityReadingsQueryKey(readingParams) } });
-  const readings: Reading[] = readingsRes?.data || [];
+  const readings: Reading[] = (readingsRes?.data || []) as unknown as Reading[];
 
   // Stats
   const totalUnits = readings.reduce((s, r) => s + (r.unitsConsumed || 0), 0);

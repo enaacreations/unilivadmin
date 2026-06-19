@@ -144,7 +144,7 @@ coursesRouter.get("/:id/enrollments", authenticate, async (req, res) => {
   try {
     const rows = await db.select().from(courseEnrollmentsTable).where(eq(courseEnrollmentsTable.courseId, req.params["id"]!)).orderBy(desc(courseEnrollmentsTable.createdAt));
     const enriched = await Promise.all(rows.map(async (r) => {
-      const [e] = await db.select({ name: employeesTable.name, employeeCode: employeesTable.employeeCode, department: employeesTable.department, role: employeesTable.role }).from(employeesTable).where(eq(employeesTable.id, r.employeeId));
+      const [e] = await db.select({ name: employeesTable.name, employeeCode: employeesTable.employeeCode, department: employeesTable.department, role: employeesTable.designation }).from(employeesTable).where(eq(employeesTable.id, r.employeeId));
       return { ...r, employee: e || null };
     }));
     res.json({ success: true, data: enriched });

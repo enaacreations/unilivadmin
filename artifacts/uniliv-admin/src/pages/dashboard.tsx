@@ -9,11 +9,11 @@ import { StatusBadge } from "@/components/status-badge";
 import { formatDistanceToNow } from "date-fns";
 
 export default function Dashboard() {
-  const { data: statsRes, isLoading: statsLoading } = useGetDashboardStats({ query: { queryKey: getGetDashboardStatsQueryKey() } });
-  const { data: chartsRes, isLoading: chartsLoading } = useGetDashboardCharts({ query: { queryKey: getGetDashboardChartsQueryKey() } });
+  const { data: statsRes, isLoading: statsLoading } = useGetDashboardStats(undefined, { query: { queryKey: getGetDashboardStatsQueryKey() } });
+  const { data: chartsRes, isLoading: chartsLoading } = useGetDashboardCharts(undefined, { query: { queryKey: getGetDashboardChartsQueryKey() } });
   const { data: complaintsRes, isLoading: complaintsLoading } = useGetComplaints({ limit: 5 } as any, { query: { queryKey: getGetComplaintsQueryKey({ limit: 5 } as any) } });
   const { data: residentsRes, isLoading: residentsLoading } = useGetResidents({ limit: 5 } as any, { query: { queryKey: getGetResidentsQueryKey({ limit: 5 } as any) } });
-  const { data: propertiesRes, isLoading: propertiesLoading } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
+  const { data: propertiesRes, isLoading: propertiesLoading } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
 
   const stats = statsRes?.data;
   const charts = chartsRes?.data;

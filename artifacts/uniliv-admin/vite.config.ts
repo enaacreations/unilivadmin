@@ -66,6 +66,20 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    // Local dev only: proxy /api to the Express server so the SPA stays
+    // same-origin (cookies + relative apiFetch work without CORS). On Replit
+    // API_PROXY_TARGET is unset, so this is a no-op and the external router
+    // handles /api routing as before.
+    ...(process.env.API_PROXY_TARGET
+      ? {
+          proxy: {
+            "/api": {
+              target: process.env.API_PROXY_TARGET,
+              changeOrigin: true,
+            },
+          },
+        }
+      : {}),
   },
   preview: {
     port,

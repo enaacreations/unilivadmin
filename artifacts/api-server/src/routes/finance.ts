@@ -498,7 +498,7 @@ financeRouter.post("/bank-lines/:id/confirm", authenticate, authorize("BANKING",
       const unpaid = await db.select().from(ledgerEntriesTable)
         .where(and(eq(ledgerEntriesTable.residentId, useResident), eq(ledgerEntriesTable.isPaid, false)))
         .orderBy(ledgerEntriesTable.createdAt);
-      const match = unpaid.find((e) => Math.abs(Number(e.amount) - line.amount) < 0.01) || unpaid[0];
+      const match = unpaid.find((e) => Math.abs(Number(e.amount) - Number(line.amount)) < 0.01) || unpaid[0];
       if (match) useEntry = match.id;
     }
 

@@ -36,7 +36,7 @@ export default function ComplaintDetail() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  const { data: res, isLoading } = useGetComplaint(id, { query: { queryKey: getGetComplaintQueryKey(id), enabled: !!id } });
+  const { data: res, isLoading, isError } = useGetComplaint(id, { query: { queryKey: getGetComplaintQueryKey(id), enabled: !!id } });
   const complaint = res?.data;
 
   const mutUpdate = useUpdateComplaint();
@@ -54,7 +54,15 @@ export default function ComplaintDetail() {
   const [escReason, setEscReason] = React.useState("");
   const [escTo, setEscTo] = React.useState("");
 
-  if (isLoading || !complaint) return <div className="p-8 text-center">Loading...</div>;
+  if (isLoading) return <div className="p-8 text-center">Loading...</div>;
+  if (isError || !complaint) return (
+    <div className="p-8 text-center space-y-3">
+      <p className="text-muted-foreground">Complaint not found or failed to load.</p>
+      <Link href="/complaints">
+        <Button variant="outline"><ChevronLeft className="w-4 h-4 mr-2" /> Back to Complaints</Button>
+      </Link>
+    </div>
+  );
 
   const handleUpdateStatus = async (status: string, extra = {}) => {
     try {
@@ -66,7 +74,7 @@ export default function ComplaintDetail() {
   };
 
   const handleEscalate = async () => {
-    if(!escTo || !escReason) return toast({title: "Select user and reason", variant: "destructive"});
+    if(!escTo || !escReason) { toast({title: "Select user and reason", variant: "destructive"}); return; }
     try {
       await mutEscalate.mutateAsync({ data: { complaintId: id, escalatedTo: escTo, reason: escReason, level: 1 } });
       toast({ title: "Complaint Escalated" });

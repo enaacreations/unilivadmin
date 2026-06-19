@@ -289,12 +289,18 @@ function AttendanceTab({ employeeId }: { employeeId: string }) {
   const createMut = useMarkAttendance();
   const updateMut = useUpdateAttendance();
 
+  const hhmm = (iso?: string | null) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+
   const openDay = (day: number) => {
     const rec = byDay[day];
     setEditDay(day);
     setEditStatus(rec?.status || "PRESENT");
-    setEditIn(rec?.inTime ? new Date(rec.inTime).toISOString().slice(11, 16) : "");
-    setEditOut(rec?.outTime ? new Date(rec.outTime).toISOString().slice(11, 16) : "");
+    setEditIn(hhmm(rec?.inTime));
+    setEditOut(hhmm(rec?.outTime));
     setEditNotes(rec?.notes || "");
   };
 

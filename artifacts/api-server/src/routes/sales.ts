@@ -261,22 +261,32 @@ leadsRouter.post("/:id/convert", authenticate, async (req, res) => {
     const email = body.email || lead.email;
     if (!propertyId) { res.status(400).json({ success: false, error: "propertyId is required to convert" }); return; }
     if (!email) { res.status(400).json({ success: false, error: "email is required to convert" }); return; }
-    const [resident] = await db.insert(residentsTable).values({
-      id: newId(),
-      name: lead.name,
-      phone: lead.phone,
-      email,
-      propertyId,
-      roomId: body.roomId,
-      planType: body.planType || "MONTHLY",
-      monthlyRent: body.monthlyRent?.toString() || "0",
-      securityDeposit: (body.securityDeposit ?? body.depositAmount)?.toString() || "0",
-      checkInDate: body.checkInDate ? new Date(body.checkInDate) : new Date(),
-      status: "ACTIVE",
-      updatedAt: new Date(),
-    }).returning();
-    await db.update(leadsTable).set({ stage: "CONVERTED", convertedAt: new Date(), residentId: resident.id, updatedAt: new Date() }).where(eq(leadsTable.id, id));
-    await logActivity(id, "STAGE_CHANGE", `Converted to resident ${resident.name}`, { residentId: resident.id }, req.user?.id);
+    const resident = await db.transaction(async (tx) => {
+      const [r] = await tx.insert(residentsTable).values({
+        id: newId(),
+        name: lead.name,
+        phone: lead.phone,
+        email,
+        propertyId,
+        roomId: body.roomId,
+        planType: body.planType || "MONTHLY",
+        monthlyRent: body.monthlyRent?.toString() || "0",
+        securityDeposit: (body.securityDeposit ?? body.depositAmount)?.toString() || "0",
+        checkInDate: body.checkInDate ? new Date(body.checkInDate) : new Date(),
+        status: "ACTIVE",
+        updatedAt: new Date(),
+      }).returning();
+      await tx.update(leadsTable).set({ stage: "CONVERTED", convertedAt: new Date(), residentId: r.id, updatedAt: new Date() }).where(eq(leadsTable.id, id));
+      await tx.insert(leadActivitiesTable).values({
+        id: newId(),
+        leadId: id,
+        type: "STAGE_CHANGE",
+        note: `Converted to resident ${r.name}`,
+        meta: { residentId: r.id },
+        createdBy: req.user?.id || null,
+      });
+      return r;
+    });
     res.json({ success: true, data: { lead: id, residentId: resident.id, resident } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

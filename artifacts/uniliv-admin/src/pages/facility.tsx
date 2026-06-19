@@ -38,7 +38,7 @@ export default function FacilityPage() {
   const { can } = usePermissions();
   const [tab, setTab] = React.useState("assets");
 
-  const { data: propsRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
+  const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
   const properties = propsRes?.data || [];
 
   const assetParams = propertyId ? { propertyId } : {};

@@ -7,7 +7,8 @@ import {
   UserCheck, Briefcase, GraduationCap, Truck, ClipboardList, ShoppingCart,
   PackageCheck, Boxes, ChefHat, CalendarDays, TrendingUp, MapPin,
   BookOpen, CreditCard, Shield, Settings, LogOut, Search, Menu, BarChart3,
-  Repeat, BellRing, Landmark, Receipt, Wrench, Zap, ClipboardCheck, Radio, Wallet
+  Repeat, BellRing, Landmark, Receipt, Wrench, Zap, ClipboardCheck, Radio, Wallet,
+  UtensilsCrossed, ListOrdered, FilePlus2, Soup, Send, CheckCircle2, Trash2, SlidersHorizontal
 } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -51,6 +52,17 @@ const navGroups: Array<{ title: string; items: Array<{ title: string; href: stri
     { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES" },
     { title: "Menu Planning", href: "/menu-planning", icon: CalendarDays, module: "MENU_PLANNING" },
   ]},
+  { title: "Food Ordering", items: [
+    { title: "Dashboard", href: "/food/dashboard", icon: UtensilsCrossed, module: "FOOD_DASHBOARD" },
+    { title: "All Orders", href: "/food/orders", icon: ListOrdered, module: "FOOD_ALL_ORDERS" },
+    { title: "Place Order", href: "/food/place-order", icon: FilePlus2, module: "FOOD_PLACE_ORDER" },
+    { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY" },
+    { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH" },
+    { title: "Confirm Delivery", href: "/food/confirm-delivery", icon: CheckCircle2, module: "FOOD_CONFIRM_DELIVERY" },
+    { title: "Waste Tracking", href: "/food/waste", icon: Trash2, module: "FOOD_WASTE_TRACKING" },
+    { title: "Reports", href: "/food/reports", icon: BarChart3, module: "FOOD_REPORTS" },
+    { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS" },
+  ]},
   { title: "Growth", items: [
     { title: "Sales CRM", href: "/leads", icon: TrendingUp, module: "SALES_LEADS" },
     { title: "Property Leads", href: "/property-leads", icon: MapPin, module: "PROPERTY_LEADS" },
@@ -75,7 +87,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { setToken } = useAuthStore();
   const { propertyId, setPropertyId } = useAppStore();
   const { me, can } = usePermissions();
-  const { data: propertiesRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } });
+  const { data: propertiesRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
   const logout = useLogout();
   const properties = propertiesRes?.data || [];
 

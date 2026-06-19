@@ -201,17 +201,19 @@ function PODetailSheet({ poId, onClose, onCreateGRN, onSent, propName, toast }: 
   return (
     <Sheet open={!!poId} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="sm:max-w-2xl w-full overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle className="font-display flex items-center gap-3">
+            Purchase Order
+            {po && <span className="font-mono text-sm bg-muted/30 px-2 py-1 rounded">{po.poNumber}</span>}
+            {po && <StatusBadge status={po.status} />}
+          </SheetTitle>
+        </SheetHeader>
         {isLoading ? (
-          <div className="space-y-3"><div className="h-6 bg-muted/30 animate-pulse rounded" /><div className="h-32 bg-muted/30 animate-pulse rounded" /></div>
-        ) : po ? (
-          <div className="space-y-6">
-            <SheetHeader>
-              <SheetTitle className="font-display flex items-center gap-3">
-                Purchase Order
-                <span className="font-mono text-sm bg-muted/30 px-2 py-1 rounded">{po.poNumber}</span>
-                <StatusBadge status={po.status} />
-              </SheetTitle>
-            </SheetHeader>
+          <div className="space-y-3 mt-6"><div className="h-6 bg-muted/30 animate-pulse rounded" /><div className="h-32 bg-muted/30 animate-pulse rounded" /></div>
+        ) : !po ? (
+          <p className="text-sm text-muted-foreground p-4 text-center mt-6">Could not load this purchase order.</p>
+        ) : (
+          <div className="space-y-6 mt-6">
 
             <div className="border rounded-md p-4 bg-card grid grid-cols-2 gap-3 text-sm">
               <div>
@@ -308,7 +310,7 @@ function PODetailSheet({ poId, onClose, onCreateGRN, onSent, propName, toast }: 
               )}
             </div>
           </div>
-        ) : null}
+        )}
       </SheetContent>
     </Sheet>
   );

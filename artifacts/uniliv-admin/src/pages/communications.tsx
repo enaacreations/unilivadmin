@@ -243,7 +243,7 @@ function BulkMessagesTab({ prefill, onPrefillConsumed }: { prefill: BulkPrefill 
     return () => clearTimeout(t);
   }, [form.propertyId, form.audience, form.body, form.subject]);
 
-  const previewData = mutPreview.data?.data || { total: 0, sample: [] };
+  const previewData = (mutPreview.data as any)?.data || { total: 0, sample: [] };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -464,7 +464,7 @@ function AuditLogTab() {
               <div>
                 <Label className="mb-2 block">Target Filter</Label>
                 <pre className="p-4 rounded bg-primary text-primary-foreground font-mono text-xs overflow-x-auto">
-                  {JSON.stringify(viewLog.filter || {}, null, 2)}
+                  {JSON.stringify(viewLog.recipientFilter || viewLog.filter || {}, null, 2)}
                 </pre>
               </div>
             </div>

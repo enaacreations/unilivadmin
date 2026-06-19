@@ -52,10 +52,11 @@ router.post("/", authenticate, async (req, res) => {
     const body = req.body;
     const requestedStatus = body.status || "ACTIVE";
     if (requestedStatus === "ACTIVE" && (await isKycGateEnabled())) {
-      return res.status(400).json({
+      res.status(400).json({
         success: false,
         error: "KYC gate is enabled: new residents cannot be created with status ACTIVE. Create with status NOTICE_PERIOD or CHECKED_OUT, then complete KYC + e-sign before activating.",
       });
+      return;
     }
     const [row] = await db.insert(residentsTable).values({
       id: newId(),
@@ -148,6 +149,10 @@ router.get("/:id/ledger", authenticate, async (req, res) => {
 router.post("/:id/ledger", authenticate, async (req, res) => {
   try {
     const body = req.body;
+    if (body?.amount == null || Number.isNaN(Number(body.amount))) {
+      res.status(400).json({ success: false, error: "amount is required and must be a number" });
+      return;
+    }
     const [row] = await db.insert(ledgerEntriesTable).values({
       id: newId(),
       residentId: req.params["id"]!,
@@ -181,6 +186,10 @@ router.get("/:id/payments", authenticate, async (req, res) => {
 router.post("/:id/payments", authenticate, async (req, res) => {
   try {
     const body = req.body;
+    if (body?.amount == null || Number.isNaN(Number(body.amount))) {
+      res.status(400).json({ success: false, error: "amount is required and must be a number" });
+      return;
+    }
     const [row] = await db.insert(paymentsTable).values({
       id: newId(),
       residentId: req.params["id"]!,
@@ -206,36 +215,40 @@ router.post("/:id/checkout", authenticate, async (req, res) => {
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
 
-    // Mark resident checked out
-    await db.update(residentsTable).set({
-      status: "CHECKED_OUT",
-      checkOutDate: checkoutDate ? new Date(checkoutDate) : new Date(),
-      updatedAt: new Date(),
-    }).where(eq(residentsTable.id, residentId));
-
-    // Free up room
-    if (resident.roomId) {
-      await db.update(roomsTable).set({ status: "VACANT", updatedAt: new Date() }).where(eq(roomsTable.id, resident.roomId));
-    }
-
     // Record refund + deductions in ledger
     const notes = [reason, keyReturned === false ? "Key NOT returned" : null, roomConditionNote].filter(Boolean).join(" | ");
-    if (deductions && Number(deductions) > 0) {
-      await db.insert(ledgerEntriesTable).values({
-        id: newId(), residentId, type: "ADJUSTMENT",
-        amount: Number(deductions).toString(),
-        description: `Check-out deductions: ${notes || "—"}`,
-        isPaid: true, createdBy: req.user?.id, updatedAt: new Date(),
-      });
-    }
-    if (refundAmount && Number(refundAmount) > 0) {
-      await db.insert(ledgerEntriesTable).values({
-        id: newId(), residentId, type: "DEPOSIT",
-        amount: (-Number(refundAmount)).toString(),
-        description: `Security deposit refund`,
-        isPaid: true, createdBy: req.user?.id, updatedAt: new Date(),
-      });
-    }
+
+    // Atomic: resident status, room vacate, and ledger entries must all succeed together.
+    await db.transaction(async (tx) => {
+      // Mark resident checked out
+      await tx.update(residentsTable).set({
+        status: "CHECKED_OUT",
+        checkOutDate: checkoutDate ? new Date(checkoutDate) : new Date(),
+        updatedAt: new Date(),
+      }).where(eq(residentsTable.id, residentId));
+
+      // Free up room
+      if (resident.roomId) {
+        await tx.update(roomsTable).set({ status: "VACANT", updatedAt: new Date() }).where(eq(roomsTable.id, resident.roomId));
+      }
+
+      if (deductions && Number(deductions) > 0) {
+        await tx.insert(ledgerEntriesTable).values({
+          id: newId(), residentId, type: "ADJUSTMENT",
+          amount: Number(deductions).toString(),
+          description: `Check-out deductions: ${notes || "—"}`,
+          isPaid: true, createdBy: req.user?.id, updatedAt: new Date(),
+        });
+      }
+      if (refundAmount && Number(refundAmount) > 0) {
+        await tx.insert(ledgerEntriesTable).values({
+          id: newId(), residentId, type: "DEPOSIT",
+          amount: (-Number(refundAmount)).toString(),
+          description: `Security deposit refund`,
+          isPaid: true, createdBy: req.user?.id, updatedAt: new Date(),
+        });
+      }
+    });
 
     const [row] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     res.json({ success: true, data: await enrichResident(row!) });

@@ -266,7 +266,7 @@ export default function Inventory() {
 function InventoryDetailSheet({ id, onClose, propName }: { id: string | null; onClose: () => void; propName: (id?: string | null) => string }) {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: itemRes } = useQuery<{ success: boolean; data: any }>({
+  const { data: itemRes, isLoading } = useQuery<{ success: boolean; data: any }>({
     queryKey: [`/api/inventory/${id}`, id],
     queryFn: () => apiFetch(`/inventory/${id}`),
     enabled: !!id,
@@ -323,13 +323,17 @@ function InventoryDetailSheet({ id, onClose, propName }: { id: string | null; on
     <>
       <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
         <SheetContent className="sm:max-w-2xl w-full overflow-y-auto">
-          {item && (
-            <div className="space-y-6">
-              <SheetHeader>
-                <SheetTitle className="font-display flex items-center gap-3">
-                  {item.name} <StatusBadge status={item.stockStatus || (item.isLowStock ? "LOW_STOCK" : "OK")} />
-                </SheetTitle>
-              </SheetHeader>
+          <SheetHeader>
+            <SheetTitle className="font-display flex items-center gap-3">
+              {item ? <>{item.name} <StatusBadge status={item.stockStatus || (item.isLowStock ? "LOW_STOCK" : "OK")} /></> : "Inventory Item"}
+            </SheetTitle>
+          </SheetHeader>
+          {isLoading ? (
+            <div className="space-y-3 mt-6"><div className="h-24 bg-muted/30 animate-pulse rounded" /><div className="h-32 bg-muted/30 animate-pulse rounded" /></div>
+          ) : !item ? (
+            <p className="text-sm text-muted-foreground p-4 text-center mt-6">Could not load this item.</p>
+          ) : (
+            <div className="space-y-6 mt-6">
 
               <div className="grid grid-cols-2 gap-3 text-sm border rounded-md p-4 bg-card">
                 <div><p className="text-muted-foreground text-xs uppercase">SKU</p><p className="font-mono">{item.sku || "—"}</p></div>

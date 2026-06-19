@@ -18,18 +18,13 @@ router.get("/", authenticate, async (req, res) => {
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(propertiesTable).where(where);
     const rows = await db.select().from(propertiesTable).where(where).limit(limit).offset(offset).orderBy(propertiesTable.createdAt);
 
-    const [occupiedCounts] = await Promise.resolve(
-      Promise.all(rows.map(async (p) => {
-        const [r] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(eq(residentsTable.propertyId, p.id));
-        return { id: p.id, count: r.count || 0 };
-      }))
-    );
-
     const occupiedMap: Record<string, number> = {};
-    for (const row of rows) {
-      const [r] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(eq(residentsTable.propertyId, row.id));
-      occupiedMap[row.id] = r.count || 0;
-    }
+    await Promise.all(
+      rows.map(async (row) => {
+        const [r] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(eq(residentsTable.propertyId, row.id));
+        occupiedMap[row.id] = r.count || 0;
+      })
+    );
 
     res.json({
       success: true,

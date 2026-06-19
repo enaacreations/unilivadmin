@@ -8,9 +8,11 @@ import { newId } from "../lib/id.js";
 
 export const templatesRouter = Router();
 
-templatesRouter.get("/", authenticate, async (_req, res) => {
-  const rows = await db.select().from(messageTemplatesTable).orderBy(messageTemplatesTable.createdAt);
-  res.json({ success: true, data: rows });
+templatesRouter.get("/", authenticate, async (req, res) => {
+  try {
+    const rows = await db.select().from(messageTemplatesTable).orderBy(messageTemplatesTable.createdAt);
+    res.json({ success: true, data: rows });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 templatesRouter.post("/", authenticate, async (req, res) => {
@@ -41,8 +43,10 @@ templatesRouter.put("/:id", authenticate, async (req, res) => {
 });
 
 templatesRouter.delete("/:id", authenticate, async (req, res) => {
-  await db.delete(messageTemplatesTable).where(eq(messageTemplatesTable.id, req.params["id"]!));
-  res.json({ success: true, message: "Deleted" });
+  try {
+    await db.delete(messageTemplatesTable).where(eq(messageTemplatesTable.id, req.params["id"]!));
+    res.json({ success: true, message: "Deleted" });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 export const commsRouter = Router();

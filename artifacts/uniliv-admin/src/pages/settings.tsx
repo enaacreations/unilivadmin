@@ -243,7 +243,7 @@ function KycGateTab({ canEdit }: { canEdit: boolean }) {
 function WalletConfigTab({ canEdit }: { canEdit: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: propertiesRes } = useGetProperties({ query: { queryKey: getGetPropertiesQueryKey() } } as any);
+  const { data: propertiesRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
   const properties = (propertiesRes as any)?.data || [];
   const [propertyId, setPropertyId] = React.useState<string>("");
 

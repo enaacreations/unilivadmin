@@ -69,7 +69,7 @@ export default function GRN() {
 }
 
 function GRNDetailSheet({ id, onClose, propName }: { id: string | null; onClose: () => void; propName: (id?: string | null) => string }) {
-  const { data: res } = useQuery<{ success: boolean; data: any }>({
+  const { data: res, isLoading } = useQuery<{ success: boolean; data: any }>({
     queryKey: [`/api/grn/${id}`, id],
     queryFn: () => apiFetch(`/grn/${id}`),
     enabled: !!id,
@@ -79,14 +79,18 @@ function GRNDetailSheet({ id, onClose, propName }: { id: string | null; onClose:
   return (
     <Sheet open={!!id} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="sm:max-w-2xl w-full overflow-y-auto">
-        {grn && (
-          <div className="space-y-6">
-            <SheetHeader>
-              <SheetTitle className="font-display flex items-center gap-3">
-                GRN <span className="font-mono text-sm bg-muted/30 px-2 py-1 rounded">{grn.grnNumber}</span>
-                {grn.qcPass !== false ? <Badge className="bg-green-600 text-white hover:bg-green-700">QC Pass</Badge> : <Badge variant="destructive">QC Fail</Badge>}
-              </SheetTitle>
-            </SheetHeader>
+        <SheetHeader>
+          <SheetTitle className="font-display flex items-center gap-3">
+            GRN {grn && <span className="font-mono text-sm bg-muted/30 px-2 py-1 rounded">{grn.grnNumber}</span>}
+            {grn && (grn.qcPass !== false ? <Badge className="bg-green-600 text-white hover:bg-green-700">QC Pass</Badge> : <Badge variant="destructive">QC Fail</Badge>)}
+          </SheetTitle>
+        </SheetHeader>
+        {isLoading ? (
+          <div className="space-y-3 mt-6"><div className="h-24 bg-muted/30 animate-pulse rounded" /><div className="h-32 bg-muted/30 animate-pulse rounded" /></div>
+        ) : !grn ? (
+          <p className="text-sm text-muted-foreground p-4 text-center mt-6">Could not load this GRN.</p>
+        ) : (
+          <div className="space-y-6 mt-6">
 
             <div className="grid grid-cols-2 gap-3 text-sm border rounded-md p-4 bg-card">
               <div><p className="text-muted-foreground text-xs uppercase">PO Number</p><p className="font-mono font-medium">{grn.po?.poNumber || "—"}</p></div>
