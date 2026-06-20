@@ -2,17 +2,25 @@ import { create } from 'zustand';
 
 interface AuthState {
   token: string | null;
-  setToken: (token: string | null) => void;
+  setToken: (token: string | null, remember?: boolean) => void;
   isAuthenticated: () => boolean;
 }
 
+const TOKEN_KEY = 'uniliv_token';
+
 export const useAuthStore = create<AuthState>((set, get) => ({
-  token: localStorage.getItem('uniliv_token'),
-  setToken: (token) => {
+  token: localStorage.getItem(TOKEN_KEY) ?? sessionStorage.getItem(TOKEN_KEY),
+  setToken: (token, remember = true) => {
     if (token) {
-      localStorage.setItem('uniliv_token', token);
+      // "Remember me": localStorage survives a browser restart; sessionStorage clears on close.
+      const primary = remember ? localStorage : sessionStorage;
+      const secondary = remember ? sessionStorage : localStorage;
+      primary.setItem(TOKEN_KEY, token);
+      secondary.removeItem(TOKEN_KEY);
+      localStorage.setItem('uniliv_remember', remember ? '1' : '0');
     } else {
-      localStorage.removeItem('uniliv_token');
+      localStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(TOKEN_KEY);
     }
     set({ token });
   },

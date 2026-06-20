@@ -1,16 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
+import { FcGoogle } from "react-icons/fc";
 import { useAuthStore } from "@/lib/store";
 import { apiFetch } from "@/lib/api-fetch";
 import { useToast } from "@/hooks/use-toast";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { homeForRole, type UserRole } from "@/lib/permissions";
 import { useQueryParam } from "@/lib/nav-helpers";
-import { AlertTriangle, ArrowLeft, Eye, EyeOff, Loader2, ShieldCheck, Smartphone, UtensilsCrossed } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, ShieldCheck, Smartphone, User } from "lucide-react";
 
 type View = "login" | "otp" | "forgot-username" | "forgot-password" | "reset" | "username-result";
 type OtpFlow = "LOGIN" | "FORGOT_USERNAME" | "FORGOT_PASSWORD";
@@ -61,6 +59,14 @@ function useCountdown() {
   return { seconds: Math.max(0, seconds), start };
 }
 
+// Shared dark-glass styles (this page is always dark, independent of app theme).
+const INPUT = "w-full h-12 rounded-xl border border-white/10 bg-white/[0.05] pl-10 pr-3 text-sm text-white placeholder:text-white/35 focus:outline-none focus:border-accent/70 focus:ring-2 focus:ring-accent/25 transition-colors";
+const LABEL = "block text-sm font-semibold text-white/85 mb-1.5";
+const PRIMARY = "group w-full h-12 rounded-xl bg-accent text-white text-sm font-semibold inline-flex items-center justify-center gap-2 shadow-[0_10px_34px_-10px_rgba(232,96,44,0.75)] hover:bg-accent/90 active:scale-[0.99] transition disabled:opacity-60 disabled:pointer-events-none";
+const LINK = "text-accent hover:text-accent/80 font-medium transition-colors";
+const BACK = "inline-flex items-center gap-1.5 text-sm text-white/50 hover:text-white/85 transition-colors";
+const ICON = "absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-white/40 pointer-events-none";
+
 export default function Login() {
   const [, setLocation] = useLocation();
   const { setToken } = useAuthStore();
@@ -75,6 +81,7 @@ export default function Login() {
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(true);
 
   // otp
   const [flow, setFlow] = useState<OtpFlow>("LOGIN");
@@ -113,7 +120,7 @@ export default function Login() {
       if (flow === "LOGIN") {
         const res = await auth.verifyOtp(challenge.challengeId, c);
         queryClient.clear(); // never inherit a previous user's cached identity/data
-        setToken(res.accessToken);
+        setToken(res.accessToken, remember);
         toast({ title: `Welcome back, ${res.user?.name?.split(" ")[0] ?? ""}`.trim() });
         setLocation(homeForRole(res.user?.role as UserRole | undefined));
       } else if (flow === "FORGOT_USERNAME") {
@@ -178,42 +185,61 @@ export default function Login() {
     } finally { setBusy(false); }
   };
 
+  const onGoogle = () => toast({
+    title: "Google sign-in is coming soon",
+    description: "Please continue with your email and password below.",
+  });
+
   const backToLogin = () => { setView("login"); setCode(""); setChallenge(null); };
 
+  const Eyebrow = () => <div className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Secure access</div>;
+
   return (
-    <div className="min-h-screen w-full flex bg-background">
-      {/* Brand panel */}
-      <div className="hidden lg:flex w-1/2 bg-primary text-primary-foreground flex-col justify-between p-12 relative overflow-hidden">
-        <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: "radial-gradient(circle at 2px 2px, white 1px, transparent 0)", backgroundSize: "32px 32px" }} />
+    <div className="min-h-screen w-full flex bg-[#0a0706] text-white">
+      {/* ── Left brand panel ── */}
+      <div className="hidden lg:flex w-1/2 relative overflow-hidden flex-col justify-between p-14 bg-[#0e0a08]">
+        <div className="absolute inset-0" style={{ background: "radial-gradient(58% 50% at 26% 64%, rgba(232,96,44,0.17), transparent 70%)" }} />
+        <div className="absolute inset-0" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px)", backgroundSize: "46px 46px", WebkitMaskImage: "radial-gradient(72% 72% at 32% 50%, black, transparent)", maskImage: "radial-gradient(72% 72% at 32% 50%, black, transparent)" }} />
+        <div className="absolute inset-0" style={{ background: "linear-gradient(120deg, rgba(0,0,0,0) 38%, rgba(0,0,0,0.45))" }} />
+
         <div className="relative z-10 flex items-center gap-3">
-          <div className="w-10 h-10 rounded bg-accent flex items-center justify-center text-accent-foreground font-display font-bold text-xl shadow-lg">U</div>
-          <span className="font-display font-bold text-xl tracking-tight">Uniliv</span>
-        </div>
-        <div className="relative z-10 max-w-md">
-          <div className="inline-flex items-center gap-2 rounded-full bg-primary-foreground/10 px-3 py-1 text-xs font-medium mb-6">
-            <UtensilsCrossed className="w-3.5 h-3.5" /> Food Ordering & Kitchen Operations
+          <div className="w-11 h-11 rounded-xl bg-brand-gradient flex items-center justify-center text-white font-display font-bold text-xl">U</div>
+          <div className="leading-tight">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">Property operations platform</div>
+            <div className="font-display font-bold text-xl text-white">Uniliv</div>
           </div>
-          <h1 className="text-4xl font-display font-bold tracking-tight mb-4 leading-tight">
-            The operations command center for co-living
-          </h1>
-          <p className="text-primary-foreground/70 text-lg">
-            Place orders, coordinate kitchens, track every dispatch and cut food wastage — from one secure, unified portal.
-          </p>
         </div>
-        <div className="relative z-10 flex items-center gap-2 text-sm text-primary-foreground/50">
+
+        <div className="relative z-10 max-w-md">
+          <h1 className="font-display text-5xl font-bold leading-[1.04] tracking-tight text-white">Property ops,<br />made clear.</h1>
+          <p className="mt-5 text-lg text-white/55">Residents, complaints, food and finance — every property in one secure place.</p>
+          <div className="mt-9 grid grid-cols-3 gap-3">
+            {[{ k: "Properties", v: "Live view" }, { k: "Complaints", v: "SLA-tracked" }, { k: "Food", v: "Zero waste" }].map((f) => (
+              <div key={f.k} className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-white/40">{f.k}</div>
+                <div className="mt-1 text-sm font-semibold text-white">{f.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative z-10 inline-flex items-center gap-2 text-sm text-white/40">
           <ShieldCheck className="w-4 h-4" /> Secured with two-factor authentication
         </div>
       </div>
 
-      {/* Form panel */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-surface">
-        <div className="w-full max-w-md space-y-8">
-          <div className="lg:hidden w-12 h-12 rounded bg-accent flex items-center justify-center text-accent-foreground font-display font-bold text-xl shadow-lg mx-auto">U</div>
+      {/* ── Right form panel ── */}
+      <div className="w-full lg:w-1/2 flex items-center justify-center p-5 sm:p-8">
+        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/[0.035] p-7 sm:p-9 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)] backdrop-blur-xl">
+          <div className="lg:hidden mb-6 flex items-center justify-center gap-2.5">
+            <div className="w-9 h-9 rounded-lg bg-brand-gradient flex items-center justify-center text-white font-display font-bold">U</div>
+            <span className="font-display font-bold text-lg text-white">Uniliv</span>
+          </div>
 
           {reason && (
-            <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm">
-              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-warning" />
-              <span className="text-foreground">
+            <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100/90">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-400" />
+              <span>
                 {reason === "replaced"
                   ? "You were signed out because your account was signed in on another device. Only one active session is allowed at a time."
                   : "Your session has expired. Please sign in again."}
@@ -223,62 +249,82 @@ export default function Login() {
 
           {view === "login" && (
             <>
-              <div className="space-y-2">
-                <h2 className="text-3xl font-display font-bold tracking-tight text-primary">Welcome back</h2>
-                <p className="text-muted-foreground">Sign in with your username or email to continue</p>
+              <div className="space-y-1.5 mb-6">
+                <Eyebrow />
+                <h2 className="font-display text-3xl font-bold text-white">Welcome back</h2>
+                <p className="text-sm text-white/55">Sign in to manage properties, residents, complaints and food operations.</p>
               </div>
-              <form onSubmit={onLogin} className="space-y-5">
-                <div className="space-y-2">
-                  <Label htmlFor="identifier">Username or Email</Label>
-                  <Input id="identifier" autoFocus placeholder="unitlead1 or you@uniliv.com" className="h-11"
-                    value={identifier} onChange={(e) => setIdentifier(e.target.value)} data-testid="input-identifier" />
-                  <button type="button" className="text-sm font-medium text-accent hover:underline" onClick={() => { setRecoverPhone(""); setView("forgot-username"); }}>
-                    Forgot your username?
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
+
+              <button type="button" onClick={onGoogle} className="w-full h-12 rounded-xl border border-white/10 bg-white/[0.05] hover:bg-white/[0.09] text-white text-sm font-medium inline-flex items-center justify-center gap-2.5 transition-colors">
+                <FcGoogle className="h-5 w-5" /> Continue with Google
+              </button>
+
+              <div className="my-5 flex items-center gap-3">
+                <div className="h-px flex-1 bg-white/10" />
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-white/35">or continue with email</span>
+                <div className="h-px flex-1 bg-white/10" />
+              </div>
+
+              <form onSubmit={onLogin} className="space-y-4">
+                <div>
+                  <label htmlFor="identifier" className={LABEL}>Email or Username</label>
                   <div className="relative">
-                    <Input id="password" type={showPassword ? "text" : "password"} placeholder="••••••••" className="h-11 pr-10"
+                    <User className={ICON} />
+                    <input id="identifier" autoFocus placeholder="Enter your email or username" className={INPUT}
+                      value={identifier} onChange={(e) => setIdentifier(e.target.value)} data-testid="input-identifier" />
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="password" className={LABEL}>Password</label>
+                  <div className="relative">
+                    <Lock className={ICON} />
+                    <input id="password" type={showPassword ? "text" : "password"} placeholder="Enter your password" className={`${INPUT} pr-10`}
                       value={password} onChange={(e) => setPassword(e.target.value)} data-testid="input-password" />
-                    <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/80 transition-colors">
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
-                  <button type="button" className="text-sm font-medium text-accent hover:underline" onClick={() => { setRecoverId(identifier); setView("forgot-password"); }}>
-                    Forgot password?
-                  </button>
                 </div>
-                <Button type="submit" className="w-full h-11 text-base font-semibold" disabled={busy} data-testid="button-submit-login">
-                  {busy && <Loader2 className="w-5 h-5 animate-spin mr-2" />} Continue
-                </Button>
+                <div className="flex items-center justify-between pt-0.5">
+                  <label className="flex items-center gap-2 text-sm text-white/70 cursor-pointer select-none">
+                    <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="h-4 w-4 rounded border-white/20 bg-white/5 accent-[#E8602C]" />
+                    Remember me
+                  </label>
+                  <button type="button" className={LINK} onClick={() => { setRecoverId(identifier); setView("forgot-password"); }}>Forgot password?</button>
+                </div>
+                <button type="submit" disabled={busy} className={PRIMARY} data-testid="button-submit-login">
+                  {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Sign in <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" /></>}
+                </button>
               </form>
+
+              <p className="mt-6 text-center text-sm text-white/45">
+                Can't remember your username?{" "}
+                <button type="button" className={LINK} onClick={() => { setRecoverPhone(""); setView("forgot-username"); }}>Recover it</button>
+              </p>
             </>
           )}
 
           {view === "otp" && challenge && (
-            <div className="space-y-6">
-              <button onClick={backToLogin} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-                <ArrowLeft className="w-4 h-4" /> Back
-              </button>
-              <div className="space-y-2">
-                <div className="w-12 h-12 rounded-full bg-accent/10 flex items-center justify-center"><Smartphone className="w-6 h-6 text-accent" /></div>
-                <h2 className="text-2xl font-display font-bold tracking-tight text-primary">Verify it's you</h2>
-                <p className="text-muted-foreground">We sent a 6-digit code to <span className="font-medium text-foreground">{challenge.maskedPhone}</span></p>
+            <div>
+              <button onClick={backToLogin} className={BACK}><ArrowLeft className="w-4 h-4" /> Back</button>
+              <div className="mt-5 space-y-1.5">
+                <Eyebrow />
+                <h2 className="font-display text-2xl font-bold text-white flex items-center gap-2"><Smartphone className="w-5 h-5 text-accent" /> Verify it's you</h2>
+                <p className="text-sm text-white/55">We sent a 6-digit code to <span className="font-medium text-white">{challenge.maskedPhone}</span></p>
               </div>
-              <div className="flex justify-center py-2">
+              <div className="flex justify-center py-7">
                 <InputOTP maxLength={6} value={code} onChange={setCode} onComplete={(v) => onVerify(v)} data-testid="input-otp">
                   <InputOTPGroup>
-                    {[0, 1, 2, 3, 4, 5].map((i) => <InputOTPSlot key={i} index={i} className="h-12 w-11 text-lg" />)}
+                    {[0, 1, 2, 3, 4, 5].map((i) => <InputOTPSlot key={i} index={i} className="h-12 w-11 text-lg bg-white/[0.05] border-white/15 text-white" />)}
                   </InputOTPGroup>
                 </InputOTP>
               </div>
-              <Button className="w-full h-11" disabled={busy || code.length < 6} onClick={() => onVerify()} data-testid="button-verify-otp">
-                {busy && <Loader2 className="w-5 h-5 animate-spin mr-2" />} Verify
-              </Button>
-              <div className="text-center text-sm text-muted-foreground">
+              <button onClick={() => onVerify()} disabled={busy || code.length < 6} className={PRIMARY} data-testid="button-verify-otp">
+                {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : "Verify"}
+              </button>
+              <div className="mt-5 text-center text-sm text-white/45">
                 Didn't get it?{" "}
-                <button className="font-medium text-accent hover:underline disabled:text-muted-foreground disabled:no-underline" disabled={resend.seconds > 0} onClick={onResend}>
+                <button className={`${LINK} disabled:text-white/30 disabled:no-underline`} disabled={resend.seconds > 0} onClick={onResend}>
                   {resend.seconds > 0 ? `Resend in ${resend.seconds}s` : "Resend code"}
                 </button>
               </div>
@@ -286,69 +332,77 @@ export default function Login() {
           )}
 
           {view === "forgot-username" && (
-            <div className="space-y-6">
-              <button onClick={backToLogin} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="w-4 h-4" /> Back to sign in</button>
-              <div className="space-y-2">
-                <h2 className="text-2xl font-display font-bold tracking-tight text-primary">Find your username</h2>
-                <p className="text-muted-foreground">Enter your registered mobile number and we'll send a verification code.</p>
+            <div>
+              <button onClick={backToLogin} className={BACK}><ArrowLeft className="w-4 h-4" /> Back to sign in</button>
+              <div className="mt-5 space-y-1.5 mb-6">
+                <Eyebrow />
+                <h2 className="font-display text-2xl font-bold text-white">Find your username</h2>
+                <p className="text-sm text-white/55">Enter your registered mobile number and we'll send a verification code.</p>
               </div>
-              <form onSubmit={onForgotUsername} className="space-y-5">
-                <div className="space-y-2">
-                  <Label htmlFor="recover-phone">Registered mobile number</Label>
-                  <Input id="recover-phone" autoFocus placeholder="9876500000" className="h-11" value={recoverPhone} onChange={(e) => setRecoverPhone(e.target.value)} />
+              <form onSubmit={onForgotUsername} className="space-y-4">
+                <div>
+                  <label htmlFor="recover-phone" className={LABEL}>Registered mobile number</label>
+                  <div className="relative">
+                    <Smartphone className={ICON} />
+                    <input id="recover-phone" autoFocus inputMode="numeric" placeholder="9876500000" className={INPUT} value={recoverPhone} onChange={(e) => setRecoverPhone(e.target.value)} />
+                  </div>
                 </div>
-                <Button type="submit" className="w-full h-11" disabled={busy || !recoverPhone}>{busy && <Loader2 className="w-5 h-5 animate-spin mr-2" />} Send code</Button>
+                <button type="submit" disabled={busy || !recoverPhone} className={PRIMARY}>{busy ? <Loader2 className="w-5 h-5 animate-spin" /> : "Send code"}</button>
               </form>
             </div>
           )}
 
           {view === "username-result" && (
-            <div className="space-y-6 text-center">
-              <div className="w-12 h-12 rounded-full bg-success/10 flex items-center justify-center mx-auto"><ShieldCheck className="w-6 h-6 text-success" /></div>
-              <div className="space-y-2">
-                <h2 className="text-2xl font-display font-bold tracking-tight text-primary">Your username</h2>
-                <p className="text-muted-foreground">Use this to sign in.</p>
-              </div>
-              <div className="text-xl font-mono font-semibold text-foreground bg-muted rounded-lg py-4">{resultUsername}</div>
-              <Button className="w-full h-11" onClick={() => { setIdentifier(resultUsername); backToLogin(); }}>Continue to sign in</Button>
+            <div className="text-center">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-success/15"><ShieldCheck className="h-6 w-6 text-success" /></div>
+              <Eyebrow />
+              <h2 className="mt-1 font-display text-2xl font-bold text-white">Your username</h2>
+              <p className="mt-1.5 text-sm text-white/55">Use this to sign in.</p>
+              <div className="my-5 rounded-xl border border-white/10 bg-white/[0.05] py-4 text-xl font-mono font-semibold text-white">{resultUsername}</div>
+              <button className={PRIMARY} onClick={() => { setIdentifier(resultUsername); backToLogin(); }}>Continue to sign in</button>
             </div>
           )}
 
           {view === "forgot-password" && (
-            <div className="space-y-6">
-              <button onClick={backToLogin} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="w-4 h-4" /> Back to sign in</button>
-              <div className="space-y-2">
-                <h2 className="text-2xl font-display font-bold tracking-tight text-primary">Reset your password</h2>
-                <p className="text-muted-foreground">Enter your username or email — we'll send a code to your registered mobile.</p>
+            <div>
+              <button onClick={backToLogin} className={BACK}><ArrowLeft className="w-4 h-4" /> Back to sign in</button>
+              <div className="mt-5 space-y-1.5 mb-6">
+                <Eyebrow />
+                <h2 className="font-display text-2xl font-bold text-white">Reset your password</h2>
+                <p className="text-sm text-white/55">Enter your username or email — we'll send a code to your registered mobile.</p>
               </div>
-              <form onSubmit={onForgotPassword} className="space-y-5">
-                <div className="space-y-2">
-                  <Label htmlFor="recover-id">Username or Email</Label>
-                  <Input id="recover-id" autoFocus placeholder="unitlead1 or you@uniliv.com" className="h-11" value={recoverId} onChange={(e) => setRecoverId(e.target.value)} />
+              <form onSubmit={onForgotPassword} className="space-y-4">
+                <div>
+                  <label htmlFor="recover-id" className={LABEL}>Email or Username</label>
+                  <div className="relative">
+                    <Mail className={ICON} />
+                    <input id="recover-id" autoFocus placeholder="Enter your email or username" className={INPUT} value={recoverId} onChange={(e) => setRecoverId(e.target.value)} />
+                  </div>
                 </div>
-                <Button type="submit" className="w-full h-11" disabled={busy || !recoverId}>{busy && <Loader2 className="w-5 h-5 animate-spin mr-2" />} Send code</Button>
+                <button type="submit" disabled={busy || !recoverId} className={PRIMARY}>{busy ? <Loader2 className="w-5 h-5 animate-spin" /> : "Send code"}</button>
               </form>
             </div>
           )}
 
           {view === "reset" && (
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <div className="w-12 h-12 rounded-full bg-accent/10 flex items-center justify-center"><ShieldCheck className="w-6 h-6 text-accent" /></div>
-                <h2 className="text-2xl font-display font-bold tracking-tight text-primary">Set a new password</h2>
-                <p className="text-muted-foreground">Choose a strong password of at least 8 characters.</p>
+            <div>
+              <div className="space-y-1.5 mb-6">
+                <Eyebrow />
+                <h2 className="font-display text-2xl font-bold text-white flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-accent" /> Set a new password</h2>
+                <p className="text-sm text-white/55">Choose a strong password of at least 8 characters.</p>
               </div>
-              <form onSubmit={onReset} className="space-y-5">
-                <div className="space-y-2">
-                  <Label htmlFor="new-password">New password</Label>
+              <form onSubmit={onReset} className="space-y-4">
+                <div>
+                  <label htmlFor="new-password" className={LABEL}>New password</label>
                   <div className="relative">
-                    <Input id="new-password" autoFocus type={showPassword ? "text" : "password"} placeholder="••••••••" className="h-11 pr-10" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
-                    <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                    <Lock className={ICON} />
+                    <input id="new-password" autoFocus type={showPassword ? "text" : "password"} placeholder="Enter a new password" className={`${INPUT} pr-10`} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+                    <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/80 transition-colors">
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
                 </div>
-                <Button type="submit" className="w-full h-11" disabled={busy || newPassword.length < 8}>{busy && <Loader2 className="w-5 h-5 animate-spin mr-2" />} Update password</Button>
+                <button type="submit" disabled={busy || newPassword.length < 8} className={PRIMARY}>{busy ? <Loader2 className="w-5 h-5 animate-spin" /> : "Update password"}</button>
               </form>
             </div>
           )}

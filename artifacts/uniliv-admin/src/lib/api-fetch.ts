@@ -1,5 +1,15 @@
 const TOKEN_KEY = "uniliv_token";
-const getToken = () => localStorage.getItem(TOKEN_KEY);
+const getToken = () => localStorage.getItem(TOKEN_KEY) ?? sessionStorage.getItem(TOKEN_KEY);
+/** Persist a (refreshed) token to whichever storage the "remember me" choice implies. */
+function persistToken(token: string): void {
+  const remember = localStorage.getItem("uniliv_remember") !== "0";
+  (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
+  (remember ? sessionStorage : localStorage).removeItem(TOKEN_KEY);
+}
+function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+}
 
 function loginPath(): string {
   const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
@@ -10,7 +20,7 @@ let redirecting = false;
 /** Session is unrecoverable — drop the token and bounce to login, optionally
  *  with a `reason` ("replaced" | "expired") the login screen explains to the user. */
 export function redirectToLogin(reason?: string): void {
-  localStorage.removeItem(TOKEN_KEY);
+  clearToken();
   const path = loginPath();
   if (redirecting || window.location.pathname === path) return;
   redirecting = true;
@@ -32,7 +42,7 @@ export function refreshSession(): Promise<string | null> {
         if (!r.ok) return null;
         const j = await r.json().catch(() => null);
         const t = j?.accessToken as string | undefined;
-        if (t) { localStorage.setItem(TOKEN_KEY, t); return t; }
+        if (t) { persistToken(t); return t; }
         return null;
       })
       .catch(() => null)
