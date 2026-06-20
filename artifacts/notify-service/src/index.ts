@@ -26,7 +26,7 @@ const worker = new Worker<DeliveryJob>(
     const isLastAttempt = attemptNo >= (job.opts.attempts ?? MAX_ATTEMPTS);
     await processDelivery(job.data.outboxId, { attemptNo, isLastAttempt });
   },
-  { connection: createConnection(), concurrency: CONCURRENCY },
+  { connection: await createConnection(), concurrency: CONCURRENCY },
 );
 
 worker.on("completed", (job) => console.info(`[notify-service] delivered ${job.data.outboxId}`));
