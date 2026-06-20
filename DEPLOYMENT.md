@@ -180,3 +180,4 @@ docker compose down
 | Build fails on a native binary (rollup/oxide/lightningcss) | Build for your server's arch, e.g. `DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose build`. |
 | Login works but session drops after 15 min | Serve over **HTTPS** (Secure cookies); see §6. |
 | 502 from nginx | API unhealthy — `docker compose logs api`, check DB connectivity. |
+| `web` fails: `bind host port 0.0.0.0:80: address already in use` | A host web server already owns :80. Run the container on another port (`echo 'WEB_PORT=8080' >> .env && docker compose up -d`) and reverse-proxy `unilivues.sleebit.com` → `127.0.0.1:8080` from your host nginx (terminate TLS there). See §6. |
