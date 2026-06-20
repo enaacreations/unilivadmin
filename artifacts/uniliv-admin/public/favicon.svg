@@ -1,3 +1,12 @@
 <svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="180" height="180" rx="36" fill="#FF3C00"/>
+  <defs>
+    <linearGradient id="uniliv" x1="20" y1="14" x2="160" y2="166" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF9A3D"/>
+      <stop offset="0.5" stop-color="#F2603C"/>
+      <stop offset="1" stop-color="#C2459A"/>
+    </linearGradient>
+  </defs>
+  <rect width="180" height="180" rx="40" fill="url(#uniliv)"/>
+  <path d="M58 50v44c0 17.7 14.3 32 32 32s32-14.3 32-32V50" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" fill="none"/>
+  <circle cx="122" cy="50" r="9" fill="#FFFFFF"/>
 </svg>

@@ -40,14 +40,23 @@ function publicUser(user: DbUser) {
 }
 
 async function issueSession(res: Response, user: DbUser) {
-  const authUser = { id: user.id, email: user.email, role: user.role, propertyId: user.propertyId };
+  // Single active session: a new login rotates the session id and revokes every
+  // other refresh token, so any other device's access/refresh tokens stop working.
+  const sessionId = newId();
+  const authUser = { id: user.id, email: user.email, role: user.role, propertyId: user.propertyId, sid: sessionId };
   const accessToken = signAccessToken(authUser);
   const refreshToken = signRefreshToken(user.id);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  await db.insert(refreshTokensTable).values({ id: newId(), userId: user.id, token: refreshToken, expiresAt });
-  await db.update(usersTable)
-    .set({ lastLogin: new Date(), failedLoginAttempts: 0, lockedUntil: null, updatedAt: new Date() })
-    .where(eq(usersTable.id, user.id));
+  // Atomic, serialized per user: lock the user row first so two near-simultaneous
+  // logins can't interleave into an orphaned refresh token / sid mismatch (lockout).
+  await db.transaction(async (tx) => {
+    await tx.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.id, user.id)).for("update");
+    await tx.delete(refreshTokensTable).where(eq(refreshTokensTable.userId, user.id));
+    await tx.insert(refreshTokensTable).values({ id: newId(), userId: user.id, token: refreshToken, expiresAt });
+    await tx.update(usersTable)
+      .set({ currentSessionId: sessionId, lastLogin: new Date(), failedLoginAttempts: 0, lockedUntil: null, updatedAt: new Date() })
+      .where(eq(usersTable.id, user.id));
+  });
   res.cookie("refreshToken", refreshToken, {
     httpOnly: true,
     secure: process.env["NODE_ENV"] === "production",
@@ -282,9 +291,13 @@ router.post("/reset-password", async (req, res) => {
       return;
     }
     const passwordHash = await bcrypt.hash(String(newPassword), 12);
-    await db.update(usersTable)
-      .set({ passwordHash, failedLoginAttempts: 0, lockedUntil: null, updatedAt: new Date() })
-      .where(eq(usersTable.id, result.userId));
+    // A password reset logs out every device: clear the session and drop all refresh tokens.
+    await db.transaction(async (tx) => {
+      await tx.update(usersTable)
+        .set({ passwordHash, failedLoginAttempts: 0, lockedUntil: null, currentSessionId: null, updatedAt: new Date() })
+        .where(eq(usersTable.id, result.userId!));
+      await tx.delete(refreshTokensTable).where(eq(refreshTokensTable.userId, result.userId!));
+    });
     res.json({ success: true, message: "Password updated. Please sign in." });
   } catch (err) {
     req.log.error(err);
@@ -304,7 +317,12 @@ router.post("/refresh", async (req, res) => {
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, rt.userId));
     if (!user) { res.status(401).json({ success: false, error: "User not found" }); return; }
-    const authUser = { id: user.id, email: user.email, role: user.role, propertyId: user.propertyId };
+    if (!user.isActive) { res.status(401).json({ success: false, error: "Account is inactive" }); return; }
+    // No active session (logged out / reset / replaced) → don't mint a token.
+    if (!user.currentSessionId) { res.status(401).json({ success: false, error: "Session ended. Please sign in again." }); return; }
+    // Reuse the user's current session id (only login rotates it) so the renewed
+    // access token still matches the single active session.
+    const authUser = { id: user.id, email: user.email, role: user.role, propertyId: user.propertyId, sid: user.currentSessionId };
     const accessToken = signAccessToken(authUser);
     res.json({ success: true, accessToken, user: publicUser(user) });
   } catch (err) {

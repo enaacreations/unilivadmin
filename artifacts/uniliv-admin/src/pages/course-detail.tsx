@@ -9,6 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Progress } from "@/components/ui/progress";
 import { ArrowLeft, BellRing, UserPlus, Play, FileText, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -52,7 +55,7 @@ export default function CourseDetail() {
         <Card><CardContent className="p-6 flex items-center gap-3"><Badge variant="outline">{course.category}</Badge><Badge variant="secondary">{course.contentType}</Badge>{course.isMandatory && <Badge variant="destructive">Mandatory</Badge>}</CardContent></Card>
         <Card><CardContent className="p-6"><div className="text-xs text-muted-foreground">Enrolled</div><div className="text-2xl font-medium">{course.enrollmentCount}</div></CardContent></Card>
         <Card><CardContent className="p-6 flex items-center gap-4">
-          <svg width="64" height="64" viewBox="0 0 80 80" className="-rotate-90"><circle cx="40" cy="40" r="32" stroke="hsl(var(--muted))" strokeWidth="10" fill="none" /><circle cx="40" cy="40" r="32" stroke="hsl(var(--primary))" strokeWidth="10" fill="none" strokeDasharray={`${c(completionPct)} 999`} /></svg>
+          <svg width="64" height="64" viewBox="0 0 80 80" className="-rotate-90"><circle cx="40" cy="40" r="32" stroke="var(--border)" strokeWidth="10" fill="none" /><circle cx="40" cy="40" r="32" stroke="var(--accent)" strokeWidth="10" fill="none" strokeDasharray={`${c(completionPct)} 999`} /></svg>
           <div><div className="text-xs text-muted-foreground">Completion</div><div className="text-2xl font-medium">{completionPct}%</div></div>
         </CardContent></Card>
       </div>
@@ -126,16 +129,19 @@ function EnrollDialog({ courseId, onClose, onDone, existingIds }: { courseId: st
         <div className="space-y-3">
           <div className="flex gap-2">
             <Input placeholder="Search employees..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            <select className="border rounded px-3 py-2 text-sm" value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
-              <option value="">All departments</option>
-              {(departments as string[]).map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+            <Select value={deptFilter || "ALL"} onValueChange={(v) => setDeptFilter(v === "ALL" ? "" : v)}>
+              <SelectTrigger className="w-48"><SelectValue placeholder="All departments" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All departments</SelectItem>
+                {(departments as string[]).map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
             <Button variant="outline" onClick={toggleAll} size="sm">{selected.size === employees.length && employees.length > 0 ? "None" : "All"}</Button>
           </div>
           <div className="max-h-[400px] overflow-y-auto border rounded">
             {employees.map((e: any) => (
               <label key={e.id} className="flex items-center gap-3 p-2 border-b hover:bg-accent cursor-pointer">
-                <input type="checkbox" checked={selected.has(e.id)} onChange={() => toggle(e.id)} />
+                <Checkbox checked={selected.has(e.id)} onCheckedChange={() => toggle(e.id)} />
                 <div className="flex-1">
                   <div className="text-sm font-medium">{e.name}</div>
                   <div className="text-xs text-muted-foreground">{e.department} · {e.role} · {e.employeeCode}</div>
@@ -255,12 +261,17 @@ function QuizDialog({ course, enrollmentId, onClose, onDone }: { course: any; en
             {questions.map((q, i) => (
               <div key={i} className="space-y-2">
                 <div className="font-medium text-sm">{i + 1}. {q.q}</div>
-                {q.options.map((o, oi) => (
-                  <label key={oi} className="flex items-center gap-2 p-2 border rounded cursor-pointer hover:bg-accent">
-                    <input type="radio" name={`q-${i}`} checked={answers[i] === oi} onChange={() => setAnswers({ ...answers, [i]: oi })} />
-                    <span className="text-sm">{o}</span>
-                  </label>
-                ))}
+                <RadioGroup
+                  value={answers[i] != null ? String(answers[i]) : ""}
+                  onValueChange={(v) => setAnswers({ ...answers, [i]: Number(v) })}
+                >
+                  {q.options.map((o, oi) => (
+                    <label key={oi} htmlFor={`q-${i}-${oi}`} className="flex items-center gap-2 p-2 border rounded cursor-pointer hover:bg-accent">
+                      <RadioGroupItem id={`q-${i}-${oi}`} value={String(oi)} />
+                      <span className="text-sm">{o}</span>
+                    </label>
+                  ))}
+                </RadioGroup>
               </div>
             ))}
           </div>

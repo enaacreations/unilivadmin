@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api-fetch";
+import { useQueryParam } from "@/lib/nav-helpers";
 import { useToast } from "@/hooks/use-toast";
 import { POFormModal } from "@/components/po-form-modal";
 import { GRNFormModal } from "@/components/grn-form-modal";
@@ -31,6 +32,9 @@ export default function PurchaseOrders() {
   const [grnOpen, setGrnOpen] = React.useState(false);
   const [grnPoId, setGrnPoId] = React.useState<string | undefined>();
   const [detailId, setDetailId] = React.useState<string | null>(null);
+  // Opened from a vendor's PO row (?poId=) → show that PO's detail sheet.
+  const paramPoId = useQueryParam("poId");
+  React.useEffect(() => { if (paramPoId) setDetailId(paramPoId); }, [paramPoId]);
 
   const params: Record<string, string> = {};
   if (status !== "ALL") params.status = status;

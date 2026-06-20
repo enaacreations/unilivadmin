@@ -1,5 +1,6 @@
 import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryCache } from "@tanstack/react-query";
+import { handleUnauthorized, redirectToLogin } from "@/lib/api-fetch";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
@@ -11,6 +12,7 @@ import { useAuthStore } from "@/lib/store";
 // Pages
 import Login from "@/pages/login";
 import EsignSignPage from "@/pages/esign-sign";
+import SharedMenuPage from "@/pages/shared-menu";
 import Dashboard from "@/pages/dashboard";
 import Properties from "@/pages/properties";
 import PropertyDetail from "@/pages/property-detail";
@@ -32,7 +34,7 @@ import Indents from "@/pages/indents";
 import PurchaseOrders from "@/pages/purchase-orders";
 import GRN from "@/pages/grn";
 import Inventory from "@/pages/inventory";
-import Kitchen from "@/pages/kitchen";
+import Recipes from "@/pages/kitchen";
 import MenuPlanning from "@/pages/menu-planning";
 import Leads from "@/pages/leads";
 import Courses from "@/pages/courses";
@@ -69,9 +71,24 @@ import FoodOrderDetail from "@/pages/food-order-detail";
 import FoodGuests from "@/pages/food-guests";
 
 const queryClient = new QueryClient({
+  // When any query 401s (expired token), recover once: silently refresh and
+  // refetch, or bounce to login. Stops the "empty sidebar after refresh" state.
+  queryCache: new QueryCache({
+    onError: (error: any) => {
+      const status = error?.status ?? error?.response?.status;
+      if (status !== 401) return;
+      const code = error?.data?.code ?? error?.response?.data?.code;
+      if (code === "SESSION_REPLACED") { redirectToLogin("replaced"); return; }
+      void handleUnauthorized().then((ok) => { if (ok) queryClient.invalidateQueries(); });
+    },
+  }),
   defaultOptions: {
     queries: {
-      retry: 1,
+      retry: (count, error: any) => {
+        const status = error?.status ?? error?.response?.status;
+        if (status === 401 || status === 403) return false;
+        return count < 1;
+      },
       staleTime: 30_000,
     },
   },
@@ -98,6 +115,7 @@ function Router() {
     <Switch>
       <Route path="/login" component={Login} />
       <Route path="/esign/sign/:token" component={EsignSignPage} />
+      <Route path="/m/:token" component={SharedMenuPage} />
       <Route path="/">{() => <ProtectedRoute component={Dashboard} />}</Route>
       <Route path="/properties">{() => <ProtectedRoute component={Properties} />}</Route>
       <Route path="/properties/:id">{() => <ProtectedRoute component={PropertyDetail} />}</Route>
@@ -122,7 +140,7 @@ function Router() {
       <Route path="/grn">{() => <ProtectedRoute component={GRN} />}</Route>
       <Route path="/inventory">{() => <ProtectedRoute component={Inventory} />}</Route>
       
-      <Route path="/recipes">{() => <ProtectedRoute component={Kitchen} />}</Route>
+      <Route path="/recipes">{() => <ProtectedRoute component={Recipes} />}</Route>
       <Route path="/kitchen">{() => <Redirect to="/recipes" />}</Route>
       <Route path="/menu-planning">{() => <ProtectedRoute component={MenuPlanning} />}</Route>
 

@@ -20,6 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -370,7 +371,8 @@ export default function FoodDispatch() {
                   {selected.size === dispatchable.length ? "Clear all" : "Select all"}
                 </Button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 pb-28">
+              <BoundedScroll size="page">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 px-0.5 pt-0.5 pb-28">
                 {dispatchable.map((o) => {
                   const isSel = selected.has(o.id);
                   return (
@@ -448,7 +450,8 @@ export default function FoodDispatch() {
                     </Card>
                   );
                 })}
-              </div>
+                </div>
+              </BoundedScroll>
             </>
           )}
         </TabsContent>
@@ -464,7 +467,8 @@ export default function FoodDispatch() {
               hint="Once you dispatch an order it will show here with its delivery partner and dispatch time until delivery is confirmed."
             />
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <BoundedScroll size="page">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 px-0.5 py-0.5">
               {dispatched.map((o) => (
                 <Card key={o.id} className="overflow-hidden">
                   <CardContent className="p-4 space-y-3">
@@ -509,7 +513,8 @@ export default function FoodDispatch() {
                   </CardContent>
                 </Card>
               ))}
-            </div>
+              </div>
+            </BoundedScroll>
           )}
         </TabsContent>
 
@@ -524,7 +529,8 @@ export default function FoodDispatch() {
               hint="Bundle prepared orders from the Dispatch Queue into a trip with a van and driver. Active and past trips will appear here."
             />
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <BoundedScroll size="page">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 px-0.5 py-0.5">
               {trips.map((t) => (
                 <TripCard
                   key={t.id}
@@ -532,7 +538,8 @@ export default function FoodDispatch() {
                   onOpen={() => setOpenTripId(t.id)}
                 />
               ))}
-            </div>
+              </div>
+            </BoundedScroll>
           )}
         </TabsContent>
       </Tabs>

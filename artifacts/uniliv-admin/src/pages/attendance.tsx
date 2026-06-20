@@ -2,6 +2,7 @@ import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMarkAttendance, useUpdateAttendance } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api-fetch";
+import { usePermissions } from "@/lib/use-permissions";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { Download, CheckCircle2, UserCheck, UserX, Coffee, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -34,6 +36,8 @@ interface AttRow {
 export default function Attendance() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { can } = usePermissions();
+  const canEdit = can("EMPLOYEES", "edit");
   const [date, setDate] = React.useState(() => new Date().toISOString().slice(0, 10));
   const [department, setDepartment] = React.useState("ALL");
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
@@ -140,9 +144,11 @@ export default function Attendance() {
             <Button variant="outline" onClick={exportCsv} data-testid="button-export-csv">
               <Download className="w-4 h-4 mr-2" /> Export CSV
             </Button>
-            <Button className="bg-accent hover:bg-accent/90 text-white" onClick={markAllPresent} data-testid="button-mark-all-present">
-              <CheckCircle2 className="w-4 h-4 mr-2" /> Mark all Present
-            </Button>
+            {canEdit && (
+              <Button className="bg-accent hover:bg-accent/90 text-white" onClick={markAllPresent} data-testid="button-mark-all-present">
+                <CheckCircle2 className="w-4 h-4 mr-2" /> Mark all Present
+              </Button>
+            )}
           </div>
         }
       />
@@ -169,7 +175,7 @@ export default function Attendance() {
             </SelectContent>
           </Select>
         </div>
-        {Object.values(selected).some(Boolean) && (
+        {canEdit && Object.values(selected).some(Boolean) && (
           <Button variant="outline" onClick={markSelectedPresent}>
             Mark selected Present ({Object.values(selected).filter(Boolean).length})
           </Button>
@@ -178,9 +184,9 @@ export default function Attendance() {
 
       <Card className="shadow-sm">
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <BoundedScroll size="lg">
             <table className="w-full text-sm">
-              <thead className="bg-surface/50 border-b sticky top-0">
+              <thead className="bg-surface border-b sticky top-0 z-10">
                 <tr>
                   <th className="p-3 text-left w-10"><Checkbox checked={allChecked} onCheckedChange={toggleAll} /></th>
                   <th className="p-3 text-left font-medium text-xs uppercase tracking-wider text-muted-foreground">Code</th>
@@ -214,6 +220,7 @@ export default function Attendance() {
                         <Select
                           value={row.record?.status || ""}
                           onValueChange={(v) => setStatus(row, v)}
+                          disabled={!canEdit}
                         >
                           <SelectTrigger className="w-44 h-8" data-testid={`select-status-${row.employeeId}`}>
                             <SelectValue placeholder="Mark status" />
@@ -228,7 +235,7 @@ export default function Attendance() {
                 )}
               </tbody>
             </table>
-          </div>
+          </BoundedScroll>
         </CardContent>
       </Card>
     </div>

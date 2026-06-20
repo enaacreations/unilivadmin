@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "./api-fetch";
+import { useAuthStore } from "./store";
 import { can, moduleForPath, type Module, type Permission, type UserRole } from "./permissions";
 
 interface Me {
@@ -14,9 +15,13 @@ interface Me {
 }
 
 export function useMe() {
+  // Key by token so a different signed-in user never reads the previous
+  // user's cached identity (root cause of the "always super admin" bug).
+  const token = useAuthStore((s) => s.token);
   return useQuery<{ data: Me }>({
-    queryKey: ["/auth/me"],
+    queryKey: ["/auth/me", token],
     queryFn: () => apiFetch("/auth/me"),
+    enabled: !!token,
     staleTime: 5 * 60_000,
   });
 }

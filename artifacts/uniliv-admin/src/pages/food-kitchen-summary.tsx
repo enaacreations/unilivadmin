@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import {
   Select,
   SelectContent,
@@ -244,7 +245,7 @@ export default function FoodKitchenSummary() {
         preparingId={prepareOne.isPending ? (prepareOne.variables as string) : null}
         onPrepareAll={markAllPreparing}
         bulkPreparing={bulkPreparing}
-        onOpenOrder={(id) => setLocation(`/food/orders?id=${id}`)}
+        onOpenOrder={(id) => setLocation(`/food/orders/${id}`)}
       />
     </div>
   );
@@ -264,9 +265,9 @@ function MealCard({ mealType, dishes }: { mealType: MealType; dishes: KitchenSum
         </Badge>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="overflow-x-auto">
+        <BoundedScroll size="md">
           <table className="w-full text-sm">
-            <thead className="bg-muted/40 border-y">
+            <thead className="sticky top-0 z-10 bg-muted/40 border-y backdrop-blur supports-[backdrop-filter]:bg-muted/60">
               <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
                 <th className="p-3 font-medium w-8"></th>
                 <th className="p-3 font-medium">Dish</th>
@@ -280,7 +281,7 @@ function MealCard({ mealType, dishes }: { mealType: MealType; dishes: KitchenSum
               ))}
             </tbody>
           </table>
-        </div>
+        </BoundedScroll>
       </CardContent>
     </Card>
   );
@@ -397,9 +398,9 @@ function OpenOrdersPanel({
             <p className="text-sm mt-1">No open orders for this selection.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <BoundedScroll size="lg" className="rounded-md border">
             <table className="w-full text-sm">
-              <thead className="bg-muted/40 border-y">
+              <thead className="sticky top-0 z-10 bg-muted/40 border-y backdrop-blur supports-[backdrop-filter]:bg-muted/60">
                 <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="p-3 font-medium">Order</th>
                   <th className="p-3 font-medium">Property</th>
@@ -448,7 +449,7 @@ function OpenOrdersPanel({
                 ))}
               </tbody>
             </table>
-          </div>
+          </BoundedScroll>
         )}
       </CardContent>
     </Card>

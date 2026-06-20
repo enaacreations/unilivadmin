@@ -206,7 +206,7 @@ export async function verifyChallenge(
   // verifies (in addition to the real one). Never set this in real production.
   const masterOtp = process.env["DEV_OTP"];
   const valid =
-    (!!masterOtp && String(code) === masterOtp) ||
+    (!isProd() && !!masterOtp && String(code) === masterOtp) ||
     (await bcrypt.compare(String(code), ch.codeHash));
   if (!valid) {
     const attempts = ch.attemptCount + 1;

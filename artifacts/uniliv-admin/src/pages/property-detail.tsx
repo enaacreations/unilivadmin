@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FormModal } from "@/components/ui/form-modal";
 import { EmptyState } from "@/components/ui/empty-state";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { DataTable } from "@/components/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -399,14 +400,16 @@ function PropertyElectricityTab({ propertyId }: { propertyId: string }) {
       </div>
       {meters.length === 0 ? <EmptyState icon={ZapIcon} title="No meters" description="Add meters from the Electricity page" /> : (
         <Card><CardContent className="p-0">
-          <Table>
-            <TableHeader><TableRow><TableHead>Meter No.</TableHead><TableHead>Label</TableHead><TableHead>Room</TableHead><TableHead>Resident</TableHead><TableHead>Tariff</TableHead></TableRow></TableHeader>
-            <TableBody>
-              {meters.map((m: any) => (
-                <TableRow key={m.id}><TableCell className="font-mono">{m.meterNo}</TableCell><TableCell>{m.label || "—"}</TableCell><TableCell>{m.roomNumber || "—"}</TableCell><TableCell>{m.residentName || "—"}</TableCell><TableCell className="text-xs">{m.tariffName || "—"}</TableCell></TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <BoundedScroll size="md">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead>Meter No.</TableHead><TableHead>Label</TableHead><TableHead>Room</TableHead><TableHead>Resident</TableHead><TableHead>Tariff</TableHead></TableRow></TableHeader>
+              <TableBody>
+                {meters.map((m: any) => (
+                  <TableRow key={m.id}><TableCell className="font-mono">{m.meterNo}</TableCell><TableCell>{m.label || "—"}</TableCell><TableCell>{m.roomNumber || "—"}</TableCell><TableCell>{m.residentName || "—"}</TableCell><TableCell className="text-xs">{m.tariffName || "—"}</TableCell></TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </BoundedScroll>
         </CardContent></Card>
       )}
     </div>
@@ -619,14 +622,14 @@ export default function PropertyDetail() {
                 )}
               </CardContent>
             </Card>
-            <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 content-start">
               {(() => {
                 const t = (property.portfolioType as PortfolioType) || "CO_LIVING";
                 const fields = portfolioAttrFields(t);
                 const attrs = (property.portfolioAttributes as PortfolioAttributes) || {};
                 if (fields.length === 0) return null;
                 return (
-                  <Card data-testid="card-portfolio-attributes">
+                  <Card className="sm:col-span-2" data-testid="card-portfolio-attributes">
                     <CardContent className="p-4">
                       <h3 className="font-display font-semibold text-primary mb-3">
                         {PORTFOLIO_TYPE_LABELS[t]} Details
@@ -725,6 +728,7 @@ export default function PropertyDetail() {
           ) : filteredRooms.length === 0 ? (
             <EmptyState icon={Bed} title="No rooms" description="Add your first room to get started" />
           ) : (
+            <BoundedScroll size="lg" className="pr-2">
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
               {filteredRooms.map((room) => (
                 <Card key={room.id} className="hover:border-accent/50 transition-colors group" data-testid={`row-room-${room.id}`}>
@@ -748,6 +752,7 @@ export default function PropertyDetail() {
                 </Card>
               ))}
             </div>
+            </BoundedScroll>
           )}
           <RoomFormModal
             open={roomModalOpen}
@@ -881,11 +886,11 @@ export default function PropertyDetail() {
                     description="Add rooms to see availability"
                   />
                 ) : (
-                  <div className="overflow-x-auto" data-testid="availability-grid">
+                  <BoundedScroll size="md" data-testid="availability-grid">
                     <table className="text-xs border-collapse">
-                      <thead>
+                      <thead className="sticky top-0 z-20 bg-card">
                         <tr>
-                          <th className="sticky left-0 bg-card text-left px-2 py-1 border-b font-medium">Room</th>
+                          <th className="sticky left-0 z-10 bg-card text-left px-2 py-1 border-b font-medium">Room</th>
                           {Array.from({ length: 14 }).map((_, i) => {
                             const d = new Date(calStart);
                             d.setDate(d.getDate() + i);
@@ -935,14 +940,16 @@ export default function PropertyDetail() {
                         })}
                       </tbody>
                     </table>
-                    <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <span className="inline-block w-3 h-3 bg-success/15 border" /> Available
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <span className="inline-block w-3 h-3 bg-destructive/30 border" /> Booked
-                      </span>
-                    </div>
+                  </BoundedScroll>
+                )}
+                {availability.length > 0 && (
+                  <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-3 h-3 bg-success/15 border" /> Available
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-3 h-3 bg-destructive/30 border" /> Booked
+                    </span>
                   </div>
                 )}
               </CardContent>

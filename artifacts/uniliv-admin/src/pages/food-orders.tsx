@@ -26,14 +26,18 @@ import {
   foodApi, foodKeys, MEAL_TYPES, BRANDS, ORDER_STATUSES, MEAL_LABEL, fmtQty,
   type FoodOrder, type OrderStatus, type OrderDetail, type FoodOrderEvent,
 } from "@/lib/food-api";
+import { useQueryParam } from "@/lib/nav-helpers";
 
 const ALL = "ALL";
 
 export default function FoodOrders() {
   const [, setLocation] = useLocation();
+  const paramProperty = useQueryParam("propertyId");
 
   const [status, setStatus] = React.useState<string>(ALL);
-  const [propertyId, setPropertyId] = React.useState<string>(ALL);
+  const [propertyId, setPropertyId] = React.useState<string>(paramProperty || ALL);
+  // When navigated here scoped to a property (?propertyId=), apply that filter.
+  React.useEffect(() => { if (paramProperty) setPropertyId(paramProperty); }, [paramProperty]);
   const [brand, setBrand] = React.useState<string>(ALL);
   const [mealType, setMealType] = React.useState<string>(ALL);
   const [from, setFrom] = React.useState<string>("");

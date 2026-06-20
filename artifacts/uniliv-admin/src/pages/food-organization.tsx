@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { FormModal } from "@/components/ui/form-modal";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { useToast } from "@/hooks/use-toast";
 import {
   foodApi, foodKeys,
@@ -129,14 +130,15 @@ function HierarchyTab() {
       </div>
 
       <Card>
-        <CardContent className="space-y-1 p-3">
+        <CardContent className="p-3">
+          <BoundedScroll size="lg">
+          <div className="space-y-1 pr-3">
           {tree?.cities.map((city) => (
             <TreeRow
               key={city.id}
               icon={MapPin}
               label={city.name}
               meta={`${city.kitchens.length} kitchen${city.kitchens.length === 1 ? "" : "s"}`}
-              defaultOpen={cityCount <= 3}
             >
               {city.kitchens.length === 0 && <EmptyHint>No kitchens in this city yet.</EmptyHint>}
               {city.kitchens.map((k) => (
@@ -160,6 +162,8 @@ function HierarchyTab() {
               ))}
             </TreeRow>
           )}
+          </div>
+          </BoundedScroll>
         </CardContent>
       </Card>
 
@@ -326,23 +330,29 @@ function BrandsTab() {
         </div>
         <Button size="sm" onClick={openAdd}><Plus className="mr-1 h-4 w-4" /> Add Brand</Button>
       </CardHeader>
-      <CardContent className="space-y-1">
+      <CardContent>
         {isLoading ? (
           <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
         ) : brands.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">No brands yet.</p>
-        ) : brands.map((b) => (
-          <div key={b.id} className="flex items-center gap-3 rounded-md border px-3 py-2">
-            <Tag className="h-4 w-4 text-muted-foreground" />
-            <div className="flex-1">
-              <span className="text-sm font-medium">{b.name}</span>
-              <Badge variant="outline" className="ml-2 text-[10px]">{b.code}</Badge>
+        ) : (
+          <BoundedScroll size="lg">
+            <div className="space-y-1 pr-3">
+              {brands.map((b) => (
+                <div key={b.id} className="flex items-center gap-3 rounded-md border px-3 py-2">
+                  <Tag className="h-4 w-4 text-muted-foreground" />
+                  <div className="flex-1">
+                    <span className="text-sm font-medium">{b.name}</span>
+                    <Badge variant="outline" className="ml-2 text-[10px]">{b.code}</Badge>
+                  </div>
+                  {!b.isActive && <Badge variant="secondary" className="text-[10px]">Inactive</Badge>}
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(b)}><Pencil className="h-3.5 w-3.5" /></Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(b)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                </div>
+              ))}
             </div>
-            {!b.isActive && <Badge variant="secondary" className="text-[10px]">Inactive</Badge>}
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(b)}><Pencil className="h-3.5 w-3.5" /></Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(b)}><Trash2 className="h-3.5 w-3.5" /></Button>
-          </div>
-        ))}
+          </BoundedScroll>
+        )}
       </CardContent>
 
       <FormModal open={open} onOpenChange={setOpen} title={edit ? "Edit Brand" : "Add Brand"} onSave={() => save.mutate()} isSaving={save.isPending} saveLabel={edit ? "Save" : "Add"}>
@@ -436,19 +446,23 @@ function UnitLeadsTab() {
         {leads.length === 0 && <p className="text-sm text-muted-foreground">No unit leads found.</p>}
 
         {userId && (
-          <div className="space-y-1">
-            {scopesLoading ? (
-              <p className="py-4 text-sm text-muted-foreground">Loading…</p>
-            ) : propertyScopes.length === 0 ? (
-              <p className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">No properties tagged. This lead manages nothing yet.</p>
-            ) : propertyScopes.map((s) => (
-              <div key={s.id} className="flex items-center gap-2 rounded-md border px-3 py-2">
-                <Building2 className="h-4 w-4 text-muted-foreground" />
-                <span className="flex-1 text-sm">{propName.get(s.propertyId!) ?? s.propertyId}</span>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => remove.mutate(s.id)} title="Untag"><Trash2 className="h-3.5 w-3.5" /></Button>
+          scopesLoading ? (
+            <p className="py-4 text-sm text-muted-foreground">Loading…</p>
+          ) : propertyScopes.length === 0 ? (
+            <p className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">No properties tagged. This lead manages nothing yet.</p>
+          ) : (
+            <BoundedScroll size="lg">
+              <div className="space-y-1 pr-3">
+                {propertyScopes.map((s) => (
+                  <div key={s.id} className="flex items-center gap-2 rounded-md border px-3 py-2">
+                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                    <span className="flex-1 text-sm">{propName.get(s.propertyId!) ?? s.propertyId}</span>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => remove.mutate(s.id)} title="Untag"><Trash2 className="h-3.5 w-3.5" /></Button>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </BoundedScroll>
+          )
         )}
       </CardContent>
 

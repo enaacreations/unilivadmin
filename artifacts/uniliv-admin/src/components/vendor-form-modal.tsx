@@ -127,7 +127,7 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: Props) 
           </div>
           <div>
             <Label>Phone *</Label>
-            <Input {...form.register("phone")} data-testid="input-vendor-phone" />
+            <Input type="tel" {...form.register("phone")} data-testid="input-vendor-phone" />
             {form.formState.errors.phone && <p className="text-xs text-destructive mt-1">{form.formState.errors.phone.message}</p>}
           </div>
           <div>
@@ -136,11 +136,29 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: Props) 
           </div>
           <div>
             <Label>GSTIN</Label>
-            <Input {...form.register("gstin")} className="font-mono" />
+            <Input
+              {...form.register("gstin", {
+                onChange: (e) => {
+                  e.target.value = e.target.value.toUpperCase();
+                },
+              })}
+              className="font-mono uppercase"
+              maxLength={15}
+              placeholder="22AAAAA0000A1Z5"
+            />
           </div>
           <div>
             <Label>PAN</Label>
-            <Input {...form.register("pan")} className="font-mono" />
+            <Input
+              {...form.register("pan", {
+                onChange: (e) => {
+                  e.target.value = e.target.value.toUpperCase();
+                },
+              })}
+              className="font-mono uppercase"
+              maxLength={10}
+              placeholder="AAAAA0000A"
+            />
           </div>
           <div className="col-span-2">
             <Label>Address</Label>
@@ -163,11 +181,29 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: Props) 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label>Bank Account</Label>
-            <Input {...form.register("bankAccount")} className="font-mono" />
+            <Input
+              {...form.register("bankAccount", {
+                onChange: (e) => {
+                  e.target.value = e.target.value.toUpperCase();
+                },
+              })}
+              className="font-mono uppercase"
+              maxLength={18}
+              inputMode="numeric"
+            />
           </div>
           <div>
             <Label>IFSC Code</Label>
-            <Input {...form.register("ifscCode")} className="font-mono" />
+            <Input
+              {...form.register("ifscCode", {
+                onChange: (e) => {
+                  e.target.value = e.target.value.toUpperCase();
+                },
+              })}
+              className="font-mono uppercase"
+              maxLength={11}
+              placeholder="HDFC0001234"
+            />
           </div>
           <div className="col-span-2">
             <Label>Status</Label>

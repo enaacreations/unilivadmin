@@ -204,12 +204,12 @@ export function ResidentFormModal({ open, onOpenChange }: ResidentFormModalProps
             </div>
             <div>
               <Label>Phone *</Label>
-              <Input data-testid="input-resident-phone" {...form1.register("phone")} />
+              <Input type="tel" inputMode="numeric" maxLength={10} placeholder="10-digit number" data-testid="input-resident-phone" {...form1.register("phone")} />
               {form1.formState.errors.phone && <p className="text-xs text-destructive">{form1.formState.errors.phone.message}</p>}
             </div>
             <div className="col-span-2">
               <Label>Email *</Label>
-              <Input data-testid="input-resident-email" {...form1.register("email")} />
+              <Input type="email" autoComplete="email" placeholder="name@example.com" data-testid="input-resident-email" {...form1.register("email")} />
               {form1.formState.errors.email && <p className="text-xs text-destructive">{form1.formState.errors.email.message}</p>}
             </div>
             <div>

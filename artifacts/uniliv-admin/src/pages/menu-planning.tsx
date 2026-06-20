@@ -10,13 +10,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { ChevronLeft, ChevronRight, Send, Copy, Truck, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const SLOTS = ["BREAKFAST", "LUNCH", "SNACK", "DINNER"];
-const COLORS = ["hsl(var(--primary))", "hsl(var(--accent))", "#f59e0b", "#06b6d4"];
+const COLORS = ["var(--primary)", "var(--accent)", "var(--warning)", "var(--info)"];
 
 function mondayOf(d: Date) {
   const x = new Date(d);
@@ -258,14 +259,26 @@ function DailyProductionTab({ propertyId, recipes, slots }: { propertyId: string
         <Card>
           <CardHeader><CardTitle className="text-base">Wastage Log</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {wastage.map((w: any, i: number) => <div key={i} className="text-sm border rounded p-2">{w.item} · {w.quantity} {w.unit} · {w.reason || "—"}</div>)}
+            {wastage.length > 0 && (
+              <BoundedScroll size="sm">
+                <div className="space-y-2 pr-3">
+                  {wastage.map((w: any, i: number) => <div key={i} className="text-sm border rounded p-2">{w.item} · {w.quantity} {w.unit} · {w.reason || "—"}</div>)}
+                </div>
+              </BoundedScroll>
+            )}
             <AddRow onAdd={(item, quantity, unit, reason) => update("wastage", [...wastage, { item, quantity: Number(quantity), unit, reason, at: new Date().toISOString() }])} fields={["Item", "Qty", "Unit", "Reason"]} />
           </CardContent>
         </Card>
         <Card>
           <CardHeader><CardTitle className="text-base">Raw Material Receiving</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {receivings.map((r: any, i: number) => <div key={i} className="text-sm border rounded p-2">{r.item} · {r.quantity} {r.unit} · expires {r.expiry || "—"}</div>)}
+            {receivings.length > 0 && (
+              <BoundedScroll size="sm">
+                <div className="space-y-2 pr-3">
+                  {receivings.map((r: any, i: number) => <div key={i} className="text-sm border rounded p-2">{r.item} · {r.quantity} {r.unit} · expires {r.expiry || "—"}</div>)}
+                </div>
+              </BoundedScroll>
+            )}
             <AddRow onAdd={(item, quantity, unit, expiry) => update("receivings", [...receivings, { item, quantity: Number(quantity), unit, expiry, at: new Date().toISOString() }])} fields={["Item", "Qty", "Unit", "Expiry"]} />
           </CardContent>
         </Card>
@@ -299,7 +312,7 @@ function KitchenAnalyticsTab({ propertyId }: { propertyId: string }) {
         <CardHeader><CardTitle className="text-base">Avg Rating by Recipe (last 4 weeks)</CardTitle></CardHeader>
         <CardContent style={{ height: 280 }}>
           {feedback.length ? (
-            <ResponsiveContainer width="100%" height="100%"><BarChart data={feedback}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="recipeName" tick={{ fontSize: 10 }} /><YAxis domain={[0, 5]} /><Tooltip /><Bar dataKey="avgRating" fill="hsl(var(--primary))" /></BarChart></ResponsiveContainer>
+            <ResponsiveContainer width="100%" height="100%"><BarChart data={feedback}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="recipeName" tick={{ fontSize: 10 }} /><YAxis domain={[0, 5]} /><Tooltip /><Bar dataKey="avgRating" fill="var(--primary)" /></BarChart></ResponsiveContainer>
           ) : <p className="text-sm text-muted-foreground">No feedback yet</p>}
         </CardContent>
       </Card>
@@ -307,7 +320,7 @@ function KitchenAnalyticsTab({ propertyId }: { propertyId: string }) {
         <CardHeader><CardTitle className="text-base">Wastage (kg per week)</CardTitle></CardHeader>
         <CardContent style={{ height: 280 }}>
           {wastage.length ? (
-            <ResponsiveContainer width="100%" height="100%"><LineChart data={wastage}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="weekStart" /><YAxis /><Tooltip /><Line type="monotone" dataKey="kg" stroke="hsl(var(--primary))" strokeWidth={2} /></LineChart></ResponsiveContainer>
+            <ResponsiveContainer width="100%" height="100%"><LineChart data={wastage}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="weekStart" /><YAxis /><Tooltip /><Line type="monotone" dataKey="kg" stroke="var(--primary)" strokeWidth={2} /></LineChart></ResponsiveContainer>
           ) : <p className="text-sm text-muted-foreground">No wastage logged yet</p>}
         </CardContent>
       </Card>

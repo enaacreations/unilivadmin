@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useLocation, Link } from "wouter";
+import { withQuery } from "@/lib/nav-helpers";
 import { useQuery } from "@tanstack/react-query";
 import { format, subDays } from "date-fns";
 import {
@@ -21,8 +22,8 @@ import {
   Users,
   Wallet,
   Clock,
-  FilePlus2,
-  ArrowRight,
+  LayoutDashboard,
+  Compass,
   Timer,
   type LucideIcon,
 } from "lucide-react";
@@ -30,10 +31,11 @@ import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import {
   Select,
   SelectContent,
@@ -65,11 +67,11 @@ import {
 import { useAppStore } from "@/lib/store";
 
 const STATUS_COLORS: Record<string, string> = {
-  PLACED: "#0EA5E9",
-  PREPARING: "#EAB308",
-  DISPATCHED: "#A855F7",
-  DELIVERED: "#22C55E",
-  CANCELLED: "#EF4444",
+  PLACED: "var(--info)",
+  PREPARING: "var(--warning)",
+  DISPATCHED: "var(--pop)",
+  DELIVERED: "var(--success)",
+  CANCELLED: "var(--destructive)",
 };
 
 function kpiValue(k?: Kpi): number {
@@ -144,32 +146,96 @@ export default function FoodDashboard() {
         subtitle="Kitchen operations at a glance — orders, dispatch, and delivery"
       />
 
-      {/* Quick actions */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {QUICK_ACTIONS.map((action) => (
-          <Link
-            key={action.href}
-            href={action.href}
-            className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 shadow-sm transition-all hover:border-accent/50 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-accent/40"
-          >
-            <span
-              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${action.tint}`}
-            >
-              <action.icon className="h-5 w-5" />
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-foreground">
-                {action.label}
-              </span>
-              <span className="block truncate text-xs text-muted-foreground">
-                {action.description}
-              </span>
-            </span>
-            <ArrowRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
-          </Link>
-        ))}
+      {/* Filters */}
+      <div className="flex flex-wrap items-end gap-3">
+        <Select value={propertyId} onValueChange={setPropertyId}>
+          <SelectTrigger className="w-52">
+            <SelectValue placeholder="Property" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All Properties</SelectItem>
+            {properties.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={brand} onValueChange={setBrand}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="Brand" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All Brands</SelectItem>
+            {BRANDS.map((b) => (
+              <SelectItem key={b} value={b}>
+                {b}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <div className="flex flex-col gap-1">
+          <Label className="text-xs text-muted-foreground">From</Label>
+          <DatePicker value={from} max={to} onChange={setFrom} className="w-40" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label className="text-xs text-muted-foreground">To</Label>
+          <DatePicker value={to} min={from} onChange={setTo} className="w-40" />
+        </div>
       </div>
 
+      {/* Sticky KPI row — stays in view as the overview scrolls */}
+      <div className="sticky top-0 z-10 -mx-1 bg-background/95 px-1 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        {isLoading ? (
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-24 w-full rounded-xl" />
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              title="Total Orders"
+              value={kpiValue(kpis?.totalOrders)}
+              change={kpiChange(kpis?.totalOrders)}
+              icon={ClipboardList}
+            />
+            <StatCard
+              title="Ordered"
+              value={kpiValue(kpis?.ordered)}
+              change={kpiChange(kpis?.ordered)}
+              icon={Package}
+            />
+            <StatCard
+              title="Dispatched"
+              value={kpiValue(kpis?.dispatched)}
+              change={kpiChange(kpis?.dispatched)}
+              icon={Truck}
+            />
+            <StatCard
+              title="Delivered"
+              value={kpiValue(kpis?.delivered)}
+              change={kpiChange(kpis?.delivered)}
+              icon={CheckCircle2}
+            />
+          </div>
+        )}
+      </div>
+
+      <Tabs defaultValue="overview" className="w-full">
+        <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1 sm:w-auto">
+          <TabsTrigger value="overview" className="gap-1.5">
+            <LayoutDashboard className="h-3.5 w-3.5" /> Overview
+          </TabsTrigger>
+          <TabsTrigger value="insights" className="gap-1.5">
+            <Compass className="h-3.5 w-3.5" /> Insights &amp; Navigation
+          </TabsTrigger>
+        </TabsList>
+
+        {/* OVERVIEW — property + cut-offs + pending actions */}
+        <TabsContent value="overview" className="mt-4 space-y-4">
       {/* Unit-lead home: property overview + today's cut-offs */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Property overview */}
@@ -196,7 +262,7 @@ export default function FoodDashboard() {
                   </div>
                 </div>
                 <Link
-                  href="/food/guests"
+                  href={withQuery("/food/guests", { propertyId: overview?.id })}
                   className="inline-flex items-center gap-1 rounded-md text-sm font-medium text-accent hover:text-accent/80 focus:outline-none focus:ring-2 focus:ring-accent/40"
                 >
                   View guests
@@ -298,95 +364,21 @@ export default function FoodDashboard() {
                     cutoffs[0]?.isPastCutoff ? <Badge variant="destructive">Closed</Badge> : <Badge variant="success">Open</Badge>
                   ) : <Badge variant="secondary">—</Badge>}
                 </div>
-                <ul className="divide-y divide-border">
-                  {cutoffs.map((c) => (
-                    <li key={c.mealType} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
-                      <span className="text-sm text-foreground">{MEAL_LABEL[c.mealType] ?? c.mealType}</span>
-                      <span className="font-mono text-xs text-muted-foreground">{c.serviceTime ? `Serves ${c.serviceTime}` : "—"}</span>
-                    </li>
-                  ))}
-                </ul>
+                <BoundedScroll maxHeight="220px" className="pr-2">
+                  <ul className="divide-y divide-border">
+                    {cutoffs.map((c) => (
+                      <li key={c.mealType} className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                        <span className="text-sm text-foreground">{MEAL_LABEL[c.mealType] ?? c.mealType}</span>
+                        <span className="font-mono text-xs text-muted-foreground">{c.serviceTime ? `Serves ${c.serviceTime}` : "—"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </BoundedScroll>
               </div>
             )}
           </CardContent>
         </Card>
       </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3">
-        <Select value={propertyId} onValueChange={setPropertyId}>
-          <SelectTrigger className="w-52">
-            <SelectValue placeholder="Property" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="ALL">All Properties</SelectItem>
-            {properties.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={brand} onValueChange={setBrand}>
-          <SelectTrigger className="w-40">
-            <SelectValue placeholder="Brand" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="ALL">All Brands</SelectItem>
-            {BRANDS.map((b) => (
-              <SelectItem key={b} value={b}>
-                {b}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <div className="flex flex-col gap-1">
-          <Label className="text-xs text-muted-foreground">From</Label>
-          <DatePicker value={from} max={to} onChange={setFrom} className="w-40" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-xs text-muted-foreground">To</Label>
-          <DatePicker value={to} min={from} onChange={setTo} className="w-40" />
-        </div>
-      </div>
-
-      {/* KPIs */}
-      {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-28 w-full rounded-xl" />
-          ))}
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard
-            title="Total Orders"
-            value={kpiValue(kpis?.totalOrders)}
-            change={kpiChange(kpis?.totalOrders)}
-            icon={ClipboardList}
-          />
-          <StatCard
-            title="Ordered"
-            value={kpiValue(kpis?.ordered)}
-            change={kpiChange(kpis?.ordered)}
-            icon={Package}
-          />
-          <StatCard
-            title="Dispatched"
-            value={kpiValue(kpis?.dispatched)}
-            change={kpiChange(kpis?.dispatched)}
-            icon={Truck}
-          />
-          <StatCard
-            title="Delivered"
-            value={kpiValue(kpis?.delivered)}
-            change={kpiChange(kpis?.delivered)}
-            icon={CheckCircle2}
-          />
-        </div>
-      )}
 
       {/* Pending Actions */}
       <div>
@@ -425,62 +417,67 @@ export default function FoodDashboard() {
           </div>
         )}
       </div>
+        </TabsContent>
 
-      {/* Status overview chart */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <BarChart3 className="w-4 h-4 text-muted-foreground" />
-            Order Status Breakdown
-          </CardTitle>
-        </CardHeader>
-        <CardContent style={{ height: 280 }}>
-          {statusData.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              No orders in the selected range.
+        {/* INSIGHTS & NAVIGATION — secondary chart + quick nav */}
+        <TabsContent value="insights" className="mt-4 space-y-4">
+          {/* Status overview chart */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <BarChart3 className="w-4 h-4 text-muted-foreground" />
+                Order Status Breakdown
+              </CardTitle>
+            </CardHeader>
+            <CardContent style={{ height: 280 }}>
+              {statusData.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  No orders in the selected range.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={statusData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                    <XAxis
+                      dataKey="status"
+                      tick={{ fontSize: 11 }}
+                      tickFormatter={(v: string) => v.replace(/_/g, " ")}
+                    />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                    <Tooltip
+                      cursor={{ fill: "rgba(0,0,0,0.04)" }}
+                      formatter={(value: number) => [value, "Orders"]}
+                    />
+                    <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                      {statusData.map((d) => (
+                        <Cell key={d.status} fill={STATUS_COLORS[d.status] ?? "var(--muted)"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Quick Navigation */}
+          <div>
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+              Quick Navigation
+            </h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {QUICK_NAV.map((tile) => (
+                <QuickNavTile
+                  key={tile.href}
+                  icon={tile.icon}
+                  label={tile.label}
+                  description={tile.description}
+                  onClick={() => setLocation(tile.href)}
+                />
+              ))}
             </div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={statusData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                <XAxis
-                  dataKey="status"
-                  tick={{ fontSize: 11 }}
-                  tickFormatter={(v: string) => v.replace(/_/g, " ")}
-                />
-                <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                <Tooltip
-                  cursor={{ fill: "rgba(0,0,0,0.04)" }}
-                  formatter={(value: number) => [value, "Orders"]}
-                />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                  {statusData.map((d) => (
-                    <Cell key={d.status} fill={STATUS_COLORS[d.status] ?? "#94A3B8"} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Quick Navigation */}
-      <div>
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-          Quick Navigation
-        </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {QUICK_NAV.map((tile) => (
-            <QuickNavTile
-              key={tile.href}
-              icon={tile.icon}
-              label={tile.label}
-              description={tile.description}
-              onClick={() => setLocation(tile.href)}
-            />
-          ))}
-        </div>
-      </div>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -555,43 +552,6 @@ function QuickNavTile({
     </button>
   );
 }
-
-const QUICK_ACTIONS: {
-  label: string;
-  description: string;
-  href: string;
-  icon: LucideIcon;
-  tint: string;
-}[] = [
-  {
-    label: "Place Order",
-    description: "Start a new order",
-    href: "/food/place-order",
-    icon: FilePlus2,
-    tint: "bg-accent/10 text-accent",
-  },
-  {
-    label: "All Orders",
-    description: "Browse & manage",
-    href: "/food/orders",
-    icon: ListOrdered,
-    tint: "bg-info/10 text-info",
-  },
-  {
-    label: "Active Guests",
-    description: "Residents on-site",
-    href: "/food/guests",
-    icon: Users,
-    tint: "bg-success/10 text-success",
-  },
-  {
-    label: "Reports",
-    description: "Trends & exports",
-    href: "/food/reports",
-    icon: BarChart3,
-    tint: "bg-warning/10 text-warning",
-  },
-];
 
 const QUICK_NAV: {
   label: string;

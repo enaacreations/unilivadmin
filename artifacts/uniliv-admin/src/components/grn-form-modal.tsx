@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { NumberStepper } from "@/components/ui/number-stepper";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 
@@ -169,7 +170,15 @@ export function GRNFormModal({ open, onOpenChange, prefillPoId, onCreated }: Pro
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <Label className="text-xs">Qty Received *</Label>
-                      <Input type="number" value={it.qtyReceived} onChange={(e) => updateItem(idx, "qtyReceived", e.target.value)} />
+                      <div className="mt-1">
+                        <NumberStepper
+                          aria-label="Quantity received"
+                          value={Number(it.qtyReceived) || 0}
+                          onChange={(n) => updateItem(idx, "qtyReceived", n)}
+                          min={0}
+                          className="w-full"
+                        />
+                      </div>
                     </div>
                     <div>
                       <Label className="text-xs">Condition</Label>

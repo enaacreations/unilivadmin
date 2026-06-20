@@ -19,6 +19,7 @@ import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Combobox } from "@/components/ui/combobox";
 import { ControlledDatePicker } from "@/components/ui/date-picker";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -31,10 +32,34 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { FormModal } from "@/components/ui/form-modal";
 import { useToast } from "@/hooks/use-toast";
 
 const DEPARTMENTS = ["Operations", "Housekeeping", "Security", "Kitchen", "Finance", "HR", "Maintenance", "Admin"];
+
+const DESIGNATIONS = [
+  "Warden",
+  "Property Manager",
+  "Operations Manager",
+  "Housekeeping Supervisor",
+  "Cook",
+  "Chef",
+  "Kitchen Helper",
+  "Security Guard",
+  "Maintenance Technician",
+  "Electrician",
+  "Plumber",
+  "Accountant",
+  "HR Executive",
+  "Sales Executive",
+  "Cluster Manager",
+  "City Head",
+  "Unit Lead",
+  "Receptionist",
+  "Driver",
+  "Caretaker",
+];
 
 const empSchema = z.object({
   name: z.string().min(1, "Required"),
@@ -145,6 +170,22 @@ export default function Employees() {
       toast({ title: e?.message || "Failed", variant: "destructive" });
     }
   });
+
+  const designationOptions = React.useMemo(() => {
+    const seen = new Set<string>();
+    const opts: { value: string; label: string }[] = [];
+    const add = (raw?: string | null) => {
+      const v = (raw || "").trim();
+      if (!v) return;
+      const key = v.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      opts.push({ value: v, label: v });
+    };
+    DESIGNATIONS.forEach(add);
+    employees.forEach((e) => add(e.designation));
+    return opts;
+  }, [employees]);
 
   const propertyName = (id?: string | null) => properties.find((p) => p.id === id)?.name || "—";
 
@@ -299,7 +340,7 @@ export default function Employees() {
               </div>
               <div>
                 <Label>Phone *</Label>
-                <Input {...form.register("phone")} data-testid="input-phone" />
+                <Input type="tel" inputMode="numeric" maxLength={10} placeholder="10-digit number" {...form.register("phone")} data-testid="input-phone" />
                 {form.formState.errors.phone && <p className="text-xs text-destructive mt-1">{form.formState.errors.phone.message}</p>}
               </div>
               <div>
@@ -338,7 +379,19 @@ export default function Employees() {
               </div>
               <div>
                 <Label>Designation *</Label>
-                <Input {...form.register("designation")} />
+                <Combobox
+                  options={designationOptions}
+                  value={form.watch("designation") || ""}
+                  onChange={(v) =>
+                    form.setValue("designation", v || "", {
+                      shouldValidate: true,
+                      shouldDirty: true,
+                    })
+                  }
+                  creatable
+                  placeholder="Select or type a designation"
+                  searchPlaceholder="Search or add designation…"
+                />
                 {form.formState.errors.designation && <p className="text-xs text-destructive mt-1">{form.formState.errors.designation.message}</p>}
               </div>
               <div>
@@ -371,20 +424,92 @@ export default function Employees() {
 
           <TabsContent value="compensation" className="space-y-4 mt-4">
             <div className="grid grid-cols-2 gap-3">
-              <div><Label>CTC (Annual)</Label><Input type="number" {...form.register("ctc")} /></div>
-              <div><Label>Basic</Label><Input type="number" {...form.register("basic")} /></div>
-              <div><Label>HRA</Label><Input type="number" {...form.register("hra")} /></div>
-              <div><Label>Special Allowance</Label><Input type="number" {...form.register("specialAllowance")} /></div>
+              <div>
+                <Label>CTC (Annual)</Label>
+                <InputGroup>
+                  <InputGroupAddon>₹</InputGroupAddon>
+                  <InputGroupInput type="number" inputMode="numeric" min={0} placeholder="0" {...form.register("ctc")} />
+                </InputGroup>
+              </div>
+              <div>
+                <Label>Basic</Label>
+                <InputGroup>
+                  <InputGroupAddon>₹</InputGroupAddon>
+                  <InputGroupInput type="number" inputMode="numeric" min={0} placeholder="0" {...form.register("basic")} />
+                </InputGroup>
+              </div>
+              <div>
+                <Label>HRA</Label>
+                <InputGroup>
+                  <InputGroupAddon>₹</InputGroupAddon>
+                  <InputGroupInput type="number" inputMode="numeric" min={0} placeholder="0" {...form.register("hra")} />
+                </InputGroup>
+              </div>
+              <div>
+                <Label>Special Allowance</Label>
+                <InputGroup>
+                  <InputGroupAddon>₹</InputGroupAddon>
+                  <InputGroupInput type="number" inputMode="numeric" min={0} placeholder="0" {...form.register("specialAllowance")} />
+                </InputGroup>
+              </div>
             </div>
           </TabsContent>
 
           <TabsContent value="banking" className="space-y-4 mt-4">
             <div className="grid grid-cols-2 gap-3">
-              <div><Label>Bank Account</Label><Input {...form.register("bankAccount")} /></div>
-              <div><Label>IFSC Code</Label><Input {...form.register("ifscCode")} /></div>
-              <div><Label>PAN Number</Label><Input {...form.register("panNumber")} /></div>
-              <div><Label>PF Number</Label><Input {...form.register("pfNumber")} /></div>
-              <div className="col-span-2"><Label>ESIC Number</Label><Input {...form.register("esicNumber")} /></div>
+              <div>
+                <Label>Bank Account</Label>
+                <Input
+                  inputMode="numeric"
+                  maxLength={18}
+                  placeholder="Account number"
+                  {...form.register("bankAccount")}
+                />
+              </div>
+              <div>
+                <Label>IFSC Code</Label>
+                <Input
+                  maxLength={11}
+                  placeholder="ABCD0123456"
+                  pattern="[A-Za-z]{4}0[A-Za-z0-9]{6}"
+                  className="uppercase"
+                  {...form.register("ifscCode", {
+                    onChange: (e) => { e.target.value = e.target.value.toUpperCase(); },
+                  })}
+                />
+              </div>
+              <div>
+                <Label>PAN Number</Label>
+                <Input
+                  maxLength={10}
+                  placeholder="ABCDE1234F"
+                  pattern="[A-Za-z]{5}[0-9]{4}[A-Za-z]{1}"
+                  className="uppercase"
+                  {...form.register("panNumber", {
+                    onChange: (e) => { e.target.value = e.target.value.toUpperCase(); },
+                  })}
+                />
+              </div>
+              <div>
+                <Label>PF Number</Label>
+                <Input
+                  maxLength={22}
+                  placeholder="UAN / PF number"
+                  className="uppercase"
+                  {...form.register("pfNumber", {
+                    onChange: (e) => { e.target.value = e.target.value.toUpperCase(); },
+                  })}
+                />
+              </div>
+              <div className="col-span-2">
+                <Label>ESIC Number</Label>
+                <Input
+                  inputMode="numeric"
+                  maxLength={17}
+                  placeholder="17-digit IP number"
+                  {...form.register("esicNumber")}
+                />
+              </div>
             </div>
           </TabsContent>
         </Tabs>

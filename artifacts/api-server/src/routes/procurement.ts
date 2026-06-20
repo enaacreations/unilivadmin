@@ -11,6 +11,33 @@ import { newId } from "../lib/id.js";
 
 const num = (v: unknown) => v === null || v === undefined || v === "" ? null : Number(v);
 
+// =================== PROCUREMENT (shared) ===================
+export const procurementRouter = Router();
+
+// Distinct, non-empty, alphabetically-sorted item names used across procurement,
+// for powering creatable item-name comboboxes in indent/PO forms.
+// Line items live in JSON `items` arrays on indents/purchase_orders (each entry has
+// an `itemName` key); rate_contracts has a real `item_name` text column. UNION all.
+procurementRouter.get("/item-suggestions", authenticate, async (req, res) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT DISTINCT name FROM (
+        SELECT TRIM(elem->>'itemName') AS name
+          FROM ${indentsTable}, json_array_elements(${indentsTable.items}) AS elem
+        UNION
+        SELECT TRIM(elem->>'itemName') AS name
+          FROM ${purchaseOrdersTable}, json_array_elements(${purchaseOrdersTable.items}) AS elem
+        UNION
+        SELECT TRIM(${rateContractsTable.itemName}) AS name FROM ${rateContractsTable}
+      ) AS names
+      WHERE name IS NOT NULL AND name <> ''
+      ORDER BY name ASC
+    `);
+    const data = (result.rows as Array<{ name: string }>).map((r) => r.name);
+    res.json({ success: true, data });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
 // =================== VENDORS ===================
 export const vendorRouter = Router();
 

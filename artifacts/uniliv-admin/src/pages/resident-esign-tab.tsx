@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { FormModal } from "@/components/ui/form-modal";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import { FileSignature, Plus, Copy, ExternalLink, X, Download } from "lucide-react";
@@ -65,7 +66,8 @@ export function ResidentEsignTab({ residentId, residentName }: { residentId: str
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-2">
+        <BoundedScroll size="md" className="-mx-1 px-1">
+          <div className="space-y-2">
           {rows.map((r) => (
             <Card key={r.id} data-testid={`esign-row-${r.id}`}>
               <CardContent className="p-4 flex items-center justify-between gap-4">
@@ -85,7 +87,8 @@ export function ResidentEsignTab({ residentId, residentName }: { residentId: str
               </CardContent>
             </Card>
           ))}
-        </div>
+          </div>
+        </BoundedScroll>
       )}
 
       <CreateEsignModal open={createOpen} onOpenChange={setCreateOpen} residentId={residentId} residentName={residentName} />

@@ -6,6 +6,7 @@ import {
   useGetFacilityLogs, getGetFacilityLogsQueryKey,
 } from "@workspace/api-client-react";
 import { useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react";
+import { useGetEmployees, useGetVendors } from "@workspace/api-client-react";
 import { apiFetch } from "@/lib/api-fetch";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
@@ -21,7 +22,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { FormModal } from "@/components/ui/form-modal";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { Wrench, Plus, AlertTriangle, CalendarClock, ClipboardList, CheckCircle2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -54,6 +57,12 @@ export default function FacilityPage() {
   const logsParams = propertyId ? { propertyId } : {};
   const { data: logsRes } = useGetFacilityLogs(logsParams, { query: { queryKey: getGetFacilityLogsQueryKey(logsParams) } });
   const logs = (logsRes?.data || []) as unknown as Log[];
+
+  // People for "Assigned To" combobox: employees + vendors, labelled by name
+  const { data: employeesRes } = useGetEmployees();
+  const employees = employeesRes?.data || [];
+  const { data: vendorsRes } = useGetVendors();
+  const vendors = vendorsRes?.data || [];
 
   // Stats
   const overdueCount = schedules.filter((s) => new Date(s.nextDueDate) < new Date()).length;
@@ -92,6 +101,22 @@ export default function FacilityPage() {
     onSuccess: () => { toast({ title: editSched ? "Schedule updated" : "Schedule created" }); qc.invalidateQueries({ queryKey: getGetFacilitySchedulesQueryKey(schedParams) }); setSchedOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
+
+  // "Assigned To" options: employees + vendors keyed/stored by name (back-compat).
+  // Include any existing stored name so legacy/custom values still display.
+  const assigneeOptions: ComboboxOption[] = React.useMemo(() => {
+    const opts: ComboboxOption[] = [];
+    const seen = new Set<string>();
+    employees.forEach((e: any) => {
+      if (e?.name && !seen.has(e.name)) { seen.add(e.name); opts.push({ value: e.name, label: e.name, keywords: ["Employee"] }); }
+    });
+    vendors.forEach((v: any) => {
+      if (v?.name && !seen.has(v.name)) { seen.add(v.name); opts.push({ value: v.name, label: `Vendor · ${v.name}`, keywords: ["Vendor", v.name] }); }
+    });
+    const current = schedForm.assignedTo;
+    if (current && !seen.has(current)) opts.push({ value: current, label: current });
+    return opts;
+  }, [employees, vendors, schedForm.assignedTo]);
 
   // Log modal
   const [logOpen, setLogOpen] = React.useState(false);
@@ -132,8 +157,9 @@ export default function FacilityPage() {
             {assetsLoading ? <div className="p-6 space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-12" />)}</div> : assets.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No assets yet — add your first one.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">Code</th><th className="px-4 py-3">Name</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Property</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Warranty</th><th />
                 </tr></thead>
                 <tbody>
@@ -150,6 +176,7 @@ export default function FacilityPage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
@@ -162,8 +189,9 @@ export default function FacilityPage() {
             {schedLoading ? <div className="p-6 space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-12" />)}</div> : schedules.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No schedules yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">Task</th><th className="px-4 py-3">Asset</th><th className="px-4 py-3">Frequency</th><th className="px-4 py-3">Next Due</th><th className="px-4 py-3">Last Done</th><th className="px-4 py-3">Status</th><th />
                 </tr></thead>
                 <tbody>
@@ -186,6 +214,7 @@ export default function FacilityPage() {
                   })}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
@@ -195,8 +224,9 @@ export default function FacilityPage() {
             {logs.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No service logs yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">When</th><th className="px-4 py-3">Asset</th><th className="px-4 py-3">Outcome</th><th className="px-4 py-3">Cost</th><th className="px-4 py-3">Notes</th>
                 </tr></thead>
                 <tbody>
@@ -211,6 +241,7 @@ export default function FacilityPage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
@@ -267,7 +298,19 @@ export default function FacilityPage() {
             <div><Label>Frequency (days) *</Label><Input type="number" min={1} value={schedForm.frequencyDays || ""} onChange={(e) => setSchedForm({ ...schedForm, frequencyDays: Number(e.target.value) })} data-testid="input-frequency" /></div>
             <div><Label>Next due *</Label><DatePicker value={schedForm.nextDueDate || ""} onChange={(v) => setSchedForm({ ...schedForm, nextDueDate: v })} data-testid="input-next-due" /></div>
           </div>
-          <div><Label>Assigned To</Label><Input value={schedForm.assignedTo || ""} onChange={(e) => setSchedForm({ ...schedForm, assignedTo: e.target.value })} placeholder="Vendor or employee name" /></div>
+          <div><Label>Assigned To</Label>
+            <Combobox
+              options={assigneeOptions}
+              value={schedForm.assignedTo || null}
+              onChange={(v) => setSchedForm({ ...schedForm, assignedTo: v || "" })}
+              placeholder="Vendor or employee name"
+              searchPlaceholder="Search people…"
+              emptyText="No people found."
+              creatable
+              allowClear
+              createLabel={(q) => `Use "${q}"`}
+            />
+          </div>
           <div><Label>Notes</Label><Textarea value={schedForm.notes || ""} onChange={(e) => setSchedForm({ ...schedForm, notes: e.target.value })} /></div>
         </div>
       </FormModal>

@@ -2,6 +2,7 @@ import * as React from "react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { FormModal } from "@/components/ui/form-modal";
 import { Input } from "@/components/ui/input";
+import { Combobox } from "@/components/ui/combobox";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { NumberStepper } from "@/components/ui/number-stepper";
+import { UNITS } from "@/components/indent-form-modal";
 import { Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
@@ -74,6 +77,15 @@ export function POFormModal({ open, onOpenChange, prefill, onCreated }: Props) {
     enabled: !!vendorId,
   });
   const rates = rcRes?.data || [];
+
+  const { data: itemSugRes } = useQuery<{ success: boolean; data: string[] }>({
+    queryKey: ["procurement", "item-suggestions"],
+    queryFn: () => apiFetch(`/procurement/item-suggestions`),
+  });
+  const itemOptions = React.useMemo(
+    () => (itemSugRes?.data || []).map((s) => ({ value: s, label: s })),
+    [itemSugRes],
+  );
 
   React.useEffect(() => {
     if (open) {
@@ -205,7 +217,14 @@ export function POFormModal({ open, onOpenChange, prefill, onCreated }: Props) {
                 <div key={idx} className="border rounded-md p-3 bg-card space-y-2">
                   <div className="grid grid-cols-12 gap-2">
                     <div className="col-span-5">
-                      <Input placeholder="Item name *" value={it.itemName} onChange={(e) => updateItem(idx, "itemName", e.target.value)} />
+                      <Combobox
+                        options={itemOptions}
+                        value={it.itemName || null}
+                        onChange={(v) => updateItem(idx, "itemName", v || "")}
+                        placeholder="Item name *"
+                        searchPlaceholder="Search or add item…"
+                        creatable
+                      />
                     </div>
                     <div className="col-span-5">
                       <Input placeholder="Specification" value={it.specification} onChange={(e) => updateItem(idx, "specification", e.target.value)} />
@@ -216,10 +235,23 @@ export function POFormModal({ open, onOpenChange, prefill, onCreated }: Props) {
                       </Button>
                     </div>
                     <div className="col-span-3">
-                      <Input type="number" min={0} placeholder="Qty *" value={it.quantity} onChange={(e) => updateItem(idx, "quantity", e.target.value)} />
+                      <NumberStepper
+                        aria-label="Quantity"
+                        value={Number(it.quantity) || 0}
+                        onChange={(n) => updateItem(idx, "quantity", n)}
+                        min={0}
+                        className="w-full"
+                      />
                     </div>
                     <div className="col-span-3">
-                      <Input placeholder="Unit" value={it.unit} onChange={(e) => updateItem(idx, "unit", e.target.value)} />
+                      <Select value={it.unit || undefined} onValueChange={(v) => updateItem(idx, "unit", v)}>
+                        <SelectTrigger><SelectValue placeholder="Unit" /></SelectTrigger>
+                        <SelectContent>
+                          {[...new Set([...UNITS, ...(it.unit && !UNITS.includes(it.unit) ? [it.unit] : [])])].map((u) => (
+                            <SelectItem key={u} value={u}>{u}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                     <div className="col-span-3">
                       <Input type="number" min={0} step="0.01" placeholder="Rate" value={it.rate} onChange={(e) => updateItem(idx, "rate", e.target.value)} />

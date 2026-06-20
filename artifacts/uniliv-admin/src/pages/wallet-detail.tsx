@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -260,6 +261,7 @@ export default function WalletDetail() {
           ) : txns.length === 0 ? (
             <div className="p-12 text-center text-muted-foreground">No transactions yet.</div>
           ) : (
+            <BoundedScroll size="md">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -296,6 +298,7 @@ export default function WalletDetail() {
                 ))}
               </TableBody>
             </Table>
+            </BoundedScroll>
           )}
         </CardContent>
       </Card>

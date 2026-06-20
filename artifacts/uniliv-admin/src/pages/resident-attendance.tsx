@@ -17,6 +17,7 @@ import { FormModal } from "@/components/ui/form-modal";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { ClipboardCheck, UserCheck, UserX, Plane, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -134,8 +135,9 @@ export default function ResidentAttendancePage() {
             {isLoading ? <div className="p-8 text-center text-muted-foreground">Loading...</div> : rows.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No active residents in this property.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3 w-8"><Checkbox checked={allSelected} onCheckedChange={toggleAll} /></th>
                   <th className="px-4 py-3">Resident</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Notes</th>
                 </tr></thead>
@@ -154,6 +156,7 @@ export default function ResidentAttendancePage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
@@ -168,8 +171,9 @@ export default function ResidentAttendancePage() {
             {outPasses.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No out-pass requests yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">Resident</th><th className="px-4 py-3">Reason</th><th className="px-4 py-3">Leave</th><th className="px-4 py-3">Return by</th><th className="px-4 py-3">Status</th><th />
                 </tr></thead>
                 <tbody>
@@ -201,6 +205,7 @@ export default function ResidentAttendancePage() {
                   })}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>

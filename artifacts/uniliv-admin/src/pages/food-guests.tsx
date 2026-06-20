@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/lib/store";
+import { useQueryParam } from "@/lib/nav-helpers";
 import { usePermissions } from "@/lib/use-permissions";
 import { apiDownload } from "@/lib/api-fetch";
 import { foodApi, foodKeys, type GuestRow } from "@/lib/food-api";
@@ -49,7 +50,11 @@ function fmtDate(value: string | null): string {
 }
 
 export default function FoodGuests() {
-  const { propertyId } = useAppStore();
+  // Scope to ?propertyId= when present (e.g. opened from a property card),
+  // otherwise the global property scope from the sidebar.
+  const paramProperty = useQueryParam("propertyId");
+  const { propertyId: globalProperty } = useAppStore();
+  const propertyId = paramProperty ?? globalProperty ?? null;
   const { me } = usePermissions();
   const { toast } = useToast();
 

@@ -106,6 +106,38 @@ export function can(role: UserRole | undefined, module: Module, perm: Permission
   return ROLE_PERMISSIONS[role]?.[module]?.[perm] === true;
 }
 
+/**
+ * Where a freshly signed-in user should land, based on their role. Each role
+ * goes to the module it actually works in, so nobody is dropped onto the
+ * super-admin operations dashboard by accident. Admin/ops/audit roles (which
+ * legitimately read the ops overview) fall through to "/".
+ */
+export function homeForRole(role: UserRole | undefined): string {
+  if (!role) return "/";
+  const HOME: Partial<Record<UserRole, string>> = {
+    HR_MANAGER: "/employees",
+    PROCUREMENT_MANAGER: "/indents",
+    KITCHEN_MANAGER: "/recipes",
+    PROJECTS_MANAGER: "/property-leads",
+    PROPERTY_ACQUISITION: "/property-leads",
+    FINANCE: "/dashboard/executive",
+    SALES_EXECUTIVE: "/leads",
+    UNIT_LEAD: "/food/dashboard",
+    CLUSTER_MANAGER: "/food/dashboard",
+    CITY_HEAD: "/food/dashboard",
+    ZONAL_HEAD: "/food/dashboard",
+    OPS_EXCELLENCE: "/food/dashboard",
+    SENIOR_VICE_PRESIDENT: "/food/dashboard",
+    FNB_SUPERVISOR: "/food/dashboard",
+    FNB_MANAGER: "/food/dashboard",
+    FNB_ZONAL_HEAD: "/food/dashboard",
+  };
+  if (HOME[role]) return HOME[role]!;
+  if (can(role, "DASHBOARD", "view")) return "/";
+  if (can(role, "FOOD_DASHBOARD", "view")) return "/food/dashboard";
+  return "/";
+}
+
 export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
   [/^\/$/, "DASHBOARD"],
   [/^\/dashboard\/executive/, "EXECUTIVE_DASHBOARD"],

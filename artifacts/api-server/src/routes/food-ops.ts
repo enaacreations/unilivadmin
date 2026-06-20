@@ -715,6 +715,33 @@ foodOpsRouter.post("/menu/share", authenticate, authorize("FOOD_PLACE_ORDER", "v
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
+/** PUBLIC — renders a shared menu link (the `/m/:token` web page). No auth:
+ *  anyone holding the share token can view that day's menu (read-only, no PII). */
+foodOpsRouter.get("/menu/shared/:token", async (req, res) => {
+  try {
+    const token = req.params["token"];
+    const [share] = await db.select().from(foodMenuSharesTable).where(eq(foodMenuSharesTable.shareToken, token));
+    if (!share) { res.status(404).json({ success: false, error: "This menu link is invalid or has expired." }); return; }
+    const date = share.menuDate ?? new Date();
+    const cfg = await getPropertyFoodConfig(share.propertyId);
+    const brand = share.brand || cfg.brand || "";
+    const kitchenId = cfg.kitchenId || "";
+    const [property] = await db.select({ name: propertiesTable.name, city: propertiesTable.city })
+      .from(propertiesTable).where(eq(propertiesTable.id, share.propertyId));
+    const meals: Array<{ mealType: string; label: string; dishes: unknown[] }> = [];
+    if (brand && kitchenId) {
+      const mealCfg = await db.select().from(foodMealConfigTable).where(eq(foodMealConfigTable.isEnabled, true)).orderBy(foodMealConfigTable.sortOrder);
+      for (const c of mealCfg) {
+        if (c.brand && c.brand !== brand) continue;
+        if (share.mealType && c.mealType !== share.mealType) continue; // single-meal share
+        const dishes = await resolveMenu(kitchenId, brand, c.mealType, date);
+        if (dishes.length) meals.push({ mealType: c.mealType, label: c.displayLabel, dishes });
+      }
+    }
+    res.json({ success: true, data: { brand, date, propertyName: property?.name ?? null, city: property?.city ?? null, meals } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
 /* ════════════════════════════════════════════════════════════════════════
  * Advanced analytics (Persona st.33)
  * ════════════════════════════════════════════════════════════════════════ */

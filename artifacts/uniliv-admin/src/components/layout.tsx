@@ -1,210 +1,446 @@
 import * as React from "react"
 import { Link, useLocation } from "wouter"
+import { useQueryClient } from "@tanstack/react-query"
 import { useAuthStore, useAppStore } from "@/lib/store"
 import { useLogout, useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react"
 import {
-  LayoutDashboard, Building2, Users, AlertCircle, WashingMachine, MessageSquare,
-  UserCheck, Briefcase, GraduationCap, Truck, ClipboardList, ShoppingCart,
-  PackageCheck, Boxes, ChefHat, CalendarDays, TrendingUp, MapPin,
-  BookOpen, CreditCard, Shield, Settings, LogOut, Search, Menu, BarChart3,
-  Repeat, BellRing, Landmark, Receipt, Wrench, Zap, ClipboardCheck, Radio, Wallet,
-  UtensilsCrossed, ListOrdered, FilePlus2, Soup, Send, CheckCircle2, Trash2, SlidersHorizontal,
-  Network, Home
+  LogOut, Search, Menu, ChevronDown, Check, ChevronsUpDown, Building2, Sun, Moon,
 } from "lucide-react"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
+import {
+  Popover, PopoverContent, PopoverTrigger,
+} from "@/components/ui/popover"
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
+} from "@/components/ui/command"
+import {
+  Sheet, SheetContent, SheetHeader, SheetTitle,
+} from "@/components/ui/sheet"
+import {
+  Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { UserAvatar } from "@/components/ui/user-avatar"
 import { NotificationBell } from "@/components/notification-bell"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { usePermissions } from "@/lib/use-permissions"
-import { moduleForPath, type Module } from "@/lib/permissions"
+import { moduleForPath } from "@/lib/permissions"
+import { cn } from "@/lib/utils"
+import { navGroups, type NavGroup, type NavItem } from "@/lib/nav"
+import { CommandPalette, type CommandNavItem } from "@/components/command-palette"
 
-const navGroups: Array<{ title: string; items: Array<{ title: string; href: string; icon: any; module: Module }> }> = [
-  { title: "Overview", items: [
-    { title: "Dashboard", href: "/", icon: LayoutDashboard, module: "DASHBOARD" },
-    { title: "Executive", href: "/dashboard/executive", icon: BarChart3, module: "EXECUTIVE_DASHBOARD" },
-  ]},
-  { title: "Operations", items: [
-    { title: "Properties", href: "/properties", icon: Building2, module: "PROPERTIES" },
-    { title: "Residents", href: "/residents", icon: Users, module: "RESIDENTS" },
-    { title: "Complaints", href: "/complaints", icon: AlertCircle, module: "COMPLAINTS" },
-    { title: "Laundry", href: "/laundry", icon: WashingMachine, module: "LAUNDRY" },
-    { title: "Communications", href: "/communications", icon: MessageSquare, module: "COMMUNICATIONS" },
-    { title: "Facility", href: "/facility", icon: Wrench, module: "FACILITY" },
-    { title: "Electricity", href: "/electricity", icon: Zap, module: "ELECTRICITY" },
-    { title: "Attendance & Out-pass", href: "/resident-attendance", icon: ClipboardCheck, module: "RESIDENT_ATTENDANCE" },
-    { title: "IoT Devices", href: "/iot", icon: Radio, module: "IOT" },
-  ]},
-  { title: "People", items: [
-    { title: "Employees", href: "/employees", icon: UserCheck, module: "EMPLOYEES" },
-    { title: "Recruitment", href: "/recruitment", icon: Briefcase, module: "RECRUITMENT" },
-    { title: "Learning & Dev", href: "/courses", icon: GraduationCap, module: "LND" },
-  ]},
-  { title: "Supply Chain", items: [
-    { title: "Vendors", href: "/vendors", icon: Truck, module: "VENDORS" },
-    { title: "Indents", href: "/indents", icon: ClipboardList, module: "INDENTS" },
-    { title: "Purchase Orders", href: "/purchase-orders", icon: ShoppingCart, module: "PURCHASE_ORDERS" },
-    { title: "GRN", href: "/grn", icon: PackageCheck, module: "GRN" },
-    { title: "Inventory", href: "/inventory", icon: Boxes, module: "INVENTORY" },
-  ]},
-  { title: "Food", items: [
-    { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES" },
-    { title: "Menu Planning", href: "/menu-planning", icon: CalendarDays, module: "MENU_PLANNING" },
-  ]},
-  { title: "Food Ordering", items: [
-    { title: "Dashboard", href: "/food/dashboard", icon: UtensilsCrossed, module: "FOOD_DASHBOARD" },
-    { title: "My Properties", href: "/food/my-properties", icon: Home, module: "FOOD_DASHBOARD" },
-    { title: "Organization", href: "/food/organization", icon: Network, module: "FOOD_ORG" },
-    { title: "All Orders", href: "/food/orders", icon: ListOrdered, module: "FOOD_ALL_ORDERS" },
-    { title: "Place Order", href: "/food/place-order", icon: FilePlus2, module: "FOOD_PLACE_ORDER" },
-    { title: "Active Guests", href: "/food/guests", icon: Users, module: "FOOD_DASHBOARD" },
-    { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY" },
-    { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH" },
-    { title: "Confirm Delivery", href: "/food/confirm-delivery", icon: CheckCircle2, module: "FOOD_CONFIRM_DELIVERY" },
-    { title: "Waste Tracking", href: "/food/waste", icon: Trash2, module: "FOOD_WASTE_TRACKING" },
-    { title: "Reports", href: "/food/reports", icon: BarChart3, module: "FOOD_REPORTS" },
-    { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS" },
-  ]},
-  { title: "Growth", items: [
-    { title: "Sales CRM", href: "/leads", icon: TrendingUp, module: "SALES_LEADS" },
-    { title: "Property Leads", href: "/property-leads", icon: MapPin, module: "PROPERTY_LEADS" },
-  ]},
-  { title: "Finance", items: [
-    { title: "Ledger", href: "/ledger", icon: BookOpen, module: "LEDGER" },
-    { title: "Payments", href: "/payments", icon: CreditCard, module: "PAYMENTS" },
-    { title: "Wallet", href: "/wallet", icon: Wallet, module: "WALLET" },
-    { title: "Recurring Billing", href: "/billing-cycles", icon: Repeat, module: "BILLING_CYCLES" },
-    { title: "Reminders", href: "/reminders", icon: BellRing, module: "REMINDERS" },
-    { title: "Banking", href: "/banking", icon: Landmark, module: "BANKING" },
-    { title: "Expenses", href: "/expenses", icon: Receipt, module: "EXPENSES" },
-  ]},
-  { title: "Settings", items: [
-    { title: "Users & Roles", href: "/users", icon: Shield, module: "USERS" },
-    { title: "Configuration", href: "/settings", icon: Settings, module: "SETTINGS" },
-  ]}
-];
+const NAV_OPEN_KEY = "uniliv_nav_open"
+const SIDEBAR_KEY = "uniliv_sidebar"
 
 /** Live greeting + date/time/day shown in the topbar (Persona st.37, st.39). */
 function GreetingClock({ name }: { name?: string }) {
-  const [now, setNow] = React.useState(new Date());
+  const [now, setNow] = React.useState(new Date())
   React.useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 15_000);
-    return () => clearInterval(t);
-  }, []);
-  const h = now.getHours();
-  const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
-  const first = name?.split(" ")[0];
-  const dateStr = now.toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "short", year: "numeric" });
-  const timeStr = now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+    const t = setInterval(() => setNow(new Date()), 15_000)
+    return () => clearInterval(t)
+  }, [])
+  const h = now.getHours()
+  const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"
+  const first = name?.split(" ")[0]
+  const dateStr = now.toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "short", year: "numeric" })
+  const timeStr = now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
   return (
     <div className="hidden lg:flex flex-col leading-tight">
       <span className="text-sm font-semibold text-foreground">{greeting}{first ? `, ${first}` : ""}</span>
-      <span className="text-xs text-muted-foreground">{dateStr} · {timeStr}</span>
+      <span className="text-xs text-muted-foreground tabular-nums">{dateStr} · {timeStr}</span>
     </div>
-  );
+  )
 }
 
-export function Layout({ children }: { children: React.ReactNode }) {
-  const [location, setLocation] = useLocation();
-  const { setToken } = useAuthStore();
-  const { propertyId, setPropertyId } = useAppStore();
-  const { me, can } = usePermissions();
-  const { data: propertiesRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
-  const logout = useLogout();
-  const properties = propertiesRes?.data || [];
+function isItemActive(location: string, href: string) {
+  return location === href || (href !== "/" && location.startsWith(href))
+}
 
-  const handleLogout = () => {
-    logout.mutate(undefined, { onSettled: () => { setToken(null); setLocation("/login"); } });
-  };
-
-  const filteredGroups = navGroups
-    .map((g) => ({ ...g, items: g.items.filter((i) => can(i.module, "view")) }))
-    .filter((g) => g.items.length > 0);
-
-  let pageTitle = "Dashboard";
-  filteredGroups.forEach((g) => g.items.forEach((i) => {
-    if (i.href === location || (i.href !== "/" && location.startsWith(i.href))) pageTitle = i.title;
-  }));
-
-  React.useEffect(() => { document.title = `${pageTitle} | Uniliv`; }, [pageTitle]);
-
+/** A single nav link with the gradient active-rail (no layout shift: pl-4 in both states). */
+function NavLink({ item, location, onNavigate }: { item: NavItem; location: string; onNavigate?: () => void }) {
+  const isActive = isItemActive(location, item.href)
   return (
-    <div className="flex h-screen bg-surface overflow-hidden">
-      <div className="w-64 bg-sidebar text-sidebar-foreground flex flex-col h-full shrink-0 border-r border-sidebar shadow-xl z-20 hidden md:flex">
-        <div className="p-5 flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-accent flex items-center justify-center text-accent-foreground font-display font-bold text-lg shadow-sm">U</div>
-          <span className="font-display font-bold text-lg tracking-tight">Uniliv</span>
+    <Link href={item.href}>
+      <span
+        onClick={onNavigate}
+        aria-current={isActive ? "page" : undefined}
+        className={cn(
+          "relative flex items-center gap-3 pl-4 pr-3 py-2 rounded-lg transition-colors cursor-pointer text-sm hover-elevate",
+          isActive
+            ? "text-accent font-semibold bg-accent/5"
+            : "text-sidebar-foreground/70 hover:text-sidebar-foreground",
+        )}
+      >
+        {isActive && <span aria-hidden className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-brand-gradient" />}
+        <item.icon className="w-4 h-4 shrink-0" />
+        <span className="truncate">{item.title}</span>
+      </span>
+    </Link>
+  )
+}
+
+/** Collapsible nav group with persisted open/closed state. */
+function NavGroupSection({
+  group, location, open, onToggle, onNavigate,
+}: {
+  group: NavGroup
+  location: string
+  open: boolean
+  onToggle: (title: string, open: boolean) => void
+  onNavigate?: () => void
+}) {
+  return (
+    <Collapsible open={open} onOpenChange={(o) => onToggle(group.title, o)}>
+      <CollapsibleTrigger className="group/nav flex w-full items-center justify-between px-3 py-1.5 rounded-lg text-[10px] uppercase font-bold tracking-widest text-sidebar-foreground/40 hover:text-sidebar-foreground/70 transition-colors">
+        <span>{group.title}</span>
+        <ChevronDown className={cn("w-3.5 h-3.5 transition-transform duration-200", open ? "" : "-rotate-90")} />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0">
+        <div className="space-y-1 pt-1 pb-1">
+          {group.items.map((item) => (
+            <NavLink key={item.href} item={item} location={location} onNavigate={onNavigate} />
+          ))}
         </div>
-        <div className="px-4 pb-4 border-b border-sidebar-foreground/10">
-          <Select value={propertyId || "all"} onValueChange={(val) => setPropertyId(val === "all" ? null : val)}>
-            <SelectTrigger className="w-full bg-sidebar-foreground/5 border-sidebar-foreground/10 text-sidebar-foreground focus:ring-accent">
-              <SelectValue placeholder="All Properties" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Properties</SelectItem>
-              {properties.map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex-1 overflow-y-auto py-4 scrollbar-thin">
-          <nav className="px-3 space-y-6">
-            {filteredGroups.map((group) => (
-              <div key={group.title}>
-                <h4 className="text-[10px] uppercase text-sidebar-foreground/40 font-bold mb-2 tracking-widest px-3">{group.title}</h4>
-                <div className="space-y-1">
-                  {group.items.map((item) => {
-                    const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
-                    return (
-                      <Link key={item.href} href={item.href}>
-                        <span className={`flex items-center gap-3 px-3 py-2 rounded-md transition-all cursor-pointer text-sm font-medium ${isActive ? 'bg-accent/10 text-accent border-l-4 border-accent' : 'text-sidebar-foreground/70 hover:bg-sidebar-foreground/5 hover:text-sidebar-foreground'}`}>
-                          <item.icon className="w-4 h-4" />
-                          {item.title}
-                        </span>
-                      </Link>
-                    )
-                  })}
-                </div>
-              </div>
-            ))}
-          </nav>
-        </div>
-        <div className="p-4 border-t border-sidebar-foreground/10 mt-auto bg-sidebar/95">
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/** Searchable, scroll-capped property scope selector (Popover + cmdk). */
+function PropertyScope({
+  properties, propertyId, onSelect, className,
+}: {
+  properties: Array<{ id: string; name: string }>
+  propertyId: string | null
+  onSelect: (id: string | null) => void
+  className?: string
+}) {
+  const [open, setOpen] = React.useState(false)
+  const current = properties.find((p) => p.id === propertyId)
+  const label = propertyId ? (current?.name ?? "Property") : "All Properties"
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          role="combobox"
+          aria-expanded={open}
+          aria-label="Select property scope"
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-foreground/[0.04] px-3 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-foreground/[0.07] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+            className,
+          )}
+        >
+          <Building2 className="w-4 h-4 shrink-0 text-sidebar-foreground/60" />
+          <span className="flex-1 truncate text-left">{label}</span>
+          <ChevronsUpDown className="w-4 h-4 shrink-0 text-sidebar-foreground/50" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[--radix-popover-trigger-width] min-w-56 p-0">
+        <Command>
+          <CommandInput placeholder="Search properties…" />
+          <CommandList className="max-h-64">
+            <CommandEmpty>No properties found.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value="All Properties"
+                onSelect={() => { onSelect(null); setOpen(false) }}
+              >
+                <Check className={cn("w-4 h-4", propertyId === null ? "opacity-100" : "opacity-0")} />
+                <span>All Properties</span>
+              </CommandItem>
+              {properties.map((p) => (
+                <CommandItem
+                  key={p.id}
+                  value={p.name}
+                  onSelect={() => { onSelect(p.id); setOpen(false) }}
+                >
+                  <Check className={cn("w-4 h-4", propertyId === p.id ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate">{p.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** Shared sidebar inner content — reused by the desktop rail and the mobile Sheet. */
+function SidebarContent({
+  filteredGroups, location, openGroup, onToggleGroup, properties, propertyId, onSelectProperty,
+  me, sidebarMode, onToggleSidebarMode, onLogout, onNavigate, showFooter = true,
+}: {
+  filteredGroups: NavGroup[]
+  location: string
+  openGroup: string | null
+  onToggleGroup: (title: string, open: boolean) => void
+  properties: Array<{ id: string; name: string }>
+  propertyId: string | null
+  onSelectProperty: (id: string | null) => void
+  me: ReturnType<typeof usePermissions>["me"]
+  sidebarMode: "light" | "espresso"
+  onToggleSidebarMode: () => void
+  onLogout: () => void
+  onNavigate?: () => void
+  showFooter?: boolean
+}) {
+  return (
+    <>
+      <div className="px-4 pb-4 border-b border-sidebar-border">
+        <PropertyScope properties={properties} propertyId={propertyId} onSelect={onSelectProperty} />
+      </div>
+      <div className="flex-1 overflow-y-auto py-3 scrollbar-thin">
+        <nav className="px-3 space-y-1">
+          {filteredGroups.map((group) => (
+            <NavGroupSection
+              key={group.title}
+              group={group}
+              location={location}
+              open={openGroup === group.title}
+              onToggle={onToggleGroup}
+              onNavigate={onNavigate}
+            />
+          ))}
+        </nav>
+      </div>
+      {showFooter && (
+        <div className="p-3 border-t border-sidebar-border mt-auto">
           <div className="flex items-center gap-3">
-            <UserAvatar name={me?.name} className="w-10 h-10 border border-sidebar-foreground/20" fallbackClassName="bg-sidebar-foreground/10 text-sidebar-foreground" />
+            <UserAvatar name={me?.name} className="w-9 h-9 border border-sidebar-border" fallbackClassName="bg-sidebar-foreground/10 text-sidebar-foreground" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{me?.name || "Admin User"}</p>
-              {me?.designation && <p className="text-[11px] text-sidebar-foreground/60 truncate">{me.designation}</p>}
-              <div className="flex items-center mt-0.5">
-                <span className="text-[10px] uppercase tracking-wider bg-accent text-accent-foreground px-2 py-0.5 rounded-full font-bold">{(me?.role || "ADMIN").replace(/_/g, " ")}</span>
-              </div>
+              <p className="text-sm font-medium truncate text-sidebar-foreground">{me?.name || "Admin User"}</p>
+              <p className="text-[11px] text-sidebar-foreground/60 truncate">
+                {(me?.role || "ADMIN").replace(/_/g, " ")}
+              </p>
             </div>
-            <Button variant="ghost" size="icon" onClick={handleLogout} className="text-sidebar-foreground/50 hover:text-destructive hover:bg-destructive/10 shrink-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onToggleSidebarMode}
+              aria-label={sidebarMode === "espresso" ? "Switch to light sidebar" : "Switch to espresso sidebar"}
+              title="Toggle sidebar appearance"
+              className="text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-foreground/10 shrink-0 h-8 w-8"
+            >
+              {sidebarMode === "espresso" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onLogout}
+              aria-label="Log out"
+              className="text-sidebar-foreground/50 hover:text-destructive hover:bg-destructive/10 shrink-0 h-8 w-8"
+            >
               <LogOut className="w-4 h-4" />
             </Button>
           </div>
         </div>
-      </div>
+      )}
+    </>
+  )
+}
+
+function Logo() {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="w-8 h-8 rounded-lg bg-brand-gradient flex items-center justify-center text-white font-display font-bold text-lg">U</div>
+      <span className="font-display font-bold text-lg tracking-tight text-sidebar-foreground">Uniliv</span>
+    </div>
+  )
+}
+
+export function Layout({ children }: { children: React.ReactNode }) {
+  const [location, setLocation] = useLocation()
+  const { setToken } = useAuthStore()
+  const { propertyId, setPropertyId } = useAppStore()
+  const { me, can } = usePermissions()
+  const { data: propertiesRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } })
+  const logout = useLogout()
+  const queryClient = useQueryClient()
+  const properties = (propertiesRes?.data || []) as Array<{ id: string; name: string }>
+
+  const [mobileOpen, setMobileOpen] = React.useState(false)
+
+  // Persisted sidebar appearance (light | espresso).
+  const [sidebarMode, setSidebarMode] = React.useState<"light" | "espresso">(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_KEY) === "espresso" ? "espresso" : "light"
+    } catch { return "light" }
+  })
+  const toggleSidebarMode = React.useCallback(() => {
+    setSidebarMode((prev) => {
+      const next = prev === "espresso" ? "light" : "espresso"
+      try { localStorage.setItem(SIDEBAR_KEY, next) } catch { /* ignore */ }
+      return next
+    })
+  }, [])
+
+  const handleLogout = () => {
+    logout.mutate(undefined, {
+      onSettled: () => {
+        setToken(null)
+        queryClient.clear() // drop all user-scoped cache so the next login starts clean
+        setLocation("/login")
+      },
+    })
+  }
+
+  const filteredGroups = React.useMemo(
+    () => navGroups
+      .map((g) => ({ ...g, items: g.items.filter((i) => can(i.module, "view")) }))
+      .filter((g) => g.items.length > 0),
+    [can],
+  )
+
+  // Flatten permission-filtered nav for the command palette.
+  const commandItems = React.useMemo<CommandNavItem[]>(
+    () => filteredGroups.flatMap((g) =>
+      g.items.map((i) => ({ title: i.title, href: i.href, group: g.title, icon: i.icon })),
+    ),
+    [filteredGroups],
+  )
+
+  // Active item + group, for page title and breadcrumb.
+  const active = React.useMemo(() => {
+    let found: { item: NavItem; group: string } | null = null
+    filteredGroups.forEach((g) => g.items.forEach((i) => {
+      if (isItemActive(location, i.href)) {
+        if (!found || i.href.length > found.item.href.length) found = { item: i, group: g.title }
+      }
+    }))
+    return found as { item: NavItem; group: string } | null
+  }, [filteredGroups, location])
+
+  // Accordion nav: exactly one group open at a time — the active route's group
+  // by default; opening another collapses the rest. Everything else stays shut.
+  const activeGroup = active?.group ?? null
+  const [openGroup, setOpenGroup] = React.useState<string | null>(activeGroup)
+  React.useEffect(() => { if (activeGroup) setOpenGroup(activeGroup) }, [activeGroup])
+  const toggleGroup = React.useCallback((title: string, open: boolean) => {
+    setOpenGroup(open ? title : null)
+  }, [])
+
+  const pageTitle = active?.item.title ?? "Dashboard"
+  // A detail route is a deeper path than the matched nav item (e.g. /residents/:id, /food/orders/:id).
+  const isDetail = !!active && location !== active.item.href && location.startsWith(active.item.href)
+
+  React.useEffect(() => { document.title = `${pageTitle} | Uniliv` }, [pageTitle])
+
+  const sidebarClass = cn(sidebarMode === "espresso" && "sidebar-espresso")
+
+  return (
+    <div className="flex h-screen bg-surface overflow-hidden">
+      {/* Desktop sidebar */}
+      <aside
+        className={cn(
+          "w-64 bg-sidebar text-sidebar-foreground flex flex-col h-full shrink-0 border-r border-sidebar-border z-20 hidden md:flex",
+          sidebarClass,
+        )}
+      >
+        <div className="p-5">
+          <Logo />
+        </div>
+        <SidebarContent
+          filteredGroups={filteredGroups}
+          location={location}
+          openGroup={openGroup}
+          onToggleGroup={toggleGroup}
+          properties={properties}
+          propertyId={propertyId}
+          onSelectProperty={setPropertyId}
+          me={me}
+          sidebarMode={sidebarMode}
+          onToggleSidebarMode={toggleSidebarMode}
+          onLogout={handleLogout}
+        />
+      </aside>
+
+      {/* Mobile nav drawer */}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent
+          side="left"
+          className={cn(
+            "w-72 p-0 bg-sidebar text-sidebar-foreground border-sidebar-border flex flex-col",
+            sidebarClass,
+          )}
+        >
+          <SheetHeader className="p-5 text-left">
+            <SheetTitle asChild>
+              <div><Logo /></div>
+            </SheetTitle>
+          </SheetHeader>
+          <SidebarContent
+            filteredGroups={filteredGroups}
+            location={location}
+            openGroup={openGroup}
+            onToggleGroup={toggleGroup}
+            properties={properties}
+            propertyId={propertyId}
+            onSelectProperty={setPropertyId}
+            me={me}
+            sidebarMode={sidebarMode}
+            onToggleSidebarMode={toggleSidebarMode}
+            onLogout={handleLogout}
+            onNavigate={() => setMobileOpen(false)}
+          />
+        </SheetContent>
+      </Sheet>
 
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <header className="h-16 bg-card border-b border-border flex items-center justify-between px-6 shrink-0 z-10 shadow-sm">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" className="md:hidden"><Menu className="w-5 h-5" /></Button>
-            <h2 className="text-lg font-display font-semibold hidden sm:block">{pageTitle}</h2>
+        <header className="h-16 bg-card border-b border-border flex items-center justify-between px-4 sm:px-6 shrink-0 z-10">
+          <div className="flex items-center gap-3 min-w-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden shrink-0"
+              aria-label="Open navigation"
+              onClick={() => setMobileOpen(true)}
+            >
+              <Menu className="w-5 h-5" />
+            </Button>
+            <div className="min-w-0">
+              {isDetail && active ? (
+                <Breadcrumb>
+                  <BreadcrumbList>
+                    <BreadcrumbItem className="hidden sm:inline-flex">
+                      <BreadcrumbLink asChild>
+                        <Link href={active.item.href}>{active.item.title}</Link>
+                      </BreadcrumbLink>
+                    </BreadcrumbItem>
+                    <BreadcrumbSeparator className="hidden sm:inline-flex" />
+                    <BreadcrumbItem>
+                      <BreadcrumbPage className="font-display font-semibold text-lg text-foreground">Details</BreadcrumbPage>
+                    </BreadcrumbItem>
+                  </BreadcrumbList>
+                </Breadcrumb>
+              ) : (
+                <h2 className="text-lg font-display font-semibold truncate">{pageTitle}</h2>
+              )}
+            </div>
             <div className="hidden lg:block h-8 w-px bg-border" />
             <GreetingClock name={me?.name} />
           </div>
+
           <div className="flex items-center gap-2">
-            <div className="relative hidden md:block w-64 lg:w-80">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input type="search" placeholder="Search residents, complaints..." className="pl-9 bg-surface border-transparent focus-visible:border-accent" />
-            </div>
+            <button
+              type="button"
+              onClick={() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}
+              className="hidden md:flex items-center gap-2 w-56 lg:w-72 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              aria-label="Search (Command-K)"
+            >
+              <Search className="h-4 w-4 shrink-0" />
+              <span className="flex-1 text-left">Search…</span>
+              <kbd className="pointer-events-none hidden lg:inline-flex h-5 select-none items-center gap-0.5 rounded border border-border bg-card px-1.5 font-mono text-[10px] font-medium text-muted-foreground">⌘K</kbd>
+            </button>
             <ThemeToggle />
             <NotificationBell />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+                <Button variant="ghost" className="relative h-8 w-8 rounded-full" aria-label="Account menu">
                   <UserAvatar name={me?.name} className="h-8 w-8" />
                 </Button>
               </DropdownMenuTrigger>
@@ -223,20 +459,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </DropdownMenu>
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto p-6 bg-surface">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-surface">
           <div className="max-w-7xl mx-auto space-y-6">{children}</div>
         </main>
       </div>
+
+      {/* ⌘K command palette — self-manages its own open state. */}
+      <CommandPalette items={commandItems} />
     </div>
-  );
+  )
 }
 
 export function PageGuard({ children }: { children: React.ReactNode }) {
-  const [location] = useLocation();
-  const { me, can } = usePermissions();
-  const Forbidden = React.lazy(() => import("@/pages/forbidden"));
-  const mod = moduleForPath(location);
-  if (!me) return <>{children}</>; // loading — let children render skeleton
-  if (mod && !can(mod, "view")) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>;
-  return <>{children}</>;
+  const [location] = useLocation()
+  const { me, can } = usePermissions()
+  const Forbidden = React.lazy(() => import("@/pages/forbidden"))
+  const mod = moduleForPath(location)
+  if (!me) return <>{children}</> // loading — let children render skeleton
+  if (mod && !can(mod, "view")) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
+  return <>{children}</>
 }

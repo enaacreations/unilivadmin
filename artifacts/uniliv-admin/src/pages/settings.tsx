@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Combobox } from "@/components/ui/combobox";
 import { Badge } from "@/components/ui/badge";
 import { Check, X } from "lucide-react";
 import { apiFetch } from "@/lib/api-fetch";
@@ -18,17 +19,75 @@ import { useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-clien
 
 const COMPLAINT_CATEGORIES = ["ELECTRICAL","PLUMBING","HOUSEKEEPING","INTERNET","SECURITY","FOOD","LAUNDRY","OTHER"];
 
-function GeneralTab() {
+const CURRENCY_OPTIONS = [
+  { value: "INR", label: "INR — Indian Rupee (₹)" },
+  { value: "USD", label: "USD — US Dollar ($)" },
+  { value: "EUR", label: "EUR — Euro (€)" },
+  { value: "GBP", label: "GBP — British Pound (£)" },
+  { value: "AED", label: "AED — UAE Dirham (د.إ)" },
+];
+const TIMEZONE_OPTIONS = [
+  "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London",
+  "America/New_York", "America/Los_Angeles", "UTC",
+].map((tz) => ({ value: tz, label: tz }));
+
+type GeneralSettings = { organization: string; currency: string; timezone: string; supportEmail: string };
+const GENERAL_DEFAULTS: GeneralSettings = { organization: "UNILIV Co-Living", currency: "INR", timezone: "Asia/Kolkata", supportEmail: "support@uniliv.com" };
+
+function GeneralTab({ canEdit }: { canEdit: boolean }) {
+  const { toast } = useToast();
+  const [form, setForm] = React.useState<GeneralSettings>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("uniliv_general_settings") || "{}");
+      return { ...GENERAL_DEFAULTS, ...saved };
+    } catch { return GENERAL_DEFAULTS; }
+  });
+  const [saved, setSaved] = React.useState(form);
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved);
+
+  const onSave = () => {
+    localStorage.setItem("uniliv_general_settings", JSON.stringify(form));
+    setSaved(form);
+    toast({ title: "General settings saved" });
+  };
+
   return (
     <Card>
       <CardHeader><CardTitle>General</CardTitle></CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-4">
-          <div><label className="text-sm font-medium">Organization</label><Input defaultValue="UNILIV Co-Living" /></div>
-          <div><label className="text-sm font-medium">Currency</label><Input defaultValue="INR" disabled /></div>
-          <div><label className="text-sm font-medium">Timezone</label><Input defaultValue="Asia/Kolkata" disabled /></div>
-          <div><label className="text-sm font-medium">Support Email</label><Input defaultValue="support@uniliv.com" /></div>
+          <div>
+            <Label>Organization</Label>
+            <Input value={form.organization} onChange={(e) => setForm((f) => ({ ...f, organization: e.target.value }))} disabled={!canEdit} />
+          </div>
+          <div>
+            <Label>Currency</Label>
+            <Select value={form.currency} onValueChange={(v) => setForm((f) => ({ ...f, currency: v }))} disabled={!canEdit}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>{CURRENCY_OPTIONS.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Timezone</Label>
+            <Combobox
+              options={TIMEZONE_OPTIONS}
+              value={form.timezone}
+              onChange={(v) => setForm((f) => ({ ...f, timezone: v || GENERAL_DEFAULTS.timezone }))}
+              placeholder="Select timezone"
+              searchPlaceholder="Search timezones…"
+              disabled={!canEdit}
+            />
+          </div>
+          <div>
+            <Label>Support Email</Label>
+            <Input type="email" value={form.supportEmail} onChange={(e) => setForm((f) => ({ ...f, supportEmail: e.target.value }))} disabled={!canEdit} />
+          </div>
         </div>
+        {canEdit && (
+          <div className="flex justify-end">
+            <Button onClick={onSave} disabled={!dirty} data-testid="button-save-general">Save Changes</Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -439,7 +498,7 @@ export default function Settings() {
           <TabsTrigger value="electricity-tariffs" data-testid="tab-electricity-tariffs">Electricity Tariffs</TabsTrigger>
           <TabsTrigger value="wallet" data-testid="tab-wallet-settings">Wallet</TabsTrigger>
         </TabsList>
-        <TabsContent value="general"><GeneralTab /></TabsContent>
+        <TabsContent value="general"><GeneralTab canEdit={canEdit} /></TabsContent>
         <TabsContent value="sla"><SLATab canEdit={canEdit} /></TabsContent>
         <TabsContent value="routing"><RoutingTab canEdit={canEdit} /></TabsContent>
         <TabsContent value="notifications"><NotificationsTab /></TabsContent>

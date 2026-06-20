@@ -11,11 +11,12 @@ import { DatePicker } from "@/components/ui/date-picker";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-fetch";
-import { useGetProperties } from "@workspace/api-client-react";
+import { useGetProperties, useGetVendors } from "@workspace/api-client-react";
 import type { ExpenseDto, ExpenseCategoryDto, CreateExpenseBody, ExpenseDtoStatus } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -71,6 +72,8 @@ function ExpensesTab() {
   const categories = catsRes?.data || [];
   const { data: propsRes } = useGetProperties();
   const properties = propsRes?.data || [];
+  const { data: vendorsRes } = useGetVendors();
+  const vendors = vendorsRes?.data || [];
 
   const [open, setOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<ExpenseDto | null>(null);
@@ -127,6 +130,12 @@ function ExpensesTab() {
       amount: form.amount,
     });
   };
+
+  const vendorOptions: ComboboxOption[] = React.useMemo(() => {
+    const names = new Set<string>(vendors.map((v) => v.name));
+    if (form.vendor) names.add(form.vendor);
+    return Array.from(names).sort().map((n) => ({ value: n, label: n }));
+  }, [vendors, form.vendor]);
 
   const statusBadge = (s: ExpenseDtoStatus | string) => {
     const map: Record<string, "success" | "warning" | "destructive" | "outline"> = {
@@ -242,7 +251,18 @@ function ExpensesTab() {
               </SelectContent>
             </Select>
           </div>
-          <div><Label>Vendor</Label><Input value={form.vendor} onChange={e => setForm({...form, vendor: e.target.value})} /></div>
+          <div>
+            <Label>Vendor</Label>
+            <Combobox
+              options={vendorOptions}
+              value={form.vendor || null}
+              onChange={v => setForm({...form, vendor: v || ""})}
+              placeholder="Select vendor"
+              searchPlaceholder="Search vendors…"
+              emptyText="No vendors found."
+              allowClear
+            />
+          </div>
           <div><Label>Reference / Bill No.</Label><Input value={form.reference} onChange={e => setForm({...form, reference: e.target.value})} /></div>
           <div><Label>Description</Label><Textarea rows={3} value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
           <div>

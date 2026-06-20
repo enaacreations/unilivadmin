@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useParams, useLocation, Link } from "wouter";
+import { withQuery } from "@/lib/nav-helpers";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { ArrowLeft, Edit, Plus, Star, FileText, Trash2, AlertTriangle, ExternalLink } from "lucide-react";
@@ -101,7 +102,7 @@ export default function VendorDetail() {
           <RateContractsTab vendorId={id} />
         </TabsContent>
         <TabsContent value="pos" className="mt-4">
-          <POsTab vendorId={id} onView={() => setLocation(`/purchase-orders`)} />
+          <POsTab vendorId={id} onView={(po: any) => setLocation(withQuery("/purchase-orders", { poId: po?.id }))} />
         </TabsContent>
         <TabsContent value="compliance" className="mt-4">
           <ComplianceTab vendorId={id} />
@@ -287,7 +288,7 @@ function RateContractsTab({ vendorId }: { vendorId: string }) {
   );
 }
 
-function POsTab({ vendorId, onView }: { vendorId: string; onView: () => void }) {
+function POsTab({ vendorId, onView }: { vendorId: string; onView: (po: any) => void }) {
   const { data: res, isLoading } = useQuery<{ success: boolean; data: any[] }>({
     queryKey: [`/api/vendors/${vendorId}/purchase-orders`],
     queryFn: () => apiFetch(`/vendors/${vendorId}/purchase-orders`),

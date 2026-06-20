@@ -203,6 +203,9 @@ export const usersTable = pgTable("users", {
   lockedUntil: timestamp("locked_until"),
   mobileVerifiedAt: timestamp("mobile_verified_at"),
   lastLogin: timestamp("last_login"),
+  /** Single active session: the session id stamped into the current access token.
+   *  A new login rotates this, so access/refresh tokens from other devices stop working. */
+  currentSessionId: text("current_session_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

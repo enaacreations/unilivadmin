@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/lib/store";
 import { apiFetch } from "@/lib/api-fetch";
 import { useToast } from "@/hooks/use-toast";
@@ -7,16 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
-import { can, type UserRole } from "@/lib/permissions";
-import { ArrowLeft, Eye, EyeOff, Loader2, ShieldCheck, Smartphone, UtensilsCrossed } from "lucide-react";
-
-/** Where to land a user after login, based on what their role can actually view. */
-function homeForRole(role?: string): string {
-  const r = role as UserRole | undefined;
-  if (can(r, "DASHBOARD", "view")) return "/";
-  if (can(r, "FOOD_DASHBOARD", "view")) return "/food/dashboard";
-  return "/";
-}
+import { homeForRole, type UserRole } from "@/lib/permissions";
+import { useQueryParam } from "@/lib/nav-helpers";
+import { AlertTriangle, ArrowLeft, Eye, EyeOff, Loader2, ShieldCheck, Smartphone, UtensilsCrossed } from "lucide-react";
 
 type View = "login" | "otp" | "forgot-username" | "forgot-password" | "reset" | "username-result";
 type OtpFlow = "LOGIN" | "FORGOT_USERNAME" | "FORGOT_PASSWORD";
@@ -71,6 +65,8 @@ export default function Login() {
   const [, setLocation] = useLocation();
   const { setToken } = useAuthStore();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const reason = useQueryParam("reason"); // "replaced" | "expired" — why we were bounced here
 
   const [view, setView] = useState<View>("login");
   const [busy, setBusy] = useState(false);
@@ -116,9 +112,10 @@ export default function Login() {
     try {
       if (flow === "LOGIN") {
         const res = await auth.verifyOtp(challenge.challengeId, c);
+        queryClient.clear(); // never inherit a previous user's cached identity/data
         setToken(res.accessToken);
         toast({ title: `Welcome back, ${res.user?.name?.split(" ")[0] ?? ""}`.trim() });
-        setLocation(homeForRole(res.user?.role));
+        setLocation(homeForRole(res.user?.role as UserRole | undefined));
       } else if (flow === "FORGOT_USERNAME") {
         const res = await auth.forgotUsernameVerify(challenge.challengeId, c);
         setResultUsername(res.data.username);
@@ -212,6 +209,17 @@ export default function Login() {
       <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-surface">
         <div className="w-full max-w-md space-y-8">
           <div className="lg:hidden w-12 h-12 rounded bg-accent flex items-center justify-center text-accent-foreground font-display font-bold text-xl shadow-lg mx-auto">U</div>
+
+          {reason && (
+            <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-warning" />
+              <span className="text-foreground">
+                {reason === "replaced"
+                  ? "You were signed out because your account was signed in on another device. Only one active session is allowed at a time."
+                  : "Your session has expired. Please sign in again."}
+              </span>
+            </div>
+          )}
 
           {view === "login" && (
             <>

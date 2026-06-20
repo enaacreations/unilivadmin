@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { cn } from "@/lib/utils"
 
 import {
   ColumnDef,
@@ -44,6 +45,14 @@ interface DataTableProps<TData, TValue> {
   exportFilename?: string
   /** Hide the built-in Export button. */
   hideExport?: boolean
+  /**
+   * Caps the height of the scrollable table body so pages stop long-scrolling.
+   * The toolbar stays pinned above and the pagination footer stays pinned below;
+   * only the rows scroll, beneath a sticky header. Accepts any CSS length
+   * (e.g. "58vh", "480px"). Pass `false` to disable bounding and let the table
+   * grow to its natural height. Defaults to `"58vh"`.
+   */
+  maxBodyHeight?: string | false
 }
 
 export function DataTable<TData, TValue>({
@@ -56,6 +65,7 @@ export function DataTable<TData, TValue>({
   toolbarActions,
   exportFilename = "export",
   hideExport = false,
+  maxBodyHeight = "58vh",
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>([])
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([])
@@ -174,26 +184,50 @@ export function DataTable<TData, TValue>({
       </div>
       
       <div className="rounded-md border bg-card">
-        <Table>
-          <TableHeader>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header) => {
-                  return (
-                    <TableHead key={header.id}>
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(
-                            header.column.columnDef.header,
-                            header.getContext()
-                          )}
-                    </TableHead>
-                  )
-                })}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
+        {/*
+          Scroll region. The base <Table> wraps itself in its own
+          `overflow-auto` div; we flatten that to `overflow-visible`
+          (`[&>div]:overflow-visible`) so THIS div is the single scroll parent.
+          That matters because a `sticky` <thead> sticks to its nearest
+          scroll-clipping ancestor — we want it sticking to this height-capped
+          container, not the inner wrapper. Horizontal overflow always works;
+          vertical height is capped at `maxBodyHeight` unless it's `false`.
+          `overscroll-contain` keeps wheel momentum from bubbling to the page.
+        */}
+        <div
+          className={cn(
+            "w-full [&>div]:overflow-visible",
+            maxBodyHeight !== false
+              ? "overflow-auto overscroll-contain"
+              : "overflow-x-auto"
+          )}
+          style={maxBodyHeight !== false ? { maxHeight: maxBodyHeight } : undefined}
+        >
+          <Table>
+            <TableHeader
+              className={cn(
+                maxBodyHeight !== false &&
+                  "sticky top-0 z-10 bg-card [&_tr]:border-b [&_tr]:border-border"
+              )}
+            >
+              {table.getHeaderGroups().map((headerGroup) => (
+                <TableRow key={headerGroup.id}>
+                  {headerGroup.headers.map((header) => {
+                    return (
+                      <TableHead key={header.id}>
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(
+                              header.column.columnDef.header,
+                              header.getContext()
+                            )}
+                      </TableHead>
+                    )
+                  })}
+                </TableRow>
+              ))}
+            </TableHeader>
+            <TableBody>
             {isLoading ? (
               Array.from({ length: 5 }).map((_, index) => (
                 <TableRow key={index}>
@@ -229,8 +263,9 @@ export function DataTable<TData, TValue>({
                 </TableCell>
               </TableRow>
             )}
-          </TableBody>
-        </Table>
+            </TableBody>
+          </Table>
+        </div>
       </div>
 
       <div className="flex items-center justify-between px-2">

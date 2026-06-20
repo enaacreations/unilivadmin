@@ -19,6 +19,9 @@ import { FormModal } from "@/components/ui/form-modal";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
+import { TimePicker } from "@/components/ui/time-picker";
+import { NumberStepper } from "@/components/ui/number-stepper";
 import { useToast } from "@/hooks/use-toast";
 import { apiDownload } from "@/lib/api-fetch";
 import { Download } from "lucide-react";
@@ -97,19 +100,21 @@ export default function FoodSettings() {
       />
 
       <Tabs defaultValue="dishes" className="space-y-4">
-        <TabsList className="flex-wrap h-auto">
-          <TabsTrigger value="dishes"><UtensilsCrossed className="h-4 w-4 mr-2" /> Dishes</TabsTrigger>
-          <TabsTrigger value="raw-materials"><Boxes className="h-4 w-4 mr-2" /> Raw Materials</TabsTrigger>
-          <TabsTrigger value="rotation"><CalendarRange className="h-4 w-4 mr-2" /> Menu Rotation</TabsTrigger>
-          <TabsTrigger value="composition"><SlidersHorizontal className="h-4 w-4 mr-2" /> Menu Rules</TabsTrigger>
-          <TabsTrigger value="rules"><Scale className="h-4 w-4 mr-2" /> Per-Resident Rules</TabsTrigger>
-          <TabsTrigger value="partners"><Truck className="h-4 w-4 mr-2" /> Agencies</TabsTrigger>
-          <TabsTrigger value="kitchens"><ChefHat className="h-4 w-4 mr-2" /> Kitchens</TabsTrigger>
-          <TabsTrigger value="meals"><ListChecks className="h-4 w-4 mr-2" /> Meal Types</TabsTrigger>
-          <TabsTrigger value="cutoffs"><Clock className="h-4 w-4 mr-2" /> Cut-offs & Service</TabsTrigger>
-          <TabsTrigger value="hierarchy"><Network className="h-4 w-4 mr-2" /> Hierarchy</TabsTrigger>
-          <TabsTrigger value="users"><ShieldCheck className="h-4 w-4 mr-2" /> Users & Scopes</TabsTrigger>
-        </TabsList>
+        <div className="sticky top-0 z-10 -mx-1 bg-background px-1 pb-1">
+          <TabsList className="flex w-full flex-nowrap justify-start gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <TabsTrigger value="dishes" className="shrink-0 whitespace-nowrap"><UtensilsCrossed className="h-4 w-4 mr-2" /> Dishes</TabsTrigger>
+            <TabsTrigger value="raw-materials" className="shrink-0 whitespace-nowrap"><Boxes className="h-4 w-4 mr-2" /> Raw Materials</TabsTrigger>
+            <TabsTrigger value="rotation" className="shrink-0 whitespace-nowrap"><CalendarRange className="h-4 w-4 mr-2" /> Menu Rotation</TabsTrigger>
+            <TabsTrigger value="composition" className="shrink-0 whitespace-nowrap"><SlidersHorizontal className="h-4 w-4 mr-2" /> Menu Rules</TabsTrigger>
+            <TabsTrigger value="rules" className="shrink-0 whitespace-nowrap"><Scale className="h-4 w-4 mr-2" /> Per-Resident Rules</TabsTrigger>
+            <TabsTrigger value="partners" className="shrink-0 whitespace-nowrap"><Truck className="h-4 w-4 mr-2" /> Agencies</TabsTrigger>
+            <TabsTrigger value="kitchens" className="shrink-0 whitespace-nowrap"><ChefHat className="h-4 w-4 mr-2" /> Kitchens</TabsTrigger>
+            <TabsTrigger value="meals" className="shrink-0 whitespace-nowrap"><ListChecks className="h-4 w-4 mr-2" /> Meal Types</TabsTrigger>
+            <TabsTrigger value="cutoffs" className="shrink-0 whitespace-nowrap"><Clock className="h-4 w-4 mr-2" /> Cut-offs & Service</TabsTrigger>
+            <TabsTrigger value="hierarchy" className="shrink-0 whitespace-nowrap"><Network className="h-4 w-4 mr-2" /> Hierarchy</TabsTrigger>
+            <TabsTrigger value="users" className="shrink-0 whitespace-nowrap"><ShieldCheck className="h-4 w-4 mr-2" /> Users & Scopes</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="dishes"><DishesTab /></TabsContent>
         <TabsContent value="raw-materials"><RawMaterialsTab /></TabsContent>
@@ -584,7 +589,10 @@ function RotationTab() {
             </div>
             <div>
               <Label>Rotation Week</Label>
-              <Input type="number" min={1} value={form.rotationWeek} onChange={(e) => setForm({ ...form, rotationWeek: Number(e.target.value) })} />
+              <Select value={String(form.rotationWeek)} onValueChange={(v) => setForm({ ...form, rotationWeek: Number(v) })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{[1, 2, 3, 4].map((w) => <SelectItem key={w} value={String(w)}>Week {w}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
             <div>
               <Label>Day of Week</Label>
@@ -650,7 +658,7 @@ function RotationTab() {
             </div>
             <div>
               <Label>Sort Order {editing ? "" : "(start)"}</Label>
-              <Input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: Number(e.target.value) })} />
+              <div><NumberStepper value={form.sortOrder} onChange={(n) => setForm({ ...form, sortOrder: n })} min={0} /></div>
             </div>
           </div>
         </div>
@@ -722,29 +730,31 @@ function CompositionRulesTab() {
       {isLoading ? <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
         : rules.length === 0 ? <p className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">No composition rules yet. Add one to guide menu building.</p>
         : (
-        <div className="space-y-2">
-          {rules.map((r) => (
-            <div key={r.id} className="rounded-md border p-3">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-[10px]">{r.brand}</Badge>
-                <span className="text-sm font-medium">{MEAL_LABEL[r.mealType as MealType] ?? r.mealType}</span>
-                {r.name && <span className="text-xs text-muted-foreground">· {r.name}</span>}
-                <Badge variant="secondary" className="text-[10px]">{kitchenName(r.kitchenId)}</Badge>
-                <div className="ml-auto flex items-center gap-1">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(r)}><Trash2 className="h-3.5 w-3.5" /></Button>
+        <BoundedScroll size="lg">
+          <div className="space-y-2 pr-3">
+            {rules.map((r) => (
+              <div key={r.id} className="rounded-md border p-3">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-[10px]">{r.brand}</Badge>
+                  <span className="text-sm font-medium">{MEAL_LABEL[r.mealType as MealType] ?? r.mealType}</span>
+                  {r.name && <span className="text-xs text-muted-foreground">· {r.name}</span>}
+                  <Badge variant="secondary" className="text-[10px]">{kitchenName(r.kitchenId)}</Badge>
+                  <div className="ml-auto flex items-center gap-1">
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(r)}><Pencil className="h-3.5 w-3.5" /></Button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(r)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {r.slots.sort((a, b) => a.sortOrder - b.sortOrder).map((s) => (
+                    <Badge key={s.id} variant="outline" className="text-[10px]">
+                      {s.slotLabel || labelize(s.component || s.preparation || "any")} ×{s.minCount}{s.maxCount ? `–${s.maxCount}` : ""}
+                    </Badge>
+                  ))}
                 </div>
               </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {r.slots.sort((a, b) => a.sortOrder - b.sortOrder).map((s) => (
-                  <Badge key={s.id} variant="outline" className="text-[10px]">
-                    {s.slotLabel || labelize(s.component || s.preparation || "any")} ×{s.minCount}{s.maxCount ? `–${s.maxCount}` : ""}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </BoundedScroll>
       )}
 
       <FormModal open={open} onOpenChange={setOpen} title={editing ? "Edit Composition Rule" : "Add Composition Rule"} onSave={() => save.mutate()} isSaving={save.isPending} saveLabel={editing ? "Save" : "Create"}>
@@ -801,7 +811,7 @@ function CompositionRulesTab() {
                   </div>
                   <div>
                     <Label className="text-[10px]">Min</Label>
-                    <Input type="number" min={0} value={s.minCount} onChange={(e) => updateSlot(i, { minCount: Number(e.target.value) })} className="h-8 w-16" />
+                    <NumberStepper value={s.minCount} onChange={(n) => updateSlot(i, { minCount: n })} min={0} className="h-8" aria-label="Minimum count" />
                   </div>
                   <div>
                     <Label className="text-[10px]">Max</Label>
@@ -1431,20 +1441,26 @@ function CutoffConfigPanel({ properties, propName }: { properties: FoodLookups["
         </div>
         <Button size="sm" onClick={openAdd}><Plus className="h-4 w-4 mr-1" /> Add cut-off</Button>
       </CardHeader>
-      <CardContent className="space-y-1">
+      <CardContent>
         {isLoading ? <p className="py-4 text-sm text-muted-foreground">Loading…</p>
           : rows.length === 0 ? <p className="py-4 text-sm text-muted-foreground">No cut-off set — orders never close. Add one.</p>
-          : rows.map((c) => (
-            <div key={c.id} className="flex items-center gap-3 rounded-md border px-3 py-2">
-              <Badge variant="outline" className="text-[10px]">{c.brand}</Badge>
-              {c.propertyId
-                ? <span className="text-sm inline-flex items-center gap-1"><Building2 className="h-3.5 w-3.5 text-muted-foreground" />{propName(c.propertyId)}</span>
-                : <Badge variant="secondary" className="text-[10px]"><Globe className="h-3 w-3 mr-1" /> GLOBAL</Badge>}
-              <span className="ml-auto font-mono text-sm inline-flex items-center gap-1"><Clock className="h-3.5 w-3.5 text-muted-foreground" />{c.cutoffTime}</span>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(c)}><Pencil className="h-3.5 w-3.5" /></Button>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(c)}><Trash2 className="h-3.5 w-3.5" /></Button>
-            </div>
-          ))}
+          : (
+            <BoundedScroll size="lg">
+              <div className="space-y-1 pr-3">
+                {rows.map((c) => (
+                  <div key={c.id} className="flex items-center gap-3 rounded-md border px-3 py-2">
+                    <Badge variant="outline" className="text-[10px]">{c.brand}</Badge>
+                    {c.propertyId
+                      ? <span className="text-sm inline-flex items-center gap-1"><Building2 className="h-3.5 w-3.5 text-muted-foreground" />{propName(c.propertyId)}</span>
+                      : <Badge variant="secondary" className="text-[10px]"><Globe className="h-3 w-3 mr-1" /> GLOBAL</Badge>}
+                    <span className="ml-auto font-mono text-sm inline-flex items-center gap-1"><Clock className="h-3.5 w-3.5 text-muted-foreground" />{c.cutoffTime}</span>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(c)}><Pencil className="h-3.5 w-3.5" /></Button>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(c)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                  </div>
+                ))}
+              </div>
+            </BoundedScroll>
+          )}
       </CardContent>
 
       <FormModal open={open} onOpenChange={setOpen} title={editing ? "Edit Cut-off" : "Add Cut-off"} onSave={() => { if (!form.cutoffTime.trim()) { toast({ title: "Cut-off time required", variant: "destructive" }); return; } save.mutate(); }} isSaving={save.isPending} saveLabel={editing ? "Save" : "Add"}>
@@ -1459,7 +1475,7 @@ function CutoffConfigPanel({ properties, propName }: { properties: FoodLookups["
             </div>
             <div>
               <Label>Cut-off Time *</Label>
-              <Input value={form.cutoffTime} onChange={(e) => setForm({ ...form, cutoffTime: e.target.value })} className="font-mono" placeholder="HH:MM" />
+              <TimePicker value={form.cutoffTime} onChange={(v) => setForm({ ...form, cutoffTime: v })} stepMinutes={15} placeholder="Select cut-off" />
             </div>
           </div>
           <div>
@@ -1584,11 +1600,11 @@ function CutoffWindowsTab({ properties, propName }: { properties: FoodLookups["p
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Service Time</Label>
-              <Input value={form.serviceTime} onChange={(e) => setForm({ ...form, serviceTime: e.target.value })} className="font-mono" placeholder="HH:MM" />
+              <TimePicker value={form.serviceTime} onChange={(v) => setForm({ ...form, serviceTime: v })} stepMinutes={15} placeholder="Select time" />
             </div>
             <div>
               <Label>Lead (min)</Label>
-              <Input type="number" min={0} value={form.leadTimeMinutes} onChange={(e) => setForm({ ...form, leadTimeMinutes: Number(e.target.value) })} />
+              <div><NumberStepper value={form.leadTimeMinutes} onChange={(n) => setForm({ ...form, leadTimeMinutes: n })} min={0} step={5} /></div>
             </div>
           </div>
           <div>

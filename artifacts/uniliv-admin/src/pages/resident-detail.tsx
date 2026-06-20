@@ -33,6 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { UserAvatar } from "@/components/ui/user-avatar";
 import { FormModal } from "@/components/ui/form-modal";
 import { DataTable } from "@/components/data-table";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import {
   Select,
   SelectContent,
@@ -80,18 +81,20 @@ function ResidentAttendanceHistory({ residentId }: { residentId: string }) {
         {isLoading ? <div className="p-6"><Skeleton className="h-24" /></div> : records.length === 0 ? (
           <div className="p-12 text-center text-muted-foreground">No attendance records yet.</div>
         ) : (
-          <Table>
-            <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Status</TableHead><TableHead>Notes</TableHead></TableRow></TableHeader>
-            <TableBody>
-              {records.map((r) => (
-                <TableRow key={r.id} data-testid={`history-row-${r.id}`}>
-                  <TableCell className="text-xs">{format(new Date(r.attendanceDate), "dd MMM yyyy")}</TableCell>
-                  <TableCell><Badge variant={r.status === "PRESENT" ? "default" : r.status === "ABSENT" ? "destructive" : "secondary"}>{r.status}</Badge></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{r.notes || "—"}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <BoundedScroll size="md">
+            <Table>
+              <TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead>Date</TableHead><TableHead>Status</TableHead><TableHead>Notes</TableHead></TableRow></TableHeader>
+              <TableBody>
+                {records.map((r) => (
+                  <TableRow key={r.id} data-testid={`history-row-${r.id}`}>
+                    <TableCell className="text-xs">{format(new Date(r.attendanceDate), "dd MMM yyyy")}</TableCell>
+                    <TableCell><Badge variant={r.status === "PRESENT" ? "default" : r.status === "ABSENT" ? "destructive" : "secondary"}>{r.status}</Badge></TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{r.notes || "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </BoundedScroll>
         )}
       </CardContent></Card>
     </div>
@@ -331,34 +334,36 @@ export default function ResidentDetail() {
             </CardContent>
           </Card>
           <div className="rounded-md border bg-card">
-            <Table>
-              <TableHeader className="bg-surface/50">
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead className="text-right">Debit</TableHead>
-                  <TableHead className="text-right">Credit</TableHead>
-                  <TableHead className="text-right">Balance</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {ledgerWithBalance.length === 0 ? (
-                  <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No entries</TableCell></TableRow>
-                ) : (
-                  ledgerWithBalance.map((e) => (
-                    <TableRow key={e.id}>
-                      <TableCell>{new Date(e.createdAt).toLocaleDateString()}</TableCell>
-                      <TableCell><Badge variant="secondary" className="text-xs">{e.type}</Badge></TableCell>
-                      <TableCell>{e.description}</TableCell>
-                      <TableCell className="text-right text-destructive font-mono">{e.debit ? `₹${e.debit.toLocaleString("en-IN")}` : "—"}</TableCell>
-                      <TableCell className="text-right text-success font-mono">{e.credit ? `₹${e.credit.toLocaleString("en-IN")}` : "—"}</TableCell>
-                      <TableCell className="text-right font-mono font-semibold">₹{e.balance.toLocaleString("en-IN")}</TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+            <BoundedScroll size="md">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-surface">
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead className="text-right">Debit</TableHead>
+                    <TableHead className="text-right">Credit</TableHead>
+                    <TableHead className="text-right">Balance</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {ledgerWithBalance.length === 0 ? (
+                    <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No entries</TableCell></TableRow>
+                  ) : (
+                    ledgerWithBalance.map((e) => (
+                      <TableRow key={e.id}>
+                        <TableCell>{new Date(e.createdAt).toLocaleDateString()}</TableCell>
+                        <TableCell><Badge variant="secondary" className="text-xs">{e.type}</Badge></TableCell>
+                        <TableCell>{e.description}</TableCell>
+                        <TableCell className="text-right text-destructive font-mono">{e.debit ? `₹${e.debit.toLocaleString("en-IN")}` : "—"}</TableCell>
+                        <TableCell className="text-right text-success font-mono">{e.credit ? `₹${e.credit.toLocaleString("en-IN")}` : "—"}</TableCell>
+                        <TableCell className="text-right font-mono font-semibold">₹{e.balance.toLocaleString("en-IN")}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </BoundedScroll>
           </div>
         </TabsContent>
 
@@ -655,32 +660,34 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
           {txns.length === 0 ? (
             <div className="p-12 text-center text-muted-foreground">No transactions yet</div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead className="text-right">Balance After</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {txns.map((t) => (
-                  <TableRow key={t.id}>
-                    <TableCell className="text-xs">{format(new Date(t.createdAt), "dd MMM yy HH:mm")}</TableCell>
-                    <TableCell>{txTypeBadge(t.type)}</TableCell>
-                    <TableCell className="text-sm">{t.description}</TableCell>
-                    <TableCell className={`text-right font-mono text-sm ${isCredit(t.type) ? "text-green-600" : "text-red-600"}`}>
-                      {isCredit(t.type) ? "+" : "−"}₹{t.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-sm">
-                      ₹{t.balanceAfter.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-                    </TableCell>
+            <BoundedScroll size="md">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-card">
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                    <TableHead className="text-right">Balance After</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {txns.map((t) => (
+                    <TableRow key={t.id}>
+                      <TableCell className="text-xs">{format(new Date(t.createdAt), "dd MMM yy HH:mm")}</TableCell>
+                      <TableCell>{txTypeBadge(t.type)}</TableCell>
+                      <TableCell className="text-sm">{t.description}</TableCell>
+                      <TableCell className={`text-right font-mono text-sm ${isCredit(t.type) ? "text-green-600" : "text-red-600"}`}>
+                        {isCredit(t.type) ? "+" : "−"}₹{t.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-sm">
+                        ₹{t.balanceAfter.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </BoundedScroll>
           )}
         </CardContent>
       </Card>

@@ -10,8 +10,8 @@ import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NumberStepper } from "@/components/ui/number-stepper";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -361,18 +361,18 @@ function ConfirmDeliverySheet({
                               Ordered: {fmtQty(e.orderedQty, e.unit)}
                             </p>
                           </div>
-                          <div className="shrink-0 w-40">
+                          <div className="shrink-0">
                             <Label className="text-[10px] uppercase text-muted-foreground">
                               Received ({e.unit.toLowerCase()})
                             </Label>
-                            <Input
-                              type="number"
+                            <NumberStepper
+                              value={Number(e.value)}
                               min={0}
                               max={e.orderedQty}
-                              step="any"
-                              value={e.value}
-                              onChange={(ev) => setValue(e.itemId, ev.target.value)}
-                              className={err ? "border-destructive" : ""}
+                              step={0.001}
+                              onChange={(n) => setValue(e.itemId, String(n))}
+                              aria-label={`${e.dishName} received quantity`}
+                              className={err ? "mt-1 border-destructive" : "mt-1"}
                             />
                           </div>
                         </div>

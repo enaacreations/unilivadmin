@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { FormModal } from "@/components/ui/form-modal";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { useToast } from "@/hooks/use-toast";
 import { ShieldCheck, Plus } from "lucide-react";
 
@@ -88,7 +89,8 @@ export function ResidentKycTab({ residentId }: { residentId: string }) {
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-2">
+        <BoundedScroll size="md" className="-mx-1 px-1">
+          <div className="space-y-2">
           {rows.map((r) => (
             <Card key={r.id} data-testid={`kyc-row-${r.id}`}>
               <CardContent className="p-4 flex items-center justify-between gap-4">
@@ -135,7 +137,8 @@ export function ResidentKycTab({ residentId }: { residentId: string }) {
               </CardContent>
             </Card>
           ))}
-        </div>
+          </div>
+        </BoundedScroll>
       )}
 
       <CreateKycModal open={createOpen} onOpenChange={setCreateOpen} residentId={residentId} />

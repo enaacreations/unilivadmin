@@ -15,6 +15,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { FormModal } from "@/components/ui/form-modal";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { Radio, Plus, KeyRound, Activity, Wifi, WifiOff, Copy } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format, formatDistanceToNow } from "date-fns";
@@ -114,8 +115,9 @@ export default function IoTPage() {
             {isLoading ? <div className="p-8 text-center text-muted-foreground">Loading...</div> : devices.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No devices registered yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">Name</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Adapter</th><th className="px-4 py-3">Property / Room</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Last Seen</th><th />
                 </tr></thead>
                 <tbody>
@@ -135,11 +137,13 @@ export default function IoTPage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
 
         <TabsContent value="live" className="space-y-4">
+          <BoundedScroll size="lg">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {latest.length === 0 ? <div className="col-span-3 p-12 text-center text-muted-foreground">No data yet.</div> : latest.map((l) => {
               const seenMs = l.lastSeenAt ? Date.now() - new Date(l.lastSeenAt).getTime() : null;
@@ -164,6 +168,7 @@ export default function IoTPage() {
               );
             })}
           </div>
+          </BoundedScroll>
         </TabsContent>
 
         <TabsContent value="readings" className="space-y-4">
@@ -171,8 +176,9 @@ export default function IoTPage() {
             {readings.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No telemetry yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">When</th><th className="px-4 py-3">Device</th><th className="px-4 py-3">Metric</th><th className="px-4 py-3">Value</th>
                 </tr></thead>
                 <tbody>
@@ -186,6 +192,7 @@ export default function IoTPage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>

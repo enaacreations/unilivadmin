@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NumberStepper } from "@/components/ui/number-stepper";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -371,15 +372,14 @@ function WasteSheet({
                           </div>
                           <div>
                             <Label className="text-xs text-muted-foreground">Wasted ({it.unit.toLowerCase()})</Label>
-                            <Input
-                              type="number"
+                            <NumberStepper
+                              value={draft[it.id] === "" || draft[it.id] === undefined ? 0 : Number(draft[it.id])}
                               min={0}
                               max={Number(it.orderedQty)}
-                              step="any"
-                              value={draft[it.id] ?? ""}
-                              placeholder="0"
+                              step={0.001}
                               disabled={locked}
-                              onChange={(e) => setDraft((d) => ({ ...d, [it.id]: e.target.value }))}
+                              onChange={(n) => setDraft((d) => ({ ...d, [it.id]: String(n) }))}
+                              aria-label={`${it.dishName || it.dishId} wasted quantity`}
                               className={`mt-1 ${err ? "border-destructive focus-visible:ring-destructive" : ""}`}
                             />
                             {err && <p className="text-xs text-destructive mt-1 flex items-center gap-1"><AlertTriangle className="h-3 w-3" /> {err}</p>}

@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { NumberStepper } from "@/components/ui/number-stepper";
 import { MapPin, Loader2 } from "lucide-react";
 import {
   Select,
@@ -33,6 +35,52 @@ import {
   type PortfolioType,
   type PortfolioAttributes,
 } from "@/lib/portfolio-types";
+
+const INDIAN_STATES: string[] = [
+  // 28 states
+  "Andhra Pradesh",
+  "Arunachal Pradesh",
+  "Assam",
+  "Bihar",
+  "Chhattisgarh",
+  "Goa",
+  "Gujarat",
+  "Haryana",
+  "Himachal Pradesh",
+  "Jharkhand",
+  "Karnataka",
+  "Kerala",
+  "Madhya Pradesh",
+  "Maharashtra",
+  "Manipur",
+  "Meghalaya",
+  "Mizoram",
+  "Nagaland",
+  "Odisha",
+  "Punjab",
+  "Rajasthan",
+  "Sikkim",
+  "Tamil Nadu",
+  "Telangana",
+  "Tripura",
+  "Uttar Pradesh",
+  "Uttarakhand",
+  "West Bengal",
+  // 8 union territories
+  "Andaman and Nicobar Islands",
+  "Chandigarh",
+  "Dadra and Nagar Haveli and Daman and Diu",
+  "Delhi",
+  "Jammu and Kashmir",
+  "Ladakh",
+  "Lakshadweep",
+  "Puducherry",
+];
+
+const STATE_OPTIONS: ComboboxOption[] = INDIAN_STATES.map((s) => ({
+  value: s,
+  label: s,
+}));
 
 const AMENITIES = [
   "Wifi",
@@ -286,33 +334,62 @@ export function PropertyFormModal({
           </div>
           <div>
             <Label>State *</Label>
-            <Input data-testid="input-property-state" {...register("state")} />
+            <Combobox
+              options={STATE_OPTIONS}
+              value={watch("state") || null}
+              onChange={(v) =>
+                setValue("state", v ?? "", {
+                  shouldValidate: true,
+                  shouldDirty: true,
+                })
+              }
+              placeholder="Select state"
+              searchPlaceholder="Search states…"
+              emptyText="No state found."
+            />
             {errors.state && (
               <p className="text-xs text-destructive mt-1">{errors.state.message}</p>
             )}
           </div>
           <div>
             <Label>Pincode *</Label>
-            <Input data-testid="input-property-pincode" {...register("pincode")} />
+            <Input
+              data-testid="input-property-pincode"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="560001"
+              {...register("pincode", {
+                onChange: (e) => {
+                  e.target.value = e.target.value.replace(/\D/g, "").slice(0, 6);
+                },
+              })}
+            />
             {errors.pincode && (
               <p className="text-xs text-destructive mt-1">{errors.pincode.message}</p>
             )}
           </div>
           <div>
             <Label>Total Beds *</Label>
-            <Input
-              data-testid="input-property-beds"
-              type="number"
-              min={1}
-              {...register("totalBeds")}
-            />
+            <div className="mt-1">
+              <NumberStepper
+                value={Number(watch("totalBeds")) || 0}
+                onChange={(n) =>
+                  setValue("totalBeds", n, {
+                    shouldValidate: true,
+                    shouldDirty: true,
+                  })
+                }
+                min={0}
+                aria-label="Total beds"
+              />
+            </div>
             {errors.totalBeds && (
               <p className="text-xs text-destructive mt-1">{errors.totalBeds.message}</p>
             )}
           </div>
           <div>
             <Label>Phone</Label>
-            <Input data-testid="input-property-phone" {...register("phone")} />
+            <Input data-testid="input-property-phone" type="tel" {...register("phone")} />
             {errors.phone && (
               <p className="text-xs text-destructive mt-1">{errors.phone.message}</p>
             )}
@@ -450,69 +527,53 @@ export function PropertyFormModal({
               {attrFields.includes("deskCapacity") && (
                 <div>
                   <Label className="text-xs">Desk Capacity</Label>
-                  <Input
-                    data-testid="input-attr-desk-capacity"
-                    type="number"
-                    min={0}
-                    value={attrs.deskCapacity ?? ""}
-                    onChange={(e) =>
-                      setAttr(
-                        "deskCapacity",
-                        e.target.value === "" ? undefined : Number(e.target.value)
-                      )
-                    }
-                  />
+                  <div className="mt-1">
+                    <NumberStepper
+                      aria-label="Desk capacity"
+                      value={attrs.deskCapacity ?? 0}
+                      min={0}
+                      onChange={(n) => setAttr("deskCapacity", n)}
+                    />
+                  </div>
                 </div>
               )}
               {attrFields.includes("privateOfficeCount") && (
                 <div>
                   <Label className="text-xs">Private Offices</Label>
-                  <Input
-                    data-testid="input-attr-private-offices"
-                    type="number"
-                    min={0}
-                    value={attrs.privateOfficeCount ?? ""}
-                    onChange={(e) =>
-                      setAttr(
-                        "privateOfficeCount",
-                        e.target.value === "" ? undefined : Number(e.target.value)
-                      )
-                    }
-                  />
+                  <div className="mt-1">
+                    <NumberStepper
+                      aria-label="Private offices"
+                      value={attrs.privateOfficeCount ?? 0}
+                      min={0}
+                      onChange={(n) => setAttr("privateOfficeCount", n)}
+                    />
+                  </div>
                 </div>
               )}
               {attrFields.includes("seatCapacity") && (
                 <div>
                   <Label className="text-xs">Seat Capacity</Label>
-                  <Input
-                    data-testid="input-attr-seat-capacity"
-                    type="number"
-                    min={0}
-                    value={attrs.seatCapacity ?? ""}
-                    onChange={(e) =>
-                      setAttr(
-                        "seatCapacity",
-                        e.target.value === "" ? undefined : Number(e.target.value)
-                      )
-                    }
-                  />
+                  <div className="mt-1">
+                    <NumberStepper
+                      aria-label="Seat capacity"
+                      value={attrs.seatCapacity ?? 0}
+                      min={0}
+                      onChange={(n) => setAttr("seatCapacity", n)}
+                    />
+                  </div>
                 </div>
               )}
               {attrFields.includes("leaseTermMonths") && (
                 <div>
                   <Label className="text-xs">Lease Term (months)</Label>
-                  <Input
-                    data-testid="input-attr-lease-term"
-                    type="number"
-                    min={0}
-                    value={attrs.leaseTermMonths ?? ""}
-                    onChange={(e) =>
-                      setAttr(
-                        "leaseTermMonths",
-                        e.target.value === "" ? undefined : Number(e.target.value)
-                      )
-                    }
-                  />
+                  <div className="mt-1">
+                    <NumberStepper
+                      aria-label="Lease term in months"
+                      value={attrs.leaseTermMonths ?? 0}
+                      min={0}
+                      onChange={(n) => setAttr("leaseTermMonths", n)}
+                    />
+                  </div>
                 </div>
               )}
             </div>

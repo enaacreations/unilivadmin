@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useLocation } from "wouter";
+import { withQuery } from "@/lib/nav-helpers";
 import { useQuery } from "@tanstack/react-query";
 import { format, subDays } from "date-fns";
 import {
@@ -21,6 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -51,11 +53,11 @@ const PERIOD_PRESETS: { key: PeriodKey; label: string; days: number }[] = [
 
 // StatusBadge-aligned colors for the status breakdown chart.
 const STATUS_COLOR: Record<OrderStatus, string> = {
-  PLACED: "var(--info, #0EA5E9)",
-  ACCEPTED: "var(--accent, #F97316)",
+  PLACED: INFO,
+  ACCEPTED: ACCENT,
   REJECTED: DESTRUCTIVE,
   PREPARING: WARNING,
-  DISPATCHED: "var(--info, #0EA5E9)",
+  DISPATCHED: INFO,
   DELIVERED: SUCCESS,
   CANCELLED: DESTRUCTIVE,
 };
@@ -322,267 +324,282 @@ export default function FoodReports() {
         </div>
       </div>
 
-      {/* Charts grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* 1) Orders per day */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <BarChart3 className="w-4 h-4 text-accent" /> Orders per Day
-            </CardTitle>
-          </CardHeader>
-          <CardContent style={{ height: 300 }}>
-            {isLoading ? (
-              <ChartSkeleton />
-            ) : ordersPerDay.length === 0 ? (
-              <ChartEmpty icon={ClipboardList} label="No orders in this range" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={ordersPerDay} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="ordersGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={ACCENT} stopOpacity={0.35} />
-                      <stop offset="95%" stopColor={ACCENT} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" />
-                  <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                  <Tooltip labelFormatter={dayTickFmt} />
-                  <Area type="monotone" dataKey="count" name="Orders" stroke={ACCENT} strokeWidth={2} fill="url(#ordersGradient)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
+      {/* Segmented analytics — only a couple of charts render per view */}
+      <Tabs defaultValue="volume" className="w-full">
+        <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1 sm:w-auto">
+          <TabsTrigger value="volume" className="gap-1.5">
+            <BarChart3 className="h-3.5 w-3.5" /> Volume
+          </TabsTrigger>
+          <TabsTrigger value="meals" className="gap-1.5">
+            <PieChartIcon className="h-3.5 w-3.5" /> Meals
+          </TabsTrigger>
+          <TabsTrigger value="status" className="gap-1.5">
+            <ClipboardList className="h-3.5 w-3.5" /> Status
+          </TabsTrigger>
+          <TabsTrigger value="waste" className="gap-1.5">
+            <TrendingDown className="h-3.5 w-3.5" /> Waste &amp; Delays
+          </TabsTrigger>
+        </TabsList>
 
-        {/* 2) Meal-type distribution */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <PieChartIcon className="w-4 h-4 text-accent" /> Meal-type Distribution
-            </CardTitle>
-          </CardHeader>
-          <CardContent style={{ height: 300 }}>
-            {isLoading ? (
-              <ChartSkeleton />
-            ) : mealChartData.length === 0 ? (
-              <ChartEmpty icon={UtensilsCrossed} label="No meal data in this range" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={mealChartData}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={55}
-                    outerRadius={95}
-                    paddingAngle={2}
-                    label={(e: any) => `${e.value}`}
-                  >
-                    {mealChartData.map((_, i) => (
-                      <Cell key={i} fill={MEAL_PALETTE[i % MEAL_PALETTE.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
+        {/* Volume — orders per day + resident demand */}
+        <TabsContent value="volume" className="mt-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-accent" /> Orders per Day
+                </CardTitle>
+              </CardHeader>
+              <CardContent style={{ height: 300 }}>
+                {isLoading ? (
+                  <ChartSkeleton />
+                ) : ordersPerDay.length === 0 ? (
+                  <ChartEmpty icon={ClipboardList} label="No orders in this range" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={ordersPerDay} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="ordersGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={ACCENT} stopOpacity={0.35} />
+                          <stop offset="95%" stopColor={ACCENT} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip labelFormatter={dayTickFmt} />
+                      <Area type="monotone" dataKey="count" name="Orders" stroke={ACCENT} strokeWidth={2} fill="url(#ordersGradient)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
 
-        {/* 3) Resident trend */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Users className="w-4 h-4 text-accent" /> Resident Trend
-            </CardTitle>
-          </CardHeader>
-          <CardContent style={{ height: 300 }}>
-            {isLoading ? (
-              <ChartSkeleton />
-            ) : residentTrend.length === 0 ? (
-              <ChartEmpty icon={Users} label="No resident data in this range" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={residentTrend} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" />
-                  <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                  <Tooltip labelFormatter={dayTickFmt} />
-                  <Line type="monotone" dataKey="residents" name="Residents" stroke={PRIMARY} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Users className="w-4 h-4 text-accent" /> Resident Trend
+                </CardTitle>
+              </CardHeader>
+              <CardContent style={{ height: 300 }}>
+                {isLoading ? (
+                  <ChartSkeleton />
+                ) : residentTrend.length === 0 ? (
+                  <ChartEmpty icon={Users} label="No resident data in this range" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={residentTrend} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip labelFormatter={dayTickFmt} />
+                      <Line type="monotone" dataKey="residents" name="Residents" stroke={PRIMARY} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
 
-        {/* 4) Status breakdown */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <BarChart3 className="w-4 h-4 text-accent" /> Status Breakdown
-            </CardTitle>
-          </CardHeader>
-          <CardContent style={{ height: 300 }}>
-            {isLoading ? (
-              <ChartSkeleton />
-            ) : statusChartData.length === 0 ? (
-              <ChartEmpty icon={ClipboardList} label="No status data in this range" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={statusChartData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="value" name="Orders" radius={[4, 4, 0, 0]}>
-                    {statusChartData.map((d, i) => (
-                      <Cell key={i} fill={STATUS_COLOR[d.status as OrderStatus] ?? PRIMARY} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Waste & delays analytics */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <TrendingDown className="w-5 h-5 text-accent" />
-          <h2 className="text-lg font-display font-semibold text-foreground">Waste &amp; Delays</h2>
-        </div>
-
-        {/* Summary tiles */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <StatCard
-            title="Total Wasted"
-            value={analyticsLoading ? "—" : (summary?.totalWasted ?? 0)}
-            icon={Trash2}
-          />
-          <StatCard
-            title="Waste %"
-            value={analyticsLoading ? "—" : `${summary?.wastePct ?? 0}%`}
-            icon={TrendingDown}
-          />
-          <StatCard
-            title="Delayed Deliveries"
-            value={
-              analyticsLoading
-                ? "—"
-                : `${summary?.delayedOrders ?? 0} / ${summary?.deliveredOrders ?? 0} delivered`
-            }
-            icon={Clock}
-          />
-        </div>
-
-        {/* Wastage trend + Top wastage items */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Wastage trend */}
+        {/* Meals — meal-type mix */}
+        <TabsContent value="meals" className="mt-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
-                <TrendingDown className="w-4 h-4 text-accent" /> Wastage Trend
+                <PieChartIcon className="w-4 h-4 text-accent" /> Meal-type Distribution
               </CardTitle>
             </CardHeader>
-            <CardContent style={{ height: 300 }}>
-              {analyticsLoading ? (
+            <CardContent style={{ height: 340 }}>
+              {isLoading ? (
                 <ChartSkeleton />
-              ) : wastageTrend.length === 0 ? (
-                <ChartEmpty icon={Trash2} label="No wastage recorded in this range" />
+              ) : mealChartData.length === 0 ? (
+                <ChartEmpty icon={UtensilsCrossed} label="No meal data in this range" />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={wastageTrend} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="wasteGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={WARNING} stopOpacity={0.35} />
-                        <stop offset="95%" stopColor={WARNING} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" />
-                    <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
-                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                    <Tooltip labelFormatter={dayTickFmt} />
-                    <Area type="monotone" dataKey="wasted" name="Wasted" stroke={WARNING} strokeWidth={2} fill="url(#wasteGradient)" />
-                  </AreaChart>
+                  <PieChart>
+                    <Pie
+                      data={mealChartData}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={60}
+                      outerRadius={110}
+                      paddingAngle={2}
+                      label={(e: any) => `${e.value}`}
+                    >
+                      {mealChartData.map((_, i) => (
+                        <Cell key={i} fill={MEAL_PALETTE[i % MEAL_PALETTE.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                  </PieChart>
                 </ResponsiveContainer>
               )}
             </CardContent>
           </Card>
+        </TabsContent>
 
-          {/* Top wastage items */}
+        {/* Status — fulfilment breakdown */}
+        <TabsContent value="status" className="mt-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
-                <Trash2 className="w-4 h-4 text-accent" /> Top Wastage Items
+                <BarChart3 className="w-4 h-4 text-accent" /> Status Breakdown
               </CardTitle>
             </CardHeader>
-            <CardContent style={{ height: 300 }}>
-              {analyticsLoading ? (
+            <CardContent style={{ height: 340 }}>
+              {isLoading ? (
                 <ChartSkeleton />
-              ) : topWasteChartData.length === 0 ? (
-                <ChartEmpty icon={UtensilsCrossed} label="No wasted items in this range" />
+              ) : statusChartData.length === 0 ? (
+                <ChartEmpty icon={ClipboardList} label="No status data in this range" />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={topWasteChartData}
-                    layout="vertical"
-                    margin={{ top: 8, right: 16, left: 8, bottom: 0 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" horizontal={false} />
-                    <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={110}
-                      tick={{ fontSize: 11 }}
-                      interval={0}
-                    />
-                    <Tooltip
-                      formatter={(val: any, _n: any, item: any) => [
-                        `${val} ${item?.payload?.unit ?? ""}`.trim(),
-                        `Wasted (${item?.payload?.wastePct ?? 0}%)`,
-                      ]}
-                    />
-                    <Bar dataKey="wasted" name="Wasted" fill={DESTRUCTIVE} radius={[0, 4, 4, 0]} />
+                  <BarChart data={statusChartData} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Bar dataKey="value" name="Orders" radius={[4, 4, 0, 0]}>
+                      {statusChartData.map((d, i) => (
+                        <Cell key={i} fill={STATUS_COLOR[d.status as OrderStatus] ?? PRIMARY} />
+                      ))}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               )}
             </CardContent>
           </Card>
-        </div>
+        </TabsContent>
 
-        {/* Delivery delays */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Clock className="w-4 h-4 text-accent" /> Delivery Delays
-            </CardTitle>
-          </CardHeader>
-          <CardContent style={{ height: 320 }}>
-            {analyticsLoading ? (
-              <ChartSkeleton />
-            ) : delays.length === 0 ? (
-              <ChartEmpty icon={Clock} label="No delivery data in this range" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={delays} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" />
-                  <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                  <Tooltip labelFormatter={dayTickFmt} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="total" name="Delivered" fill={INFO} radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="delayed" name="Delayed" fill={WARNING} radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+        {/* Waste & Delays — analytics scope */}
+        <TabsContent value="waste" className="mt-4 space-y-4">
+          {/* Summary tiles */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <StatCard
+              title="Total Wasted"
+              value={analyticsLoading ? "—" : (summary?.totalWasted ?? 0)}
+              icon={Trash2}
+            />
+            <StatCard
+              title="Waste %"
+              value={analyticsLoading ? "—" : `${summary?.wastePct ?? 0}%`}
+              icon={TrendingDown}
+            />
+            <StatCard
+              title="Delayed Deliveries"
+              value={
+                analyticsLoading
+                  ? "—"
+                  : `${summary?.delayedOrders ?? 0} / ${summary?.deliveredOrders ?? 0} delivered`
+              }
+              icon={Clock}
+            />
+          </div>
+
+          {/* Wastage trend + Top wastage items */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <TrendingDown className="w-4 h-4 text-accent" /> Wastage Trend
+                </CardTitle>
+              </CardHeader>
+              <CardContent style={{ height: 300 }}>
+                {analyticsLoading ? (
+                  <ChartSkeleton />
+                ) : wastageTrend.length === 0 ? (
+                  <ChartEmpty icon={Trash2} label="No wastage recorded in this range" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={wastageTrend} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="wasteGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={WARNING} stopOpacity={0.35} />
+                          <stop offset="95%" stopColor={WARNING} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                      <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip labelFormatter={dayTickFmt} />
+                      <Area type="monotone" dataKey="wasted" name="Wasted" stroke={WARNING} strokeWidth={2} fill="url(#wasteGradient)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Trash2 className="w-4 h-4 text-accent" /> Top Wastage Items
+                </CardTitle>
+              </CardHeader>
+              <CardContent style={{ height: 300 }}>
+                {analyticsLoading ? (
+                  <ChartSkeleton />
+                ) : topWasteChartData.length === 0 ? (
+                  <ChartEmpty icon={UtensilsCrossed} label="No wasted items in this range" />
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={topWasteChartData}
+                      layout="vertical"
+                      margin={{ top: 8, right: 16, left: 8, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={110}
+                        tick={{ fontSize: 11 }}
+                        interval={0}
+                      />
+                      <Tooltip
+                        formatter={(val: any, _n: any, item: any) => [
+                          `${val} ${item?.payload?.unit ?? ""}`.trim(),
+                          `Wasted (${item?.payload?.wastePct ?? 0}%)`,
+                        ]}
+                      />
+                      <Bar dataKey="wasted" name="Wasted" fill={DESTRUCTIVE} radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Delivery delays */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Clock className="w-4 h-4 text-accent" /> Delivery Delays
+              </CardTitle>
+            </CardHeader>
+            <CardContent style={{ height: 320 }}>
+              {analyticsLoading ? (
+                <ChartSkeleton />
+              ) : delays.length === 0 ? (
+                <ChartEmpty icon={Clock} label="No delivery data in this range" />
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={delays} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                    <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                    <Tooltip labelFormatter={dayTickFmt} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="total" name="Delivered" fill={INFO} radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="delayed" name="Delayed" fill={WARNING} radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Property filter context footnote */}
       {propertyId !== "ALL" && (
@@ -591,7 +608,7 @@ export default function FoodReports() {
           <button
             type="button"
             className="text-accent hover:underline font-medium"
-            onClick={() => setLocation("/food/orders")}
+            onClick={() => setLocation(withQuery("/food/orders", { propertyId }))}
           >
             {propName(propertyId)}
           </button>

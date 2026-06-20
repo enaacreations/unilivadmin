@@ -32,6 +32,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { FormModal } from "@/components/ui/form-modal";
 import {
   Select,
@@ -570,8 +571,9 @@ function LeaveTab({ employeeId }: { employeeId: string }) {
 
       <Card className="shadow-sm">
         <CardContent className="p-0">
+          <BoundedScroll size="md">
           <table className="w-full text-sm">
-            <thead className="bg-surface/50 border-b">
+            <thead className="bg-card border-b sticky top-0 z-10">
               <tr>
                 <th className="p-3 text-left font-medium text-xs uppercase tracking-wider text-muted-foreground">Type</th>
                 <th className="p-3 text-left font-medium text-xs uppercase tracking-wider text-muted-foreground">Duration</th>
@@ -608,6 +610,7 @@ function LeaveTab({ employeeId }: { employeeId: string }) {
               ))}
             </tbody>
           </table>
+          </BoundedScroll>
         </CardContent>
       </Card>
 
@@ -717,6 +720,7 @@ function PerformanceTab({ employeeId }: { employeeId: string }) {
           </CardContent>
         </Card>
       ) : (
+        <BoundedScroll size="lg" className="pr-2">
         <div className="relative pl-6 border-l-2 border-border space-y-4">
           {notes.map((n) => {
             const m = typeMeta(n.type);
@@ -739,6 +743,7 @@ function PerformanceTab({ employeeId }: { employeeId: string }) {
             );
           })}
         </div>
+        </BoundedScroll>
       )}
 
       <FormModal open={addOpen} onOpenChange={setAddOpen} title="Add Performance Note" onSave={submit} isSaving={saving}>
@@ -854,41 +859,47 @@ function ExitTab({ employeeId }: { employeeId: string; onSwitchTab: (t: string) 
         </CardContent>
       </Card>
 
-      <Card className="shadow-sm">
-        <CardContent className="p-5">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground mb-3">Clearance Checklist</p>
-          <div className="space-y-2">
-            {exit.clearances.map((c) => (
-              <div key={c.id} className="flex items-center justify-between border rounded-lg p-3">
-                <div className="flex items-center gap-3">
-                  <span className="font-medium">{c.department}</span>
-                  <StatusBadge status={c.status} />
-                </div>
-                {c.status === "PENDING" && (
-                  <Button size="sm" variant="outline" onClick={() => markCleared(c.id)}>Mark Cleared</Button>
-                )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className="shadow-sm">
+          <CardContent className="p-5">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground mb-3">Clearance Checklist</p>
+            <BoundedScroll size="md" className="pr-2">
+              <div className="space-y-2">
+                {exit.clearances.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between border rounded-lg p-3">
+                    <div className="flex items-center gap-3">
+                      <span className="font-medium">{c.department}</span>
+                      <StatusBadge status={c.status} />
+                    </div>
+                    {c.status === "PENDING" && (
+                      <Button size="sm" variant="outline" onClick={() => markCleared(c.id)}>Mark Cleared</Button>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+            </BoundedScroll>
+          </CardContent>
+        </Card>
 
-      <Card className="shadow-sm">
-        <CardContent className="p-5">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground mb-3">Asset Return</p>
-          <div className="space-y-2">
-            {exit.assets.map((a) => (
-              <div key={a.id} className="flex items-center justify-between border rounded-lg p-3">
-                <div className="flex items-center gap-3">
-                  <Checkbox checked={a.returned} onCheckedChange={(v) => toggleAsset(a.id, !!v)} />
-                  <span className="font-medium">{a.asset.replace("_", " ")}</span>
-                </div>
-                {a.returned && <Badge variant="outline" className="text-success border-success/30">Returned</Badge>}
+        <Card className="shadow-sm">
+          <CardContent className="p-5">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground mb-3">Asset Return</p>
+            <BoundedScroll size="md" className="pr-2">
+              <div className="space-y-2">
+                {exit.assets.map((a) => (
+                  <div key={a.id} className="flex items-center justify-between border rounded-lg p-3">
+                    <div className="flex items-center gap-3">
+                      <Checkbox checked={a.returned} onCheckedChange={(v) => toggleAsset(a.id, !!v)} />
+                      <span className="font-medium">{a.asset.replace("_", " ")}</span>
+                    </div>
+                    {a.returned && <Badge variant="outline" className="text-success border-success/30">Returned</Badge>}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+            </BoundedScroll>
+          </CardContent>
+        </Card>
+      </div>
 
       {exit.status !== "COMPLETED" && (
         <Card className="shadow-sm">

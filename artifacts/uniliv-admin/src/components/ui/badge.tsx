@@ -13,30 +13,18 @@ type BadgeVariant =
   | "info";
 
 const badgeVariants = cva(
-  // @replit
-  // Whitespace-nowrap: Badges should never wrap.
-  "whitespace-nowrap inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2" +
-  " hover-elevate ",
+  // Soft status pills: tinted background + colour-matched text (calm, flat).
+  "whitespace-nowrap inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
   {
     variants: {
       variant: {
-        default:
-          // @replit shadow-xs instead of shadow, no hover because we use hover-elevate
-          "border-transparent bg-primary text-primary-foreground shadow-xs",
-        secondary:
-          // @replit no hover because we use hover-elevate
-          "border-transparent bg-secondary text-secondary-foreground",
-        destructive:
-          // @replit shadow-xs instead of shadow, no hover because we use hover-elevate
-          "border-transparent bg-destructive text-destructive-foreground shadow-xs",
-          // @replit shadow-xs" - use badge outline variable
+        default: "border-transparent bg-accent/12 text-accent-strong",
+        secondary: "border-transparent bg-secondary text-secondary-foreground",
+        destructive: "border-transparent bg-destructive/12 text-destructive",
         outline: "text-foreground border [border-color:var(--badge-outline,var(--border))]",
-        success:
-          "border-transparent bg-success text-success-foreground shadow-xs",
-        warning:
-          "border-transparent bg-warning text-warning-foreground shadow-xs",
-        info:
-          "border-transparent bg-[color:var(--info,#2563EB)] text-white shadow-xs",
+        success: "border-transparent bg-success/12 text-success",
+        warning: "border-transparent bg-warning/12 text-warning",
+        info: "border-transparent bg-info/12 text-info",
       },
     },
     defaultVariants: {

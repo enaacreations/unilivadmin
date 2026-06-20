@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { foodApi, foodKeys, type MyPropertyCard } from "@/lib/food-api";
-import { useAppStore } from "@/lib/store";
+import { withQuery } from "@/lib/nav-helpers";
 
 const inr = (n: number) => `₹${(n ?? 0).toLocaleString("en-IN")}`;
 
@@ -28,16 +28,15 @@ function Stat({ icon: Icon, label, value }: { icon: typeof Users; label: string;
 
 export default function FoodMyProperties() {
   const [, setLocation] = useLocation();
-  const { setPropertyId } = useAppStore();
 
   const { data: properties = [], isLoading } = useQuery<MyPropertyCard[]>({
     queryKey: foodKeys.myProperties(),
     queryFn: () => foodApi.myProperties(),
   });
 
+  // Carry the property into the destination page so it opens scoped to it.
   const go = (propertyId: string, path: string) => {
-    setPropertyId(propertyId);
-    setLocation(path);
+    setLocation(withQuery(path, { propertyId }));
   };
 
   return (

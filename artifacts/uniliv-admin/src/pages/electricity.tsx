@@ -22,6 +22,7 @@ import { FormModal } from "@/components/ui/form-modal";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { Zap, Gauge, IndianRupee, Plus, Send, Upload } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -164,8 +165,9 @@ export default function ElectricityPage() {
             {metersLoading ? <div className="p-8 text-center text-muted-foreground">Loading...</div> : meters.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No meters yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">Meter No.</th><th className="px-4 py-3">Label</th><th className="px-4 py-3">Property</th><th className="px-4 py-3">Room</th><th className="px-4 py-3">Resident</th><th className="px-4 py-3">Tariff</th><th />
                 </tr></thead>
                 <tbody>
@@ -185,6 +187,7 @@ export default function ElectricityPage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
@@ -197,8 +200,9 @@ export default function ElectricityPage() {
             {readings.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No readings yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">Date</th><th className="px-4 py-3">Meter</th><th className="px-4 py-3">Reading</th><th className="px-4 py-3">Units</th><th className="px-4 py-3">Amount</th><th className="px-4 py-3">Status</th><th />
                 </tr></thead>
                 <tbody>
@@ -219,6 +223,7 @@ export default function ElectricityPage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
@@ -231,8 +236,9 @@ export default function ElectricityPage() {
             {tariffs.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">No tariffs yet.</div>
             ) : (
+              <BoundedScroll size="lg">
               <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left"><tr>
+                <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
                   <th className="px-4 py-3">Name</th><th className="px-4 py-3">Rate/Unit</th><th className="px-4 py-3">Fixed</th><th className="px-4 py-3">Effective From</th><th className="px-4 py-3">Status</th>
                 </tr></thead>
                 <tbody>
@@ -247,6 +253,7 @@ export default function ElectricityPage() {
                   ))}
                 </tbody>
               </table>
+              </BoundedScroll>
             )}
           </CardContent></Card>
         </TabsContent>
