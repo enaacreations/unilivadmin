@@ -56,6 +56,7 @@ const navGroups: Array<{ title: string; items: Array<{ title: string; href: stri
     { title: "Dashboard", href: "/food/dashboard", icon: UtensilsCrossed, module: "FOOD_DASHBOARD" },
     { title: "All Orders", href: "/food/orders", icon: ListOrdered, module: "FOOD_ALL_ORDERS" },
     { title: "Place Order", href: "/food/place-order", icon: FilePlus2, module: "FOOD_PLACE_ORDER" },
+    { title: "Active Guests", href: "/food/guests", icon: Users, module: "FOOD_DASHBOARD" },
     { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY" },
     { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH" },
     { title: "Confirm Delivery", href: "/food/confirm-delivery", icon: CheckCircle2, module: "FOOD_CONFIRM_DELIVERY" },
@@ -81,6 +82,26 @@ const navGroups: Array<{ title: string; items: Array<{ title: string; href: stri
     { title: "Configuration", href: "/settings", icon: Settings, module: "SETTINGS" },
   ]}
 ];
+
+/** Live greeting + date/time/day shown in the topbar (Persona st.37, st.39). */
+function GreetingClock({ name }: { name?: string }) {
+  const [now, setNow] = React.useState(new Date());
+  React.useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 15_000);
+    return () => clearInterval(t);
+  }, []);
+  const h = now.getHours();
+  const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  const first = name?.split(" ")[0];
+  const dateStr = now.toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "short", year: "numeric" });
+  const timeStr = now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="hidden lg:flex flex-col leading-tight">
+      <span className="text-sm font-semibold text-foreground">{greeting}{first ? `, ${first}` : ""}</span>
+      <span className="text-xs text-muted-foreground">{dateStr} · {timeStr}</span>
+    </div>
+  );
+}
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation();
@@ -108,14 +129,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen bg-surface overflow-hidden">
-      <div className="w-64 bg-primary text-primary-foreground flex flex-col h-full shrink-0 border-r border-primary shadow-xl z-20 hidden md:flex">
+      <div className="w-64 bg-sidebar text-sidebar-foreground flex flex-col h-full shrink-0 border-r border-sidebar shadow-xl z-20 hidden md:flex">
         <div className="p-5 flex items-center gap-3">
           <div className="w-8 h-8 rounded bg-accent flex items-center justify-center text-accent-foreground font-display font-bold text-lg shadow-sm">U</div>
           <span className="font-display font-bold text-lg tracking-tight">Uniliv Admin</span>
         </div>
-        <div className="px-4 pb-4 border-b border-primary-foreground/10">
+        <div className="px-4 pb-4 border-b border-sidebar-foreground/10">
           <Select value={propertyId || "all"} onValueChange={(val) => setPropertyId(val === "all" ? null : val)}>
-            <SelectTrigger className="w-full bg-primary-foreground/5 border-primary-foreground/10 text-primary-foreground focus:ring-accent">
+            <SelectTrigger className="w-full bg-sidebar-foreground/5 border-sidebar-foreground/10 text-sidebar-foreground focus:ring-accent">
               <SelectValue placeholder="All Properties" />
             </SelectTrigger>
             <SelectContent>
@@ -128,13 +149,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <nav className="px-3 space-y-6">
             {filteredGroups.map((group) => (
               <div key={group.title}>
-                <h4 className="text-[10px] uppercase text-primary-foreground/40 font-bold mb-2 tracking-widest px-3">{group.title}</h4>
+                <h4 className="text-[10px] uppercase text-sidebar-foreground/40 font-bold mb-2 tracking-widest px-3">{group.title}</h4>
                 <div className="space-y-1">
                   {group.items.map((item) => {
                     const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
                     return (
                       <Link key={item.href} href={item.href}>
-                        <span className={`flex items-center gap-3 px-3 py-2 rounded-md transition-all cursor-pointer text-sm font-medium ${isActive ? 'bg-accent/10 text-accent border-l-4 border-accent' : 'text-primary-foreground/70 hover:bg-primary-foreground/5 hover:text-primary-foreground'}`}>
+                        <span className={`flex items-center gap-3 px-3 py-2 rounded-md transition-all cursor-pointer text-sm font-medium ${isActive ? 'bg-accent/10 text-accent border-l-4 border-accent' : 'text-sidebar-foreground/70 hover:bg-sidebar-foreground/5 hover:text-sidebar-foreground'}`}>
                           <item.icon className="w-4 h-4" />
                           {item.title}
                         </span>
@@ -146,16 +167,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
             ))}
           </nav>
         </div>
-        <div className="p-4 border-t border-primary-foreground/10 mt-auto bg-primary/95">
+        <div className="p-4 border-t border-sidebar-foreground/10 mt-auto bg-sidebar/95">
           <div className="flex items-center gap-3">
-            <UserAvatar name={me?.name} className="w-10 h-10 border border-primary-foreground/20" fallbackClassName="bg-primary-foreground/10 text-primary-foreground" />
+            <UserAvatar name={me?.name} className="w-10 h-10 border border-sidebar-foreground/20" fallbackClassName="bg-sidebar-foreground/10 text-sidebar-foreground" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium truncate">{me?.name || "Admin User"}</p>
+              {me?.designation && <p className="text-[11px] text-sidebar-foreground/60 truncate">{me.designation}</p>}
               <div className="flex items-center mt-0.5">
-                <span className="text-[10px] uppercase tracking-wider bg-accent text-accent-foreground px-2 py-0.5 rounded-full font-bold">{me?.role || "ADMIN"}</span>
+                <span className="text-[10px] uppercase tracking-wider bg-accent text-accent-foreground px-2 py-0.5 rounded-full font-bold">{(me?.role || "ADMIN").replace(/_/g, " ")}</span>
               </div>
             </div>
-            <Button variant="ghost" size="icon" onClick={handleLogout} className="text-primary-foreground/50 hover:text-destructive hover:bg-destructive/10 shrink-0">
+            <Button variant="ghost" size="icon" onClick={handleLogout} className="text-sidebar-foreground/50 hover:text-destructive hover:bg-destructive/10 shrink-0">
               <LogOut className="w-4 h-4" />
             </Button>
           </div>
@@ -167,6 +189,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-4">
             <Button variant="ghost" size="icon" className="md:hidden"><Menu className="w-5 h-5" /></Button>
             <h2 className="text-lg font-display font-semibold hidden sm:block">{pageTitle}</h2>
+            <div className="hidden lg:block h-8 w-px bg-border" />
+            <GreetingClock name={me?.name} />
           </div>
           <div className="flex items-center gap-2">
             <div className="relative hidden md:block w-64 lg:w-80">
@@ -185,6 +209,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <DropdownMenuLabel className="font-normal">
                   <div className="flex flex-col space-y-1">
                     <p className="text-sm font-medium leading-none">{me?.name}</p>
+                    {me?.designation && <p className="text-xs leading-none text-muted-foreground">{me.designation}</p>}
                     <p className="text-xs leading-none text-muted-foreground">{me?.email}</p>
                   </div>
                 </DropdownMenuLabel>

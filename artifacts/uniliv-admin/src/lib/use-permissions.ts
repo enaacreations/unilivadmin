@@ -2,7 +2,16 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "./api-fetch";
 import { can, moduleForPath, type Module, type Permission, type UserRole } from "./permissions";
 
-interface Me { id: string; name: string; email: string; role: UserRole; propertyId?: string | null }
+interface Me {
+  id: string;
+  name: string;
+  email: string;
+  username?: string | null;
+  designation?: string | null;
+  phone?: string | null;
+  role: UserRole;
+  propertyId?: string | null;
+}
 
 export function useMe() {
   return useQuery<{ data: Me }>({

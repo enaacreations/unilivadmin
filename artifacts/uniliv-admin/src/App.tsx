@@ -63,6 +63,8 @@ import FoodConfirmDelivery from "@/pages/food-confirm-delivery";
 import FoodWaste from "@/pages/food-waste";
 import FoodReports from "@/pages/food-reports";
 import FoodSettings from "@/pages/food-settings";
+import FoodOrderDetail from "@/pages/food-order-detail";
+import FoodGuests from "@/pages/food-guests";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -126,7 +128,9 @@ function Router() {
       <Route path="/food">{() => <Redirect to="/food/dashboard" />}</Route>
       <Route path="/food/dashboard">{() => <ProtectedRoute component={FoodDashboard} />}</Route>
       <Route path="/food/orders">{() => <ProtectedRoute component={FoodOrders} />}</Route>
+      <Route path="/food/orders/:id">{() => <ProtectedRoute component={FoodOrderDetail} />}</Route>
       <Route path="/food/place-order">{() => <ProtectedRoute component={FoodPlaceOrder} />}</Route>
+      <Route path="/food/guests">{() => <ProtectedRoute component={FoodGuests} />}</Route>
       <Route path="/food/kitchen-summary">{() => <ProtectedRoute component={FoodKitchenSummary} />}</Route>
       <Route path="/food/dispatch">{() => <ProtectedRoute component={FoodDispatch} />}</Route>
       <Route path="/food/confirm-delivery">{() => <ProtectedRoute component={FoodConfirmDelivery} />}</Route>

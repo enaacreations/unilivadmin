@@ -20,11 +20,11 @@
   --color-popover-border: var(--border);
 
   --color-primary: var(--primary);
-  --color-primary-foreground: #FFFFFF;
-  
-  --color-secondary: #E2E8F0;
-  --color-secondary-foreground: #1E293B;
-  --color-secondary-border: #CBD5E1;
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary-border: var(--secondary-border);
   
   --color-muted: var(--muted-bg);
   --color-muted-foreground: var(--muted);
@@ -41,9 +41,9 @@
   --color-warning: var(--warning);
   --color-warning-foreground: #FFFFFF;
 
-  --color-sidebar: var(--primary);
+  --color-sidebar: var(--sidebar-bg);
   --color-sidebar-foreground: #FFFFFF;
-  --color-sidebar-border: var(--primary);
+  --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-primary: var(--accent);
   --color-sidebar-primary-foreground: #FFFFFF;
   --color-sidebar-accent: var(--accent);
@@ -75,11 +75,40 @@
   --info: #2563EB;
   --badge-outline: #CBD5E1;
 
+  /* Decoupled tokens so dark mode can flip foreground without breaking the
+     always-dark sidebar / brand buttons (light-mode values = unchanged). */
+  --primary-foreground: #FFFFFF;
+  --secondary: #E2E8F0;
+  --secondary-foreground: #1E293B;
+  --secondary-border: #CBD5E1;
+  --sidebar-bg: #0F172A;
+  --sidebar-border: #1E293B;
+
   --app-font-sans: 'DM Sans', sans-serif;
   --app-font-display: 'Sora', sans-serif;
   --app-font-mono: 'JetBrains Mono', monospace;
-  
+
   --radius: .5rem;
+}
+
+/* Dark theme — flips content surfaces/foreground; sidebar stays navy. */
+.dark {
+  --primary: #EAEEF6;            /* foreground text + headings */
+  --primary-foreground: #0F172A; /* dark text on light brand buttons */
+  --surface: #0B1120;            /* page background */
+  --card: #161D2C;               /* cards / popovers */
+  --border: #2A3344;
+  --muted: #94A3B8;              /* muted text */
+  --muted-bg: #1E2738;           /* muted surfaces */
+  --secondary: #1E293B;
+  --secondary-foreground: #E2E8F0;
+  --secondary-border: #334155;
+  --sidebar-bg: #0B1120;
+  --sidebar-border: #1E293B;
+  --info: #38BDF8;
+  --success: #22C55E;
+  --warning: #FBBF24;
+  --danger: #F87171;
 }
 
 @layer base {

@@ -11,10 +11,12 @@ out-tsc
 # dependencies
 node_modules
 
-# local environment (never commit secrets; see .env.example)
+# local environment (never commit secrets; see .env.example / .env.docker.example)
 .env
 .env.local
 .env.*.local
+.env.docker
+.env.production
 
 # IDEs and editors
 /.idea

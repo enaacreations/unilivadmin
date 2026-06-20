@@ -10,11 +10,12 @@ import { apiFetch } from "@/lib/api-fetch";
 // ─── Domain types ────────────────────────────────────────────────────────────
 export type FoodBrand = "UNILIV" | "HUDDLE";
 export type MealType = "BREAKFAST" | "LUNCH" | "SNACKS" | "DINNER" | "NIGHT_MILK";
-export type OrderStatus = "PLACED" | "PREPARING" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
+export type OrderStatus = "PLACED" | "ACCEPTED" | "REJECTED" | "PREPARING" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
+export type DispatchStatus = "LOADING" | "IN_TRANSIT" | "DELIVERED" | "PARTIAL";
 
 export const MEAL_TYPES: MealType[] = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER", "NIGHT_MILK"];
 export const BRANDS: FoodBrand[] = ["UNILIV", "HUDDLE"];
-export const ORDER_STATUSES: OrderStatus[] = ["PLACED", "PREPARING", "DISPATCHED", "DELIVERED", "CANCELLED"];
+export const ORDER_STATUSES: OrderStatus[] = ["PLACED", "ACCEPTED", "REJECTED", "PREPARING", "DISPATCHED", "DELIVERED", "CANCELLED"];
 
 export interface FoodOrder {
   id: string;
@@ -40,6 +41,13 @@ export interface FoodOrder {
   preparingAt: string | null;
   cancelledAt: string | null;
   cancelReason: string | null;
+  acceptedAt: string | null;
+  rejectedAt: string | null;
+  rejectionReason: string | null;
+  batchId: string | null;
+  kitchenId: string | null;
+  dispatchId: string | null;
+  expectedDeliveryAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -70,6 +78,8 @@ export interface FoodOrderEvent {
 export interface OrderDetail extends FoodOrder {
   items: FoodOrderItem[];
   events: FoodOrderEvent[];
+  kitchen?: Kitchen | null;
+  dispatch?: Dispatch | null;
 }
 
 export interface Kpi { value: number; changePct: number | null }
@@ -123,6 +133,38 @@ export interface FoodLookups {
   mealTypes: MealType[];
 }
 
+// ─── Phase 1–3 domain types ──────────────────────────────────────────────────
+export interface Kitchen {
+  id: string; name: string; code: string; brand: FoodBrand | null;
+  address: string | null; city: string | null; state: string | null; pincode: string | null;
+  contactName: string | null; contactPhone: string | null; clusterId: string | null; isActive: boolean;
+}
+export interface Dispatch {
+  id: string; dispatchNumber: string; kitchenId: string | null; kitchenName?: string | null; kitchenCode?: string | null;
+  deliveryPartnerId: string | null; partnerName?: string | null; vehicleNumber: string | null;
+  driverName: string | null; driverPhone: string | null; dispatchedAt: string | null;
+  estimatedArrivalAt: string | null; status: DispatchStatus; notes: string | null; orderCount?: number;
+}
+export interface DispatchDetail extends Dispatch {
+  kitchen?: Kitchen | null;
+  orders: (FoodOrder & { propertyName?: string | null })[];
+}
+export interface MealConfig { id: string; mealType: MealType; displayLabel: string; brand: FoodBrand | null; sortOrder: number; isEnabled: boolean }
+export interface MealWindow { id: string; brand: FoodBrand; propertyId: string | null; mealType: MealType; cutoffTime: string; serviceTime: string | null; leadTimeMinutes: number; isActive: boolean }
+export interface Cutoff { mealType: MealType; cutoffTime: string; serviceTime: string | null; cutoffAt: string | null; isPastCutoff: boolean }
+export interface AnalyticsData {
+  period: string; range: { from: string; to: string };
+  wastageTrend: { date: string; wasted: number }[];
+  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePct: number }[];
+  delays: { date: string; delayed: number; total: number }[];
+  summary: { totalWasted: number; totalOrdered: number; wastePct: number; delayedOrders: number; deliveredOrders: number };
+}
+export interface GuestRow { id: string; name: string; phone: string; email: string; gender: string | null; roomNumber: string | null; propertyId: string; propertyName: string | null; checkInDate: string | null; status: string }
+export interface PropertyOverview { id: string; name: string; address: string; city: string; state: string; pincode: string; totalBeds: number; occupied: number; activeGuests: number; occupancyPct: number; monthlyRevenue: number }
+export interface RevenueData { months: { month: string; total: number }[] }
+export interface FullMenuMeal { mealType: MealType; label: string; dishes: { dishId: string; dishName: string; component: string; unit: string; slotLabel: string | null; sortOrder: number }[] }
+export interface FullMenu { brand: FoodBrand; date: string; meals: FullMenuMeal[] }
+
 type Envelope<T> = { success: boolean; data: T; meta?: PageMeta };
 export interface PageMeta { total: number; page: number; limit: number; totalPages: number }
 
@@ -152,6 +194,17 @@ export const foodKeys = {
   scopes: (userId?: string) => ["food", "scopes", userId ?? "all"] as const,
   users: () => ["food", "users"] as const,
   lookups: () => ["food", "lookups"] as const,
+  dispatches: () => ["food", "dispatches"] as const,
+  dispatch: (id: string) => ["food", "dispatch", id] as const,
+  kitchens: (p: Record<string, unknown> = {}) => ["food", "kitchens", p] as const,
+  mealConfig: () => ["food", "meal-config"] as const,
+  mealWindows: (p: Record<string, unknown> = {}) => ["food", "meal-windows", p] as const,
+  cutoffs: (p: Record<string, unknown>) => ["food", "cutoffs", p] as const,
+  analytics: (p: Record<string, unknown>) => ["food", "analytics", p] as const,
+  guests: (p: Record<string, unknown>) => ["food", "guests", p] as const,
+  propertyOverview: (p: Record<string, unknown>) => ["food", "property-overview", p] as const,
+  revenue: (p: Record<string, unknown>) => ["food", "revenue", p] as const,
+  fullMenu: (p: Record<string, unknown>) => ["food", "full-menu", p] as const,
 };
 
 // ─── API surface ─────────────────────────────────────────────────────────────
@@ -223,6 +276,53 @@ export const foodApi = {
   listScopes: (userId?: string) => apiFetch<Envelope<UserScope[]>>(`/food/scopes${qs({ userId })}`).then((r) => r.data),
   createScope: (b: Record<string, unknown>) => apiFetch<Envelope<UserScope>>(`/food/scopes`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
   deleteScope: (id: string) => apiFetch<Envelope<unknown>>(`/food/scopes/${id}`, { method: "DELETE" }),
+
+  // ─── Phase 1–3 ─────────────────────────────────────────────────────────────
+  // Kitchens
+  listKitchens: (p: Record<string, unknown> = {}) => apiFetch<Envelope<Kitchen[]>>(`/food/kitchens${qs(p)}`).then((r) => r.data),
+  createKitchen: (b: Record<string, unknown>) => apiFetch<Envelope<Kitchen>>(`/food/kitchens`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateKitchen: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Kitchen>>(`/food/kitchens/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteKitchen: (id: string) => apiFetch<Envelope<unknown>>(`/food/kitchens/${id}`, { method: "DELETE" }),
+
+  // Dispatch trips
+  listDispatches: () => apiFetch<Envelope<Dispatch[]>>(`/food/dispatches`).then((r) => r.data),
+  getDispatch: (id: string) => apiFetch<Envelope<DispatchDetail>>(`/food/dispatches/${id}`).then((r) => r.data),
+  createDispatch: (b: Record<string, unknown>) => apiFetch<Envelope<Dispatch>>(`/food/dispatches`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateDispatchStatus: (id: string, status: DispatchStatus) => apiFetch<Envelope<Dispatch>>(`/food/dispatches/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }).then((r) => r.data),
+
+  // Kitchen accept / reject
+  acceptOrder: (id: string) => apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/accept`, { method: "POST", body: "{}" }).then((r) => r.data),
+  rejectOrder: (id: string, reason?: string) => apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
+
+  // Multi-meal batch
+  placeOrderBatch: (b: Record<string, unknown>) => apiFetch<Envelope<{ batch: any; orders: FoodOrder[] }>>(`/food/order-batches`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+
+  // Meal config + cut-off windows
+  mealConfig: () => apiFetch<Envelope<MealConfig[]>>(`/food/meal-config`).then((r) => r.data),
+  updateMealConfig: (mealType: string, b: Record<string, unknown>) => apiFetch<Envelope<MealConfig>>(`/food/meal-config/${mealType}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  listMealWindows: (p: Record<string, unknown> = {}) => apiFetch<Envelope<MealWindow[]>>(`/food/meal-windows${qs(p)}`).then((r) => r.data),
+  createMealWindow: (b: Record<string, unknown>) => apiFetch<Envelope<MealWindow>>(`/food/meal-windows`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateMealWindow: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<MealWindow>>(`/food/meal-windows/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteMealWindow: (id: string) => apiFetch<Envelope<unknown>>(`/food/meal-windows/${id}`, { method: "DELETE" }),
+  cutoffs: (p: Record<string, unknown> = {}) => apiFetch<Envelope<Cutoff[]>>(`/food/cutoffs${qs(p)}`).then((r) => r.data),
+
+  // Menu (full day + share)
+  fullMenu: (p: Record<string, unknown> = {}) => apiFetch<Envelope<FullMenu>>(`/food/menu/full${qs(p)}`).then((r) => r.data),
+  shareMenu: (b: Record<string, unknown>) => apiFetch<Envelope<{ recipientCount: number }>>(`/food/menu/share`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+
+  // Analytics
+  analytics: (p: Record<string, unknown> = {}) => apiFetch<Envelope<AnalyticsData>>(`/food/analytics${qs(p)}`).then((r) => r.data),
+
+  // Unit-Lead home insights
+  propertyOverview: (p: Record<string, unknown> = {}) => apiFetch<Envelope<PropertyOverview | null>>(`/food/property-overview${qs(p)}`).then((r) => r.data),
+  revenue: (p: Record<string, unknown> = {}) => apiFetch<Envelope<RevenueData>>(`/food/revenue${qs(p)}`).then((r) => r.data),
+  guests: (p: Record<string, unknown> = {}) => apiFetch<Envelope<GuestRow[]>>(`/food/guests${qs(p)}`),
+
+  // Export URLs (open in a new tab / anchor download)
+  reportsExportXlsxUrl: (p: Record<string, unknown> = {}) => `/api/food/reports/export.xlsx${qs(p)}`,
+  reportsExportPdfUrl: (p: Record<string, unknown> = {}) => `/api/food/reports/export.pdf${qs(p)}`,
+  guestsExportXlsxUrl: (p: Record<string, unknown> = {}) => `/api/food/guests/export.xlsx${qs(p)}`,
+  guestsExportPdfUrl: (p: Record<string, unknown> = {}) => `/api/food/guests/export.pdf${qs(p)}`,
 };
 
 // ─── Display helpers ─────────────────────────────────────────────────────────

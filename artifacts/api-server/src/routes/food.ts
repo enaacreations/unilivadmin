@@ -25,6 +25,8 @@ import {
   userScopesTable,
   propertiesTable,
   usersTable,
+  kitchensTable,
+  foodDispatchesTable,
 } from "@workspace/db";
 import { and, eq, or, ilike, sql, desc, asc, gte, lte, inArray, isNull } from "drizzle-orm";
 import type { AnyColumn } from "drizzle-orm";
@@ -39,9 +41,17 @@ import {
   computeOrderItems,
   nextOrderNumber,
   convertForDisplay,
+  resolveExpectedDeliveryAt,
 } from "../lib/food-service.js";
+import { notifyOrderEvent } from "../lib/notification-service.js";
 
 export const foodRouter: Router = Router();
+
+/** Resolves a property's display name for notification context. */
+async function propertyName(propertyId: string): Promise<string | null> {
+  const [p] = await db.select({ name: propertiesTable.name }).from(propertiesTable).where(eq(propertiesTable.id, propertyId));
+  return p?.name ?? null;
+}
 
 const BRANDS = ["UNILIV", "HUDDLE"] as const;
 const MEAL_TYPES = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER", "NIGHT_MILK"] as const;
@@ -250,6 +260,7 @@ foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create")
 
     const residents = residentsCount != null ? Number(residentsCount) : qty;
     const computed = await computeOrderItems(brand, mealType, sd, qty, propertyId);
+    const expDelivery = await resolveExpectedDeliveryAt(brand, mealType, sd, propertyId);
 
     // Insert order with order-number retry on unique violation.
     let order: typeof foodOrdersTable.$inferSelect | undefined;
@@ -268,6 +279,7 @@ foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create")
           totalQuantity: String(qty),
           status: "PLACED",
           serviceDate: sd,
+          expectedDeliveryAt: expDelivery,
           notes: notes ?? null,
           createdById: req.user!.id,
           updatedAt: new Date(),
@@ -298,6 +310,15 @@ foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create")
       status: "PLACED",
       note: "Order placed",
       actorId: req.user!.id,
+    });
+
+    await notifyOrderEvent("PLACED", {
+      unitLeadId: order.unitLeadId,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      propertyName: await propertyName(order.propertyId),
+      mealType: order.mealType,
+      brand: order.brand,
     });
 
     res.status(201).json({ success: true, data: { ...order, totalQuantity: order.totalQuantity != null ? Number(order.totalQuantity) : null, items } });
@@ -351,10 +372,14 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
       propertyName: propertiesTable.name,
       unitLeadName: usersTable.name,
       deliveryPartnerName: deliveryPartnersTable.name,
+      kitchen: kitchensTable,
+      dispatch: foodDispatchesTable,
     }).from(foodOrdersTable)
       .leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
       .leftJoin(usersTable, eq(foodOrdersTable.unitLeadId, usersTable.id))
       .leftJoin(deliveryPartnersTable, eq(foodOrdersTable.deliveryPartnerId, deliveryPartnersTable.id))
+      .leftJoin(kitchensTable, eq(foodOrdersTable.kitchenId, kitchensTable.id))
+      .leftJoin(foodDispatchesTable, eq(foodOrdersTable.dispatchId, foodDispatchesTable.id))
       .where(eq(foodOrdersTable.id, id));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
 
@@ -381,6 +406,8 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
         propertyName: row.propertyName,
         unitLeadName: row.unitLeadName,
         deliveryPartnerName: row.deliveryPartnerName,
+        kitchen: row.kitchen ?? null,
+        dispatch: row.dispatch ?? null,
         items: items.map((r) => ({
           ...r.it,
           dishName: r.dishName,
@@ -474,6 +501,10 @@ foodRouter.post("/orders/:id/cancel", authenticate, authorize("FOOD_PLACE_ORDER"
     await db.insert(foodOrderEventsTable).values({
       id: newId(), orderId: id, status: "CANCELLED", note: reason ? `Cancelled: ${reason}` : "Order cancelled", actorId: req.user!.id,
     });
+    await notifyOrderEvent("CANCELLED", {
+      unitLeadId: order.unitLeadId, orderId: order.id, orderNumber: order.orderNumber,
+      propertyName: await propertyName(order.propertyId), mealType: order.mealType, brand: order.brand, reason,
+    });
     res.json({ success: true, data: updated });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
@@ -543,6 +574,17 @@ foodRouter.post("/orders/:id/dispatch", authenticate, authorize("FOOD_DISPATCH",
     await db.insert(foodOrderEventsTable).values({
       id: newId(), orderId: id, status: "DISPATCHED", note: "Order dispatched", actorId: req.user!.id,
     });
+    {
+      const dispItems = await db.select({ name: dishesTable.name, qty: foodOrderItemsTable.preparedQty, ordered: foodOrderItemsTable.orderedQty, unit: foodOrderItemsTable.unit })
+        .from(foodOrderItemsTable).leftJoin(dishesTable, eq(foodOrderItemsTable.dishId, dishesTable.id)).where(eq(foodOrderItemsTable.orderId, id));
+      const [dp] = await db.select({ name: deliveryPartnersTable.name }).from(deliveryPartnersTable).where(eq(deliveryPartnersTable.id, b.deliveryPartnerId));
+      await notifyOrderEvent("DISPATCHED", {
+        unitLeadId: order.unitLeadId, orderId: order.id, orderNumber: order.orderNumber,
+        propertyName: await propertyName(order.propertyId), mealType: order.mealType, brand: order.brand,
+        driverName: dp?.name ?? null,
+        items: dispItems.map((it) => ({ name: it.name ?? "Item", qty: Number(it.qty ?? it.ordered ?? 0), unit: it.unit })),
+      });
+    }
     res.json({ success: true, data: updated });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
@@ -584,6 +626,10 @@ foodRouter.post("/orders/:id/confirm-delivery", authenticate, authorize("FOOD_CO
     }).where(eq(foodOrdersTable.id, id)).returning();
     await db.insert(foodOrderEventsTable).values({
       id: newId(), orderId: id, status: "DELIVERED", note: "Delivery confirmed", actorId: req.user!.id,
+    });
+    await notifyOrderEvent("DELIVERED", {
+      unitLeadId: order.unitLeadId, orderId: order.id, orderNumber: order.orderNumber,
+      propertyName: await propertyName(order.propertyId), mealType: order.mealType, brand: order.brand,
     });
     res.json({ success: true, data: updated });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }

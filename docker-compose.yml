@@ -1,0 +1,67 @@
+name: unilivadmin
+
+# Production stack. Postgres is NOT containerised — it runs on the host and is
+# reached from the api container via host.docker.internal (host-gateway).
+# Copy .env.docker.example → .env.docker and fill it in before `up`.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: api
+    image: unilivadmin-api:latest
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env.docker
+    environment:
+      NODE_ENV: production
+      PORT: "8090"
+    expose:
+      - "8090"
+    extra_hosts:
+      # Lets the container reach Postgres running on the Docker host (Linux).
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: web
+    image: unilivadmin-web:latest
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      # Host port → container :80. Override with WEB_PORT (e.g. WEB_PORT=8080)
+      # when a host reverse proxy / TLS terminator sits in front. TLS upstream.
+      - "${WEB_PORT:-80}:80"
+
+  # ── On-demand DB schema + seed (NOT started by `up`) ──────────────────────
+  # Build once, then run commands against the host Postgres, e.g.:
+  #   docker compose run --rm tools "pnpm --filter @workspace/db run push-force"
+  #   docker compose run --rm tools "pnpm --filter @workspace/scripts run seed:food-extra"
+  tools:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: base
+    image: unilivadmin-tools:latest
+    env_file:
+      - .env.docker
+    environment:
+      NODE_ENV: production
+    working_dir: /repo
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["sh", "-lc"]
+    command: ["echo 'Run a command, e.g.: docker compose run --rm tools \"pnpm --filter @workspace/db run push-force\"'"]

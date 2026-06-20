@@ -16,6 +16,7 @@ import {
   foodMenuRotationTable,
   perResidentRuleTable,
   foodOrdersTable,
+  foodMealWindowsTable,
 } from "@workspace/db";
 import { and, eq, or, isNull, lte, gte, sql, inArray } from "drizzle-orm";
 import type { AuthUser } from "../middlewares/auth.js";
@@ -259,6 +260,37 @@ export async function nextOrderNumber(): Promise<string> {
     .where(sql`${foodOrdersTable.orderNumber} like ${prefix + "%"}`);
   const seq = (row?.c ?? 0) + 1;
   return prefix + String(seq).padStart(6, "0");
+}
+
+/**
+ * Resolves the expected delivery time for an order = serviceDate@serviceTime +
+ * leadTime, using the property-specific meal window if present else the global
+ * default. Returns null when no window is configured. Feeds delay analytics.
+ */
+export async function resolveExpectedDeliveryAt(
+  brand: string,
+  mealType: string,
+  serviceDate: Date,
+  propertyId: string,
+): Promise<Date | null> {
+  const rows = await db
+    .select()
+    .from(foodMealWindowsTable)
+    .where(
+      and(
+        eq(foodMealWindowsTable.brand, brand as never),
+        eq(foodMealWindowsTable.mealType, mealType as never),
+        eq(foodMealWindowsTable.isActive, true),
+        or(isNull(foodMealWindowsTable.propertyId), eq(foodMealWindowsTable.propertyId, propertyId)),
+      ),
+    );
+  const w = rows.sort((a, b) => (a.propertyId === propertyId ? -1 : 1))[0];
+  if (!w?.serviceTime) return null;
+  const [h, m] = w.serviceTime.split(":").map(Number);
+  if (h == null || isNaN(h)) return null;
+  const d = new Date(serviceDate);
+  d.setHours(h, m || 0, 0, 0);
+  return new Date(d.getTime() + (w.leadTimeMinutes ?? 0) * 60000);
 }
 
 /** Converts a base quantity to a friendlier display unit (g→kg, ml→litre). */

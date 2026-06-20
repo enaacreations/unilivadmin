@@ -182,11 +182,19 @@ export const usersTable = pgTable("users", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
+  /** Unique login username (Persona st.2/7). Nullable until backfilled. */
+  username: text("username").unique(),
+  /** Friendly title shown beside the name on the dashboard (Persona st.41). */
+  designation: text("designation"),
   phone: text("phone"),
   passwordHash: text("password_hash").notNull(),
   role: userRoleEnum("role").notNull(),
   propertyId: text("property_id"),
   isActive: boolean("is_active").default(true).notNull(),
+  /** OTP/login throttling (Persona st.5/6). */
+  failedLoginAttempts: integer("failed_login_attempts").default(0).notNull(),
+  lockedUntil: timestamp("locked_until"),
+  mobileVerifiedAt: timestamp("mobile_verified_at"),
   lastLogin: timestamp("last_login"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

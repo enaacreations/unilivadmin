@@ -23,6 +23,7 @@ import { financeRouter } from "./finance.js";
 import { facilityRouter, electricityRouter, residentAttendanceRouter, outPassRouter, iotRouter, iotIngestionRouter } from "./operations.js";
 import { walletRouter } from "./wallet.js";
 import foodRouter from "./food.js";
+import foodOpsRouter from "./food-ops.js";
 
 const router: IRouter = Router();
 
@@ -72,5 +73,6 @@ router.use("/iot", iotRouter);
 router.use("/iot", iotIngestionRouter);
 router.use(walletRouter);
 router.use("/food", foodRouter);
+router.use("/food", foodOpsRouter);
 
 export default router;

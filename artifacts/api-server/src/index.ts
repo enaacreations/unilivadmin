@@ -17,7 +17,9 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
+// Bind explicitly to 0.0.0.0 so the server is reachable over IPv4 inside
+// containers (Linux defaults to IPv6-only when the host is omitted).
+app.listen(port, "0.0.0.0", (err?: Error) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);

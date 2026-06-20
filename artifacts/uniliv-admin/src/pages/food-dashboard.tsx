@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useLocation } from "wouter";
+import { useLocation, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { format, subDays } from "date-fns";
 import {
@@ -17,11 +17,19 @@ import {
   ClipboardCheck,
   BarChart3,
   Settings,
+  Building2,
+  Users,
+  Wallet,
+  Clock,
+  FilePlus2,
+  ArrowRight,
+  Timer,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -46,10 +54,14 @@ import {
   foodApi,
   foodKeys,
   BRANDS,
+  MEAL_LABEL,
   type DashboardData,
   type FoodLookups,
   type Kpi,
+  type PropertyOverview,
+  type Cutoff,
 } from "@/lib/food-api";
+import { useAppStore } from "@/lib/store";
 
 const STATUS_COLORS: Record<string, string> = {
   PLACED: "#0EA5E9",
@@ -68,6 +80,24 @@ function kpiChange(k?: Kpi): number | undefined {
 
 export default function FoodDashboard() {
   const [, setLocation] = useLocation();
+
+  // Selected property from the global app store (null = all properties).
+  const { propertyId: storePropertyId } = useAppStore();
+  const scopedPropertyId = storePropertyId ?? undefined;
+
+  // Today's date as an ISO string, used to scope cut-offs.
+  const todayIso = React.useMemo(() => new Date().toISOString(), []);
+
+  const { data: overview, isLoading: overviewLoading } = useQuery<PropertyOverview | null>({
+    queryKey: foodKeys.propertyOverview({ propertyId: scopedPropertyId }),
+    queryFn: () => foodApi.propertyOverview({ propertyId: scopedPropertyId }),
+  });
+
+  const { data: cutoffs, isLoading: cutoffsLoading } = useQuery<Cutoff[]>({
+    queryKey: foodKeys.cutoffs({ brand: "UNILIV", propertyId: scopedPropertyId, date: todayIso }),
+    queryFn: () =>
+      foodApi.cutoffs({ brand: "UNILIV", propertyId: scopedPropertyId, date: todayIso }),
+  });
 
   const [propertyId, setPropertyId] = React.useState("ALL");
   const [brand, setBrand] = React.useState("ALL");
@@ -112,6 +142,176 @@ export default function FoodDashboard() {
         title="Food Dashboard"
         subtitle="Kitchen operations at a glance — orders, dispatch, and delivery"
       />
+
+      {/* Quick actions */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {QUICK_ACTIONS.map((action) => (
+          <Link
+            key={action.href}
+            href={action.href}
+            className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 shadow-sm transition-all hover:border-accent/50 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-accent/40"
+          >
+            <span
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${action.tint}`}
+            >
+              <action.icon className="h-5 w-5" />
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold text-foreground">
+                {action.label}
+              </span>
+              <span className="block truncate text-xs text-muted-foreground">
+                {action.description}
+              </span>
+            </span>
+            <ArrowRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
+          </Link>
+        ))}
+      </div>
+
+      {/* Unit-lead home: property overview + today's cut-offs */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Property overview */}
+        {overviewLoading ? (
+          <Skeleton className="h-44 w-full rounded-xl lg:col-span-2" />
+        ) : overview ? (
+          <Card className="lg:col-span-2">
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                    <Building2 className="h-5 w-5 text-primary" />
+                  </span>
+                  <div className="min-w-0">
+                    <CardTitle className="font-display text-lg leading-tight">
+                      {overview.name}
+                    </CardTitle>
+                    <p className="mt-0.5 text-sm text-muted-foreground">
+                      {[overview.address, overview.city, overview.state]
+                        .filter(Boolean)
+                        .join(", ")}
+                      {overview.pincode ? ` — ${overview.pincode}` : ""}
+                    </p>
+                  </div>
+                </div>
+                <Link
+                  href="/food/guests"
+                  className="inline-flex items-center gap-1 rounded-md text-sm font-medium text-accent hover:text-accent/80 focus:outline-none focus:ring-2 focus:ring-accent/40"
+                >
+                  View guests
+                  <ChevronRight className="h-4 w-4" />
+                </Link>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                {/* Active guests */}
+                <div className="rounded-lg border border-border bg-surface/60 p-4">
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <Users className="h-3.5 w-3.5" />
+                    Active Guests
+                  </div>
+                  <p className="mt-1 font-display text-2xl font-bold text-foreground">
+                    {overview.activeGuests.toLocaleString("en-IN")}
+                  </p>
+                </div>
+
+                {/* Occupancy */}
+                <div className="rounded-lg border border-border bg-surface/60 p-4">
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <ClipboardList className="h-3.5 w-3.5" />
+                    Occupancy
+                  </div>
+                  <p className="mt-1 font-display text-2xl font-bold text-foreground">
+                    {overview.occupied}
+                    <span className="text-base font-medium text-muted-foreground">
+                      {" / "}
+                      {overview.totalBeds}
+                    </span>
+                  </p>
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-accent transition-all"
+                      style={{
+                        width: `${Math.min(100, Math.max(0, overview.occupancyPct))}%`,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    {Math.round(overview.occupancyPct)}% occupied
+                  </p>
+                </div>
+
+                {/* Monthly revenue */}
+                <div className="rounded-lg border border-border bg-surface/60 p-4">
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <Wallet className="h-3.5 w-3.5" />
+                    Monthly Revenue
+                  </div>
+                  <p className="mt-1 font-display text-2xl font-bold text-foreground">
+                    ₹{overview.monthlyRevenue.toLocaleString("en-IN")}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {/* Today's cut-offs */}
+        <Card className={overview || overviewLoading ? "" : "lg:col-span-3"}>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Timer className="h-4 w-4 text-muted-foreground" />
+              Today's Cut-offs
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {cutoffsLoading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : !cutoffs || cutoffs.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-1 py-6 text-center">
+                <Clock className="h-6 w-6 text-muted-foreground" />
+                <p className="text-sm font-medium text-foreground">No cut-offs configured</p>
+                <p className="text-xs text-muted-foreground">
+                  Set meal windows in Settings to see ordering cut-offs.
+                </p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {cutoffs.map((c) => (
+                  <li
+                    key={c.mealType}
+                    className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted/50">
+                        <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                      </span>
+                      <div>
+                        <p className="text-sm font-medium text-foreground">
+                          {MEAL_LABEL[c.mealType] ?? c.mealType}
+                        </p>
+                        <p className="font-mono text-xs text-muted-foreground">
+                          Cut-off {c.cutoffTime}
+                        </p>
+                      </div>
+                    </div>
+                    {c.isPastCutoff ? (
+                      <Badge variant="destructive">Closed</Badge>
+                    ) : (
+                      <Badge variant="success">Open</Badge>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
@@ -368,6 +568,43 @@ function QuickNavTile({
     </button>
   );
 }
+
+const QUICK_ACTIONS: {
+  label: string;
+  description: string;
+  href: string;
+  icon: LucideIcon;
+  tint: string;
+}[] = [
+  {
+    label: "Place Order",
+    description: "Start a new order",
+    href: "/food/place-order",
+    icon: FilePlus2,
+    tint: "bg-accent/10 text-accent",
+  },
+  {
+    label: "All Orders",
+    description: "Browse & manage",
+    href: "/food/orders",
+    icon: ListOrdered,
+    tint: "bg-info/10 text-info",
+  },
+  {
+    label: "Active Guests",
+    description: "Residents on-site",
+    href: "/food/guests",
+    icon: Users,
+    tint: "bg-success/10 text-success",
+  },
+  {
+    label: "Reports",
+    description: "Trends & exports",
+    href: "/food/reports",
+    icon: BarChart3,
+    tint: "bg-warning/10 text-warning",
+  },
+];
 
 const QUICK_NAV: {
   label: string;

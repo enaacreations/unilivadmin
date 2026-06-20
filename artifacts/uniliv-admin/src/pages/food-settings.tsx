@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Pencil, Trash2, UtensilsCrossed, CalendarRange, Scale, Truck,
   Network, ShieldCheck, Leaf, Beef, Building2, MapPin, Layers, Globe,
+  ChefHat, ListChecks, Clock, Phone,
 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import { PageHeader } from "@/components/page-header";
@@ -11,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormModal } from "@/components/ui/form-modal";
@@ -22,7 +24,7 @@ import {
   foodApi, foodKeys, MEAL_TYPES, BRANDS, MEAL_LABEL, DAY_LABEL, fmtQty,
   type Dish, type MenuRotationRow, type PerResidentRule, type DeliveryPartner,
   type Zone, type City, type Cluster, type UserScope, type FoodUser, type FoodLookups,
-  type FoodBrand, type MealType,
+  type FoodBrand, type MealType, type Kitchen, type MealConfig, type MealWindow,
 } from "@/lib/food-api";
 
 // ─── Enums (from spec) ────────────────────────────────────────────────────────
@@ -87,7 +89,7 @@ export default function FoodSettings() {
     <div className="space-y-6">
       <PageHeader
         title="Food Settings & Master Data"
-        subtitle="Manage dishes, menu rotation, per-resident rules, delivery partners, hierarchy and user scopes"
+        subtitle="Manage dishes, menu rotation, per-resident rules, delivery partners, kitchens, meal types, cut-off windows, hierarchy and user scopes"
       />
 
       <Tabs defaultValue="dishes" className="space-y-4">
@@ -96,6 +98,9 @@ export default function FoodSettings() {
           <TabsTrigger value="rotation"><CalendarRange className="h-4 w-4 mr-2" /> Menu Rotation</TabsTrigger>
           <TabsTrigger value="rules"><Scale className="h-4 w-4 mr-2" /> Per-Resident Rules</TabsTrigger>
           <TabsTrigger value="partners"><Truck className="h-4 w-4 mr-2" /> Delivery Partners</TabsTrigger>
+          <TabsTrigger value="kitchens"><ChefHat className="h-4 w-4 mr-2" /> Kitchens</TabsTrigger>
+          <TabsTrigger value="meals"><ListChecks className="h-4 w-4 mr-2" /> Meal Types</TabsTrigger>
+          <TabsTrigger value="cutoffs"><Clock className="h-4 w-4 mr-2" /> Cut-off Windows</TabsTrigger>
           <TabsTrigger value="hierarchy"><Network className="h-4 w-4 mr-2" /> Hierarchy</TabsTrigger>
           <TabsTrigger value="users"><ShieldCheck className="h-4 w-4 mr-2" /> Users & Scopes</TabsTrigger>
         </TabsList>
@@ -104,6 +109,9 @@ export default function FoodSettings() {
         <TabsContent value="rotation"><RotationTab /></TabsContent>
         <TabsContent value="rules"><RulesTab properties={properties} propName={propName} /></TabsContent>
         <TabsContent value="partners"><PartnersTab /></TabsContent>
+        <TabsContent value="kitchens"><KitchensTab /></TabsContent>
+        <TabsContent value="meals"><MealTypesTab /></TabsContent>
+        <TabsContent value="cutoffs"><CutoffWindowsTab properties={properties} propName={propName} /></TabsContent>
         <TabsContent value="hierarchy"><HierarchyTab properties={properties} /></TabsContent>
         <TabsContent value="users"><UsersTab properties={properties} propName={propName} /></TabsContent>
       </Tabs>
@@ -616,7 +624,417 @@ function PartnersTab() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 5) HIERARCHY (Zones / Cities / Clusters + Property Assignment)
+// 5) KITCHENS
+// ════════════════════════════════════════════════════════════════════════════
+type KitchenForm = {
+  name: string; code: string; brand: string; address: string; city: string;
+  state: string; pincode: string; contactName: string; contactPhone: string;
+};
+const emptyKitchen: KitchenForm = {
+  name: "", code: "", brand: "__SHARED__", address: "", city: "",
+  state: "", pincode: "", contactName: "", contactPhone: "",
+};
+
+function KitchensTab() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [modalOpen, setModalOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<Kitchen | null>(null);
+  const [delTarget, setDelTarget] = React.useState<Kitchen | null>(null);
+  const [form, setForm] = React.useState<KitchenForm>(emptyKitchen);
+
+  const { data: kitchens = [], isLoading } = useQuery<Kitchen[]>({
+    queryKey: foodKeys.kitchens({}),
+    queryFn: () => foodApi.listKitchens(),
+  });
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "kitchens"] });
+
+  const saveMut = useMutation({
+    mutationFn: (v: KitchenForm) => {
+      const body: Record<string, unknown> = {
+        name: v.name.trim(),
+        code: v.code.trim(),
+        brand: v.brand === "__SHARED__" ? null : v.brand,
+        address: v.address.trim() || null,
+        city: v.city.trim() || null,
+        state: v.state.trim() || null,
+        pincode: v.pincode.trim() || null,
+        contactName: v.contactName.trim() || null,
+        contactPhone: v.contactPhone.trim() || null,
+      };
+      return editing ? foodApi.updateKitchen(editing.id, body) : foodApi.createKitchen(body);
+    },
+    onSuccess: () => { toast({ title: editing ? "Kitchen updated" : "Kitchen created" }); invalidate(); setModalOpen(false); },
+    onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
+  });
+  const delMut = useMutation({
+    mutationFn: (id: string) => foodApi.deleteKitchen(id),
+    onSuccess: () => { toast({ title: "Kitchen deleted" }); invalidate(); setDelTarget(null); },
+    onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
+  });
+
+  const openCreate = () => { setEditing(null); setForm(emptyKitchen); setModalOpen(true); };
+  const openEdit = (k: Kitchen) => {
+    setEditing(k);
+    setForm({
+      name: k.name, code: k.code, brand: k.brand ?? "__SHARED__",
+      address: k.address ?? "", city: k.city ?? "", state: k.state ?? "",
+      pincode: k.pincode ?? "", contactName: k.contactName ?? "", contactPhone: k.contactPhone ?? "",
+    });
+    setModalOpen(true);
+  };
+  const submit = () => {
+    if (!form.name.trim()) { toast({ title: "Name is required", variant: "destructive" }); return; }
+    if (!form.code.trim()) { toast({ title: "Code is required", variant: "destructive" }); return; }
+    saveMut.mutate(form);
+  };
+
+  const cols = [
+    { accessorKey: "code", header: "Code", cell: ({ row }: any) => <span className="font-mono text-xs bg-muted/30 px-2 py-1 rounded">{row.original.code}</span> },
+    { accessorKey: "name", header: "Name", cell: ({ row }: any) => <span className="font-medium text-primary">{row.original.name}</span> },
+    { accessorKey: "brand", header: "Brand", cell: ({ row }: any) => row.original.brand
+        ? <Badge variant="outline" className="text-[10px]">{row.original.brand}</Badge>
+        : <Badge variant="secondary" className="text-[10px]">SHARED</Badge> },
+    { accessorKey: "city", header: "City", cell: ({ row }: any) => row.original.city
+        ? <span className="text-sm inline-flex items-center gap-1"><MapPin className="h-3.5 w-3.5 text-muted-foreground" />{row.original.city}</span>
+        : <span className="text-muted-foreground text-xs">—</span> },
+    { id: "contact", header: "Contact", cell: ({ row }: any) => (row.original.contactName || row.original.contactPhone)
+        ? (
+          <div className="flex flex-col leading-tight">
+            {row.original.contactName && <span className="text-sm">{row.original.contactName}</span>}
+            {row.original.contactPhone && <span className="font-mono text-[11px] text-muted-foreground inline-flex items-center gap-1"><Phone className="h-3 w-3" />{row.original.contactPhone}</span>}
+          </div>
+        )
+        : <span className="text-muted-foreground text-xs">—</span> },
+    { accessorKey: "isActive", header: "Active", cell: ({ row }: any) => <Badge variant={row.original.isActive ? "success" : "secondary"} className="text-[10px]">{row.original.isActive ? "ACTIVE" : "INACTIVE"}</Badge> },
+    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} onDelete={() => setDelTarget(row.original)} /> },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader
+        title="Kitchens" description="Production kitchens that prepare and dispatch food orders."
+        action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Kitchen</Button>}
+      />
+      <DataTable columns={cols as any} data={kitchens} isLoading={isLoading} />
+
+      <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Kitchen" : "Add Kitchen"} onSave={submit} isSaving={saveMut.isPending} saveLabel={editing ? "Save Changes" : "Create Kitchen"}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Name *</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Central Kitchen" />
+            </div>
+            <div>
+              <Label>Code *</Label>
+              <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="font-mono" placeholder="e.g. KIT-BLR-01" />
+            </div>
+          </div>
+          <div>
+            <Label>Brand</Label>
+            <Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__SHARED__">Shared (all brands)</SelectItem>
+                {BRANDS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground mt-1">Leave as shared to serve every brand.</p>
+          </div>
+          <div>
+            <Label>Address</Label>
+            <Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Street address" />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <Label>City</Label>
+              <Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+            </div>
+            <div>
+              <Label>State</Label>
+              <Input value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
+            </div>
+            <div>
+              <Label>Pincode</Label>
+              <Input value={form.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} className="font-mono" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 border-t pt-3">
+            <div>
+              <Label>Contact Name</Label>
+              <Input value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
+            </div>
+            <div>
+              <Label>Contact Phone</Label>
+              <Input value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} className="font-mono" />
+            </div>
+          </div>
+        </div>
+      </FormModal>
+
+      <ConfirmDelete open={!!delTarget} onOpenChange={(o) => !o && setDelTarget(null)} label={delTarget?.name ?? ""} onConfirm={() => delTarget && delMut.mutate(delTarget.id)} isDeleting={delMut.isPending} />
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 6) MEAL TYPES
+// ════════════════════════════════════════════════════════════════════════════
+type MealConfigForm = { displayLabel: string; sortOrder: number; isEnabled: boolean };
+
+function MealTypesTab() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [editing, setEditing] = React.useState<MealConfig | null>(null);
+  const [form, setForm] = React.useState<MealConfigForm>({ displayLabel: "", sortOrder: 0, isEnabled: true });
+
+  const { data: configs = [], isLoading } = useQuery<MealConfig[]>({
+    queryKey: foodKeys.mealConfig(),
+    queryFn: () => foodApi.mealConfig(),
+  });
+  const rows = [...configs].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "meal-config"] });
+
+  const saveMut = useMutation({
+    mutationFn: (v: MealConfigForm & { mealType: string }) =>
+      foodApi.updateMealConfig(v.mealType, {
+        displayLabel: v.displayLabel.trim(),
+        sortOrder: v.sortOrder,
+        isEnabled: v.isEnabled,
+      }),
+    onSuccess: () => { toast({ title: "Meal type updated" }); invalidate(); setEditing(null); },
+    onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
+  });
+  const toggleMut = useMutation({
+    mutationFn: (c: MealConfig) =>
+      foodApi.updateMealConfig(c.mealType, {
+        displayLabel: c.displayLabel,
+        sortOrder: c.sortOrder,
+        isEnabled: !c.isEnabled,
+      }),
+    onSuccess: () => { toast({ title: "Meal type updated" }); invalidate(); },
+    onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
+  });
+
+  const openEdit = (c: MealConfig) => {
+    setEditing(c);
+    setForm({ displayLabel: c.displayLabel, sortOrder: c.sortOrder, isEnabled: c.isEnabled });
+  };
+  const submit = () => {
+    if (!editing) return;
+    if (!form.displayLabel.trim()) { toast({ title: "Display label is required", variant: "destructive" }); return; }
+    saveMut.mutate({ ...form, mealType: editing.mealType });
+  };
+
+  const cols = [
+    { accessorKey: "mealType", header: "Meal Type", cell: ({ row }: any) => <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground">{row.original.mealType}</span> },
+    { accessorKey: "displayLabel", header: "Display Label", cell: ({ row }: any) => <span className="font-medium text-primary">{row.original.displayLabel}</span> },
+    { accessorKey: "sortOrder", header: "Order", cell: ({ row }: any) => <span className="text-muted-foreground text-xs">{row.original.sortOrder}</span> },
+    {
+      accessorKey: "isEnabled", header: "Enabled",
+      cell: ({ row }: any) => (
+        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+          <Switch
+            checked={row.original.isEnabled}
+            onCheckedChange={() => toggleMut.mutate(row.original)}
+            disabled={toggleMut.isPending}
+          />
+          <span className={`text-xs font-medium ${row.original.isEnabled ? "text-success" : "text-muted-foreground"}`}>
+            {row.original.isEnabled ? "Enabled" : "Disabled"}
+          </span>
+        </div>
+      ),
+    },
+    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} /> },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader
+        title="Meal Types" description="Customise the label, ordering and availability of each meal slot. Meal types are fixed; only their presentation can be edited."
+      />
+      <DataTable columns={cols as any} data={rows} isLoading={isLoading} />
+
+      <FormModal open={!!editing} onOpenChange={(o) => !o && setEditing(null)} title="Edit Meal Type" onSave={submit} isSaving={saveMut.isPending} saveLabel="Save Changes">
+        <div className="space-y-4">
+          {editing && (
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-[10px] font-mono uppercase tracking-wider">{editing.mealType}</Badge>
+              <span className="text-xs text-muted-foreground">System meal type</span>
+            </div>
+          )}
+          <div>
+            <Label>Display Label *</Label>
+            <Input value={form.displayLabel} onChange={(e) => setForm({ ...form, displayLabel: e.target.value })} placeholder="e.g. High Tea / Evening Snacks" />
+          </div>
+          <div>
+            <Label>Sort Order</Label>
+            <Input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: Number(e.target.value) })} />
+          </div>
+          <div className="flex items-center justify-between border-t pt-3">
+            <div>
+              <Label className="mb-0">Enabled</Label>
+              <p className="text-xs text-muted-foreground">Disabled meal types are hidden from ordering.</p>
+            </div>
+            <Switch checked={form.isEnabled} onCheckedChange={(v) => setForm({ ...form, isEnabled: v })} />
+          </div>
+        </div>
+      </FormModal>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 7) CUT-OFF WINDOWS
+// ════════════════════════════════════════════════════════════════════════════
+type WindowForm = {
+  brand: FoodBrand; mealType: MealType; cutoffTime: string; serviceTime: string;
+  leadTimeMinutes: number; propertyId: string;
+};
+const emptyWindow: WindowForm = {
+  brand: "UNILIV", mealType: "BREAKFAST", cutoffTime: "", serviceTime: "",
+  leadTimeMinutes: 0, propertyId: "",
+};
+
+function CutoffWindowsTab({ properties, propName }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [brand, setBrand] = React.useState("ALL");
+  const [modalOpen, setModalOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<MealWindow | null>(null);
+  const [delTarget, setDelTarget] = React.useState<MealWindow | null>(null);
+  const [form, setForm] = React.useState<WindowForm>(emptyWindow);
+
+  const params: Record<string, unknown> = brand === "ALL" ? {} : { brand };
+  const { data: windows = [], isLoading } = useQuery<MealWindow[]>({
+    queryKey: foodKeys.mealWindows(params),
+    queryFn: () => foodApi.listMealWindows(params),
+  });
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "meal-windows"] });
+
+  const saveMut = useMutation({
+    mutationFn: (v: WindowForm) => {
+      const body: Record<string, unknown> = {
+        brand: v.brand,
+        mealType: v.mealType,
+        cutoffTime: v.cutoffTime.trim(),
+        serviceTime: v.serviceTime.trim() || null,
+        leadTimeMinutes: v.leadTimeMinutes,
+        propertyId: v.propertyId || null,
+      };
+      return editing ? foodApi.updateMealWindow(editing.id, body) : foodApi.createMealWindow(body);
+    },
+    onSuccess: () => { toast({ title: editing ? "Cut-off window updated" : "Cut-off window created" }); invalidate(); setModalOpen(false); },
+    onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
+  });
+  const delMut = useMutation({
+    mutationFn: (id: string) => foodApi.deleteMealWindow(id),
+    onSuccess: () => { toast({ title: "Cut-off window deleted" }); invalidate(); setDelTarget(null); },
+    onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
+  });
+
+  const openCreate = () => { setEditing(null); setForm(emptyWindow); setModalOpen(true); };
+  const openEdit = (w: MealWindow) => {
+    setEditing(w);
+    setForm({
+      brand: w.brand, mealType: w.mealType, cutoffTime: w.cutoffTime ?? "",
+      serviceTime: w.serviceTime ?? "", leadTimeMinutes: w.leadTimeMinutes ?? 0,
+      propertyId: w.propertyId ?? "",
+    });
+    setModalOpen(true);
+  };
+  const submit = () => {
+    if (!form.cutoffTime.trim()) { toast({ title: "Cut-off time is required", variant: "destructive" }); return; }
+    saveMut.mutate(form);
+  };
+
+  const cols = [
+    { accessorKey: "brand", header: "Brand", cell: ({ row }: any) => <Badge variant="outline" className="text-[10px]">{row.original.brand}</Badge> },
+    { accessorKey: "mealType", header: "Meal", cell: ({ row }: any) => MEAL_LABEL[row.original.mealType as MealType] ?? row.original.mealType },
+    { accessorKey: "cutoffTime", header: "Cut-off", cell: ({ row }: any) => <span className="font-mono text-xs inline-flex items-center gap-1"><Clock className="h-3.5 w-3.5 text-muted-foreground" />{row.original.cutoffTime}</span> },
+    { accessorKey: "serviceTime", header: "Service", cell: ({ row }: any) => row.original.serviceTime ? <span className="font-mono text-xs">{row.original.serviceTime}</span> : <span className="text-muted-foreground text-xs">—</span> },
+    { accessorKey: "leadTimeMinutes", header: "Lead (min)", cell: ({ row }: any) => <span className="text-muted-foreground text-xs">{row.original.leadTimeMinutes}</span> },
+    { accessorKey: "propertyId", header: "Scope", cell: ({ row }: any) => row.original.propertyId
+        ? <span className="text-sm inline-flex items-center gap-1"><Building2 className="h-3.5 w-3.5 text-muted-foreground" />{propName(row.original.propertyId)}</span>
+        : <Badge variant="secondary" className="text-[10px]"><Globe className="h-3 w-3 mr-1" /> GLOBAL</Badge> },
+    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} onDelete={() => setDelTarget(row.original)} /> },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader
+        title="Cut-off Windows" description="Per-brand ordering cut-offs and service times, optionally overridden per property."
+        action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Window</Button>}
+      />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Select value={brand} onValueChange={setBrand}>
+          <SelectTrigger className="w-40"><SelectValue placeholder="Brand" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All Brands</SelectItem>
+            {BRANDS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <DataTable columns={cols as any} data={windows} isLoading={isLoading} />
+
+      <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Cut-off Window" : "Add Cut-off Window"} onSave={submit} isSaving={saveMut.isPending} saveLabel={editing ? "Save Changes" : "Create Window"}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Brand</Label>
+              <Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v as FoodBrand })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{BRANDS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Meal</Label>
+              <Select value={form.mealType} onValueChange={(v) => setForm({ ...form, mealType: v as MealType })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{MEAL_TYPES.map((m) => <SelectItem key={m} value={m}>{MEAL_LABEL[m]}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <Label>Cut-off Time *</Label>
+              <Input value={form.cutoffTime} onChange={(e) => setForm({ ...form, cutoffTime: e.target.value })} className="font-mono" placeholder="HH:MM" />
+            </div>
+            <div>
+              <Label>Service Time</Label>
+              <Input value={form.serviceTime} onChange={(e) => setForm({ ...form, serviceTime: e.target.value })} className="font-mono" placeholder="HH:MM" />
+            </div>
+            <div>
+              <Label>Lead (min)</Label>
+              <Input type="number" min={0} value={form.leadTimeMinutes} onChange={(e) => setForm({ ...form, leadTimeMinutes: Number(e.target.value) })} />
+            </div>
+          </div>
+          <div>
+            <Label>Property</Label>
+            <Select value={form.propertyId || "__GLOBAL__"} onValueChange={(v) => setForm({ ...form, propertyId: v === "__GLOBAL__" ? "" : v })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__GLOBAL__">Global (all properties)</SelectItem>
+                {properties.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground mt-1">Leave global to apply across all properties.</p>
+          </div>
+        </div>
+      </FormModal>
+
+      <ConfirmDelete open={!!delTarget} onOpenChange={(o) => !o && setDelTarget(null)} label={delTarget ? `${delTarget.brand} ${MEAL_LABEL[delTarget.mealType]} window` : ""} onConfirm={() => delTarget && delMut.mutate(delTarget.id)} isDeleting={delMut.isPending} />
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 8) HIERARCHY (Zones / Cities / Clusters + Property Assignment)
 // ════════════════════════════════════════════════════════════════════════════
 function HierarchyTab({ properties }: { properties: FoodLookups["properties"] }) {
   return (

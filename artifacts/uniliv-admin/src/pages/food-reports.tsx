@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { format, subDays } from "date-fns";
 import {
   Download, CalendarRange, ClipboardList, UtensilsCrossed, Users, PieChart as PieChartIcon, BarChart3,
+  FileSpreadsheet, FileText, FileDown, Trash2, Clock, TrendingDown, ChevronDown,
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -19,10 +20,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
+import { apiDownload } from "@/lib/api-fetch";
 import {
   foodApi, foodKeys, BRANDS, ORDER_STATUSES, MEAL_LABEL,
-  type ReportsData, type MealType, type OrderStatus, type FoodLookups,
+  type ReportsData, type AnalyticsData, type MealType, type OrderStatus, type FoodLookups,
 } from "@/lib/food-api";
 
 // Chart palette — keyed to the design-system CSS variables (raw hex values).
@@ -31,24 +36,28 @@ const PRIMARY = "var(--primary)";
 const SUCCESS = "var(--success)";
 const WARNING = "var(--warning)";
 const DESTRUCTIVE = "var(--destructive)";
+const INFO = "var(--info)";
 const MEAL_PALETTE = [ACCENT, PRIMARY, SUCCESS, WARNING, DESTRUCTIVE];
+
+// Period presets — drive both the analytics `period` param and the from/to window.
+type PeriodKey = "week" | "month" | "quarter" | "year";
+const PERIOD_PRESETS: { key: PeriodKey; label: string; days: number }[] = [
+  { key: "week", label: "Week", days: 7 },
+  { key: "month", label: "Month", days: 30 },
+  { key: "quarter", label: "Quarter", days: 90 },
+  { key: "year", label: "Year", days: 365 },
+];
 
 // StatusBadge-aligned colors for the status breakdown chart.
 const STATUS_COLOR: Record<OrderStatus, string> = {
   PLACED: "var(--info, #0EA5E9)",
+  ACCEPTED: "var(--accent, #F97316)",
+  REJECTED: DESTRUCTIVE,
   PREPARING: WARNING,
   DISPATCHED: "var(--info, #0EA5E9)",
   DELIVERED: SUCCESS,
   CANCELLED: DESTRUCTIVE,
 };
-
-function buildQuery(p: Record<string, string>): string {
-  const sp = new URLSearchParams();
-  for (const [k, v] of Object.entries(p)) {
-    if (v && v !== "ALL") sp.set(k, v);
-  }
-  return sp.toString();
-}
 
 /** Small empty state shown inside a chart card when its dataset is empty. */
 function ChartEmpty({ icon: Icon, label }: { icon: React.ElementType; label: string }) {
@@ -82,9 +91,19 @@ export default function FoodReports() {
   const [status, setStatus] = React.useState<string>("ALL");
   const [propertyId, setPropertyId] = React.useState<string>("ALL");
   const [brand, setBrand] = React.useState<string>("ALL");
+  const [period, setPeriod] = React.useState<PeriodKey>("month");
   const [downloading, setDownloading] = React.useState(false);
 
   const filters: Record<string, string> = { from, to, status, propertyId, brand };
+
+  // Apply a period preset: sets `period` and recomputes the from/to window.
+  const applyPeriod = (p: PeriodKey) => {
+    const preset = PERIOD_PRESETS.find((x) => x.key === p);
+    if (!preset) return;
+    setPeriod(p);
+    setFrom(format(subDays(new Date(), preset.days), "yyyy-MM-dd"));
+    setTo(format(new Date(), "yyyy-MM-dd"));
+  };
 
   const { data: lookups } = useQuery<FoodLookups>({
     queryKey: foodKeys.lookups(),
@@ -99,10 +118,38 @@ export default function FoodReports() {
     queryFn: () => foodApi.reports(filters),
   });
 
+  // Waste & delays analytics — reuses the same period/property/brand/date scope.
+  const analyticsParams: Record<string, string> = { period, from, to };
+  if (propertyId !== "ALL") analyticsParams.propertyId = propertyId;
+  if (brand !== "ALL") analyticsParams.brand = brand;
+
+  const {
+    data: analytics, isLoading: analyticsLoading, isError: analyticsError, error: analyticsErr,
+  } = useQuery<AnalyticsData>({
+    queryKey: foodKeys.analytics(analyticsParams),
+    queryFn: () => foodApi.analytics(analyticsParams),
+  });
+
   const ordersPerDay = data?.ordersPerDay ?? [];
   const mealTypeDistribution = data?.mealTypeDistribution ?? [];
   const residentTrend = data?.residentTrend ?? [];
   const statusBreakdown = data?.statusBreakdown ?? [];
+
+  const wastageTrend = analytics?.wastageTrend ?? [];
+  const topWasteItems = analytics?.topWasteItems ?? [];
+  const delays = analytics?.delays ?? [];
+  const summary = analytics?.summary;
+
+  // Shaped horizontal bar series for top-wastage items.
+  const topWasteChartData = topWasteItems
+    .slice(0, 8)
+    .map((w) => ({
+      name: w.dishName ?? "—",
+      wasted: w.wasted,
+      wastePct: w.wastePct,
+      unit: w.unit,
+    }))
+    .reverse();
 
   // Derived headline metrics.
   const totalOrders = ordersPerDay.reduce((s, d) => s + (d.count || 0), 0);
@@ -131,26 +178,29 @@ export default function FoodReports() {
     }
   }, [isError, error, toast]);
 
-  const downloadCsv = async () => {
+  React.useEffect(() => {
+    if (analyticsError) {
+      toast({ title: (analyticsErr as any)?.message || "Failed to load analytics", variant: "destructive" });
+    }
+  }, [analyticsError, analyticsErr, toast]);
+
+  // Clean export params — drop ALL sentinels so the API receives only real filters.
+  const exportParams: Record<string, string> = {};
+  for (const [k, v] of Object.entries(filters)) {
+    if (v && v !== "ALL") exportParams[k] = v;
+  }
+
+  const runExport = async (fmt: "xls" | "pdf" | "csv") => {
     setDownloading(true);
     try {
-      const query = buildQuery(filters);
-      const token = localStorage.getItem("uniliv_token");
-      const res = await fetch(`/api/food/reports/export${query ? `?${query}` : ""}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) throw new Error(`Export failed (${res.status})`);
-      const text = await res.text();
-      const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "food-orders.csv";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast({ title: "CSV downloaded", description: "food-orders.csv" });
+      if (fmt === "xls") {
+        await apiDownload(foodApi.reportsExportXlsxUrl(exportParams), "food-orders.xls");
+      } else if (fmt === "pdf") {
+        await apiDownload(foodApi.reportsExportPdfUrl(exportParams), "food-orders.pdf");
+      } else {
+        await apiDownload(foodApi.reportsExportUrl(exportParams), "food-orders.csv");
+      }
+      toast({ title: "Export ready", description: `food-orders.${fmt}` });
     } catch (e: any) {
       toast({ title: e?.message || "Download failed", variant: "destructive" });
     } finally {
@@ -164,14 +214,28 @@ export default function FoodReports() {
         title="Food Reports"
         subtitle="Order volume, meal mix, resident demand, and fulfilment status"
         action={
-          <Button
-            className="bg-accent hover:bg-accent/90 text-white"
-            onClick={downloadCsv}
-            disabled={downloading}
-          >
-            <Download className="w-4 h-4 mr-2" />
-            {downloading ? "Preparing…" : "Download CSV"}
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button className="bg-accent hover:bg-accent/90 text-white" disabled={downloading}>
+                <Download className="w-4 h-4 mr-2" />
+                {downloading ? "Preparing…" : "Export"}
+                <ChevronDown className="w-4 h-4 ml-2 opacity-80" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuLabel>Download report</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => runExport("xls")}>
+                <FileSpreadsheet className="w-4 h-4 mr-2 text-success" /> Excel (.xls)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => runExport("pdf")}>
+                <FileText className="w-4 h-4 mr-2 text-destructive" /> PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => runExport("csv")}>
+                <FileDown className="w-4 h-4 mr-2 text-muted-foreground" /> CSV
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         }
       />
 
@@ -181,6 +245,30 @@ export default function FoodReports() {
         <StatCard title="Avg Orders / Day" value={isLoading ? "—" : avgPerDay} icon={BarChart3} />
         <StatCard title="Peak Residents" value={isLoading ? "—" : peakResidents} icon={Users} />
         <StatCard title="Meal Types" value={isLoading ? "—" : mealTypeDistribution.length} icon={UtensilsCrossed} />
+      </div>
+
+      {/* Period segmented control */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex items-center rounded-lg border border-border bg-card p-1">
+          {PERIOD_PRESETS.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => applyPeriod(p.key)}
+              aria-pressed={period === p.key}
+              className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                period === p.key
+                  ? "bg-accent text-white shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {format(new Date(from), "dd MMM yyyy")} – {format(new Date(to), "dd MMM yyyy")}
+        </p>
       </div>
 
       {/* Filters */}
@@ -353,6 +441,141 @@ export default function FoodReports() {
                       <Cell key={i} fill={STATUS_COLOR[d.status as OrderStatus] ?? PRIMARY} />
                     ))}
                   </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Waste & delays analytics */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <TrendingDown className="w-5 h-5 text-accent" />
+          <h2 className="text-lg font-display font-semibold text-foreground">Waste &amp; Delays</h2>
+        </div>
+
+        {/* Summary tiles */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <StatCard
+            title="Total Wasted"
+            value={analyticsLoading ? "—" : (summary?.totalWasted ?? 0)}
+            icon={Trash2}
+          />
+          <StatCard
+            title="Waste %"
+            value={analyticsLoading ? "—" : `${summary?.wastePct ?? 0}%`}
+            icon={TrendingDown}
+          />
+          <StatCard
+            title="Delayed Deliveries"
+            value={
+              analyticsLoading
+                ? "—"
+                : `${summary?.delayedOrders ?? 0} / ${summary?.deliveredOrders ?? 0} delivered`
+            }
+            icon={Clock}
+          />
+        </div>
+
+        {/* Wastage trend + Top wastage items */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Wastage trend */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <TrendingDown className="w-4 h-4 text-accent" /> Wastage Trend
+              </CardTitle>
+            </CardHeader>
+            <CardContent style={{ height: 300 }}>
+              {analyticsLoading ? (
+                <ChartSkeleton />
+              ) : wastageTrend.length === 0 ? (
+                <ChartEmpty icon={Trash2} label="No wastage recorded in this range" />
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={wastageTrend} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="wasteGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor={WARNING} stopOpacity={0.35} />
+                        <stop offset="95%" stopColor={WARNING} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" />
+                    <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                    <Tooltip labelFormatter={dayTickFmt} />
+                    <Area type="monotone" dataKey="wasted" name="Wasted" stroke={WARNING} strokeWidth={2} fill="url(#wasteGradient)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Top wastage items */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Trash2 className="w-4 h-4 text-accent" /> Top Wastage Items
+              </CardTitle>
+            </CardHeader>
+            <CardContent style={{ height: 300 }}>
+              {analyticsLoading ? (
+                <ChartSkeleton />
+              ) : topWasteChartData.length === 0 ? (
+                <ChartEmpty icon={UtensilsCrossed} label="No wasted items in this range" />
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={topWasteChartData}
+                    layout="vertical"
+                    margin={{ top: 8, right: 16, left: 8, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" horizontal={false} />
+                    <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={110}
+                      tick={{ fontSize: 11 }}
+                      interval={0}
+                    />
+                    <Tooltip
+                      formatter={(val: any, _n: any, item: any) => [
+                        `${val} ${item?.payload?.unit ?? ""}`.trim(),
+                        `Wasted (${item?.payload?.wastePct ?? 0}%)`,
+                      ]}
+                    />
+                    <Bar dataKey="wasted" name="Wasted" fill={DESTRUCTIVE} radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Delivery delays */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Clock className="w-4 h-4 text-accent" /> Delivery Delays
+            </CardTitle>
+          </CardHeader>
+          <CardContent style={{ height: 320 }}>
+            {analyticsLoading ? (
+              <ChartSkeleton />
+            ) : delays.length === 0 ? (
+              <ChartEmpty icon={Clock} label="No delivery data in this range" />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={delays} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border, #e5e7eb)" />
+                  <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                  <Tooltip labelFormatter={dayTickFmt} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="total" name="Delivered" fill={INFO} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="delayed" name="Delayed" fill={WARNING} radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}

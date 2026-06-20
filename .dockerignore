@@ -1,0 +1,29 @@
+# ── Build context excludes (keep the image + context small) ──
+**/node_modules
+**/dist
+artifacts/*/dist
+lib/*/dist
+.git
+.gitignore
+.gitattributes
+
+# Local env / secrets (never bake into the image)
+.env
+.env.*
+!.env.docker.example
+
+# Editor / tooling / agent state
+.claude
+.vscode
+.idea
+.DS_Store
+**/.turbo
+**/coverage
+**/*.log
+
+# Repo docs not needed at build time
+DEPLOYMENT.md
+FOOD_DB_PLAN.md
+UX_AUDIT.md
+DOCUMENTATION.md
+README.md
