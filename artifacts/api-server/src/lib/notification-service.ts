@@ -21,6 +21,8 @@ import { eq } from "drizzle-orm";
 import { newId } from "./id.js";
 import { logger } from "./logger.js";
 import { enqueueDelivery, processDelivery, queueEnabled } from "@workspace/notify-core";
+import { emitNotification } from "./notification-events.js";
+import { pushToUser } from "./web-push.js";
 
 type Channel = "EMAIL" | "SMS" | "PUSH";
 
@@ -96,15 +98,28 @@ async function enqueueAndSend(input: {
 export async function notify(input: NotifyInput): Promise<void> {
   try {
     if (!input.skipInApp) {
+      const id = newId();
+      const createdAt = new Date();
       await db.insert(notificationsTable).values({
-        id: newId(),
+        id,
         userId: input.userId,
         title: input.title,
         body: input.body ?? null,
         type: input.type,
         link: input.link ?? null,
         isRead: false,
+        createdAt,
       });
+      // Live-push to any open bell (SSE) + the user's web-push subscriptions.
+      emitNotification(input.userId, {
+        id,
+        title: input.title,
+        body: input.body ?? null,
+        type: input.type,
+        link: input.link ?? null,
+        createdAt: createdAt.toISOString(),
+      });
+      void pushToUser(input.userId, { title: input.title, body: input.body ?? null, link: input.link ?? null, type: input.type });
     }
 
     if (input.email || input.sms) {

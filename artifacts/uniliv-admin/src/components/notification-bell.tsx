@@ -1,11 +1,13 @@
 import * as React from "react";
-import { Bell } from "lucide-react";
+import { Bell, BellRing } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { apiFetch } from "@/lib/api-fetch";
 import { useAuthStore } from "@/lib/store";
+import { useToast } from "@/hooks/use-toast";
+import { getPushState, enablePush, disablePush, isPushSupported, type PushState } from "@/lib/push";
 
 interface Notif { id: string; title: string; body?: string | null; type: string; link?: string | null; isRead: boolean; createdAt: string }
 
@@ -30,6 +32,47 @@ export function NotificationBell() {
     mutationFn: () => apiFetch("/notifications/read-all", { method: "PATCH" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/notifications"] }),
   });
+
+  // Live updates via SSE: refetch the moment the server emits a new notification
+  // (the 30s poll above stays as a fallback). Auth is via the httpOnly cookie.
+  React.useEffect(() => {
+    if (!isAuth) return;
+    const es = new EventSource("/api/notifications/stream", { withCredentials: true });
+    es.addEventListener("notification", () => qc.invalidateQueries({ queryKey: ["/notifications"] }));
+    return () => es.close();
+  }, [isAuth, qc]);
+
+  // Web-push opt-in toggle.
+  const { toast } = useToast();
+  const [pushState, setPushState] = React.useState<PushState>("default");
+  const [pushBusy, setPushBusy] = React.useState(false);
+  React.useEffect(() => {
+    if (isAuth && isPushSupported()) getPushState().then(setPushState);
+  }, [isAuth]);
+  const togglePush = async () => {
+    setPushBusy(true);
+    try {
+      if (pushState === "subscribed") {
+        await disablePush();
+        setPushState("default");
+        toast({ title: "Desktop notifications turned off" });
+      } else {
+        const r = await enablePush();
+        if (r.ok) {
+          setPushState("subscribed");
+          toast({ title: "Desktop notifications turned on" });
+        } else {
+          setPushState(await getPushState());
+          toast({
+            title: r.reason === "denied" ? "Notifications are blocked in your browser" : "Couldn't enable notifications",
+            variant: "destructive",
+          });
+        }
+      }
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   return (
     <DropdownMenu>
@@ -73,6 +116,24 @@ export function NotificationBell() {
             ))
           )}
         </div>
+        {isPushSupported() && pushState !== "unsupported" && (
+          <div className="flex items-center justify-between gap-2 px-3 py-2 border-t">
+            <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+              <BellRing className="w-3.5 h-3.5" /> Desktop alerts
+            </span>
+            {pushState === "denied" ? (
+              <span className="text-[11px] text-muted-foreground">Blocked in browser</span>
+            ) : (
+              <button
+                disabled={pushBusy}
+                onClick={togglePush}
+                className="text-xs font-medium text-accent hover:underline disabled:opacity-50"
+              >
+                {pushState === "subscribed" ? "Turn off" : "Turn on"}
+              </button>
+            )}
+          </div>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
