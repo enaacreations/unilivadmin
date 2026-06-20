@@ -1,6 +1,7 @@
 import { db, notificationOutboxTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { deliver } from "./providers.js";
+import { isSuppressed } from "./suppression.js";
 import type { OutboxRow } from "./types.js";
 
 export interface AttemptCtx {
@@ -23,6 +24,15 @@ export async function processDelivery(
   const [row] = await db.select().from(notificationOutboxTable).where(eq(notificationOutboxTable.id, outboxId));
   if (!row) return;
   if (row.status === "SENT" || row.status === "SKIPPED") return;
+
+  // Deliverability: never send to a hard-bounced / complained / opted-out address.
+  if (await isSuppressed(row.channel, row.toAddress)) {
+    await db
+      .update(notificationOutboxTable)
+      .set({ status: "SKIPPED", lastError: "recipient suppressed", attempts: ctx.attemptNo })
+      .where(eq(notificationOutboxTable.id, outboxId));
+    return;
+  }
 
   try {
     const providerMessageId = await deliver(row as OutboxRow);

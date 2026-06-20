@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, json, integer, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, json, integer, pgEnum, unique } from "drizzle-orm/pg-core";
 import { usersTable, propertiesTable } from "./core";
 
 /** Channels the outbound dispatch service can send through (Persona st.17/18/22/23). */
@@ -123,6 +123,27 @@ export const notificationPreferencesTable = pgTable("notification_preferences", 
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+/**
+ * Deliverability suppression list. Addresses that hard-bounced, complained, or
+ * unsubscribed are skipped before every send (fed by provider webhooks — SES/SNS
+ * bounce & complaint, MSG91 DLR). Unique per (channel, address).
+ */
+export const notificationSuppressionsTable = pgTable(
+  "notification_suppressions",
+  {
+    id: text("id").primaryKey(),
+    channel: notificationChannelEnum("channel").notNull(),
+    address: text("address").notNull(),
+    /** HARD_BOUNCE | COMPLAINT | UNSUBSCRIBED | INVALID */
+    reason: text("reason").notNull(),
+    detail: text("detail"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    uniqChannelAddress: unique("notification_suppressions_channel_address_uq").on(t.channel, t.address),
+  }),
+);
+
 /** Async export jobs for large XLS/PDF generation (optional; Persona st.34/47). */
 export const reportJobsTable = pgTable("report_jobs", {
   id: text("id").primaryKey(),
@@ -141,3 +162,4 @@ export type SystemConfig = typeof systemConfigTable.$inferSelect;
 export type NotificationOutbox = typeof notificationOutboxTable.$inferSelect;
 export type NewNotificationOutbox = typeof notificationOutboxTable.$inferInsert;
 export type PushSubscription = typeof pushSubscriptionsTable.$inferSelect;
+export type NotificationSuppression = typeof notificationSuppressionsTable.$inferSelect;

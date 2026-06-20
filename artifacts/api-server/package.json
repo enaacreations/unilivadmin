@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "@workspace/notify-core": "workspace:*",
@@ -25,6 +26,7 @@
     "pdf-lib": "^1.17.1",
     "pino": "^9",
     "pino-http": "^10",
+    "sns-validator": "^0.3.5",
     "zod": "catalog:"
   },
   "devDependencies": {
