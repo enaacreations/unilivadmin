@@ -202,7 +202,12 @@ export async function verifyChallenge(
     return { ok: false, error: "This code has expired. Please request a new one." };
   }
 
-  const valid = await bcrypt.compare(String(code), ch.codeHash);
+  // Opt-in dev/staging master OTP: when DEV_OTP is set, that fixed code always
+  // verifies (in addition to the real one). Never set this in real production.
+  const masterOtp = process.env["DEV_OTP"];
+  const valid =
+    (!!masterOtp && String(code) === masterOtp) ||
+    (await bcrypt.compare(String(code), ch.codeHash));
   if (!valid) {
     const attempts = ch.attemptCount + 1;
     const locked = attempts >= ch.maxAttempts;

@@ -116,6 +116,11 @@ docker compose run --rm tools "pnpm --filter @workspace/scripts run seed && \
 > own admin user, but you **should** run `seed:food-extra` (it seeds
 > `system_config` for OTP and the meal **cut-off windows** the app relies on).
 > Seeded logins use password `Admin@123` — change them immediately.
+>
+> **OTP at login:** without an SMS provider, set `DEV_OTP=000000` in `.env.docker`
+> (a fixed code that always passes) — or read the real per-login code from
+> `docker compose logs api --since 2m | grep -i "OTP to"`. Unset `DEV_OTP` once
+> Twilio is wired for real production.
 
 ## 5. Start
 
