@@ -11,10 +11,13 @@ import { StatusBadge } from "@/components/status-badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { formatDistanceToNow } from "date-fns";
 import { usePermissions } from "@/lib/use-permissions";
+import { useAppStore } from "@/lib/store";
 
 export default function Dashboard() {
   const [, setLocation] = useLocation();
   const { can, me } = usePermissions();
+  const { propertyId } = useAppStore(); // sidebar property scope
+  const scope = propertyId ?? undefined;
 
   // What this role can actually work with — the dashboard adapts to it.
   const showResidents = can("RESIDENTS", "view");
@@ -23,10 +26,10 @@ export default function Dashboard() {
   const showFinance = can("PAYMENTS", "view") || can("LEDGER", "view") || can("WALLET", "view");
   const showCharts = showResidents || showComplaints || showOccupancy;
 
-  const { data: statsRes, isLoading: statsLoading } = useGetDashboardStats(undefined, { query: { queryKey: getGetDashboardStatsQueryKey() } });
+  const { data: statsRes, isLoading: statsLoading } = useGetDashboardStats({ propertyId: scope } as any, { query: { queryKey: getGetDashboardStatsQueryKey({ propertyId: scope } as any) } });
   const { data: chartsRes, isLoading: chartsLoading } = useGetDashboardCharts(undefined, { query: { queryKey: getGetDashboardChartsQueryKey(), enabled: showCharts } });
-  const { data: complaintsRes, isLoading: complaintsLoading } = useGetComplaints({ limit: 5 } as any, { query: { queryKey: getGetComplaintsQueryKey({ limit: 5 } as any), enabled: showComplaints } });
-  const { data: residentsRes, isLoading: residentsLoading } = useGetResidents({ limit: 5 } as any, { query: { queryKey: getGetResidentsQueryKey({ limit: 5 } as any), enabled: showResidents } });
+  const { data: complaintsRes, isLoading: complaintsLoading } = useGetComplaints({ limit: 5, propertyId: scope } as any, { query: { queryKey: getGetComplaintsQueryKey({ limit: 5, propertyId: scope } as any), enabled: showComplaints } });
+  const { data: residentsRes, isLoading: residentsLoading } = useGetResidents({ limit: 5, propertyId: scope } as any, { query: { queryKey: getGetResidentsQueryKey({ limit: 5, propertyId: scope } as any), enabled: showResidents } });
   const { data: propertiesRes, isLoading: propertiesLoading } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey(), enabled: showOccupancy } });
 
   const stats = statsRes?.data;
@@ -66,15 +69,15 @@ export default function Dashboard() {
   const cards: ReactNode[] = [];
   if (showResidents || showOccupancy) {
     cards.push(
-      <StatCard key="residents" title="Total Residents (Active)" value={statsLoading ? "..." : (stats?.totalResidents || 0)} icon={Users} change={2.5} />,
-      <StatCard key="occupancy" title="Occupancy Rate" value={statsLoading ? "..." : `${stats?.occupancyRate || 0}%`} icon={TrendingUp} change={1.2} />,
+      <StatCard key="residents" title="Total Residents (Active)" value={statsLoading ? "..." : (stats?.totalResidents || 0)} icon={Users} />,
+      <StatCard key="occupancy" title="Occupancy Rate" value={statsLoading ? "..." : `${stats?.occupancyRate || 0}%`} icon={TrendingUp} />,
     );
   }
   if (showComplaints) {
-    cards.push(<StatCard key="complaints" title="Open Complaints" value={statsLoading ? "..." : (stats?.openComplaints || 0)} icon={AlertCircle} change={-5.4} />);
+    cards.push(<StatCard key="complaints" title="Open Complaints" value={statsLoading ? "..." : (stats?.openComplaints || 0)} icon={AlertCircle} />);
   }
   if (showFinance) {
-    cards.push(<StatCard key="overdue" title="Overdue Payments" value={statsLoading ? "..." : (stats?.pendingPayments || 0)} icon={Building} change={8.1} />);
+    cards.push(<StatCard key="overdue" title="Overdue Payments" value={statsLoading ? "..." : `₹${(stats?.pendingPayments || 0).toLocaleString("en-IN")}`} icon={Building} />);
   }
 
   const hasContent = cards.length > 0 || showCharts || showComplaints || showResidents;

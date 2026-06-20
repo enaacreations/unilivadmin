@@ -14,16 +14,26 @@ router.get("/stats", authenticate, async (req, res) => {
   try {
     const propertyId = req.query["propertyId"] as string | undefined;
 
-    const [propCount] = await db.select({ count: sql<number>`count(*)::int` }).from(propertiesTable);
-    const [resCount] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(
-      propertyId ? and(eq(residentsTable.propertyId, propertyId), eq(residentsTable.status, "ACTIVE")) : eq(residentsTable.status, "ACTIVE")
+    // The sidebar property selector scopes every dashboard metric to one property.
+    const propWhere = propertyId ? eq(propertiesTable.id, propertyId) : undefined;
+    const resActive = propertyId
+      ? and(eq(residentsTable.propertyId, propertyId), eq(residentsTable.status, "ACTIVE"))
+      : eq(residentsTable.status, "ACTIVE");
+
+    const [propCount] = await db.select({ count: sql<number>`count(*)::int` }).from(propertiesTable).where(propWhere);
+    const [resCount] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(resActive);
+
+    const [totalBeds] = await db.select({ total: sql<number>`coalesce(sum(total_beds), 0)::int` }).from(propertiesTable).where(propWhere);
+    const [occupiedBeds] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(resActive);
+
+    const [openComplaints] = await db.select({ count: sql<number>`count(*)::int` }).from(complaintsTable).where(
+      propertyId ? and(eq(complaintsTable.status, "OPEN"), eq(complaintsTable.propertyId, propertyId)) : eq(complaintsTable.status, "OPEN")
     );
-
-    const [totalBeds] = await db.select({ total: sql<number>`sum(total_beds)::int` }).from(propertiesTable);
-    const [occupiedBeds] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(eq(residentsTable.status, "ACTIVE"));
-
-    const [openComplaints] = await db.select({ count: sql<number>`count(*)::int` }).from(complaintsTable).where(eq(complaintsTable.status, "OPEN"));
-    const [critComplaints] = await db.select({ count: sql<number>`count(*)::int` }).from(complaintsTable).where(and(eq(complaintsTable.priority, "CRITICAL"), sql`status != 'RESOLVED' AND status != 'CLOSED'`));
+    const [critComplaints] = await db.select({ count: sql<number>`count(*)::int` }).from(complaintsTable).where(
+      propertyId
+        ? and(eq(complaintsTable.priority, "CRITICAL"), eq(complaintsTable.propertyId, propertyId), sql`status != 'RESOLVED' AND status != 'CLOSED'`)
+        : and(eq(complaintsTable.priority, "CRITICAL"), sql`status != 'RESOLVED' AND status != 'CLOSED'`)
+    );
 
     const [empCount] = await db.select({ count: sql<number>`count(*)::int` }).from(employeesTable).where(eq(employeesTable.status, "ACTIVE"));
     const [pendingLeaves] = await db.select({ count: sql<number>`count(*)::int` }).from(leavesTable).where(eq(leavesTable.status, "PENDING"));
@@ -33,7 +43,12 @@ router.get("/stats", authenticate, async (req, res) => {
     const [convertedLeads] = await db.select({ count: sql<number>`count(*)::int` }).from(leadsTable).where(and(eq(leadsTable.stage, "CONVERTED"), gte(leadsTable.createdAt, startOfMonth)));
 
     const [revenue] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric), 0)` }).from(paymentsTable).where(and(eq(paymentsTable.status, "SUCCESS"), gte(paymentsTable.createdAt, startOfMonth)));
-    const [pending] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric), 0)` }).from(paymentsTable).where(eq(paymentsTable.status, "PENDING"));
+    const [pending] = propertyId
+      ? await db.select({ total: sql<number>`coalesce(sum(${paymentsTable.amount}::numeric), 0)` })
+          .from(paymentsTable)
+          .leftJoin(residentsTable, eq(paymentsTable.residentId, residentsTable.id))
+          .where(and(eq(paymentsTable.status, "PENDING"), eq(residentsTable.propertyId, propertyId)))
+      : await db.select({ total: sql<number>`coalesce(sum(amount::numeric), 0)` }).from(paymentsTable).where(eq(paymentsTable.status, "PENDING"));
 
     const [lowStock] = await db.select({ count: sql<number>`count(*)::int` }).from(inventoryTable).where(sql`current_stock::numeric <= min_stock::numeric`);
 
