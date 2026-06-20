@@ -20,7 +20,7 @@ browser ──HTTPS──▶ [edge TLS] ──▶ nginx (web :80) ──/──�
   > target a specific arch from another builder, prefix:
   > `DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose build`.
 - PostgreSQL already running on the host.
-- DNS: `unilivadmin.enaacreations.com` → this server.
+- DNS: `unilivues.sleebit.com` → this server.
 
 ## 1. Prepare host PostgreSQL (installed via apt, NOT in Docker)
 
@@ -131,7 +131,7 @@ the site over **HTTPS** for token refresh to work. Terminate TLS upstream — pi
 one:
 
 - **Host reverse proxy** (recommended): run your existing host nginx / Caddy /
-  Traefik with a Let's Encrypt cert for `unilivadmin.enaacreations.com` and
+  Traefik with a Let's Encrypt cert for `unilivues.sleebit.com` and
   proxy to this container. Map the container to a non-80 port to avoid clashing:
   in `docker-compose.yml` set the `web` port to e.g. `"8080:80"`.
 - **Certbot in the container**: mount certs into the `web` container and add a
