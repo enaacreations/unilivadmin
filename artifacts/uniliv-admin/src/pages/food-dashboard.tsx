@@ -86,7 +86,7 @@ export default function FoodDashboard() {
   const [, setLocation] = useLocation();
 
   // Selected property from the global app store (null = all properties).
-  const { propertyId: storePropertyId } = useAppStore();
+  const { propertyId: storePropertyId, setPropertyId: setGlobalProperty } = useAppStore();
   const scopedPropertyId = storePropertyId ?? undefined;
 
   // Today's date as an ISO string, used to scope cut-offs.
@@ -103,7 +103,15 @@ export default function FoodDashboard() {
       foodApi.cutoffs({ brand: "UNILIV", propertyId: scopedPropertyId, date: todayIso }),
   });
 
-  const [propertyId, setPropertyId] = React.useState("ALL");
+  const [propertyId, setPropertyId] = React.useState(storePropertyId ?? "ALL");
+  // Keep the orders-table filter, the overview/banner scope and the sidebar
+  // selector as one: filter changes push to the global store; global changes
+  // mirror back here.
+  React.useEffect(() => { setPropertyId(storePropertyId ?? "ALL"); }, [storePropertyId]);
+  const selectProperty = (v: string) => {
+    setPropertyId(v);
+    setGlobalProperty(v === "ALL" ? null : v);
+  };
   const [brand, setBrand] = React.useState("ALL");
   const [from, setFrom] = React.useState(() => format(subDays(new Date(), 30), "yyyy-MM-dd"));
   const [to, setTo] = React.useState(() => format(new Date(), "yyyy-MM-dd"));
@@ -151,7 +159,7 @@ export default function FoodDashboard() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
-        <Select value={propertyId} onValueChange={setPropertyId}>
+        <Select value={propertyId} onValueChange={selectProperty}>
           <SelectTrigger className="w-52">
             <SelectValue placeholder="Property" />
           </SelectTrigger>

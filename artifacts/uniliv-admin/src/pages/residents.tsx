@@ -31,9 +31,16 @@ import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 
 export default function Residents() {
   const [, setLocation] = useLocation();
-  const { propertyId: globalPropertyId } = useAppStore();
+  const { propertyId: globalPropertyId, setPropertyId: setGlobalProperty } = useAppStore();
 
   const [propertyId, setPropertyId] = React.useState(globalPropertyId || "ALL");
+  // The page filter and the global selector are one scope: changing the filter
+  // updates the global property (so the sidebar selector + scope banner stay in
+  // sync), and the effect below mirrors global changes back into the local value.
+  const selectProperty = (v: string) => {
+    setPropertyId(v);
+    setGlobalProperty(v === "ALL" ? null : v);
+  };
   const [status, setStatus] = React.useState("ALL");
   const [search, setSearch] = React.useState("");
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -168,7 +175,7 @@ export default function Residents() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Select value={propertyId} onValueChange={setPropertyId}>
+        <Select value={propertyId} onValueChange={selectProperty}>
           <SelectTrigger className="w-48" data-testid="select-filter-property"><SelectValue placeholder="Property" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All Properties</SelectItem>

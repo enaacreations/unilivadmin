@@ -71,10 +71,17 @@ export default function FoodDispatch() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
-  const { propertyId: storeProperty } = useAppStore();
+  const { propertyId: storeProperty, setPropertyId: setGlobalProperty } = useAppStore();
 
   const [tab, setTab] = React.useState<"queue" | "transit" | "trips">("queue");
-  const [propertyId, setPropertyId] = React.useState(ALL);
+  const [propertyId, setPropertyId] = React.useState<string>(storeProperty ?? ALL);
+  // One scope: filter changes push to the global store (so the sidebar selector
+  // + scope banner update); global changes mirror back into the local filter.
+  React.useEffect(() => { setPropertyId(storeProperty ?? ALL); }, [storeProperty]);
+  const selectProperty = (v: string) => {
+    setPropertyId(v);
+    setGlobalProperty(v === ALL ? null : v);
+  };
   const [brand, setBrand] = React.useState<FoodBrand | typeof ALL>(ALL);
   const [meal, setMeal] = React.useState<MealType | typeof ALL>(ALL);
   const [date, setDate] = React.useState("");
@@ -300,7 +307,7 @@ export default function FoodDispatch() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        <Select value={propertyId} onValueChange={setPropertyId}>
+        <Select value={propertyId} onValueChange={selectProperty}>
           <SelectTrigger className="w-52"><SelectValue placeholder="Property" /></SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL}>All Properties</SelectItem>

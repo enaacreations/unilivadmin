@@ -57,11 +57,17 @@ export default function Complaints() {
   const [loc, setLocation] = useLocation();
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { propertyId: globalPropertyId } = useAppStore();
+  const { propertyId: globalPropertyId, setPropertyId: setGlobalProperty } = useAppStore();
   const { data: propsRes } = useGetProperties();
   const properties = propsRes?.data || [];
 
   const [propertyId, setPropertyId] = React.useState(globalPropertyId || "ALL");
+  // One scope: the page filter writes the global property too, keeping the
+  // sidebar selector + scope banner in sync (effect below mirrors the reverse).
+  const selectProperty = (v: string) => {
+    setPropertyId(v);
+    setGlobalProperty(v === "ALL" ? null : v);
+  };
   const [category, setCategory] = React.useState("ALL");
   const [status, setStatus] = React.useState("ALL");
 
@@ -148,7 +154,7 @@ export default function Complaints() {
 
         <TabsContent value="tickets" className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            <Select value={propertyId} onValueChange={setPropertyId}>
+            <Select value={propertyId} onValueChange={selectProperty}>
               <SelectTrigger className="w-[180px]"><SelectValue placeholder="Property" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL">All Properties</SelectItem>

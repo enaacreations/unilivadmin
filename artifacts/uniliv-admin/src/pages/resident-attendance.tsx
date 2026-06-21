@@ -29,7 +29,7 @@ interface OutPass { id: string; residentId: string; residentName?: string; prope
 export default function ResidentAttendancePage() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { propertyId } = useAppStore();
+  const { propertyId, setPropertyId: setGlobalProperty } = useAppStore();
   const { can } = usePermissions();
   const [tab, setTab] = React.useState("attendance");
   const [date, setDate] = React.useState(() => new Date().toISOString().slice(0, 10));
@@ -119,7 +119,7 @@ export default function ResidentAttendancePage() {
           <Card><CardContent className="p-4 flex flex-wrap items-end gap-3">
             <div><Label>Date</Label><DatePicker value={date} onChange={setDate} data-testid="input-att-date" /></div>
             {!propertyId && <div><Label>Property</Label>
-              <Select value={propId} onValueChange={setLocalPropId}>
+              <Select value={propId} onValueChange={(v) => { setLocalPropId(v); setGlobalProperty(v); }}>
                 <SelectTrigger className="w-[220px]" data-testid="select-att-property"><SelectValue /></SelectTrigger>
                 <SelectContent>{properties.map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
               </Select>
