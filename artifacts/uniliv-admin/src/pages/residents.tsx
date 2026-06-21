@@ -27,6 +27,7 @@ import { useLocation } from "wouter";
 import { ResidentFormModal } from "@/components/resident-form-modal";
 import { BulkRentModal } from "@/components/bulk-rent-modal";
 import { useAppStore } from "@/lib/store";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 
 export default function Residents() {
   const [, setLocation] = useLocation();
@@ -156,6 +157,8 @@ export default function Residents() {
           </div>
         }
       />
+
+      <GlobalPropertyScopeBanner />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard title="Total Active" value={totalActive} icon={UserCheck} />

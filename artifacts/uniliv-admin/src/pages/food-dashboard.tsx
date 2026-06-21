@@ -28,6 +28,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -145,6 +146,8 @@ export default function FoodDashboard() {
         title="Food Dashboard"
         subtitle="Kitchen operations at a glance — orders, dispatch, and delivery"
       />
+
+      <GlobalPropertyScopeBanner properties={lookups?.properties} />
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">

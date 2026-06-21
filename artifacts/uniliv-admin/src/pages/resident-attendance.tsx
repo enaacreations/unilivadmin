@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api-fetch";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import { PageHeader } from "@/components/page-header";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -97,6 +98,8 @@ export default function ResidentAttendancePage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Resident Attendance & Out-pass" subtitle="Daily attendance roll and gate-out approvals" />
+
+      <GlobalPropertyScopeBanner />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>

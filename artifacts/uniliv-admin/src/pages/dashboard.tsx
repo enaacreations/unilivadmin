@@ -12,6 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { formatDistanceToNow } from "date-fns";
 import { usePermissions } from "@/lib/use-permissions";
 import { useAppStore } from "@/lib/store";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 
 export default function Dashboard() {
   const [, setLocation] = useLocation();
@@ -97,6 +98,8 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <GlobalPropertyScopeBanner />
+
       {cards.length > 0 && (
         <div className="grid gap-6 grid-cols-1 md:grid-cols-2 xl:grid-cols-4">{cards}</div>
       )}

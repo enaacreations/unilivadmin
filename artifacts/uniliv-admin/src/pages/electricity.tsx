@@ -12,6 +12,7 @@ import { apiFetch } from "@/lib/api-fetch";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import { PageHeader } from "@/components/page-header";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -142,6 +143,8 @@ export default function ElectricityPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Electricity" subtitle="Meters, readings, tariffs, and post charges to ledger" />
+
+      <GlobalPropertyScopeBanner />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard title="Active Meters" value={meters.filter((m) => m.isActive).length} icon={Gauge} />

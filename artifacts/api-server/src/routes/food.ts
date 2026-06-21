@@ -891,7 +891,7 @@ foodRouter.get("/reports/export", authenticate, authorize("FOOD_REPORTS", "view"
  * Master data — Lookups
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/lookups", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/lookups", authenticate, async (req, res) => {
   try {
     const properties = await db.select({
       id: propertiesTable.id, name: propertiesTable.name,
@@ -918,7 +918,7 @@ foodRouter.get("/lookups", authenticate, authorize("FOOD_SETTINGS", "view"), asy
  * Master data — Dishes
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/dishes", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/dishes", authenticate, async (req, res) => {
   try {
     const component = req.query["component"] as string | undefined;
     const search = req.query["search"] as string | undefined;
@@ -982,7 +982,7 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), a
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.get("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/dishes/:id", authenticate, async (req, res) => {
   try {
     const [row] = await db.select().from(dishesTable).where(eq(dishesTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -1016,7 +1016,7 @@ foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "delet
  * Master data — Raw materials (ingredients)
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/raw-materials", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/raw-materials", authenticate, async (req, res) => {
   try {
     const search = req.query["search"] as string | undefined;
     const active = req.query["active"] as string | undefined;
@@ -1062,7 +1062,7 @@ foodRouter.delete("/raw-materials/:id", authenticate, authorize("FOOD_SETTINGS",
  * Master data — Menu rotation
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/menu-rotation/resolve", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/resolve", authenticate, async (req, res) => {
   try {
     const propertyId = req.query["propertyId"] as string | undefined;
     let brand = req.query["brand"] as string | undefined;
@@ -1080,7 +1080,7 @@ foodRouter.get("/menu-rotation/resolve", authenticate, authorize("FOOD_SETTINGS"
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.get("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation", authenticate, async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     const kitchenId = req.query["kitchenId"] as string | undefined;
@@ -1110,7 +1110,7 @@ foodRouter.get("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "view"
 });
 
 // Export the current menu rotation (honours the same filters as the list) as .xls.
-foodRouter.get("/menu-rotation/export.xlsx", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/export.xlsx", authenticate, async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     const kitchenId = req.query["kitchenId"] as string | undefined;
@@ -1238,7 +1238,7 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
 });
 
 // Validate the chosen dishes against the composition rule + flag shared ingredients.
-foodRouter.get("/menu-rotation/validate", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/validate", authenticate, async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     const mealType = req.query["mealType"] as string | undefined;
@@ -1255,7 +1255,7 @@ foodRouter.get("/menu-rotation/validate", authenticate, authorize("FOOD_SETTINGS
 });
 
 // Suggested dishes to satisfy the composition rule for a (kitchen, brand, meal).
-foodRouter.get("/menu-rotation/auto-fill", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/auto-fill", authenticate, async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     const mealType = req.query["mealType"] as string | undefined;
@@ -1293,7 +1293,7 @@ foodRouter.delete("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS",
  * Master data — Per-resident rules
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/rules", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/rules", authenticate, async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     const mealType = req.query["mealType"] as string | undefined;
@@ -1374,7 +1374,7 @@ const slotValues = (ruleId: string, slots: any[]) =>
     updatedAt: new Date(),
   }));
 
-foodRouter.get("/composition-rules", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/composition-rules", authenticate, async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     const mealType = req.query["mealType"] as string | undefined;
@@ -1443,7 +1443,7 @@ foodRouter.delete("/composition-rules/:id", authenticate, authorize("FOOD_SETTIN
  * Master data — Delivery partners
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/delivery-partners", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/delivery-partners", authenticate, async (req, res) => {
   try {
     const active = req.query["active"] as string | undefined;
     const where = active !== undefined ? eq(deliveryPartnersTable.isActive, active === "true") : undefined;

@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import { PageHeader } from "@/components/page-header";
+import { PropertyScopeBanner } from "@/components/property-scope-banner";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -88,9 +89,19 @@ export default function FoodOrders() {
     return { total, active, inTransit, delivered };
   }, [orders, res?.meta?.total]);
 
+  // Name of the property the page is currently scoped to (URL param or filter),
+  // for the scope banner. Falls back gracefully until lookups resolve.
+  const scopedPropertyName =
+    propertyId === ALL ? null : (properties.find((p) => p.id === propertyId)?.name ?? "Selected property");
+  const clearScope = () => {
+    setPropertyId(ALL);
+    if (paramProperty) setLocation("/food/orders"); // drop the ?propertyId= deep-link
+  };
+
   const resetFilters = () => {
     setStatus(ALL); setPropertyId(ALL); setBrand(ALL); setMealType(ALL);
     setFrom(""); setTo(""); setSearchInput(""); setSearch("");
+    if (paramProperty) setLocation("/food/orders");
   };
   const hasFilters =
     status !== ALL || propertyId !== ALL || brand !== ALL || mealType !== ALL || !!from || !!to || !!search;
@@ -152,6 +163,8 @@ export default function FoodOrders() {
           </Button>
         }
       />
+
+      <PropertyScopeBanner propertyName={scopedPropertyName} onClear={clearScope} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard title="Total Orders" value={stats.total} icon={Utensils} />

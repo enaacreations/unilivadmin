@@ -6,6 +6,7 @@ import { apiFetch } from "@/lib/api-fetch";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import { PageHeader } from "@/components/page-header";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 import { StatCard } from "@/components/stat-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -92,6 +93,8 @@ export default function IoTPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="IoT Integration" subtitle="Device registry and live telemetry" />
+
+      <GlobalPropertyScopeBanner />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard title="Devices" value={devices.length} icon={Radio} />

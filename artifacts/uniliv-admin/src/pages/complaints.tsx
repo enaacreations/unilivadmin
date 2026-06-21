@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
 import { useAppStore } from "@/lib/store";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 
 const CATEGORIES = ["ELECTRICAL", "PLUMBING", "INTERNET", "HOUSEKEEPING", "SECURITY", "FOOD", "LAUNDRY", "OTHER"];
 const SLA_MAP: Record<string, number> = {
@@ -127,6 +128,8 @@ export default function Complaints() {
           </Button>
         }
       />
+
+      <GlobalPropertyScopeBanner />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard title="Total Open" value={stats.open} icon={Ticket} />

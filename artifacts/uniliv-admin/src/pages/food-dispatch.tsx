@@ -7,6 +7,7 @@ import {
   ChefHat, User, Phone, Hash, Timer, Route, ChevronRight, PackageCheck,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -287,6 +288,8 @@ export default function FoodDispatch() {
           </Button>
         }
       />
+
+      <GlobalPropertyScopeBanner properties={lookups?.properties} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard title="Awaiting Dispatch" value={awaiting} icon={Clock} />
