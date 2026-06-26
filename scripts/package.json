@@ -9,6 +9,8 @@
     "seed:food": "tsx ./src/seed-food.ts",
     "seed:food-extra": "tsx ./src/seed-food-extra.ts",
     "seed:demo": "tsx ./src/seed-demo.ts",
+    "scrape:uniliv": "tsx ./src/scrape-uniliv.ts",
+    "import:uniliv": "tsx ./src/import-uniliv-properties.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
