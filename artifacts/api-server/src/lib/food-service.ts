@@ -21,7 +21,7 @@ import {
   menuCompositionRuleTable,
   menuCompositionSlotTable,
   dishIngredientsTable,
-  rawMaterialsTable,
+  ingredientsTable,
   systemConfigTable,
 } from "@workspace/db";
 import { and, eq, or, isNull, lte, gte, sql, inArray, desc } from "drizzle-orm";
@@ -499,7 +499,7 @@ export async function autoFillMenu(
   return chosen;
 }
 
-export interface SharedIngredient { rawMaterialId: string; name: string; dishIds: string[] }
+export interface SharedIngredient { ingredientId: string; name: string; dishIds: string[] }
 
 /** A single machine-readable rule violation the frontend can hard-block on. */
 export interface CompositionViolation {
@@ -536,23 +536,23 @@ export function buildCompositionVerdict(
   return { ok: violations.length === 0, violations };
 }
 
-/** Raw materials used by 2+ of the given dishes (drives the menu shared-ingredient warning). */
+/** Ingredients used by 2+ of the given dishes (drives the menu shared-ingredient warning). */
 export async function detectSharedIngredients(dishIds: string[]): Promise<SharedIngredient[]> {
   if (dishIds.length < 2) return [];
   const rows = await db.select({
-    rawMaterialId: dishIngredientsTable.rawMaterialId, name: rawMaterialsTable.name, dishId: dishIngredientsTable.dishId,
+    ingredientId: dishIngredientsTable.ingredientId, name: ingredientsTable.name, dishId: dishIngredientsTable.dishId,
   }).from(dishIngredientsTable)
-    .leftJoin(rawMaterialsTable, eq(dishIngredientsTable.rawMaterialId, rawMaterialsTable.id))
+    .leftJoin(ingredientsTable, eq(dishIngredientsTable.ingredientId, ingredientsTable.id))
     .where(inArray(dishIngredientsTable.dishId, dishIds));
-  const byRm = new Map<string, { name: string; dishIds: Set<string> }>();
+  const byIng = new Map<string, { name: string; dishIds: Set<string> }>();
   for (const r of rows) {
-    const e = byRm.get(r.rawMaterialId) ?? { name: r.name ?? r.rawMaterialId, dishIds: new Set<string>() };
+    const e = byIng.get(r.ingredientId) ?? { name: r.name ?? r.ingredientId, dishIds: new Set<string>() };
     e.dishIds.add(r.dishId);
-    byRm.set(r.rawMaterialId, e);
+    byIng.set(r.ingredientId, e);
   }
-  return [...byRm.entries()]
+  return [...byIng.entries()]
     .filter(([, v]) => v.dishIds.size >= 2)
-    .map(([rawMaterialId, v]) => ({ rawMaterialId, name: v.name, dishIds: [...v.dishIds] }));
+    .map(([ingredientId, v]) => ({ ingredientId, name: v.name, dishIds: [...v.dishIds] }));
 }
 
 /** Generates the next human Order ID for the current year, e.g. ORD-2026-000123. */

@@ -374,8 +374,8 @@ async function migrateGeoScopes() {
   console.log(`  ✓ migrated ${moves.length} geo scopes`);
 }
 
-async function seedRawMaterials() {
-  console.log("  raw materials + dish ingredients...");
+async function seedIngredients() {
+  console.log("  ingredients + dish ingredients...");
   const mats: Array<[string, string]> = [
     ["rm_aloo", "Aloo"], ["rm_pyaaz", "Pyaaz"], ["rm_tomato", "Tomato"], ["rm_paneer", "Paneer"],
     ["rm_gobi", "Gobi"], ["rm_matar", "Matar"], ["rm_bhindi", "Bhindi"], ["rm_chana", "Chana"],
@@ -383,7 +383,7 @@ async function seedRawMaterials() {
   ];
   for (const [rid, name] of mats) {
     await pool.query(
-      `INSERT INTO raw_materials (id, name, unit, is_active, created_at, updated_at)
+      `INSERT INTO ingredients (id, name, unit, is_active, created_at, updated_at)
        VALUES ($1,$2,'KG',true,now(),now()) ON CONFLICT (id) DO NOTHING`,
       [rid, name],
     );
@@ -404,14 +404,14 @@ async function seedRawMaterials() {
     await pool.query(`DELETE FROM dish_ingredients WHERE dish_id=$1`, [l.dish]);
     for (const [rm, qty] of l.mats) {
       await pool.query(
-        `INSERT INTO dish_ingredients (id, dish_id, raw_material_id, quantity, unit, created_at, updated_at)
+        `INSERT INTO dish_ingredients (id, dish_id, ingredient_id, quantity, unit, created_at, updated_at)
          SELECT $1,$2,$3,$4,'KG',now(),now() WHERE EXISTS (SELECT 1 FROM dishes WHERE id=$2)`,
         [id(), l.dish, rm, qty],
       );
     }
     linked++;
   }
-  console.log(`  ✓ ${mats.length} raw materials, ${linked} dishes linked`);
+  console.log(`  ✓ ${mats.length} ingredients, ${linked} dishes linked`);
 }
 
 async function seedCompositionRules() {
@@ -464,7 +464,7 @@ async function main() {
   await seedKitchenPincodes();
   await backfillPropertyBrandAndKitchen();
   await setDishBrands();
-  await seedRawMaterials();
+  await seedIngredients();
   await seedCompositionRules();
   await seedKitchenMenus();
   await backfillOrdersAndItems();

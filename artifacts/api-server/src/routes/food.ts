@@ -16,7 +16,7 @@ import {
   foodOrderItemsTable,
   foodOrderEventsTable,
   dishesTable,
-  rawMaterialsTable,
+  ingredientsTable,
   dishIngredientsTable,
   menuCompositionRuleTable,
   menuCompositionSlotTable,
@@ -1348,31 +1348,31 @@ foodRouter.get("/dishes", authenticate, async (req, res) => {
 const sanitizePreparations = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((p): p is string => typeof p === "string" && (PREPARATIONS as readonly string[]).includes(p)) : [];
 
-/** Replace a dish's ingredient rows from a [{rawMaterialId, quantity?, unit?}] list. */
+/** Replace a dish's ingredient rows from a [{ingredientId, quantity?, unit?}] list. */
 async function replaceDishIngredients(dishId: string, ingredients: unknown): Promise<void> {
   await db.delete(dishIngredientsTable).where(eq(dishIngredientsTable.dishId, dishId));
-  const valid = (Array.isArray(ingredients) ? ingredients : []).filter((it) => it && it.rawMaterialId);
+  const valid = (Array.isArray(ingredients) ? ingredients : []).filter((it) => it && it.ingredientId);
   if (!valid.length) return;
   await db.insert(dishIngredientsTable).values(valid.map((it) => ({
-    id: newId(), dishId, rawMaterialId: it.rawMaterialId,
+    id: newId(), dishId, ingredientId: it.ingredientId,
     quantity: it.quantity != null && it.quantity !== "" ? String(it.quantity) : null,
     unit: it.unit != null && it.unit !== "" ? it.unit : null, updatedAt: new Date(),
   })));
 }
 
-/** Loads a dish's ingredients joined to raw-material names. */
+/** Loads a dish's ingredients joined to ingredient names. */
 async function loadDishIngredients(dishId: string) {
   return db.select({
-    id: dishIngredientsTable.id, rawMaterialId: dishIngredientsTable.rawMaterialId,
-    rawMaterialName: rawMaterialsTable.name, quantity: dishIngredientsTable.quantity, unit: dishIngredientsTable.unit,
+    id: dishIngredientsTable.id, ingredientId: dishIngredientsTable.ingredientId,
+    ingredientName: ingredientsTable.name, quantity: dishIngredientsTable.quantity, unit: dishIngredientsTable.unit,
   }).from(dishIngredientsTable)
-    .leftJoin(rawMaterialsTable, eq(dishIngredientsTable.rawMaterialId, rawMaterialsTable.id))
+    .leftJoin(ingredientsTable, eq(dishIngredientsTable.ingredientId, ingredientsTable.id))
     .where(eq(dishIngredientsTable.dishId, dishId));
 }
 
-// Ingredient rows accepted by replaceDishIngredients (rawMaterialId required; qty/unit loose).
+// Ingredient rows accepted by replaceDishIngredients (ingredientId required; qty/unit loose).
 const zIngredient = z.object({
-  rawMaterialId: zId,
+  ingredientId: zId,
   quantity: z.union([z.string(), z.number()]).nullish(),
   unit: z.string().max(64).nullish(),
 }).passthrough();
@@ -1452,60 +1452,60 @@ foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "delet
 });
 
 /* ────────────────────────────────────────────────────────────────────────────
- * Master data — Raw materials (ingredients)
+ * Master data — Ingredients
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/raw-materials", authenticate, async (req, res) => {
+foodRouter.get("/ingredients", authenticate, async (req, res) => {
   try {
     const search = req.query["search"] as string | undefined;
     const active = req.query["active"] as string | undefined;
     const conds = [] as ReturnType<typeof eq>[];
-    if (search) conds.push(ilike(rawMaterialsTable.name, `%${search}%`));
-    if (active !== undefined) conds.push(eq(rawMaterialsTable.isActive, active === "true"));
-    const rows = await db.select().from(rawMaterialsTable).where(conds.length ? and(...conds) : undefined).orderBy(rawMaterialsTable.name);
+    if (search) conds.push(ilike(ingredientsTable.name, `%${search}%`));
+    if (active !== undefined) conds.push(eq(ingredientsTable.isActive, active === "true"));
+    const rows = await db.select().from(ingredientsTable).where(conds.length ? and(...conds) : undefined).orderBy(ingredientsTable.name);
     res.json({ success: true, data: rows });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-const createRawMaterialSchema = z.object({
+const createIngredientSchema = z.object({
   name: zText,
   unit: z.string().min(1).max(64),
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/raw-materials", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/ingredients", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
   try {
-    if (!validateBody(createRawMaterialSchema, req, res)) return;
+    if (!validateBody(createIngredientSchema, req, res)) return;
     const b = req.body || {};
     if (!b.name || !b.unit) { res.status(400).json({ success: false, error: "name and unit required" }); return; }
-    const [row] = await db.insert(rawMaterialsTable).values({
+    const [row] = await db.insert(ingredientsTable).values({
       id: newId(), name: b.name, unit: b.unit, isActive: b.isActive !== false, updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: row });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-const updateRawMaterialSchema = z.object({
+const updateIngredientSchema = z.object({
   name: zText.optional(),
   unit: z.string().max(64).optional(),
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/raw-materials/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
   try {
-    if (!validateBody(updateRawMaterialSchema, req, res)) return;
+    if (!validateBody(updateIngredientSchema, req, res)) return;
     const b = req.body || {};
     const u: Record<string, unknown> = { updatedAt: new Date() };
     for (const k of ["name", "unit", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
-    const [row] = await db.update(rawMaterialsTable).set(u as never).where(eq(rawMaterialsTable.id, req.params["id"]!)).returning();
+    const [row] = await db.update(ingredientsTable).set(u as never).where(eq(ingredientsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.delete("/raw-materials/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodRouter.delete("/ingredients/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
   try {
-    const [row] = await db.update(rawMaterialsTable).set({ isActive: false, updatedAt: new Date() }).where(eq(rawMaterialsTable.id, req.params["id"]!)).returning();
+    const [row] = await db.update(ingredientsTable).set({ isActive: false, updatedAt: new Date() }).where(eq(ingredientsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }

@@ -35,7 +35,7 @@ import {
   type Agency, type AgencyVehicle, type AgencyLocation,
   type Zone, type City, type Cluster, type UserScope, type FoodUser, type FoodLookups,
   type FoodBrand, type MealType, type Kitchen, type MealConfig, type MealWindow, type FoodCutoffConfig,
-  type RawMaterial, type CompositionRule, type FoodDefaults,
+  type Ingredient, type CompositionRule, type FoodDefaults,
 } from "@/lib/food-api";
 import { usePermissions } from "@/lib/use-permissions";
 
@@ -110,7 +110,7 @@ export default function FoodSettings() {
         <div className="sticky top-0 z-10 -mx-1 bg-background px-1 pb-1">
           <TabsList className="flex w-full flex-nowrap justify-start gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <TabsTrigger value="dishes" className="shrink-0 whitespace-nowrap"><UtensilsCrossed className="h-4 w-4 mr-2" /> Dishes</TabsTrigger>
-            <TabsTrigger value="raw-materials" className="shrink-0 whitespace-nowrap"><Boxes className="h-4 w-4 mr-2" /> Raw Materials</TabsTrigger>
+            <TabsTrigger value="ingredients" className="shrink-0 whitespace-nowrap"><Boxes className="h-4 w-4 mr-2" /> Ingredients</TabsTrigger>
             <TabsTrigger value="rotation" className="shrink-0 whitespace-nowrap"><CalendarRange className="h-4 w-4 mr-2" /> Menu Rotation</TabsTrigger>
             <TabsTrigger value="composition" className="shrink-0 whitespace-nowrap"><SlidersHorizontal className="h-4 w-4 mr-2" /> Menu Rules</TabsTrigger>
             <TabsTrigger value="rules" className="shrink-0 whitespace-nowrap"><Scale className="h-4 w-4 mr-2" /> Portion Size Rules</TabsTrigger>
@@ -127,7 +127,7 @@ export default function FoodSettings() {
         </div>
 
         <TabsContent value="dishes"><DishesTab /></TabsContent>
-        <TabsContent value="raw-materials"><RawMaterialsTab /></TabsContent>
+        <TabsContent value="ingredients"><IngredientsTab /></TabsContent>
         <TabsContent value="rotation"><RotationTab /></TabsContent>
         <TabsContent value="composition"><CompositionRulesTab /></TabsContent>
         <TabsContent value="rules"><RulesTab /></TabsContent>
@@ -148,7 +148,7 @@ export default function FoodSettings() {
 // ════════════════════════════════════════════════════════════════════════════
 // 1) DISHES
 // ════════════════════════════════════════════════════════════════════════════
-type IngredientRow = { rawMaterialId: string; quantity: string; unit: string };
+type IngredientRow = { ingredientId: string; quantity: string; unit: string };
 type DishForm = { name: string; component: string; unit: string; preparations: string[]; brands: string[]; ingredients: IngredientRow[]; isActive: boolean };
 const emptyDish: DishForm = { name: "", component: "HOT_FOOD", unit: "SERVING", preparations: ["VEG"], brands: [], ingredients: [], isActive: true };
 
@@ -196,7 +196,7 @@ function DishesTab() {
   });
 
   const brandOptions = useActiveBrands();
-  const { data: rawMaterials = [] } = useQuery<RawMaterial[]>({ queryKey: foodKeys.rawMaterials(), queryFn: () => foodApi.listRawMaterials() });
+  const { data: ingredientsMaster = [] } = useQuery<Ingredient[]>({ queryKey: foodKeys.ingredients(), queryFn: () => foodApi.listIngredients() });
   const openCreate = () => { setEditing(null); setForm(emptyDish); setModalOpen(true); };
   const openEdit = async (d: Dish) => {
     setEditing(d);
@@ -204,19 +204,19 @@ function DishesTab() {
     setModalOpen(true);
     try {
       const full = await foodApi.getDish(d.id);
-      setForm((f) => ({ ...f, ingredients: (full.ingredients ?? []).map((i) => ({ rawMaterialId: i.rawMaterialId, quantity: i.quantity != null ? String(i.quantity) : "", unit: i.unit ?? "" })) }));
+      setForm((f) => ({ ...f, ingredients: (full.ingredients ?? []).map((i) => ({ ingredientId: i.ingredientId, quantity: i.quantity != null ? String(i.quantity) : "", unit: i.unit ?? "" })) }));
     } catch { /* leave ingredients empty */ }
   };
   const toggleDishBrand = (code: string) =>
     setForm((f) => ({ ...f, brands: f.brands.includes(code) ? f.brands.filter((b) => b !== code) : [...f.brands, code] }));
   const togglePrep = (p: string) =>
     setForm((f) => ({ ...f, preparations: f.preparations.includes(p) ? f.preparations.filter((x) => x !== p) : [...f.preparations, p] }));
-  const addIngredient = () => setForm((f) => ({ ...f, ingredients: [...f.ingredients, { rawMaterialId: "", quantity: "", unit: "" }] }));
+  const addIngredient = () => setForm((f) => ({ ...f, ingredients: [...f.ingredients, { ingredientId: "", quantity: "", unit: "" }] }));
   const updateIngredient = (i: number, patch: Partial<IngredientRow>) => setForm((f) => ({ ...f, ingredients: f.ingredients.map((r, j) => j === i ? { ...r, ...patch } : r) }));
   const removeIngredient = (i: number) => setForm((f) => ({ ...f, ingredients: f.ingredients.filter((_, j) => j !== i) }));
   const submit = () => {
     if (!form.name.trim()) { toast({ title: "Name is required", variant: "destructive" }); return; }
-    saveMut.mutate({ ...form, ingredients: form.ingredients.filter((i) => i.rawMaterialId) });
+    saveMut.mutate({ ...form, ingredients: form.ingredients.filter((i) => i.ingredientId) });
   };
 
   const cols = [
@@ -310,7 +310,7 @@ function DishesTab() {
             <div className="flex items-center justify-between mb-2">
               <div>
                 <Label>Ingredients</Label>
-                <p className="text-xs text-muted-foreground">Raw materials used (drives shared-ingredient menu warnings).</p>
+                <p className="text-xs text-muted-foreground">Ingredients used (drives shared-ingredient menu warnings).</p>
               </div>
               <Button type="button" variant="outline" size="sm" onClick={addIngredient}><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
             </div>
@@ -318,9 +318,9 @@ function DishesTab() {
             <div className="space-y-2">
               {form.ingredients.map((ing, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <Select value={ing.rawMaterialId} onValueChange={(v) => updateIngredient(i, { rawMaterialId: v })}>
-                    <SelectTrigger className="flex-1"><SelectValue placeholder="Raw material" /></SelectTrigger>
-                    <SelectContent>{rawMaterials.filter((r) => r.isActive).map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}</SelectContent>
+                  <Select value={ing.ingredientId} onValueChange={(v) => updateIngredient(i, { ingredientId: v })}>
+                    <SelectTrigger className="flex-1"><SelectValue placeholder="Ingredient" /></SelectTrigger>
+                    <SelectContent>{ingredientsMaster.filter((r) => r.isActive).map((r) => <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>)}</SelectContent>
                   </Select>
                   <Input value={ing.quantity} onChange={(e) => updateIngredient(i, { quantity: e.target.value })} placeholder="Qty" className="w-20 font-mono" />
                   <Select value={ing.unit || "__none"} onValueChange={(v) => updateIngredient(i, { unit: v === "__none" ? "" : v })}>
@@ -345,41 +345,41 @@ function DishesTab() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 1b) RAW MATERIALS (ingredients master)
+// 1b) INGREDIENTS (ingredients master)
 // ════════════════════════════════════════════════════════════════════════════
-type RawMaterialForm = { name: string; unit: string; isActive: boolean };
-const emptyRawMaterial: RawMaterialForm = { name: "", unit: "KG", isActive: true };
+type IngredientForm = { name: string; unit: string; isActive: boolean };
+const emptyIngredient: IngredientForm = { name: "", unit: "KG", isActive: true };
 
-function RawMaterialsTab() {
+function IngredientsTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [modalOpen, setModalOpen] = React.useState(false);
-  const [editing, setEditing] = React.useState<RawMaterial | null>(null);
-  const [delTarget, setDelTarget] = React.useState<RawMaterial | null>(null);
-  const [form, setForm] = React.useState<RawMaterialForm>(emptyRawMaterial);
+  const [editing, setEditing] = React.useState<Ingredient | null>(null);
+  const [delTarget, setDelTarget] = React.useState<Ingredient | null>(null);
+  const [form, setForm] = React.useState<IngredientForm>(emptyIngredient);
   const [status, setStatus] = React.useState("ALL");
 
-  const { data: allRows = [], isLoading } = useQuery<RawMaterial[]>({ queryKey: foodKeys.rawMaterials(), queryFn: () => foodApi.listRawMaterials() });
+  const { data: allRows = [], isLoading } = useQuery<Ingredient[]>({ queryKey: foodKeys.ingredients(), queryFn: () => foodApi.listIngredients() });
   const rows = allRows.filter((r) => status === "ALL" ? true : status === "ACTIVE" ? r.isActive : !r.isActive);
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "raw-materials"] });
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "ingredients"] });
 
   const saveMut = useMutation({
-    mutationFn: (v: RawMaterialForm) => editing ? foodApi.updateRawMaterial(editing.id, v) : foodApi.createRawMaterial(v),
-    onSuccess: () => { toast({ title: editing ? "Raw material updated" : "Raw material created" }); invalidate(); setModalOpen(false); },
+    mutationFn: (v: IngredientForm) => editing ? foodApi.updateIngredient(editing.id, v) : foodApi.createIngredient(v),
+    onSuccess: () => { toast({ title: editing ? "Ingredient updated" : "Ingredient created" }); invalidate(); setModalOpen(false); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
   const delMut = useMutation({
-    mutationFn: (id: string) => foodApi.deleteRawMaterial(id),
-    onSuccess: () => { toast({ title: "Raw material deleted" }); invalidate(); setDelTarget(null); },
+    mutationFn: (id: string) => foodApi.deleteIngredient(id),
+    onSuccess: () => { toast({ title: "Ingredient deleted" }); invalidate(); setDelTarget(null); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
 
-  const openCreate = () => { setEditing(null); setForm(emptyRawMaterial); setModalOpen(true); };
-  const openEdit = (r: RawMaterial) => { setEditing(r); setForm({ name: r.name, unit: r.unit, isActive: r.isActive }); setModalOpen(true); };
+  const openCreate = () => { setEditing(null); setForm(emptyIngredient); setModalOpen(true); };
+  const openEdit = (r: Ingredient) => { setEditing(r); setForm({ name: r.name, unit: r.unit, isActive: r.isActive }); setModalOpen(true); };
   const submit = () => { if (!form.name.trim()) { toast({ title: "Name is required", variant: "destructive" }); return; } saveMut.mutate(form); };
 
   const cols = [
-    { accessorKey: "name", header: "Raw Material", cell: ({ row }: any) => <span className="font-medium text-primary">{row.original.name}</span> },
+    { accessorKey: "name", header: "Ingredient", cell: ({ row }: any) => <span className="font-medium text-primary">{row.original.name}</span> },
     { accessorKey: "unit", header: "Unit", cell: ({ row }: any) => <span className="text-muted-foreground text-xs uppercase">{row.original.unit}</span> },
     { accessorKey: "isActive", header: "Status", cell: ({ row }: any) => <Badge variant={row.original.isActive ? "success" : "secondary"} className="text-[10px]">{row.original.isActive ? "ACTIVE" : "INACTIVE"}</Badge> },
     { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} onDelete={() => setDelTarget(row.original)} /> },
@@ -388,8 +388,8 @@ function RawMaterialsTab() {
   return (
     <div className="space-y-4">
       <SectionHeader
-        title="Raw Materials" description="Ingredient master (Aloo, Pyaaz, Tomato, …) attached to dishes; powers shared-ingredient menu warnings."
-        action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Raw Material</Button>}
+        title="Ingredients" description="Ingredient master (Aloo, Pyaaz, Tomato, …) attached to dishes; powers shared-ingredient menu warnings."
+        action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Ingredient</Button>}
       />
       <div className="flex flex-wrap items-center gap-3">
         <Select value={status} onValueChange={setStatus}>
@@ -403,7 +403,7 @@ function RawMaterialsTab() {
       </div>
       <DataTable columns={cols as any} data={rows} isLoading={isLoading} />
 
-      <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Raw Material" : "Add Raw Material"} onSave={submit} isSaving={saveMut.isPending} saveLabel={editing ? "Save Changes" : "Create"}>
+      <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Ingredient" : "Add Ingredient"} onSave={submit} isSaving={saveMut.isPending} saveLabel={editing ? "Save Changes" : "Create"}>
         <div className="space-y-4">
           <div>
             <Label>Name *</Label>
@@ -746,7 +746,7 @@ function RotationTab() {
                   <div className="rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">
                     <span className="flex items-center gap-1 font-medium"><AlertTriangle className="h-3.5 w-3.5" /> Shared ingredients</span>
                     {validation.sharedIngredients.map((si) => (
-                      <div key={si.rawMaterialId}>{si.name} is used in {si.dishIds.length} dishes ({si.dishIds.map((id) => dishName(id)).join(", ")})</div>
+                      <div key={si.ingredientId}>{si.name} is used in {si.dishIds.length} dishes ({si.dishIds.map((id) => dishName(id)).join(", ")})</div>
                     ))}
                   </div>
                 )}

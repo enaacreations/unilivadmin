@@ -226,8 +226,8 @@ export const dishesTable = pgTable("dishes", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-/** Raw-material master (ingredients used in dishes — Aloo, Pyaaz, Tomato, …). */
-export const rawMaterialsTable = pgTable("raw_materials", {
+/** Ingredient master (ingredients used in dishes — Aloo, Pyaaz, Tomato, …). */
+export const ingredientsTable = pgTable("ingredients", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   unit: measurementUnitEnum("unit").notNull(),
@@ -236,18 +236,18 @@ export const rawMaterialsTable = pgTable("raw_materials", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => ({ nameIdx: index("idx_raw_materials_name").on(t.name) }));
 
-/** Per-dish ingredient list (dish ↔ raw material, with optional quantity). */
+/** Per-dish ingredient list (dish ↔ ingredient, with optional quantity). */
 export const dishIngredientsTable = pgTable("dish_ingredients", {
   id: text("id").primaryKey(),
   dishId: text("dish_id").notNull().references(() => dishesTable.id, { onDelete: "cascade" }),
-  rawMaterialId: text("raw_material_id").notNull().references(() => rawMaterialsTable.id),
+  ingredientId: text("ingredient_id").notNull().references(() => ingredientsTable.id),
   quantity: numeric("quantity", { precision: 12, scale: 3 }),
   unit: measurementUnitEnum("unit"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => ({
   dishIdx: index("idx_dish_ingredients_dish").on(t.dishId),
-  rmIdx: index("idx_dish_ingredients_rm").on(t.rawMaterialId),
+  rmIdx: index("idx_dish_ingredients_rm").on(t.ingredientId),
 }));
 
 /**
@@ -716,7 +716,7 @@ export type FoodOrderBatch = typeof foodOrderBatchesTable.$inferSelect;
 export type FoodMealConfig = typeof foodMealConfigTable.$inferSelect;
 export type FoodMealWindow = typeof foodMealWindowsTable.$inferSelect;
 export type FoodCutoffRow = typeof foodCutoffsTable.$inferSelect;
-export type RawMaterial = typeof rawMaterialsTable.$inferSelect;
+export type Ingredient = typeof ingredientsTable.$inferSelect;
 export type DishIngredient = typeof dishIngredientsTable.$inferSelect;
 export type MenuCompositionRule = typeof menuCompositionRuleTable.$inferSelect;
 export type MenuCompositionSlot = typeof menuCompositionSlotTable.$inferSelect;

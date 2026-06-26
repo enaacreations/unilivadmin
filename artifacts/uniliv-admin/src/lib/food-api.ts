@@ -159,7 +159,7 @@ export interface OnTimeTolerance { minutes: number }
 export interface VarianceByDayRow { date: string; ordered: number; received: number; variance: number; wasted: number }
 export interface VarianceByDayData { rows: VarianceByDayRow[] }
 
-export interface DishIngredientRow { id?: string; rawMaterialId: string; rawMaterialName?: string | null; quantity: string | number | null; unit: string | null }
+export interface DishIngredientRow { id?: string; ingredientId: string; ingredientName?: string | null; quantity: string | number | null; unit: string | null }
 export interface Dish {
   id: string; name: string; component: string; unit: string;
   brands: string[];
@@ -167,7 +167,7 @@ export interface Dish {
   photoUrl: string | null; isActive: boolean;
   ingredients?: DishIngredientRow[];
 }
-export interface RawMaterial { id: string; name: string; unit: string; isActive: boolean }
+export interface Ingredient { id: string; name: string; unit: string; isActive: boolean }
 export interface MenuRotationRow {
   id: string; brand: FoodBrand; kitchenId: string | null; kitchenName?: string | null;
   rotationWeek: number; dayOfWeek: number;
@@ -310,7 +310,7 @@ export interface OrderPreviewMeal { mealType: MealType; label: string; items: Or
 export interface CompositionSlot { id?: string; slotLabel: string | null; component: string | null; preparation: string | null; minCount: number; maxCount: number | null; sortOrder: number }
 export interface CompositionRule { id: string; brand: string; mealType: MealType; kitchenId: string | null; name: string | null; isActive: boolean; slots: CompositionSlot[] }
 export interface SlotValidation { slotId: string; slotLabel: string | null; component: string | null; preparation: string | null; minCount: number; maxCount: number | null; count: number; matchedDishIds: string[]; status: "OK" | "MISSING" | "UNDER" | "OVER" }
-export interface SharedIngredient { rawMaterialId: string; name: string; dishIds: string[] }
+export interface SharedIngredient { ingredientId: string; name: string; dishIds: string[] }
 // Machine-readable verdict for hard-blocking a menu/slot selection (B3-16).
 export type CompositionViolationType = "SLOT_MISSING" | "SLOT_UNDER" | "SLOT_OVER" | "SHARED_INGREDIENT";
 export interface CompositionViolation { type: CompositionViolationType; message: string; dishIds: string[] }
@@ -347,7 +347,7 @@ export const foodKeys = {
   reportsVarianceByDay: (p: Record<string, unknown>) => ["food", "reports-variance-by-day", p] as const,
   dishes: (p: Record<string, unknown>) => ["food", "dishes", p] as const,
   dish: (id: string) => ["food", "dish", id] as const,
-  rawMaterials: (p: Record<string, unknown> = {}) => ["food", "raw-materials", p] as const,
+  ingredients: (p: Record<string, unknown> = {}) => ["food", "ingredients", p] as const,
   compositionRules: (p: Record<string, unknown> = {}) => ["food", "composition-rules", p] as const,
   rotationValidate: (p: Record<string, unknown>) => ["food", "rotation-validate", p] as const,
   rotation: (p: Record<string, unknown>) => ["food", "menu-rotation", p] as const,
@@ -499,11 +499,11 @@ export const foodApi = {
   updateDish: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Dish>>(`/food/dishes/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
   deleteDish: (id: string) => apiFetch<Envelope<unknown>>(`/food/dishes/${id}`, { method: "DELETE" }),
 
-  // Raw materials (ingredients master)
-  listRawMaterials: (p: Record<string, unknown> = {}) => apiFetch<Envelope<RawMaterial[]>>(`/food/raw-materials${qs(p)}`).then((r) => r.data),
-  createRawMaterial: (b: Record<string, unknown>) => apiFetch<Envelope<RawMaterial>>(`/food/raw-materials`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
-  updateRawMaterial: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<RawMaterial>>(`/food/raw-materials/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
-  deleteRawMaterial: (id: string) => apiFetch<Envelope<unknown>>(`/food/raw-materials/${id}`, { method: "DELETE" }),
+  // Ingredients master
+  listIngredients: (p: Record<string, unknown> = {}) => apiFetch<Envelope<Ingredient[]>>(`/food/ingredients${qs(p)}`).then((r) => r.data),
+  createIngredient: (b: Record<string, unknown>) => apiFetch<Envelope<Ingredient>>(`/food/ingredients`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateIngredient: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Ingredient>>(`/food/ingredients/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteIngredient: (id: string) => apiFetch<Envelope<unknown>>(`/food/ingredients/${id}`, { method: "DELETE" }),
 
   listRotation: (p: Record<string, unknown> = {}) => apiFetch<Envelope<MenuRotationRow[]>>(`/food/menu-rotation${qs(p)}`).then((r) => r.data),
   createRotation: (b: Record<string, unknown>) => apiFetch<Envelope<MenuRotationRow>>(`/food/menu-rotation`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
