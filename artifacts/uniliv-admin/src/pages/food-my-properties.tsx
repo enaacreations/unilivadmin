@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { useAppStore } from "@/lib/store";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Home, Building2, ChefHat, Users, Percent, Wallet, ListOrdered, FilePlus2,
+  Home, Building2, ChefHat, Users, Percent, Wallet, ListOrdered,
   Truck, AlertTriangle, Tag, BedDouble, CheckCircle2,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
@@ -166,14 +166,6 @@ export default function FoodMyProperties() {
                 )}
 
                 <div className="mt-auto grid grid-cols-2 gap-2">
-                  <Button
-                    size="sm"
-                    className="col-span-2 gap-1.5"
-                    disabled={!p.configured}
-                    onClick={() => go(p.id, "/food/place-order")}
-                  >
-                    <FilePlus2 className="h-4 w-4" /> Place Order
-                  </Button>
                   <Button size="sm" variant="outline" className="gap-1.5" onClick={() => go(p.id, "/food/orders")}>
                     <ListOrdered className="h-4 w-4" /> Orders
                   </Button>

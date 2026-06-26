@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   useGetProperties,
+  useUpdateProperty,
   getGetPropertiesQueryKey,
   type PropertyDto,
 } from "@workspace/api-client-react";
@@ -22,11 +23,25 @@ import { useLocation } from "wouter";
 import { PropertyFormModal } from "@/components/property-form-modal";
 import { Badge } from "@/components/ui/badge";
 import { PORTFOLIO_TYPES, PORTFOLIO_TYPE_LABELS, type PortfolioType } from "@/lib/portfolio-types";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { foodApi, foodKeys } from "@/lib/food-api";
+import { Switch } from "@/components/ui/switch";
+import { useToast } from "@/hooks/use-toast";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export default function Properties() {
   const [, setLocation] = useLocation();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data: propertiesRes, isLoading } = useGetProperties(undefined, {
     query: { queryKey: getGetPropertiesQueryKey() },
   });
@@ -79,6 +94,39 @@ export default function Properties() {
   const openCreate = () => {
     setEditing(null);
     setModalOpen(true);
+  };
+
+  // Inline Active/Inactive quick-toggle. Flips status ACTIVE<->INACTIVE via the
+  // existing property update endpoint. Other statuses (UNDER_RENOVATION) are not
+  // toggleable here — only the full dropdown in the edit modal can set those.
+  const updateMut = useUpdateProperty();
+  // Property pending deactivation confirmation (null when no dialog open).
+  const [deactivating, setDeactivating] = React.useState<PropertyDto | null>(null);
+  // id currently being saved, to disable its switch while the mutation runs.
+  const [togglingId, setTogglingId] = React.useState<string | null>(null);
+
+  const setStatusValue = async (p: PropertyDto, next: "ACTIVE" | "INACTIVE") => {
+    setTogglingId(p.id);
+    try {
+      await updateMut.mutateAsync({ id: p.id, data: { status: next } as any });
+      queryClient.invalidateQueries({ queryKey: getGetPropertiesQueryKey() });
+      toast({
+        title: next === "ACTIVE" ? "Property activated" : "Property deactivated",
+      });
+    } catch (e: any) {
+      toast({ title: e?.message || "Failed to update status", variant: "destructive" });
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const onToggleStatus = (p: PropertyDto, checked: boolean) => {
+    if (checked) {
+      void setStatusValue(p, "ACTIVE");
+    } else {
+      // Confirm before deactivating an active property.
+      setDeactivating(p);
+    }
   };
 
   const columns = [
@@ -164,7 +212,29 @@ export default function Properties() {
     {
       accessorKey: "status",
       header: "Status",
-      cell: ({ row }: any) => <StatusBadge status={row.original.status} />,
+      cell: ({ row }: any) => {
+        const p = row.original as PropertyDto;
+        const toggleable = p.status === "ACTIVE" || p.status === "INACTIVE";
+        return (
+          <div className="flex items-center gap-2">
+            <StatusBadge status={p.status} />
+            {toggleable && (
+              <Switch
+                checked={p.status === "ACTIVE"}
+                disabled={togglingId === p.id}
+                onClick={(e) => e.stopPropagation()}
+                onCheckedChange={(checked) => onToggleStatus(p, checked)}
+                aria-label={
+                  p.status === "ACTIVE"
+                    ? "Deactivate property"
+                    : "Activate property"
+                }
+                data-testid={`switch-property-status-${p.id}`}
+              />
+            )}
+          </div>
+        );
+      },
     },
     {
       id: "actions",
@@ -283,6 +353,38 @@ export default function Properties() {
         onOpenChange={setModalOpen}
         property={editing}
       />
+
+      <AlertDialog
+        open={!!deactivating}
+        onOpenChange={(o) => {
+          if (!o) setDeactivating(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-deactivate-property">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Deactivate property?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deactivating
+                ? `"${deactivating.name}" will be marked Inactive.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-deactivate">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="button-confirm-deactivate"
+              onClick={() => {
+                if (deactivating) void setStatusValue(deactivating, "INACTIVE");
+                setDeactivating(null);
+              }}
+            >
+              Deactivate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -36,6 +36,22 @@ const clamp = (n: number, min?: number, max?: number) => {
   return next
 }
 
+// Full labels for unit dropdown codes. The option VALUE stays the raw code;
+// only the displayed text is mapped. Unknown codes fall back to the raw value.
+const UNIT_LABELS: Record<string, string> = {
+  G: "Grams",
+  g: "Grams",
+  KG: "Kilograms",
+  kg: "Kilograms",
+  ML: "Millilitres",
+  LITRE: "Litres",
+  PCS: "Pieces",
+  PLATE: "Plate",
+  SERVING: "Serving",
+  gram: "Grams",
+  unit: "Unit",
+}
+
 // Weight units that auto-convert between one another.
 const WEIGHT_UNITS = new Set(["kg", "gram", "g"])
 const isKg = (u: string) => u === "kg"
@@ -180,7 +196,7 @@ const NumberStepper = React.forwardRef<HTMLInputElement, NumberStepperProps>(
           <SelectContent>
             {unitOptions.map((opt) => (
               <SelectItem key={opt} value={opt}>
-                {opt}
+                {UNIT_LABELS[opt] ?? opt}
               </SelectItem>
             ))}
           </SelectContent>

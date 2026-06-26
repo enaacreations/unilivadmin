@@ -380,8 +380,9 @@ function WasteSheet({
     const n = Number(raw);
     if (Number.isNaN(n)) return "Enter a valid number";
     if (n < 0) return "Cannot be negative";
-    const ordered = Number(it.orderedQty);
-    if (!Number.isNaN(ordered) && n > ordered) return `Cannot exceed ordered (${fmtQty(ordered, it.unit)})`;
+    // Cap against RECEIVED qty; fall back to ordered when delivery not confirmed.
+    const cap = it.receivedQty == null ? Number(it.orderedQty) : Number(it.receivedQty);
+    if (!Number.isNaN(cap) && n > cap) return `Cannot exceed received (${fmtQty(cap, it.unit)})`;
     return null;
   };
 
@@ -511,7 +512,7 @@ function WasteSheet({
                             <NumberStepper
                               value={draft[it.id] === "" || draft[it.id] === undefined ? 0 : Number(draft[it.id])}
                               min={0}
-                              max={Number(it.orderedQty)}
+                              max={it.receivedQty == null ? Number(it.orderedQty) : Number(it.receivedQty)}
                               step={0.001}
                               disabled={locked}
                               unit={units[it.id] ?? it.unit}

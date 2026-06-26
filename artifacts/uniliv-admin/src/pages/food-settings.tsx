@@ -103,7 +103,7 @@ export default function FoodSettings() {
     <div className="space-y-6">
       <PageHeader
         title="Food Settings & Master Data"
-        subtitle="Manage dishes, menu rotation, per-resident rules, delivery partners, kitchens, meal types, cut-off windows, hierarchy and user scopes"
+        subtitle="Manage dishes, menu rotation, portion size rules, delivery partners, kitchens, meal types, cut-off windows, hierarchy and user scopes"
       />
 
       <Tabs defaultValue="dishes" className="space-y-4">
@@ -113,7 +113,7 @@ export default function FoodSettings() {
             <TabsTrigger value="raw-materials" className="shrink-0 whitespace-nowrap"><Boxes className="h-4 w-4 mr-2" /> Raw Materials</TabsTrigger>
             <TabsTrigger value="rotation" className="shrink-0 whitespace-nowrap"><CalendarRange className="h-4 w-4 mr-2" /> Menu Rotation</TabsTrigger>
             <TabsTrigger value="composition" className="shrink-0 whitespace-nowrap"><SlidersHorizontal className="h-4 w-4 mr-2" /> Menu Rules</TabsTrigger>
-            <TabsTrigger value="rules" className="shrink-0 whitespace-nowrap"><Scale className="h-4 w-4 mr-2" /> Per-Resident Rules</TabsTrigger>
+            <TabsTrigger value="rules" className="shrink-0 whitespace-nowrap"><Scale className="h-4 w-4 mr-2" /> Portion Size Rules</TabsTrigger>
             <TabsTrigger value="partners" className="shrink-0 whitespace-nowrap"><Truck className="h-4 w-4 mr-2" /> Agencies</TabsTrigger>
             <TabsTrigger value="kitchens" className="shrink-0 whitespace-nowrap"><ChefHat className="h-4 w-4 mr-2" /> Kitchens</TabsTrigger>
             <TabsTrigger value="meals" className="shrink-0 whitespace-nowrap"><ListChecks className="h-4 w-4 mr-2" /> Meal Types</TabsTrigger>
@@ -149,8 +149,8 @@ export default function FoodSettings() {
 // 1) DISHES
 // ════════════════════════════════════════════════════════════════════════════
 type IngredientRow = { rawMaterialId: string; quantity: string; unit: string };
-type DishForm = { name: string; component: string; unit: string; preparations: string[]; brands: string[]; ingredients: IngredientRow[] };
-const emptyDish: DishForm = { name: "", component: "HOT_FOOD", unit: "SERVING", preparations: ["VEG"], brands: [], ingredients: [] };
+type DishForm = { name: string; component: string; unit: string; preparations: string[]; brands: string[]; ingredients: IngredientRow[]; isActive: boolean };
+const emptyDish: DishForm = { name: "", component: "HOT_FOOD", unit: "SERVING", preparations: ["VEG"], brands: [], ingredients: [], isActive: true };
 
 // Live, admin-managed brand list (active only).
 function useActiveBrands(): { code: string; name: string }[] {
@@ -166,13 +166,15 @@ function DishesTab() {
   const [delTarget, setDelTarget] = React.useState<Dish | null>(null);
   const [form, setForm] = React.useState<DishForm>(emptyDish);
   const [search, setSearch] = React.useState("");
+  const [status, setStatus] = React.useState("ALL");
 
   // Newest dishes first so a just-added dish appears on top.
   const dishParams = { search: search.trim() || undefined, sort: "newest" as const };
-  const { data: dishes = [], isLoading } = useQuery<Dish[]>({
+  const { data: allDishes = [], isLoading } = useQuery<Dish[]>({
     queryKey: foodKeys.dishes(dishParams),
     queryFn: () => foodApi.listDishes(dishParams),
   });
+  const dishes = allDishes.filter((d) => status === "ALL" ? true : status === "ACTIVE" ? d.isActive : !d.isActive);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "dishes"] });
 
@@ -198,7 +200,7 @@ function DishesTab() {
   const openCreate = () => { setEditing(null); setForm(emptyDish); setModalOpen(true); };
   const openEdit = async (d: Dish) => {
     setEditing(d);
-    setForm({ name: d.name, component: d.component, unit: d.unit, preparations: d.preparations ?? [], brands: d.brands ?? [], ingredients: [] });
+    setForm({ name: d.name, component: d.component, unit: d.unit, preparations: d.preparations ?? [], brands: d.brands ?? [], ingredients: [], isActive: d.isActive });
     setModalOpen(true);
     try {
       const full = await foodApi.getDish(d.id);
@@ -241,9 +243,19 @@ function DishesTab() {
         title="Dishes" description="Master catalogue of dishes used across menus and orders."
         action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Dish</Button>}
       />
-      <div className="relative max-w-sm">
-        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
-        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search dishes…" className="pl-9" />
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative max-w-sm flex-1">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search dishes…" className="pl-9" />
+        </div>
+        <Select value={status} onValueChange={setStatus}>
+          <SelectTrigger className="w-40"><SelectValue placeholder="Status" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All Statuses</SelectItem>
+            <SelectItem value="ACTIVE">Active</SelectItem>
+            <SelectItem value="INACTIVE">Inactive</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <DataTable columns={cols as any} data={dishes} isLoading={isLoading} />
 
@@ -320,6 +332,10 @@ function DishesTab() {
               ))}
             </div>
           </div>
+          <div className="flex items-center justify-between border-t pt-3">
+            <Label>Active</Label>
+            <Switch checked={form.isActive} onCheckedChange={(v) => setForm({ ...form, isActive: v })} />
+          </div>
         </div>
       </FormModal>
 
@@ -341,8 +357,10 @@ function RawMaterialsTab() {
   const [editing, setEditing] = React.useState<RawMaterial | null>(null);
   const [delTarget, setDelTarget] = React.useState<RawMaterial | null>(null);
   const [form, setForm] = React.useState<RawMaterialForm>(emptyRawMaterial);
+  const [status, setStatus] = React.useState("ALL");
 
-  const { data: rows = [], isLoading } = useQuery<RawMaterial[]>({ queryKey: foodKeys.rawMaterials(), queryFn: () => foodApi.listRawMaterials() });
+  const { data: allRows = [], isLoading } = useQuery<RawMaterial[]>({ queryKey: foodKeys.rawMaterials(), queryFn: () => foodApi.listRawMaterials() });
+  const rows = allRows.filter((r) => status === "ALL" ? true : status === "ACTIVE" ? r.isActive : !r.isActive);
   const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "raw-materials"] });
 
   const saveMut = useMutation({
@@ -373,6 +391,16 @@ function RawMaterialsTab() {
         title="Raw Materials" description="Ingredient master (Aloo, Pyaaz, Tomato, …) attached to dishes; powers shared-ingredient menu warnings."
         action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Raw Material</Button>}
       />
+      <div className="flex flex-wrap items-center gap-3">
+        <Select value={status} onValueChange={setStatus}>
+          <SelectTrigger className="w-40"><SelectValue placeholder="Status" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">All Statuses</SelectItem>
+            <SelectItem value="ACTIVE">Active</SelectItem>
+            <SelectItem value="INACTIVE">Inactive</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
       <DataTable columns={cols as any} data={rows} isLoading={isLoading} />
 
       <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Raw Material" : "Add Raw Material"} onSave={submit} isSaving={saveMut.isPending} saveLabel={editing ? "Save Changes" : "Create"}>
@@ -612,7 +640,8 @@ function RotationTab() {
         <div className="space-y-4">
           <div>
             <Label>Kitchen *</Label>
-            <Select value={form.kitchenId} onValueChange={(v) => setForm({ ...form, kitchenId: v })}>
+            {/* B3-10: Kitchen is part of a slot's unique key — gray it out when editing an existing slot (immutable for now). */}
+            <Select value={form.kitchenId} onValueChange={(v) => setForm({ ...form, kitchenId: v })} disabled={!!editing}>
               <SelectTrigger><SelectValue placeholder="Select kitchen" /></SelectTrigger>
               <SelectContent>{kitchens.map((k) => <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>)}</SelectContent>
             </Select>
@@ -641,7 +670,8 @@ function RotationTab() {
             </div>
             <div>
               <Label>Day of Week</Label>
-              <Select value={String(form.dayOfWeek)} onValueChange={(v) => setForm({ ...form, dayOfWeek: Number(v) })}>
+              {/* B3-8: Day-of-Week is part of a slot's unique key — gray it out when editing an existing slot. */}
+              <Select value={String(form.dayOfWeek)} onValueChange={(v) => setForm({ ...form, dayOfWeek: Number(v) })} disabled={!!editing}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>{DAYS.map((d) => <SelectItem key={d} value={String(d)}>{DAY_LABEL[d]}</SelectItem>)}</SelectContent>
               </Select>
@@ -821,10 +851,11 @@ function CompositionRulesTab() {
             </div>
             <div>
               <Label>Kitchen</Label>
-              <Select value={form.kitchenId || "__all"} onValueChange={(v) => setForm({ ...form, kitchenId: v === "__all" ? "" : v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <Select value={form.kitchenId || "__all"} onValueChange={(v) => setForm({ ...form, kitchenId: v === "__all" ? "" : v })} disabled>
+                <SelectTrigger disabled><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="__all">All kitchens (brand default)</SelectItem>{kitchens.map((k) => <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>)}</SelectContent>
               </Select>
+              <p className="mt-1 text-xs text-muted-foreground">Kitchen-specific rules disabled for now.</p>
             </div>
             <div>
               <Label>Name</Label>
@@ -946,7 +977,7 @@ function RulesTab() {
   return (
     <div className="space-y-4">
       <SectionHeader
-        title="Per-Resident Rules" description="Default quantity per resident for each brand + meal + dish."
+        title="Portion Size Rules" description="Default quantity per resident for each brand + meal + dish."
         action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Rule</Button>}
       />
 

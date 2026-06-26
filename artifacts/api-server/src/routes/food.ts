@@ -1034,8 +1034,11 @@ foodRouter.post("/orders/:id/waste", authenticate, authorize("FOOD_WASTE_TRACKIN
       const it = itemById.get(inp.itemId);
       if (!it) { res.status(400).json({ success: false, error: `Unknown itemId ${inp.itemId}` }); return; }
       const wq = Number(inp.wastedQty);
-      if (!Number.isFinite(wq) || wq < 0 || wq > Number(it.orderedQty)) {
-        res.status(400).json({ success: false, error: `wastedQty for ${inp.itemId} must be between 0 and ${it.orderedQty}` });
+      // Cap against RECEIVED qty (the proof-of-delivery amount); fall back to
+      // orderedQty when delivery wasn't confirmed (receivedQty null/undefined).
+      const cap = it.receivedQty == null ? Number(it.orderedQty) : Number(it.receivedQty);
+      if (!Number.isFinite(wq) || wq < 0 || wq > cap) {
+        res.status(400).json({ success: false, error: `wastedQty for ${inp.itemId} cannot exceed received (${cap})` });
         return;
       }
     }

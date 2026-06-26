@@ -15,8 +15,17 @@ export type NavItem = { title: string; href: string; icon: LucideIcon; module: M
 export type NavGroup = { title: string; items: NavItem[] }
 
 export const navGroups: NavGroup[] = [
-  { title: "Overview", items: [
+  // Home is pinned as its own single-item group at the very top so it stays
+  // visible regardless of which collapsible group the layout's accordion has
+  // open. The sidebar (components/layout.tsx) renders every navGroup as a
+  // collapsible NavGroupSection and keeps exactly one group expanded at a time;
+  // a one-item "Home" group placed first keeps Home directly under the logo,
+  // above the rest of the navigation, while Dashboard/Executive remain inside
+  // the collapsible Overview group below.
+  { title: "Home", items: [
     { title: "Home", href: "/home", icon: Home, module: "FOOD_DASHBOARD" },
+  ]},
+  { title: "Overview", items: [
     { title: "Dashboard", href: "/", icon: LayoutDashboard, module: "DASHBOARD" },
     { title: "Executive", href: "/dashboard/executive", icon: BarChart3, module: "EXECUTIVE_DASHBOARD" },
   ]},
