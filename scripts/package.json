@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@workspace/db": "workspace:*",
+    "@workspace/storage": "workspace:*",
     "drizzle-orm": "catalog:"
   },
   "devDependencies": {

@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Eye, Pencil, Building2, Bed, Users, Percent, Search } from "lucide-react";
+import { Plus, Eye, Pencil, Building2, Bed, Users, Percent, Search, Image as ImageIcon } from "lucide-react";
 import { useLocation } from "wouter";
 import { PropertyFormModal } from "@/components/property-form-modal";
 import { Badge } from "@/components/ui/badge";
@@ -130,7 +130,33 @@ export default function Properties() {
   };
 
   const columns = [
-    { accessorKey: "name", header: "Name" },
+    {
+      accessorKey: "name",
+      header: "Name",
+      cell: ({ row }: any) => {
+        // heroImageUrl is added additively by the API but not in the generated DTO.
+        const heroUrl = (row.original as any).heroImageUrl as string | null | undefined;
+        return (
+          <div className="flex items-center gap-2.5">
+            <div className="h-9 w-12 shrink-0 overflow-hidden rounded-md border bg-surface">
+              {heroUrl ? (
+                <img
+                  src={heroUrl}
+                  alt={row.original.name}
+                  className="h-full w-full object-cover"
+                  data-testid={`property-thumb-${row.original.id}`}
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                  <ImageIcon className="h-4 w-4" />
+                </div>
+              )}
+            </div>
+            <span className="font-medium">{row.original.name}</span>
+          </div>
+        );
+      },
+    },
     {
       id: "portfolioType",
       header: "Type",

@@ -81,7 +81,13 @@ async function scrapeDetail(seed: Seed) {
     const res = await fetch(seed.detailUrl, { headers: { "User-Agent": "Mozilla/5.0 UnilivAdminImporter/1.0" } });
     html = await res.text();
   } catch (e) {
-    return { ...seed, error: `fetch failed: ${(e as Error).message}` };
+    return {
+      name: seed.name, city: seed.city, citySlug: seed.citySlug, gender: seed.gender,
+      title: null as string | null, address: null as string | null, lat: null as string | null, lng: null as string | null,
+      mapsUrl: seed.mapsUrl, sourceUrl: seed.detailUrl,
+      priceRange: [] as string[], sharingTypes: [] as string[], amenities: [] as string[],
+      heroImage: seed.thumb as string | null, images: [] as string[], error: `fetch failed: ${(e as Error).message}`,
+    };
   }
 
   // JSON-LD: address + geo
@@ -131,20 +137,20 @@ async function scrapeDetail(seed: Seed) {
 
 async function main() {
   console.log(`Scraping ${SEED.length} Uniliv properties from uniliv.in ...`);
-  const out: unknown[] = [];
+  const out: Awaited<ReturnType<typeof scrapeDetail>>[] = [];
   for (const seed of SEED) {
     const r = await scrapeDetail(seed);
-    const imgs = "images" in r ? r.images.length : 0;
-    const coords = "lat" in r && r.lat ? "geo" : "no-geo";
-    console.log(`  • ${seed.city.padEnd(13)} ${seed.name.padEnd(22)} ${String(imgs).padStart(2)} imgs  ${coords}${"error" in r ? "  ⚠ " + r.error : ""}`);
+    const imgs = r.images.length;
+    const coords = r.lat ? "geo" : "no-geo";
+    console.log(`  • ${seed.city.padEnd(13)} ${seed.name.padEnd(22)} ${String(imgs).padStart(2)} imgs  ${coords}${r.error ? "  ⚠ " + r.error : ""}`);
     out.push(r);
   }
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const outPath = resolve(__dirname, "../data/uniliv-properties.json");
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, JSON.stringify(out, null, 2));
-  const withGeo = out.filter((p) => (p as { lat?: string }).lat).length;
-  const totalImgs = out.reduce((a, p) => a + ((p as { images?: unknown[] }).images?.length || 0), 0);
+  const withGeo = out.filter((p) => p.lat).length;
+  const totalImgs = out.reduce((a, p) => a + p.images.length, 0);
   console.log(`\nWrote ${out.length} properties (${withGeo} with coords, ${totalImgs} images) -> ${outPath}`);
 }
 

@@ -4,7 +4,7 @@ import { useAppStore } from "@/lib/store";
 import { useQuery } from "@tanstack/react-query";
 import {
   Home, Building2, ChefHat, Users, Percent, Wallet, ListOrdered,
-  Truck, AlertTriangle, Tag, BedDouble, CheckCircle2,
+  Truck, AlertTriangle, Tag, BedDouble, CheckCircle2, Image as ImageIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +15,30 @@ import { foodApi, foodKeys, type MyPropertyCard } from "@/lib/food-api";
 import { withQuery } from "@/lib/nav-helpers";
 
 const inr = (n: number) => `₹${(n ?? 0).toLocaleString("en-IN")}`;
+
+// Card banner image. The /food/my-properties payload doesn't carry heroImageUrl,
+// so we fetch the property's photos and pick the hero (else the first by sortOrder).
+// Falls back to a placeholder when there are no photos or storage is unavailable.
+function PropertyBanner({ propertyId, name }: { propertyId: string; name: string }) {
+  const { data: photos = [] } = useQuery({
+    queryKey: foodKeys.propertyPhotos(propertyId),
+    queryFn: () => foodApi.listPropertyPhotos(propertyId),
+    staleTime: 5 * 60_000,
+  });
+  const hero = photos.find((p) => p.isHero) ?? photos[0];
+  const url = hero?.url ?? null;
+  return (
+    <div className="aspect-[16/7] w-full overflow-hidden bg-surface" data-testid={`property-banner-${propertyId}`}>
+      {url ? (
+        <img src={url} alt={name} className="h-full w-full object-cover" />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+          <ImageIcon className="h-7 w-7" />
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Stat({
   icon: Icon, label, value, onClick,
@@ -88,7 +112,8 @@ export default function FoodMyProperties() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {properties.map((p) => (
-            <Card key={p.id} className="flex flex-col">
+            <Card key={p.id} className="flex flex-col overflow-hidden">
+              <PropertyBanner propertyId={p.id} name={p.name} />
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">

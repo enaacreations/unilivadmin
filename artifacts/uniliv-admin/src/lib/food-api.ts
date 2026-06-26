@@ -191,6 +191,12 @@ export interface FoodUser { id: string; name: string; email: string; role: strin
 /** Assignable unit-leads (UNIT_LEAD/WARDEN) for the property form's tag multi-select. */
 export interface AssignableUnitLead { id: string; name: string; email: string; role: string; propertyId: string | null }
 export interface FoodBrandRow { id: string; code: string; name: string; isActive: boolean }
+/**
+ * A property photo. `url` is a fresh presigned R2 URL (~1h TTL) present only on
+ * GET list + POST create responses; it is null when storage is unconfigured or a
+ * presign fails. PATCH responses omit `url` entirely.
+ */
+export interface PropertyPhoto { id: string; url: string | null; caption: string | null; isHero: boolean; sortOrder: number }
 /** Result of resolving a kitchen from a pincode. `kitchenId` is null when no kitchen serves it. */
 export interface KitchenByPincode { kitchenId: string | null; kitchenName?: string; kitchenCode?: string }
 /** Forward geocode (address text → coordinates). */
@@ -342,6 +348,7 @@ export const foodKeys = {
   users: () => ["food", "users"] as const,
   assignableUnitLeads: () => ["properties", "assignable-unit-leads"] as const,
   propertyDetail: (id: string) => ["properties", "detail", id] as const,
+  propertyPhotos: (id: string) => ["properties", "photos", id] as const,
   lookups: () => ["food", "lookups"] as const,
   brands: (p: Record<string, unknown> = {}) => ["food", "brands", p] as const,
   hierarchy: () => ["food", "hierarchy"] as const,
@@ -446,6 +453,19 @@ export const foodApi = {
   // Property detail incl. form-prefill extras (tagged unit-leads + cut-off override).
   propertyDetail: (id: string) =>
     apiFetch<Envelope<{ code: string | null; unitLeadIds: string[]; cutoffTime: string | null }>>(`/properties/${id}`).then((r) => r.data),
+
+  // Property photos (gallery + hero). All under /properties/:id (PROPERTIES scope).
+  // url fields are fresh presigned R2 URLs (~1h TTL) — re-fetch to refresh.
+  listPropertyPhotos: (propertyId: string) =>
+    apiFetch<Envelope<PropertyPhoto[]>>(`/properties/${propertyId}/photos`).then((r) => r.data),
+  // dataUrl: "data:image/<jpeg|png|webp|gif>;base64,<...>" — keep the payload under
+  // ~1mb (downscale client-side); decoded image hard-capped at 8MB server-side.
+  createPropertyPhoto: (propertyId: string, body: { dataUrl: string; caption?: string; isHero?: boolean }) =>
+    apiFetch<Envelope<PropertyPhoto>>(`/properties/${propertyId}/photos`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.data),
+  updatePropertyPhoto: (propertyId: string, photoId: string, body: { isHero?: boolean; sortOrder?: number; caption?: string | null }) =>
+    apiFetch<Envelope<Omit<PropertyPhoto, "url">>>(`/properties/${propertyId}/photos/${photoId}`, { method: "PATCH", body: JSON.stringify(body) }).then((r) => r.data),
+  deletePropertyPhoto: (propertyId: string, photoId: string) =>
+    apiFetch<{ success: boolean; message: string }>(`/properties/${propertyId}/photos/${photoId}`, { method: "DELETE" }),
 
   // Brands master (admin-managed list)
   listBrands: (p: Record<string, unknown> = {}) => apiFetch<Envelope<FoodBrandRow[]>>(`/food/brands${qs(p)}`).then((r) => r.data),

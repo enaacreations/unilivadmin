@@ -63,6 +63,7 @@ import {
   Tag,
   Calendar as CalendarIcon,
   Trash2,
+  Image as ImageIcon,
 } from "lucide-react";
 import { BookingFormModal } from "@/components/booking-form-modal";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -418,6 +419,54 @@ function PropertyElectricityTab({ propertyId }: { propertyId: string }) {
   );
 }
 
+// Photo gallery shown near the top of the property detail page. Read-only here;
+// uploads/hero/delete live in the property edit modal. Photos come back ordered
+// ascending by sortOrder (hero is flagged via isHero).
+function PropertyPhotoGallery({ propertyId }: { propertyId: string }) {
+  const { data: photos = [], isLoading } = useQuery({
+    queryKey: foodKeys.propertyPhotos(propertyId),
+    queryFn: () => foodApi.listPropertyPhotos(propertyId),
+  });
+  if (isLoading || photos.length === 0) return null;
+  const hero = photos.find((p) => p.isHero) ?? photos[0];
+  const rest = photos.filter((p) => p.id !== hero.id);
+  return (
+    <Card data-testid="property-photo-gallery">
+      <CardContent className="p-4">
+        <h3 className="font-display font-semibold text-primary mb-3 flex items-center gap-2">
+          <ImageIcon className="w-4 h-4" /> Photos
+        </h3>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="relative aspect-video overflow-hidden rounded-lg border bg-surface sm:col-span-2 sm:row-span-2">
+            {hero.url ? (
+              <img src={hero.url} alt={hero.caption || "Property photo"} className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                <ImageIcon className="h-7 w-7" />
+              </div>
+            )}
+          </div>
+          {rest.slice(0, 4).map((photo) => (
+            <div
+              key={photo.id}
+              className="relative aspect-video overflow-hidden rounded-lg border bg-surface"
+              data-testid={`property-detail-photo-${photo.id}`}
+            >
+              {photo.url ? (
+                <img src={photo.url} alt={photo.caption || "Property photo"} className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                  <ImageIcon className="h-5 w-5" />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function PropertyDetail() {
   const params = useParams<{ id: string }>();
   const id = params.id as string;
@@ -562,6 +611,8 @@ export default function PropertyDetail() {
         </div>
         <StatusBadge status={property.status} className="px-3 py-1" />
       </div>
+
+      <PropertyPhotoGallery propertyId={id} />
 
       <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
         <Card>

@@ -1,10 +1,11 @@
-import { Router } from "express";
+import { Router, json } from "express";
 import { db } from "@workspace/db";
-import { propertiesTable, residentsTable, usersTable, foodCutoffsTable } from "@workspace/db";
-import { eq, sql, ilike, or, and, inArray } from "drizzle-orm";
+import { propertiesTable, residentsTable, usersTable, foodCutoffsTable, propertyPhotosTable } from "@workspace/db";
+import { eq, sql, ilike, or, and, inArray, asc } from "drizzle-orm";
+import { putObject, getObjectUrl, deleteObject, isStorageConfigured } from "@workspace/storage";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { pick } from "../lib/authz.js";
+import { pick, assertPropertyAccess } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { resolveKitchenForPincode, isActiveBrand } from "../lib/food-service.js";
@@ -106,6 +107,100 @@ async function upsertPropertyCutoff(propertyId: string, brand: string | null | u
   }
 }
 
+/** Allowed image content-types and their canonical file extensions. */
+const IMAGE_EXT: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // ~8MB decoded
+
+/**
+ * Parse a base64 image data-URL (`data:image/png;base64,...`). Returns the decoded
+ * Buffer + the normalized content-type/extension, or null if it isn't a valid,
+ * allowed image within the size budget.
+ */
+function parseImageDataUrl(dataUrl: unknown): { buffer: Buffer; contentType: string; ext: string } | null {
+  if (typeof dataUrl !== "string") return null;
+  const m = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl.trim());
+  if (!m) return null;
+  const contentType = m[1]!.toLowerCase();
+  const ext = IMAGE_EXT[contentType];
+  if (!ext) return null;
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(m[2]!, "base64");
+  } catch {
+    return null;
+  }
+  if (!buffer.length || buffer.length > MAX_PHOTO_BYTES) return null;
+  return { buffer, contentType, ext };
+}
+
+/**
+ * Resolve a presigned hero-image URL for a single property: the photo flagged
+ * isHero, else the lowest sortOrder. Presigning is wrapped so a storage outage
+ * degrades to null rather than throwing.
+ */
+async function heroImageUrlFor(propertyId: string): Promise<string | null> {
+  if (!isStorageConfigured()) return null;
+  const [photo] = await db
+    .select({ storageKey: propertyPhotosTable.storageKey })
+    .from(propertyPhotosTable)
+    .where(eq(propertyPhotosTable.propertyId, propertyId))
+    .orderBy(sql`${propertyPhotosTable.isHero} desc`, asc(propertyPhotosTable.sortOrder))
+    .limit(1);
+  if (!photo) return null;
+  try {
+    return await getObjectUrl(photo.storageKey);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Batch hero-image lookup for a list of property ids (avoids N+1). One query
+ * pulls every property's photos, we pick the hero (else lowest sortOrder) per
+ * property, then presign each — presign failures degrade that entry to null.
+ */
+async function heroImageUrlMap(propertyIds: string[]): Promise<Record<string, string | null>> {
+  const out: Record<string, string | null> = {};
+  if (!propertyIds.length || !isStorageConfigured()) return out;
+  const rows = await db
+    .select({
+      propertyId: propertyPhotosTable.propertyId,
+      storageKey: propertyPhotosTable.storageKey,
+      isHero: propertyPhotosTable.isHero,
+      sortOrder: propertyPhotosTable.sortOrder,
+    })
+    .from(propertyPhotosTable)
+    .where(inArray(propertyPhotosTable.propertyId, propertyIds));
+
+  // Reduce to the best (hero first, then lowest sortOrder) photo per property.
+  const best: Record<string, { storageKey: string; isHero: boolean; sortOrder: number }> = {};
+  for (const r of rows) {
+    const cur = best[r.propertyId];
+    const better =
+      !cur ||
+      (r.isHero && !cur.isHero) ||
+      (r.isHero === cur.isHero && r.sortOrder < cur.sortOrder);
+    if (better) best[r.propertyId] = { storageKey: r.storageKey, isHero: r.isHero, sortOrder: r.sortOrder };
+  }
+
+  await Promise.all(
+    Object.entries(best).map(async ([propertyId, photo]) => {
+      try {
+        out[propertyId] = await getObjectUrl(photo.storageKey);
+      } catch {
+        out[propertyId] = null;
+      }
+    })
+  );
+  return out;
+}
+
 router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
@@ -124,9 +219,13 @@ router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) 
       })
     );
 
+    // Batch the hero-image lookup for all listed properties (no N+1; storage
+    // outages degrade heroImageUrl to null rather than failing the list).
+    const heroMap = await heroImageUrlMap(rows.map((p) => p.id));
+
     res.json({
       success: true,
-      data: rows.map(p => ({ ...p, occupiedBeds: occupiedMap[p.id] || 0 })),
+      data: rows.map(p => ({ ...p, occupiedBeds: occupiedMap[p.id] || 0, heroImageUrl: heroMap[p.id] ?? null })),
       meta: buildMeta(countResult.count, page, limit),
     });
   } catch (err) {
@@ -250,7 +349,9 @@ router.get("/:id", authenticate, authorize("PROPERTIES", "view"), async (req, re
       cutoffTime = c?.cutoffTime ?? null;
     }
 
-    res.json({ success: true, data: { ...row, occupiedBeds: r.count || 0, unitLeadIds, cutoffTime } });
+    const heroImageUrl = await heroImageUrlFor(row.id);
+
+    res.json({ success: true, data: { ...row, occupiedBeds: r.count || 0, unitLeadIds, cutoffTime, heroImageUrl } });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
@@ -322,6 +423,226 @@ router.delete("/:id", authenticate, authorize("PROPERTIES", "delete"), async (re
     await db.delete(propertiesTable).where(eq(propertiesTable.id, req.params["id"]!));
     res.json({ success: true, message: "Deleted" });
   } catch (err) {
+    req.log.error(err);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+// ─── Property photos ──────────────────────────────────────────────────────
+// Large image uploads arrive as base64 data-URLs which exceed the small global
+// body limit, so the POST route mounts its OWN express.json({limit}) parser.
+
+/** Load a property (id only) or send 404. Returns null after responding. */
+async function loadPropertyOr404(propertyId: string, res: import("express").Response): Promise<{ id: string } | null> {
+  const [prop] = await db.select({ id: propertiesTable.id }).from(propertiesTable).where(eq(propertiesTable.id, propertyId));
+  if (!prop) {
+    res.status(404).json({ success: false, error: "Property not found" });
+    return null;
+  }
+  return prop;
+}
+
+/** Render a thrown authz/validation error (403/400) or fall through. */
+function sendAuthzError(err: any, res: import("express").Response): boolean {
+  if (err?.statusCode === 403 || err?.statusCode === 400) {
+    res.status(err.statusCode).json({ success: false, error: err.message });
+    return true;
+  }
+  return false;
+}
+
+router.get("/:id/photos", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+  try {
+    const propertyId = req.params["id"]!;
+    const prop = await loadPropertyOr404(propertyId, res);
+    if (!prop) return;
+    assertPropertyAccess(req, propertyId);
+
+    const rows = await db
+      .select()
+      .from(propertyPhotosTable)
+      .where(eq(propertyPhotosTable.propertyId, propertyId))
+      .orderBy(asc(propertyPhotosTable.sortOrder));
+
+    const data = await Promise.all(
+      rows.map(async (p) => {
+        let url: string | null = null;
+        try {
+          url = isStorageConfigured() ? await getObjectUrl(p.storageKey) : null;
+        } catch {
+          url = null;
+        }
+        return { id: p.id, url, caption: p.caption, isHero: p.isHero, sortOrder: p.sortOrder };
+      })
+    );
+
+    res.json({ success: true, data });
+  } catch (err: any) {
+    if (sendAuthzError(err, res)) return;
+    req.log.error(err);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+router.post(
+  "/:id/photos",
+  authenticate,
+  authorize("PROPERTIES", "edit"),
+  // Route-LOCAL parser: the global body limit is small; images need headroom.
+  json({ limit: "12mb" }),
+  async (req, res) => {
+    try {
+      if (!isStorageConfigured()) {
+        res.status(503).json({ success: false, error: "Photo storage is not configured." });
+        return;
+      }
+      const propertyId = req.params["id"]!;
+      const prop = await loadPropertyOr404(propertyId, res);
+      if (!prop) return;
+      assertPropertyAccess(req, propertyId);
+
+      const parsed = parseImageDataUrl(req.body?.dataUrl);
+      if (!parsed) {
+        res.status(400).json({ success: false, error: "dataUrl must be a base64 image (jpeg/png/webp/gif) under 8MB." });
+        return;
+      }
+      const caption = req.body?.caption != null ? String(req.body.caption) : null;
+      const isHero = req.body?.isHero === true;
+
+      const key = `properties/${propertyId}/${newId()}.${parsed.ext}`;
+      await putObject(key, parsed.buffer, parsed.contentType);
+
+      const row = await db.transaction(async (tx) => {
+        if (isHero) {
+          await tx
+            .update(propertyPhotosTable)
+            .set({ isHero: false })
+            .where(eq(propertyPhotosTable.propertyId, propertyId));
+        }
+        const [{ max }] = await tx
+          .select({ max: sql<number>`coalesce(max(${propertyPhotosTable.sortOrder}), -1)::int` })
+          .from(propertyPhotosTable)
+          .where(eq(propertyPhotosTable.propertyId, propertyId));
+        const [inserted] = await tx
+          .insert(propertyPhotosTable)
+          .values({
+            id: newId(),
+            propertyId,
+            storageKey: key,
+            contentType: parsed.contentType,
+            caption,
+            isHero,
+            sortOrder: (max ?? -1) + 1,
+          })
+          .returning();
+        return inserted!;
+      });
+
+      let url: string | null = null;
+      try {
+        url = await getObjectUrl(row.storageKey);
+      } catch {
+        url = null;
+      }
+
+      res.status(201).json({
+        success: true,
+        data: { id: row.id, url, caption: row.caption, isHero: row.isHero, sortOrder: row.sortOrder },
+      });
+    } catch (err: any) {
+      if (sendAuthzError(err, res)) return;
+      req.log.error(err);
+      res.status(500).json({ success: false, error: "Internal server error" });
+    }
+  }
+);
+
+router.patch("/:id/photos/:photoId", authenticate, authorize("PROPERTIES", "edit"), async (req, res) => {
+  try {
+    const propertyId = req.params["id"]!;
+    const photoId = req.params["photoId"]!;
+    const prop = await loadPropertyOr404(propertyId, res);
+    if (!prop) return;
+    assertPropertyAccess(req, propertyId);
+
+    const [existing] = await db
+      .select()
+      .from(propertyPhotosTable)
+      .where(and(eq(propertyPhotosTable.id, photoId), eq(propertyPhotosTable.propertyId, propertyId)));
+    if (!existing) {
+      res.status(404).json({ success: false, error: "Photo not found" });
+      return;
+    }
+
+    const patch: { isHero?: boolean; sortOrder?: number; caption?: string | null } = {};
+    if (req.body?.isHero !== undefined) patch.isHero = req.body.isHero === true;
+    if (req.body?.sortOrder !== undefined) {
+      const n = Number(req.body.sortOrder);
+      if (!Number.isFinite(n)) {
+        res.status(400).json({ success: false, error: "sortOrder must be a number." });
+        return;
+      }
+      patch.sortOrder = Math.trunc(n);
+    }
+    if (req.body?.caption !== undefined) patch.caption = req.body.caption != null ? String(req.body.caption) : null;
+
+    if (Object.keys(patch).length === 0) {
+      res.json({ success: true, data: { id: existing.id, caption: existing.caption, isHero: existing.isHero, sortOrder: existing.sortOrder } });
+      return;
+    }
+
+    const row = await db.transaction(async (tx) => {
+      // Setting this photo as hero clears the flag on the property's other photos.
+      if (patch.isHero === true) {
+        await tx
+          .update(propertyPhotosTable)
+          .set({ isHero: false })
+          .where(eq(propertyPhotosTable.propertyId, propertyId));
+      }
+      const [updated] = await tx
+        .update(propertyPhotosTable)
+        .set(patch)
+        .where(eq(propertyPhotosTable.id, photoId))
+        .returning();
+      return updated!;
+    });
+
+    res.json({ success: true, data: { id: row.id, caption: row.caption, isHero: row.isHero, sortOrder: row.sortOrder } });
+  } catch (err: any) {
+    if (sendAuthzError(err, res)) return;
+    req.log.error(err);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+router.delete("/:id/photos/:photoId", authenticate, authorize("PROPERTIES", "edit"), async (req, res) => {
+  try {
+    const propertyId = req.params["id"]!;
+    const photoId = req.params["photoId"]!;
+    const prop = await loadPropertyOr404(propertyId, res);
+    if (!prop) return;
+    assertPropertyAccess(req, propertyId);
+
+    const [existing] = await db
+      .select()
+      .from(propertyPhotosTable)
+      .where(and(eq(propertyPhotosTable.id, photoId), eq(propertyPhotosTable.propertyId, propertyId)));
+    if (!existing) {
+      res.status(404).json({ success: false, error: "Photo not found" });
+      return;
+    }
+
+    // Best-effort object delete; a storage failure must not block removing the row.
+    try {
+      await deleteObject(existing.storageKey);
+    } catch (e) {
+      req.log.error(e);
+    }
+    await db.delete(propertyPhotosTable).where(eq(propertyPhotosTable.id, photoId));
+
+    res.json({ success: true, message: "Deleted" });
+  } catch (err: any) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }

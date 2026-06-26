@@ -8,6 +8,7 @@ import {
   numeric,
   pgEnum,
   json,
+  index,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -176,6 +177,28 @@ export const propertiesTable = pgTable("properties", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+export const propertyPhotosTable = pgTable(
+  "property_photos",
+  {
+    id: text("id").primaryKey(),
+    propertyId: text("property_id")
+      .notNull()
+      .references(() => propertiesTable.id, { onDelete: "cascade" }),
+    /** R2 object key (see @workspace/storage). */
+    storageKey: text("storage_key").notNull(),
+    contentType: text("content_type"),
+    caption: text("caption"),
+    /** Original uniliv.in source URL, used for idempotent re-import. */
+    sourceUrl: text("source_url"),
+    isHero: boolean("is_hero").default(false).notNull(),
+    sortOrder: integer("sort_order").default(0).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("property_photos_property_id_idx").on(table.propertyId),
+  ],
+);
 
 export const roomsTable = pgTable("rooms", {
   id: text("id").primaryKey(),
@@ -466,6 +489,8 @@ export const insertComplaintEventSchema = createInsertSchema(complaintEventsTabl
 
 export type Property = typeof propertiesTable.$inferSelect;
 export type InsertProperty = typeof propertiesTable.$inferInsert;
+export type PropertyPhoto = typeof propertyPhotosTable.$inferSelect;
+export type NewPropertyPhoto = typeof propertyPhotosTable.$inferInsert;
 export type Room = typeof roomsTable.$inferSelect;
 export type InsertRoom = typeof roomsTable.$inferInsert;
 export type User = typeof usersTable.$inferSelect;

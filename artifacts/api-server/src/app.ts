@@ -56,7 +56,16 @@ app.use(cookieParser());
 // Capture the raw request bytes (req.rawBody) during JSON parsing so webhook
 // routes that need byte-exact HMAC verification (e.g. Razorpay) can recover the
 // original payload even though the global parser consumes the stream.
-app.use(express.json({ limit: BODY_LIMIT, verify: (req, _res, buf) => { (req as unknown as { rawBody?: Buffer }).rawBody = buf; } }));
+const jsonParser = express.json({ limit: BODY_LIMIT, verify: (req, _res, buf) => { (req as unknown as { rawBody?: Buffer }).rawBody = buf; } });
+// Property-photo uploads carry larger base64 image bodies and are parsed by a
+// route-local 12 MB JSON parser (routes/properties.ts). Bypass the small global limit
+// for that single route so the body isn't rejected with 413 before it reaches the
+// handler; every other route keeps the conservative BODY_LIMIT.
+const PHOTO_UPLOAD_RE = /^\/api\/properties\/[^/]+\/photos\/?$/;
+app.use((req, res, next) => {
+  if (req.method === "POST" && PHOTO_UPLOAD_RE.test(req.path)) return next();
+  return jsonParser(req, res, next);
+});
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
 
 app.use(globalRateLimiter);
