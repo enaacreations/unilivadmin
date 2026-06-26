@@ -500,6 +500,42 @@ export async function autoFillMenu(
 }
 
 export interface SharedIngredient { rawMaterialId: string; name: string; dishIds: string[] }
+
+/** A single machine-readable rule violation the frontend can hard-block on. */
+export interface CompositionViolation {
+  type: "SLOT_MISSING" | "SLOT_UNDER" | "SLOT_OVER" | "SHARED_INGREDIENT";
+  message: string;
+  dishIds: string[];
+}
+export interface CompositionVerdict { ok: boolean; violations: CompositionViolation[] }
+
+/**
+ * Folds a slot-validation + shared-ingredient result into a flat, machine-readable
+ * verdict ({ ok, violations }) the frontend can HARD-BLOCK on. `ok` is true only
+ * when every slot is satisfied (no MISSING/UNDER/OVER) and no two dishes share an
+ * ingredient. A null rule yields no slot violations (nothing to enforce).
+ */
+export function buildCompositionVerdict(
+  validation: CompositionValidation,
+  sharedIngredients: SharedIngredient[],
+): CompositionVerdict {
+  const violations: CompositionViolation[] = [];
+  for (const s of validation.slots) {
+    const label = s.slotLabel || s.component || "slot";
+    if (s.status === "MISSING") {
+      violations.push({ type: "SLOT_MISSING", message: `Missing a dish for "${label}" (needs ${s.minCount}).`, dishIds: [] });
+    } else if (s.status === "UNDER") {
+      violations.push({ type: "SLOT_UNDER", message: `"${label}" needs at least ${s.minCount} dish(es) but has ${s.count}.`, dishIds: s.matchedDishIds });
+    } else if (s.status === "OVER") {
+      violations.push({ type: "SLOT_OVER", message: `"${label}" allows at most ${s.maxCount} dish(es) but has ${s.count}.`, dishIds: s.matchedDishIds });
+    }
+  }
+  for (const si of sharedIngredients) {
+    violations.push({ type: "SHARED_INGREDIENT", message: `Two or more dishes share the ingredient "${si.name}".`, dishIds: si.dishIds });
+  }
+  return { ok: violations.length === 0, violations };
+}
+
 /** Raw materials used by 2+ of the given dishes (drives the menu shared-ingredient warning). */
 export async function detectSharedIngredients(dishIds: string[]): Promise<SharedIngredient[]> {
   if (dishIds.length < 2) return [];

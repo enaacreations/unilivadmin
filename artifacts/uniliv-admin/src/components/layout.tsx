@@ -421,26 +421,29 @@ export function Layout({ children }: { children: React.ReactNode }) {
             >
               <Menu className="w-5 h-5" />
             </Button>
-            <div className="min-w-0">
-              {isDetail && active ? (
-                <Breadcrumb>
-                  <BreadcrumbList>
-                    <BreadcrumbItem className="hidden sm:inline-flex">
-                      <BreadcrumbLink asChild>
-                        <Link href={active.item.href}>{active.item.title}</Link>
-                      </BreadcrumbLink>
-                    </BreadcrumbItem>
-                    <BreadcrumbSeparator className="hidden sm:inline-flex" />
-                    <BreadcrumbItem>
-                      <BreadcrumbPage className="font-display font-semibold text-lg text-foreground">Details</BreadcrumbPage>
-                    </BreadcrumbItem>
-                  </BreadcrumbList>
-                </Breadcrumb>
-              ) : (
-                <h2 className="text-lg font-display font-semibold truncate">{pageTitle}</h2>
-              )}
-            </div>
-            <div className="hidden lg:block h-8 w-px bg-border" />
+            {/* Page title (h2) intentionally omitted on list pages: the page renders
+                its own heading below, so showing it here too is redundant. Detail pages
+                keep the breadcrumb since it provides navigation context, not a duplicate. */}
+            {isDetail && active ? (
+              <>
+                <div className="min-w-0">
+                  <Breadcrumb>
+                    <BreadcrumbList>
+                      <BreadcrumbItem className="hidden sm:inline-flex">
+                        <BreadcrumbLink asChild>
+                          <Link href={active.item.href}>{active.item.title}</Link>
+                        </BreadcrumbLink>
+                      </BreadcrumbItem>
+                      <BreadcrumbSeparator className="hidden sm:inline-flex" />
+                      <BreadcrumbItem>
+                        <BreadcrumbPage className="font-display font-semibold text-lg text-foreground">Details</BreadcrumbPage>
+                      </BreadcrumbItem>
+                    </BreadcrumbList>
+                  </Breadcrumb>
+                </div>
+                <div className="hidden lg:block h-8 w-px bg-border" />
+              </>
+            ) : null}
             <GreetingClock name={me?.name} />
           </div>
 

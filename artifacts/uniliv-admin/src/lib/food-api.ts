@@ -292,7 +292,10 @@ export interface CompositionSlot { id?: string; slotLabel: string | null; compon
 export interface CompositionRule { id: string; brand: string; mealType: MealType; kitchenId: string | null; name: string | null; isActive: boolean; slots: CompositionSlot[] }
 export interface SlotValidation { slotId: string; slotLabel: string | null; component: string | null; preparation: string | null; minCount: number; maxCount: number | null; count: number; matchedDishIds: string[]; status: "OK" | "MISSING" | "UNDER" | "OVER" }
 export interface SharedIngredient { rawMaterialId: string; name: string; dishIds: string[] }
-export interface RotationValidation { ruleId: string | null; ruleName: string | null; slots: SlotValidation[]; unmatchedDishIds: string[]; isComplete: boolean; sharedIngredients: SharedIngredient[] }
+// Machine-readable verdict for hard-blocking a menu/slot selection (B3-16).
+export type CompositionViolationType = "SLOT_MISSING" | "SLOT_UNDER" | "SLOT_OVER" | "SHARED_INGREDIENT";
+export interface CompositionViolation { type: CompositionViolationType; message: string; dishIds: string[] }
+export interface RotationValidation { ruleId: string | null; ruleName: string | null; slots: SlotValidation[]; unmatchedDishIds: string[]; isComplete: boolean; sharedIngredients: SharedIngredient[]; ok: boolean; violations: CompositionViolation[] }
 export interface AutoFillItem { dishId: string; slotLabel: string | null; sortOrder: number }
 export interface OrderPreview {
   brand: string | null; kitchenId: string | null; configured: boolean; meals: OrderPreviewMeal[];
@@ -403,6 +406,14 @@ export const foodApi = {
     apiFetch<Envelope<OrderDetail>>(`/food/orders`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.data),
   updateOrder: (id: string, body: Record<string, unknown>) =>
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}`, { method: "PUT", body: JSON.stringify(body) }).then((r) => r.data),
+  // B3-6 — edit an order's people count (the only editable quantity input). Item
+  // quantities + totalQuantity are recomputed server-side from this; never sent by
+  // the client. `notes` is optionally editable. Allowed while PLACED/PREPARING/DISPATCHED.
+  editOrderPeople: (id: string, residentsCount: number, notes?: string | null) =>
+    apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(notes !== undefined ? { residentsCount, notes } : { residentsCount }),
+    }).then((r) => r.data),
   cancelOrder: (id: string, reason?: string) =>
     apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
   prepareOrder: (id: string) =>
@@ -464,6 +475,12 @@ export const foodApi = {
   createRotationBulk: (b: Record<string, unknown>) => apiFetch<Envelope<MenuRotationRow[]>>(`/food/menu-rotation/bulk`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
   replaceRotationSlot: (b: Record<string, unknown>) => apiFetch<Envelope<MenuRotationRow[]>>(`/food/menu-rotation/slot`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
   validateRotation: (p: Record<string, unknown> = {}) => apiFetch<Envelope<RotationValidation>>(`/food/menu-rotation/validate${qs(p)}`).then((r) => r.data),
+  // B3-16 — validate a dish selection against the composition rule + shared-ingredient
+  // check. Returns the full RotationValidation including the machine-readable
+  // `ok` / `violations` verdict to HARD-BLOCK a menu/slot save. Pass dishIds as an
+  // array (qs() serializes it) plus brand + mealType (and optional kitchenId).
+  validateComposition: (p: { brand: string; mealType: MealType | string; kitchenId?: string | null; dishIds: string[] }) =>
+    apiFetch<Envelope<RotationValidation>>(`/food/menu-rotation/validate${qs({ ...p, dishIds: p.dishIds.join(",") })}`).then((r) => r.data),
   autoFillRotation: (p: Record<string, unknown> = {}) => apiFetch<Envelope<AutoFillItem[]>>(`/food/menu-rotation/auto-fill${qs(p)}`).then((r) => r.data),
   // Menu-composition rules
   listCompositionRules: (p: Record<string, unknown> = {}) => apiFetch<Envelope<CompositionRule[]>>(`/food/composition-rules${qs(p)}`).then((r) => r.data),

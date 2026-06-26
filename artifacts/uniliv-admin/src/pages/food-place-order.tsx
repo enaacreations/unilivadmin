@@ -727,6 +727,12 @@ export default function FoodPlaceOrder() {
                 })}
               </TabsList>
 
+              {/* B3-16: This screen does NOT let the user pick individual dishes —
+                  the menu is auto-derived from the configured rotation/composition
+                  (per-dish include/exclude is "coming soon" and disabled below, so
+                  every dish is always included). There is therefore no dish selection
+                  to validate or hard-block here; the composition hard-block lives in
+                  Food Settings → Menu Rotation, where dishes are actually chosen. */}
               {preview.meals.map((meal) => {
                 const dishIds = meal.items.map((i) => i.dishId);
                 return (

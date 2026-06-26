@@ -517,15 +517,23 @@ function RotationTab() {
   const submit = () => {
     if (!form.kitchenId) { toast({ title: "Kitchen is required", variant: "destructive" }); return; }
     if (bulkDishIds.length === 0) { toast({ title: "Select at least one dish", variant: "destructive" }); return; }
+    // B3-16: hard-block — never save a menu the composition verdict rejects.
+    if (blocked) { toast({ title: "Fix menu violations before saving", description: violations[0]?.message, variant: "destructive" }); return; }
     saveMut.mutate(form);
   };
 
   // Live composition validation + shared-ingredient warning for the chosen dishes.
+  // B3-16: returns the machine-readable { ok, violations } verdict we HARD-BLOCK Save on.
   const { data: validation } = useQuery({
     queryKey: foodKeys.rotationValidate({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType, dishIds: bulkDishIds.join(",") }),
-    queryFn: () => foodApi.validateRotation({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType, dishIds: bulkDishIds.join(",") }),
+    queryFn: () => foodApi.validateComposition({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType, dishIds: bulkDishIds }),
     enabled: modalOpen && !!form.kitchenId && !!form.brand && !!form.mealType && bulkDishIds.length > 0,
   });
+  // Hard-block when the backend verdict says the selection is invalid (slot
+  // violations OR two dishes sharing an ingredient). Only enforce once we have a
+  // verdict for the current selection.
+  const violations = validation?.violations ?? [];
+  const blocked = !!validation && validation.ok === false && bulkDishIds.length > 0;
   const autoFill = useMutation({
     mutationFn: () => foodApi.autoFillRotation({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType }),
     onSuccess: (items: any) => {
@@ -636,7 +644,7 @@ function RotationTab() {
 
       <DataTable columns={cols as any} data={rows} isLoading={isLoading} />
 
-      <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Menu Slot" : "Add Menu Items"} onSave={submit} isSaving={saveMut.isPending} saveLabel={editing ? `Save ${bulkDishIds.length} dish${bulkDishIds.length === 1 ? "" : "es"}` : `Add ${bulkDishIds.length || ""} item${bulkDishIds.length === 1 ? "" : "s"}`.trim()}>
+      <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Menu Slot" : "Add Menu Items"} onSave={submit} isSaving={saveMut.isPending} saveLabel={blocked ? "Resolve violations to save" : (editing ? `Save ${bulkDishIds.length} dish${bulkDishIds.length === 1 ? "" : "es"}` : `Add ${bulkDishIds.length || ""} item${bulkDishIds.length === 1 ? "" : "s"}`.trim())}>
         <div className="space-y-4">
           <div>
             <Label>Kitchen *</Label>
@@ -695,6 +703,26 @@ function RotationTab() {
                 </label>
               ))}
             </div>
+
+            {/* B3-16: HARD-BLOCK panel — when the verdict is not ok, list every
+                violation (with offending dishes) and make clear Save is blocked. */}
+            {blocked && (
+              <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+                <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-destructive">
+                  <AlertTriangle className="h-4 w-4" /> Menu can’t be saved — resolve {violations.length} issue{violations.length === 1 ? "" : "s"}
+                </p>
+                <ul className="space-y-1.5">
+                  {violations.map((v, i) => (
+                    <li key={i} className="text-xs text-destructive">
+                      <span className="font-medium">{v.message}</span>
+                      {v.dishIds.length > 0 && (
+                        <span className="text-destructive/80"> — {v.dishIds.map((id) => dishName(id)).join(", ")}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {validation && (validation.slots.length > 0 || validation.sharedIngredients.length > 0) && (
               <div className="mt-3 space-y-2 rounded-md border p-3">
@@ -896,6 +924,24 @@ function CompositionRulesTab() {
                   <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeSlot(i)}><Trash2 className="h-3.5 w-3.5" /></Button>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* B3-16: Shared-ingredient constraint. The backend ALWAYS enforces
+              "no two dishes in a meal may share an ingredient" as a hard block when
+              a menu/slot is saved — it is not a per-rule field, so this toggle is
+              always on and read-only. Surfaced here so admins know the constraint
+              exists alongside the slot/component rules. */}
+          <div className="border-t pt-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label>No two dishes may share an ingredient</Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Always enforced. A menu that puts two dishes sharing the same raw material in the
+                  same meal is hard-blocked when you save the menu rotation.
+                </p>
+              </div>
+              <Switch checked disabled aria-label="No two dishes may share an ingredient (always enforced)" />
             </div>
           </div>
         </div>

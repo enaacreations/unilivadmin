@@ -23,6 +23,7 @@ import {
   Ban,
   Check,
   Pencil,
+  Info,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -30,8 +31,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { NumberStepper } from "@/components/ui/number-stepper";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -148,8 +149,9 @@ export default function FoodOrderDetail() {
   const [cancelReason, setCancelReason] = React.useState("");
   const [editOpen, setEditOpen] = React.useState(false);
   // Edit form fields — pre-filled from the order when the dialog opens.
-  const [editQuantity, setEditQuantity] = React.useState("");
-  const [editResidents, setEditResidents] = React.useState("");
+  // B3-6: the people count is the ONLY editable quantity input; item quantities
+  // are recomputed server-side from it.
+  const [editResidents, setEditResidents] = React.useState(1);
   const [editNotes, setEditNotes] = React.useState("");
 
   const {
@@ -204,24 +206,16 @@ export default function FoodOrderDetail() {
   // Pre-fill the edit form from the current order each time the dialog opens.
   const openEdit = () => {
     if (!order) return;
-    setEditQuantity(order.totalQuantity != null ? String(order.totalQuantity) : "");
-    setEditResidents(String(order.residentsCount ?? ""));
+    setEditResidents(order.residentsCount > 0 ? order.residentsCount : 1);
     setEditNotes(order.notes ?? "");
     setEditOpen(true);
   };
 
   const editMut = useMutation({
-    // Backend accepts { quantity?, residentsCount?, notes? } (among others) and
-    // recomputes the per-dish items automatically from the total quantity.
-    mutationFn: () => {
-      const body: Record<string, unknown> = {};
-      const qty = Number(editQuantity);
-      if (Number.isFinite(qty) && qty > 0) body.quantity = qty;
-      const residents = Number(editResidents);
-      if (Number.isFinite(residents) && residents > 0) body.residentsCount = residents;
-      body.notes = editNotes.trim() || null;
-      return foodApi.updateOrder(id, body);
-    },
+    // B3-6: only the people count (and optionally notes) is sent; the server
+    // recomputes all item quantities + totalQuantity from the people count.
+    mutationFn: () =>
+      foodApi.editOrderPeople(id, editResidents, editNotes.trim() || null),
     onSuccess: () => {
       invalidate();
       toast({ title: "Order updated" });
@@ -317,9 +311,12 @@ export default function FoodOrderDetail() {
   const canCancel =
     isPreDispatch &&
     (can("FOOD_PLACE_ORDER", "edit") || can("FOOD_KITCHEN_SUMMARY", "edit"));
-  // Backend permits editing only while PLACED or PREPARING (mirrors the PUT handler).
+  // Backend permits editing the people count while PLACED, PREPARING or DISPATCHED
+  // (mirrors the PUT handler). Items are recomputed server-side.
   const canEdit =
-    (order.status === "PLACED" || order.status === "PREPARING") &&
+    (order.status === "PLACED" ||
+      order.status === "PREPARING" ||
+      order.status === "DISPATCHED") &&
     can("FOOD_PLACE_ORDER", "edit");
 
   return (
@@ -720,7 +717,7 @@ export default function FoodOrderDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit dialog — quantity / residents / notes. Items are recomputed server-side. */}
+      {/* Edit dialog — people count + notes only. Item quantities are recomputed server-side. */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent>
           <DialogHeader>
@@ -728,35 +725,48 @@ export default function FoodOrderDetail() {
               <Pencil className="w-5 h-5 text-accent" /> Edit order
             </DialogTitle>
             <DialogDescription>
-              Adjust the order while it is still placed or preparing. Changing the
-              quantity recomputes the per-dish breakdown automatically.
+              Adjust how many people this meal is prepared for. All dish quantities
+              are recalculated automatically.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="edit-quantity">Quantity</Label>
-                <Input
-                  id="edit-quantity"
-                  type="number"
-                  min={1}
-                  step="0.01"
-                  value={editQuantity}
-                  onChange={(e) => setEditQuantity(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="edit-residents">Residents</Label>
-                <Input
-                  id="edit-residents"
-                  type="number"
-                  min={1}
-                  step="1"
-                  value={editResidents}
-                  onChange={(e) => setEditResidents(e.target.value)}
-                />
-              </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-residents" className="flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-muted-foreground" />
+                Number of People (being prepared for)
+              </Label>
+              <NumberStepper
+                value={editResidents}
+                onChange={setEditResidents}
+                min={1}
+                step={1}
+                aria-label="Number of people"
+              />
             </div>
+
+            <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+              <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-accent" />
+              <span>
+                Changing the people count will{" "}
+                <span className="font-medium text-foreground">
+                  auto-recalculate every dish quantity
+                </span>{" "}
+                for this order.
+              </span>
+            </div>
+
+            {order.status === "DISPATCHED" && (
+              <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>
+                  This order is already{" "}
+                  <span className="font-semibold">dispatched</span>. Saving will
+                  notify the kitchen and dispatch that the people count changed and
+                  the items were recomputed.
+                </span>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="edit-notes">Notes</Label>
               <Textarea
@@ -778,7 +788,7 @@ export default function FoodOrderDetail() {
             </Button>
             <Button
               onClick={() => editMut.mutate()}
-              disabled={editMut.isPending}
+              disabled={editMut.isPending || !(editResidents > 0)}
             >
               {editMut.isPending ? "Saving…" : "Save changes"}
             </Button>

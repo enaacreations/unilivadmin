@@ -60,6 +60,7 @@ import {
   loadDishesForValidation,
   autoFillMenu,
   detectSharedIngredients,
+  buildCompositionVerdict,
   getWasteEditWindowMs,
 } from "../lib/food-service.js";
 import { notifyOrderEvent } from "../lib/notification-service.js";
@@ -688,13 +689,16 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
+// Edit an order. The ONLY editable input is the people count (`residentsCount`) —
+// the number of residents the meal is being prepared for, which is the per-person
+// basis that drives every item's quantity. Item quantities / totalQuantity supplied
+// by the client are IGNORED; we recompute them SERVER-SIDE via computeOrderItems,
+// exactly like place-order, so the order stays internally consistent. `notes` is
+// also editable. Allowed while PLACED / PREPARING / DISPATCHED (never once
+// CANCELLED / DELIVERED / REJECTED / ACCEPTED-terminal).
 const updateOrderSchema = z.object({
-  quantity: z.coerce.number().nullish(),
   residentsCount: z.coerce.number().nullish(),
   notes: zText.nullish(),
-  mealType: zMealType.optional(),
-  brand: zBrand.optional(),
-  serviceDate: z.union([z.string(), z.number(), z.coerce.date()]).optional(),
 }).passthrough();
 
 foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"), async (req, res) => {
@@ -706,40 +710,37 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
 
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(order.propertyId, ids)) { res.status(403).json({ success: false, error: "Order not accessible" }); return; }
-    if (order.status !== "PLACED" && order.status !== "PREPARING") {
-      res.status(422).json({ success: false, error: "Order can only be edited while PLACED or PREPARING" });
+    if (order.status !== "PLACED" && order.status !== "PREPARING" && order.status !== "DISPATCHED") {
+      res.status(422).json({ success: false, error: "Order can only be edited while PLACED, PREPARING or DISPATCHED" });
       return;
     }
 
     const b = req.body || {};
     const update: Record<string, unknown> = { updatedAt: new Date() };
+
+    // People count drives item quantities. Default to the current basis (residentsCount,
+    // else totalQuantity) when the client omits it — place-order uses `quantity` as the
+    // per-person basis, so we feed the new people count in as that quantity to scale
+    // items identically.
+    const prevPeople = order.residentsCount != null ? Number(order.residentsCount) : Number(order.totalQuantity);
+    let people = prevPeople;
     let recompute = false;
-
-    const quantity = b.quantity != null ? Number(b.quantity) : Number(order.totalQuantity);
-    if (b.quantity != null) {
-      if (!Number.isFinite(quantity) || quantity <= 0) { res.status(400).json({ success: false, error: "quantity must be a positive number" }); return; }
-      update["totalQuantity"] = String(quantity);
-      recompute = true;
+    if (b.residentsCount != null) {
+      people = Number(b.residentsCount);
+      if (!Number.isFinite(people) || people <= 0) { res.status(400).json({ success: false, error: "residentsCount must be a positive number" }); return; }
+      if (people !== prevPeople) {
+        update["residentsCount"] = people;
+        update["totalQuantity"] = String(people);
+        recompute = true;
+      }
     }
-    if (b.residentsCount != null) update["residentsCount"] = Number(b.residentsCount);
     if (b.notes !== undefined) update["notes"] = b.notes ?? null;
-
-    const mealType = b.mealType ?? order.mealType;
-    if (b.mealType !== undefined && b.mealType !== order.mealType) { update["mealType"] = b.mealType; recompute = true; }
-    const brand = b.brand ?? order.brand;
-    if (b.brand !== undefined && b.brand !== order.brand) { update["brand"] = b.brand; recompute = true; }
-    let serviceDate = order.serviceDate;
-    if (b.serviceDate !== undefined) {
-      const sd = new Date(b.serviceDate);
-      if (isNaN(sd.getTime())) { res.status(400).json({ success: false, error: "Invalid serviceDate" }); return; }
-      if (sd.getTime() !== order.serviceDate.getTime()) { update["serviceDate"] = sd; recompute = true; }
-      serviceDate = sd;
-    }
 
     const [updated] = await db.update(foodOrdersTable).set(update as Partial<typeof foodOrdersTable.$inferInsert>).where(eq(foodOrdersTable.id, id)).returning();
 
     if (recompute) {
-      const computed = await computeOrderItems(order.kitchenId, brand, mealType, serviceDate, quantity);
+      // Recompute items server-side from the new people count, mirroring place-order.
+      const computed = await computeOrderItems(order.kitchenId, order.brand, order.mealType, order.serviceDate, people);
       await db.delete(foodOrderItemsTable).where(eq(foodOrderItemsTable.orderId, id));
       if (computed.length) {
         await db.insert(foodOrderItemsTable).values(computed.map((it) => ({
@@ -747,10 +748,34 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
           orderId: id,
           dishId: it.dishId,
           unit: it.unit as never,
+          personsCount: people,
           orderedQty: String(it.orderedQty),
           updatedAt: new Date(),
         })));
       }
+    }
+
+    // Editing an already-DISPATCHED order is sensitive: the kitchen/driver are already
+    // committed. Record an audit/timeline event and best-effort notify so the change is
+    // traceable. Neither must ever fail the edit.
+    if (order.status === "DISPATCHED" && recompute) {
+      try {
+        await db.insert(foodOrderEventsTable).values({
+          id: newId(), orderId: id, status: "DISPATCHED",
+          note: `People count changed after dispatch: ${prevPeople} → ${people} (items recomputed)`,
+          actorId: req.user!.id,
+        });
+      } catch (e) { req.log.error(e, "failed to write post-dispatch edit audit event"); }
+      req.log.warn({ orderId: id, orderNumber: order.orderNumber, prevPeople, people, actorId: req.user!.id }, "order edited after dispatch");
+      try {
+        const items = await db.select({ name: dishesTable.name, qty: foodOrderItemsTable.orderedQty, unit: foodOrderItemsTable.unit })
+          .from(foodOrderItemsTable).leftJoin(dishesTable, eq(foodOrderItemsTable.dishId, dishesTable.id)).where(eq(foodOrderItemsTable.orderId, id));
+        await notifyOrderEvent("DISPATCHED", {
+          unitLeadId: order.unitLeadId, orderId: order.id, orderNumber: order.orderNumber,
+          propertyName: await propertyName(order.propertyId), mealType: order.mealType, brand: order.brand,
+          items: items.map((it) => ({ name: it.name ?? "Item", qty: Number(it.qty ?? 0), unit: it.unit })),
+        });
+      } catch (e) { req.log.error(e, "failed to notify kitchen/dispatch of post-dispatch edit"); }
     }
 
     res.json({ success: true, data: { ...updated, totalQuantity: updated.totalQuantity != null ? Number(updated.totalQuantity) : null } });
@@ -1755,7 +1780,10 @@ foodRouter.get("/menu-rotation/validate", authenticate, async (req, res) => {
     const dishes = await loadDishesForValidation(dishIds);
     const validation = validateMenuAgainstRule(rule, dishes);
     const sharedIngredients = await detectSharedIngredients(dishIds);
-    res.json({ success: true, data: { ...validation, sharedIngredients } });
+    // Flat machine-readable verdict so the frontend can HARD-BLOCK a selection
+    // ({ ok, violations:[{type,message,dishIds}] }) without re-deriving from slots.
+    const verdict = buildCompositionVerdict(validation, sharedIngredients);
+    res.json({ success: true, data: { ...validation, sharedIngredients, ok: verdict.ok, violations: verdict.violations } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
