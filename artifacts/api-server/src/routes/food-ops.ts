@@ -16,6 +16,9 @@ import {
   clustersTable,
   foodBrandsTable,
   foodDispatchesTable,
+  foodDispatchEventsTable,
+  agencyKitchensTable,
+  DISPATCH_TRANSITIONS,
   foodOrderBatchesTable,
   foodMealConfigTable,
   foodMealWindowsTable,
@@ -60,6 +63,11 @@ import { istDayYmd, addDaysYmd, atIst } from "../lib/tz.js";
 import { z } from "zod";
 
 export const foodOpsRouter: Router = Router();
+
+/** Transaction client type (mirrors wallet-service); `db` itself also satisfies it. */
+export type TxClient = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** Either a transaction handle or the top-level db — both share the query surface used here. */
+type DbLike = TxClient | typeof db;
 
 const MEAL_TYPES = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER"] as const;
 
@@ -750,6 +758,75 @@ async function isDispatchAccessible(dispatchId: string, ids: string[] | null): P
   return orders.some((o) => isAccessible(o.propertyId, ids));
 }
 
+/** tx-aware variant of nextSeq so the dispatch number is allocated inside the same transaction. */
+async function nextSeqTx(tx: DbLike, prefix: string, column: any, table: any): Promise<string> {
+  const [row] = await tx.select({ c: sql<number>`count(*)::int` }).from(table).where(sql`${column} like ${prefix + "%"}`);
+  return prefix + String((row?.c ?? 0) + 1).padStart(6, "0");
+}
+
+/** Append a dispatch lifecycle event (audit timeline; mirrors foodOrderEventsTable writes). */
+async function writeDispatchEvent(
+  tx: DbLike,
+  dispatchId: string,
+  status: string,
+  note: string | null,
+  actorId: string | null,
+): Promise<void> {
+  await tx.insert(foodDispatchEventsTable).values({
+    id: newId(), dispatchId, status: status as never, note: note ?? null, actorId: actorId ?? null,
+  });
+}
+
+/**
+ * Shared dispatch-creation helper (Lane C contract; reused by Lane B's quick-dispatch).
+ *
+ * Creates ONE foodDispatches row in status 'LOADING', stamps dispatchId/dispatchedAt
+ * (+ partner/vehicle/kitchen links) on every order in `orderIds`, and writes a
+ * food_dispatch_events row. This guarantees EVERY dispatched order carries a
+ * dispatchId (fixes quick-dispatch consistency gap C8). Caller is responsible for
+ * scope/RBAC checks and order-status filtering; this only mutates the rows it is given.
+ *
+ * Runs against the supplied `tx` (or `db`) so it composes inside a larger transaction.
+ */
+export async function createDispatchForOrders(
+  tx: DbLike,
+  opts: {
+    orderIds: string[];
+    agencyId?: string | null;
+    vehicleId?: string | null;
+    vehicleNumber?: string | null;
+    driverName?: string | null;
+    driverPhone?: string | null;
+    kitchenId?: string | null;
+    etaMinutes?: number | null;
+    actorId: string;
+  },
+): Promise<typeof foodDispatchesTable.$inferSelect> {
+  const now = new Date();
+  const etaMinutes = opts.etaMinutes != null ? Number(opts.etaMinutes) : null;
+  const estimatedArrivalAt = etaMinutes ? new Date(now.getTime() + etaMinutes * 60000) : null;
+  const dispatchNumber = await nextSeqTx(tx, `DISP-${now.getFullYear()}-`, foodDispatchesTable.dispatchNumber, foodDispatchesTable);
+
+  const [trip] = await tx.insert(foodDispatchesTable).values({
+    id: newId(), dispatchNumber, kitchenId: opts.kitchenId ?? null, deliveryPartnerId: opts.agencyId ?? null,
+    vehicleId: opts.vehicleId ?? null, vehicleNumber: opts.vehicleNumber ?? null,
+    driverName: opts.driverName ?? null, driverPhone: opts.driverPhone ?? null,
+    dispatchedById: opts.actorId, dispatchedAt: now, estimatedArrivalAt, status: "LOADING", updatedAt: now,
+  }).returning();
+
+  for (const orderId of opts.orderIds) {
+    await tx.update(foodOrdersTable).set({
+      status: "DISPATCHED", dispatchId: trip!.id,
+      ...(opts.kitchenId ? { kitchenId: opts.kitchenId } : {}),
+      deliveryPartnerId: opts.agencyId ?? null, vehicleId: opts.vehicleId ?? null,
+      dispatchedById: opts.actorId, dispatchedAt: now, dispatchStartedAt: now, updatedAt: now,
+    }).where(eq(foodOrdersTable.id, orderId));
+  }
+
+  await writeDispatchEvent(tx, trip!.id, "LOADING", `Dispatch ${dispatchNumber} created (loading)`, opts.actorId);
+  return trip!;
+}
+
 foodOpsRouter.get("/dispatches", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
@@ -772,6 +849,18 @@ foodOpsRouter.get("/dispatches", authenticate, authorize("FOOD_DISPATCH", "view"
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
+/* C6: vehicle IDs currently committed to a LOADING/IN_TRANSIT dispatch (for the
+ * create form to grey out busy vehicles). Declared BEFORE "/dispatches/:id" so
+ * Express does not match "active-vehicles" as an :id. */
+foodOpsRouter.get("/dispatches/active-vehicles", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
+  try {
+    const rows = await db.select({ vehicleId: foodDispatchesTable.vehicleId }).from(foodDispatchesTable)
+      .where(and(isNotNull(foodDispatchesTable.vehicleId), inArray(foodDispatchesTable.status, ["LOADING", "IN_TRANSIT"])));
+    const vehicleIds = Array.from(new Set(rows.map((r) => r.vehicleId).filter((v): v is string => !!v)));
+    res.json({ success: true, data: { vehicleIds } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
 foodOpsRouter.get("/dispatches/:id", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
   try {
     const id = req.params["id"]!;
@@ -784,11 +873,34 @@ foodOpsRouter.get("/dispatches/:id", authenticate, authorize("FOOD_DISPATCH", "v
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!(await isDispatchAccessible(id, ids))) { res.status(403).json({ success: false, error: "Dispatch not accessible" }); return; }
+    // C1: enrich each order with the delivery address (property), the unit-lead
+    // contact (users via unitLeadId), and residentsCount so the dispatch detail
+    // view has everything Persona st.24 requires without extra round-trips.
     const orders = await db.select({
-      o: foodOrdersTable, propertyName: propertiesTable.name,
-    }).from(foodOrdersTable).leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
+      o: foodOrdersTable,
+      propertyName: propertiesTable.name,
+      deliveryAddress: propertiesTable.address,
+      deliveryCity: propertiesTable.city,
+      deliveryPincode: propertiesTable.pincode,
+      unitLeadName: usersTable.name,
+      unitLeadPhone: usersTable.phone,
+      unitLeadEmail: usersTable.email,
+    }).from(foodOrdersTable)
+      .leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
+      .leftJoin(usersTable, eq(foodOrdersTable.unitLeadId, usersTable.id))
       .where(eq(foodOrdersTable.dispatchId, id));
-    res.json({ success: true, data: { ...row.d, kitchen: row.kitchen, partnerName: row.partnerName, orders: orders.map((r) => ({ ...r.o, propertyName: r.propertyName, totalQuantity: r.o.totalQuantity != null ? Number(r.o.totalQuantity) : null })) } });
+    res.json({ success: true, data: { ...row.d, kitchen: row.kitchen, partnerName: row.partnerName, orders: orders.map((r) => ({
+      ...r.o,
+      propertyName: r.propertyName,
+      deliveryAddress: r.deliveryAddress,
+      deliveryCity: r.deliveryCity,
+      deliveryPincode: r.deliveryPincode,
+      unitLeadName: r.unitLeadName,
+      unitLeadPhone: r.unitLeadPhone,
+      unitLeadEmail: r.unitLeadEmail,
+      residentsCount: r.o.residentsCount,
+      totalQuantity: r.o.totalQuantity != null ? Number(r.o.totalQuantity) : null,
+    })) } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -806,6 +918,9 @@ const createDispatchSchema = z.object({
   etaMinutes: z.coerce.number().nullish(),
   estimatedArrivalAt: zDateLike.nullish(),
   notes: zText.nullish(),
+  // C3: when true, the trip departs immediately (LOADING -> IN_TRANSIT via the
+  // validated transition path) instead of staying parked in LOADING.
+  departNow: z.boolean().nullish(),
 }).passthrough();
 
 foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
@@ -825,6 +940,11 @@ foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit
       const [veh] = await db.select().from(agencyVehiclesTable).where(eq(agencyVehiclesTable.id, vehicleId));
       if (!veh || veh.agencyId !== agencyId) { res.status(422).json({ success: false, error: "Vehicle does not belong to the selected agency" }); return; }
       vehicleNumber = vehicleNumber || veh.vehicleNumber;
+      // C6: a vehicle already out on a LOADING/IN_TRANSIT trip cannot be re-used.
+      const [busy] = await db.select({ id: foodDispatchesTable.id }).from(foodDispatchesTable)
+        .where(and(eq(foodDispatchesTable.vehicleId, vehicleId), inArray(foodDispatchesTable.status, ["LOADING", "IN_TRANSIT"])))
+        .limit(1);
+      if (busy) { res.status(422).json({ success: false, error: "Vehicle is already in use on an active dispatch" }); return; }
     }
 
     const ids = await resolveAccessiblePropertyIds(req.user!);
@@ -832,25 +952,50 @@ foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit
     const dispatchable = orders.filter((o) => isAccessible(o.propertyId, ids) && !["DISPATCHED", "DELIVERED", "CANCELLED", "REJECTED"].includes(o.status));
     if (!dispatchable.length) { res.status(422).json({ success: false, error: "No dispatchable orders in selection" }); return; }
 
+    // C5: kitchen integrity. If a kitchen is named, the agency must serve it
+    // (agency_kitchens) and every dispatchable order must share that kitchen.
+    const kitchenId = b.kitchenId ?? null;
+    if (kitchenId) {
+      const [link] = await db.select({ id: agencyKitchensTable.id }).from(agencyKitchensTable)
+        .where(and(eq(agencyKitchensTable.agencyId, agencyId), eq(agencyKitchensTable.kitchenId, kitchenId), eq(agencyKitchensTable.isActive, true)))
+        .limit(1);
+      if (!link) { res.status(422).json({ success: false, error: "Agency does not serve this kitchen" }); return; }
+      const mismatch = dispatchable.some((o) => o.kitchenId != null && o.kitchenId !== kitchenId);
+      if (mismatch) { res.status(422).json({ success: false, error: "All dispatchable orders must share the selected kitchen" }); return; }
+    }
+
     const now = new Date();
     const etaMinutes = b.etaMinutes != null ? Number(b.etaMinutes) : null;
     const estimatedArrivalAt = etaMinutes ? new Date(now.getTime() + etaMinutes * 60000) : (b.estimatedArrivalAt ? new Date(b.estimatedArrivalAt) : null);
-    const dispatchNumber = await nextSeq(`DISP-${now.getFullYear()}-`, foodDispatchesTable.dispatchNumber, foodDispatchesTable);
+    const departNow = !!b.departNow;
 
-    const [trip] = await db.insert(foodDispatchesTable).values({
-      id: newId(), dispatchNumber, kitchenId: b.kitchenId ?? null, deliveryPartnerId: agencyId, vehicleId,
-      vehicleNumber, driverName: b.driverName ?? null, driverPhone: b.driverPhone ?? null,
-      dispatchedById: req.user!.id, dispatchedAt: now, estimatedArrivalAt, status: "IN_TRANSIT", notes: b.notes ?? null, updatedAt: now,
-    }).returning();
+    // C3/C8: create through the shared helper so the trip starts in LOADING and
+    // every order reliably carries dispatchId. notes/explicit-ETA (not covered by
+    // the helper's etaMinutes path) are stamped in a follow-up update.
+    const trip = await db.transaction(async (tx) => {
+      const t = await createDispatchForOrders(tx, {
+        orderIds: dispatchable.map((o) => o.id),
+        agencyId, vehicleId, vehicleNumber,
+        driverName: b.driverName ?? null, driverPhone: b.driverPhone ?? null,
+        kitchenId, etaMinutes, actorId: req.user!.id,
+      });
+      if (b.notes != null || (estimatedArrivalAt && !etaMinutes)) {
+        const [u] = await tx.update(foodDispatchesTable).set({
+          ...(b.notes != null ? { notes: b.notes } : {}),
+          ...(estimatedArrivalAt && !etaMinutes ? { estimatedArrivalAt } : {}),
+          updatedAt: new Date(),
+        }).where(eq(foodDispatchesTable.id, t.id)).returning();
+        return u ?? t;
+      }
+      return t;
+    });
 
+    // Per-order kitchen fallback + DISPATCHED order events + unit-lead notifications.
+    // (The helper sets dispatch links; this adds the order-level audit + comms that
+    // mirror the prior behavior.)
     const etaText = estimatedArrivalAt ? estimatedArrivalAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : (etaMinutes ? `~${etaMinutes} min` : null);
     for (const o of dispatchable) {
-      await db.update(foodOrdersTable).set({
-        status: "DISPATCHED", dispatchId: trip!.id, kitchenId: b.kitchenId ?? o.kitchenId ?? null,
-        deliveryPartnerId: agencyId, vehicleId, dispatchedById: req.user!.id, dispatchedAt: now,
-        dispatchStartedAt: o.dispatchStartedAt ?? now, updatedAt: now,
-      }).where(eq(foodOrdersTable.id, o.id));
-      await db.insert(foodOrderEventsTable).values({ id: newId(), orderId: o.id, status: "DISPATCHED", note: `Dispatched on ${dispatchNumber}`, actorId: req.user!.id });
+      await db.insert(foodOrderEventsTable).values({ id: newId(), orderId: o.id, status: "DISPATCHED", note: `Dispatched on ${trip.dispatchNumber}`, actorId: req.user!.id });
       const items = await db.select({ name: dishesTable.name, qty: foodOrderItemsTable.preparedQty, ordered: foodOrderItemsTable.orderedQty, unit: foodOrderItemsTable.unit })
         .from(foodOrderItemsTable).leftJoin(dishesTable, eq(foodOrderItemsTable.dishId, dishesTable.id)).where(eq(foodOrderItemsTable.orderId, o.id));
       await notifyForOrder(o, "DISPATCHED", {
@@ -859,24 +1004,196 @@ foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit
       });
     }
 
-    res.status(201).json({ success: true, data: { ...trip, dispatchedCount: dispatchable.length } });
+    // C3: depart immediately via the validated LOADING -> IN_TRANSIT transition.
+    let finalTrip = trip;
+    if (departNow && DISPATCH_TRANSITIONS["LOADING"]?.includes("IN_TRANSIT")) {
+      const [moved] = await db.update(foodDispatchesTable).set({ status: "IN_TRANSIT", updatedAt: new Date() }).where(eq(foodDispatchesTable.id, trip.id)).returning();
+      if (moved) {
+        await writeDispatchEvent(db, trip.id, "IN_TRANSIT", "Departed (LOADING → IN_TRANSIT)", req.user!.id);
+        finalTrip = moved;
+      }
+    }
+
+    res.status(201).json({ success: true, data: { ...finalTrip, dispatchedCount: dispatchable.length } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // status is left a bounded string (not enum) so the handler's own "Invalid status"
 // message is preserved for unknown values.
-const dispatchStatusSchema = z.object({ status: z.string().max(32) }).passthrough();
+const dispatchStatusSchema = z.object({ status: z.string().max(32), note: zText.nullish() }).passthrough();
 
 foodOpsRouter.patch("/dispatches/:id/status", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
   try {
     if (!validateBody(dispatchStatusSchema, req, res)) return;
-    const status = req.body?.status as string;
-    if (!["LOADING", "IN_TRANSIT", "DELIVERED", "PARTIAL"].includes(status)) { res.status(400).json({ success: false, error: "Invalid status" }); return; }
+    const target = req.body?.status as string;
+    const note = (req.body?.note as string | null | undefined) ?? null;
+    if (!Object.prototype.hasOwnProperty.call(DISPATCH_TRANSITIONS, target)) { res.status(400).json({ success: false, error: "Invalid status" }); return; }
+    const id = req.params["id"]!;
     const ids = await resolveAccessiblePropertyIds(req.user!);
-    if (!(await isDispatchAccessible(req.params["id"]!, ids))) { res.status(403).json({ success: false, error: "Dispatch not accessible" }); return; }
-    const [row] = await db.update(foodDispatchesTable).set({ status: status as never, updatedAt: new Date() }).where(eq(foodDispatchesTable.id, req.params["id"]!)).returning();
-    if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    if (!(await isDispatchAccessible(id, ids))) { res.status(403).json({ success: false, error: "Dispatch not accessible" }); return; }
+    const [current] = await db.select().from(foodDispatchesTable).where(eq(foodDispatchesTable.id, id));
+    if (!current) { res.status(404).json({ success: false, error: "Not found" }); return; }
+
+    // C2: enforce the state machine. A no-op (same status) is allowed; otherwise
+    // the target must be in DISPATCH_TRANSITIONS[current].
+    if (target !== current.status && !(DISPATCH_TRANSITIONS[current.status] ?? []).includes(target)) {
+      res.status(422).json({ success: false, error: `Cannot move from ${current.status} to ${target}` });
+      return;
+    }
+
+    const now = new Date();
+    const row = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(foodDispatchesTable).set({ status: target as never, updatedAt: now }).where(eq(foodDispatchesTable.id, id)).returning();
+      // C2: audit every change.
+      await writeDispatchEvent(tx, id, target, note ?? `Status ${current.status} → ${target}`, req.user!.id);
+      // C2: reaching DELIVERED flips the linked (still-active) orders to DELIVERED
+      // so the trip and its orders stay in sync.
+      if (target === "DELIVERED" && current.status !== "DELIVERED") {
+        const linked = await tx.select().from(foodOrdersTable).where(eq(foodOrdersTable.dispatchId, id));
+        for (const o of linked) {
+          if (["DELIVERED", "CANCELLED", "REJECTED"].includes(o.status)) continue;
+          await tx.update(foodOrdersTable).set({ status: "DELIVERED", deliveredAt: o.deliveredAt ?? now, confirmedById: o.confirmedById ?? req.user!.id, updatedAt: now }).where(eq(foodOrdersTable.id, o.id));
+          await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId: o.id, status: "DELIVERED", note: `Delivered with dispatch ${current.dispatchNumber}`, actorId: req.user!.id });
+        }
+      }
+      return updated;
+    });
     res.json({ success: true, data: row });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * C4 — Per-order delivery toggle within a trip.
+ * Marks a single order DELIVERED or reverts it to DISPATCHED. When finalizing the
+ * trip (markTripDelivered:true): if all linked orders are delivered the trip goes
+ * DELIVERED, else it goes PARTIAL (audit note records the split).
+ * ────────────────────────────────────────────────────────────────────────── */
+const dispatchOrderDeliverySchema = z.object({
+  delivered: z.boolean(),
+  remarks: zText.nullish(),
+  markTripDelivered: z.boolean().nullish(),
+}).passthrough();
+
+foodOpsRouter.patch("/dispatches/:id/orders/:orderId", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+  try {
+    if (!validateBody(dispatchOrderDeliverySchema, req, res)) return;
+    const id = req.params["id"]!;
+    const orderId = req.params["orderId"]!;
+    const delivered = !!req.body?.delivered;
+    const remarks = (req.body?.remarks as string | null | undefined) ?? null;
+    const markTripDelivered = !!req.body?.markTripDelivered;
+
+    const ids = await resolveAccessiblePropertyIds(req.user!);
+    if (!(await isDispatchAccessible(id, ids))) { res.status(403).json({ success: false, error: "Dispatch not accessible" }); return; }
+    const [trip] = await db.select().from(foodDispatchesTable).where(eq(foodDispatchesTable.id, id));
+    if (!trip) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    const [order] = await db.select().from(foodOrdersTable).where(and(eq(foodOrdersTable.id, orderId), eq(foodOrdersTable.dispatchId, id)));
+    if (!order) { res.status(404).json({ success: false, error: "Order not on this dispatch" }); return; }
+    if (order.status === "CANCELLED" || order.status === "REJECTED") { res.status(422).json({ success: false, error: `Cannot change a ${order.status} order` }); return; }
+
+    const now = new Date();
+    const result = await db.transaction(async (tx) => {
+      // Toggle the single order.
+      if (delivered) {
+        await tx.update(foodOrdersTable).set({ status: "DELIVERED", deliveredAt: order.deliveredAt ?? now, confirmedById: order.confirmedById ?? req.user!.id, deliveryRemarks: remarks ?? order.deliveryRemarks ?? null, updatedAt: now }).where(eq(foodOrdersTable.id, orderId));
+        await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId, status: "DELIVERED", note: remarks ? `Delivered: ${remarks}` : `Delivered (dispatch ${trip.dispatchNumber})`, actorId: req.user!.id });
+      } else {
+        // Revert: a delivered order goes back to DISPATCHED (still on the trip).
+        await tx.update(foodOrdersTable).set({ status: "DISPATCHED", deliveredAt: null, updatedAt: now }).where(eq(foodOrdersTable.id, orderId));
+        await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId, status: "DISPATCHED", note: "Delivery reverted", actorId: req.user!.id });
+      }
+
+      let tripRow = trip;
+      // C4: optionally finalize the trip based on per-order delivery state.
+      if (markTripDelivered) {
+        const linked = await tx.select({ status: foodOrdersTable.status }).from(foodOrdersTable).where(eq(foodOrdersTable.dispatchId, id));
+        const active = linked.filter((o) => o.status !== "CANCELLED" && o.status !== "REJECTED");
+        const allDelivered = active.length > 0 && active.every((o) => o.status === "DELIVERED");
+        const tripTarget = allDelivered ? "DELIVERED" : "PARTIAL";
+        // Only transition if the state machine allows it from the trip's current status.
+        if (tripTarget !== trip.status && (DISPATCH_TRANSITIONS[trip.status] ?? []).includes(tripTarget)) {
+          const [moved] = await tx.update(foodDispatchesTable).set({ status: tripTarget as never, updatedAt: now }).where(eq(foodDispatchesTable.id, id)).returning();
+          const deliveredCount = active.filter((o) => o.status === "DELIVERED").length;
+          await writeDispatchEvent(tx, id, tripTarget, allDelivered ? "All orders delivered" : `Partial delivery (${deliveredCount}/${active.length} delivered)`, req.user!.id);
+          if (moved) tripRow = moved;
+        }
+      }
+      return tripRow;
+    });
+    res.json({ success: true, data: result });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * C7 — Cancel a dispatch. Reverts its linked orders DISPATCHED → PREPARING
+ * (clearing dispatchId/dispatchedAt), sets the trip CANCELLED, writes audit
+ * events, and best-effort notifies the unit leads.
+ * ────────────────────────────────────────────────────────────────────────── */
+const cancelDispatchSchema = z.object({ reason: zText.nullish() }).passthrough();
+
+foodOpsRouter.post("/dispatches/:id/cancel", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+  try {
+    if (!validateBody(cancelDispatchSchema, req, res)) return;
+    const id = req.params["id"]!;
+    const reason = (req.body?.reason as string | null | undefined) ?? null;
+    const ids = await resolveAccessiblePropertyIds(req.user!);
+    if (!(await isDispatchAccessible(id, ids))) { res.status(403).json({ success: false, error: "Dispatch not accessible" }); return; }
+    const [trip] = await db.select().from(foodDispatchesTable).where(eq(foodDispatchesTable.id, id));
+    if (!trip) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    if (!(DISPATCH_TRANSITIONS[trip.status] ?? []).includes("CANCELLED")) {
+      res.status(422).json({ success: false, error: `Cannot move from ${trip.status} to CANCELLED` });
+      return;
+    }
+
+    const now = new Date();
+    const reverted = await db.transaction(async (tx) => {
+      const linked = await tx.select().from(foodOrdersTable).where(eq(foodOrdersTable.dispatchId, id));
+      const toRevert = linked.filter((o) => o.status === "DISPATCHED");
+      for (const o of toRevert) {
+        await tx.update(foodOrdersTable).set({
+          status: "PREPARING", dispatchId: null, dispatchedAt: null, dispatchStartedAt: null,
+          deliveryPartnerId: null, vehicleId: null, updatedAt: now,
+        }).where(eq(foodOrdersTable.id, o.id));
+        await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId: o.id, status: "PREPARING", note: reason ? `Dispatch ${trip.dispatchNumber} cancelled: ${reason}` : `Dispatch ${trip.dispatchNumber} cancelled`, actorId: req.user!.id });
+      }
+      await tx.update(foodDispatchesTable).set({ status: "CANCELLED", updatedAt: now }).where(eq(foodDispatchesTable.id, id));
+      await writeDispatchEvent(tx, id, "CANCELLED", reason ? `Cancelled: ${reason}` : "Dispatch cancelled", req.user!.id);
+      return toRevert;
+    });
+
+    // Best-effort notify (outside the txn; failures must not roll back the cancel).
+    // PREPARING has no order-lifecycle template, so notify the unit lead directly.
+    for (const o of reverted) {
+      try {
+        await notify({
+          userId: o.unitLeadId,
+          title: "Dispatch cancelled",
+          body: `Order ${o.orderNumber} is back in preparation${reason ? `: ${reason}` : ""}.`,
+          type: "FOOD_ORDER",
+          entityType: "FOOD_ORDER",
+          entityId: o.id,
+        });
+      } catch (err) { req.log.error({ err, orderId: o.id }, "dispatch-cancel notify failed"); }
+    }
+
+    const [row] = await db.select().from(foodDispatchesTable).where(eq(foodDispatchesTable.id, id));
+    res.json({ success: true, data: { ...row, revertedCount: reverted.length } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/* Audit timeline for a dispatch (food_dispatch_events + actor names). */
+foodOpsRouter.get("/dispatches/:id/events", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
+  try {
+    const id = req.params["id"]!;
+    const ids = await resolveAccessiblePropertyIds(req.user!);
+    if (!(await isDispatchAccessible(id, ids))) { res.status(403).json({ success: false, error: "Dispatch not accessible" }); return; }
+    const events = await db.select({
+      e: foodDispatchEventsTable, actorName: usersTable.name,
+    }).from(foodDispatchEventsTable)
+      .leftJoin(usersTable, eq(foodDispatchEventsTable.actorId, usersTable.id))
+      .where(eq(foodDispatchEventsTable.dispatchId, id))
+      .orderBy(desc(foodDispatchEventsTable.createdAt));
+    res.json({ success: true, data: events.map((r) => ({ ...r.e, actorName: r.actorName })) });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 

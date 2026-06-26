@@ -13,7 +13,7 @@
  *   5. Dish catalogue (PRD §10) — upsert by stable id
  *   6. Weekly menu rotation for both brands (PRD §10.1) — replaced each run
  *   7. Per-resident quantity rules (PRD §7.9) — replaced each run
- *   8. Delivery partners — upsert by stable id
+ *   8. Delivery partners + agencies (vehicles, locations, kitchen links) — upsert
  *   9. Sample orders spanning every lifecycle state (truncated + reseeded)
  *
  * Run:  pnpm --filter @workspace/scripts run seed:food
@@ -26,6 +26,9 @@ import {
   deliveryPartnersTable,
   agenciesTable,
   agencyVehiclesTable,
+  agencyLocationsTable,
+  agencyKitchensTable,
+  kitchensTable,
   zonesTable,
   citiesTable,
   clustersTable,
@@ -488,14 +491,82 @@ async function main() {
   await db.insert(deliveryPartnersTable)
     .values(PARTNERS.map((p) => ({ ...p, isActive: true })))
     .onConflictDoNothing({ target: deliveryPartnersTable.id });
-  // Agencies mirror partners (same id) so order/dispatch FKs stay valid + one vehicle each.
+  // Agencies mirror partners (same id) so order/dispatch FKs stay valid.
   await db.insert(agenciesTable)
     .values(PARTNERS.map((p) => ({ id: p.id, name: p.name, phone: p.phone, isActive: true })))
     .onConflictDoNothing({ target: agenciesTable.id });
+
+  // Agency locations — 1-2 depots per agency (stable ids, upsert by id).
+  type AgencyLocationRow = typeof agencyLocationsTable.$inferInsert;
+  const AGENCY_LOCATIONS: AgencyLocationRow[] = [
+    { id: "agloc_swift_main",   agencyId: "dp_swift",   name: "Swift Central Depot",   address: "Plot 14, Okhla Industrial Area Phase 1", city: "Delhi",     state: "Delhi",       pincode: "110020", contactName: "Imran Khan",    contactPhone: "9810010001", isActive: true, updatedAt: new Date() },
+    { id: "agloc_swift_west",   agencyId: "dp_swift",   name: "Swift West Hub",        address: "B-22, MIDC Andheri East",                city: "Mumbai",    state: "Maharashtra", pincode: "400093", contactName: "Sneha Patil",   contactPhone: "9810010002", isActive: true, updatedAt: new Date() },
+    { id: "agloc_fresh_main",   agencyId: "dp_fresh",   name: "FreshMove Hinjewadi Hub", address: "Rajiv Gandhi Infotech Park, Phase 2",  city: "Pune",      state: "Maharashtra", pincode: "411057", contactName: "Aditya Kulkarni", contactPhone: "9810010003", isActive: true, updatedAt: new Date() },
+    { id: "agloc_fresh_blr",    agencyId: "dp_fresh",   name: "FreshMove Koramangala Hub", address: "80 Feet Rd, Koramangala 4th Block",  city: "Bengaluru", state: "Karnataka",   pincode: "560034", contactName: "Lakshmi Rao",   contactPhone: "9810010004", isActive: true, updatedAt: new Date() },
+    { id: "agloc_inhouse_main", agencyId: "dp_inhouse", name: "In-house Cyber Hub Bay", address: "DLF Cyber Hub, Phase 2",                 city: "Gurugram",  state: "Haryana",     pincode: "122002", contactName: "Manish Gupta",  contactPhone: "9810010005", isActive: true, updatedAt: new Date() },
+  ];
+  await db.insert(agencyLocationsTable)
+    .values(AGENCY_LOCATIONS)
+    .onConflictDoNothing({ target: agencyLocationsTable.id });
+
+  // Vehicles — 2-3 per agency, mixed types, distinct numbers, based at a location.
+  type AgencyVehicleRow = typeof agencyVehiclesTable.$inferInsert;
+  const AGENCY_VEHICLES: AgencyVehicleRow[] = [
+    { id: "veh_swift_van",   agencyId: "dp_swift",   locationId: "agloc_swift_main", vehicleNumber: "DL01AB1234", vehicleType: "VAN",   isActive: true },
+    { id: "veh_swift_tempo", agencyId: "dp_swift",   locationId: "agloc_swift_main", vehicleNumber: "DL01TC4455", vehicleType: "TEMPO", isActive: true },
+    { id: "veh_swift_bike",  agencyId: "dp_swift",   locationId: "agloc_swift_west", vehicleNumber: "MH02BK7788", vehicleType: "BIKE",  isActive: true },
+    { id: "veh_fresh_van",   agencyId: "dp_fresh",   locationId: "agloc_fresh_main", vehicleNumber: "DL02CD5678", vehicleType: "VAN",   isActive: true },
+    { id: "veh_fresh_bike",  agencyId: "dp_fresh",   locationId: "agloc_fresh_main", vehicleNumber: "MH12BK3344", vehicleType: "BIKE",  isActive: true },
+    { id: "veh_fresh_tempo", agencyId: "dp_fresh",   locationId: "agloc_fresh_blr",  vehicleNumber: "KA05TC9911", vehicleType: "TEMPO", isActive: true },
+    { id: "veh_inhouse_van", agencyId: "dp_inhouse", locationId: "agloc_inhouse_main", vehicleNumber: "DL03EF9012", vehicleType: "VAN", isActive: true },
+    { id: "veh_inhouse_bike",agencyId: "dp_inhouse", locationId: "agloc_inhouse_main", vehicleNumber: "HR26BK2200", vehicleType: "BIKE",isActive: true },
+  ];
   await db.insert(agencyVehiclesTable)
-    .values(PARTNERS.map((p) => ({ id: `veh_${p.id}`, agencyId: p.id, vehicleNumber: p.vehicleNumber, vehicleType: "VAN" as const, isActive: true })))
+    .values(AGENCY_VEHICLES)
     .onConflictDoNothing({ target: agencyVehiclesTable.id });
-  console.log("  ✓ 3 agencies (+ vehicles)");
+  console.log(`  ✓ 3 agencies, ${AGENCY_LOCATIONS.length} locations, ${AGENCY_VEHICLES.length} vehicles`);
+
+  // Agency ↔ kitchen serving map — REQUIRED so the dispatch kitchen-serves
+  // validation finds an agency for the order's kitchen (else every trip 422s).
+  // Kitchens are seeded by seed:food-extra; link to whatever kitchens exist now
+  // (a later re-run after seed:food-extra back-fills any that were missing).
+  const existingKitchens = await db
+    .select({ id: kitchensTable.id })
+    .from(kitchensTable)
+    .orderBy(kitchensTable.id);
+  const kitchenIds = existingKitchens.map((k) => k.id);
+  if (kitchenIds.length === 0) {
+    console.log("  ⚠ no kitchens yet — skipping agency_kitchens links (run seed:food-extra then re-run seed:food to back-fill)");
+  } else {
+    // Every agency serves >=1 kitchen; spread agencies across kitchens
+    // round-robin and also give each agency the first kitchen so the common
+    // seeded dispatch kitchens are always covered.
+    type AgencyKitchenRow = typeof agencyKitchensTable.$inferInsert;
+    const akSeen = new Set<string>();
+    const agencyKitchenRows: AgencyKitchenRow[] = [];
+    const linkAK = (agencyId: string, kitchenId: string) => {
+      const k = `${agencyId}|${kitchenId}`;
+      if (akSeen.has(k)) return;
+      akSeen.add(k);
+      agencyKitchenRows.push({
+        id: `ak_${agencyId}_${kitchenId}`,
+        agencyId,
+        kitchenId,
+        isActive: true,
+      });
+    };
+    PARTNERS.forEach((p, idx) => {
+      // First kitchen guarantees baseline coverage for seeded dispatches.
+      linkAK(p.id, kitchenIds[0]!);
+      // Plus a round-robin kitchen so agencies fan out across the network.
+      linkAK(p.id, kitchenIds[idx % kitchenIds.length]!);
+    });
+    await db.insert(agencyKitchensTable)
+      .values(agencyKitchenRows)
+      // Unique index on (agencyId, kitchenId) — skip dup links across re-runs.
+      .onConflictDoNothing({ target: agencyKitchensTable.id });
+    console.log(`  ✓ ${agencyKitchenRows.length} agency_kitchens links (${kitchenIds.length} kitchens)`);
+  }
 
   // 9. Sample orders spanning every lifecycle state ─────────────────────────
   // Truncate ONLY the three food-order tables (CASCADE-safe) so re-runs stay

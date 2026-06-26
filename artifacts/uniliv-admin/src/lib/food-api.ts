@@ -182,7 +182,11 @@ export interface DeliveryPartner { id: string; name: string; phone: string | nul
 export type VehicleType = "VAN" | "BIKE" | "TRUCK" | "CAR" | "TEMPO" | "OTHER";
 export interface AgencyVehicle { id: string; agencyId: string; locationId: string | null; vehicleNumber: string; vehicleType: VehicleType; isActive: boolean }
 export interface AgencyLocation { id: string; agencyId: string; name: string; address: string | null; city: string | null; state: string | null; pincode: string | null; contactName: string | null; contactPhone: string | null; isActive: boolean }
-export interface Agency { id: string; name: string; phone: string | null; contactName: string | null; email: string | null; isActive: boolean; vehicles?: AgencyVehicle[]; locations?: AgencyLocation[] }
+export interface Agency { id: string; name: string; phone: string | null; contactName: string | null; email: string | null; isActive: boolean; vehicles?: AgencyVehicle[]; locations?: AgencyLocation[]; kitchenIds?: string[] }
+/** Active kitchen linked to an agency (agency→kitchens junction view). */
+export interface AgencyKitchenLink { id: string; name: string; code: string; linkId: string; linkedAt: string }
+/** Active agency linked to a kitchen (reverse junction view). */
+export interface KitchenAgencyLink { id: string; name: string; isActive: boolean; linkId: string; linkedAt: string }
 export interface Zone { id: string; name: string; code: string | null; isActive: boolean }
 export interface City { id: string; name: string; zoneId: string | null; isActive: boolean }
 export interface Cluster { id: string; name: string; cityId: string; managerId: string | null; isActive: boolean }
@@ -206,7 +210,12 @@ export interface GeocodeReverse { displayName: string; address: string; pincode:
 export interface FoodLookups {
   properties: { id: string; name: string; brand: string | null; kitchenId: string | null; clusterId: string | null }[];
   deliveryPartners: { id: string; name: string }[];
-  agencies: { id: string; name: string; vehicles: { id: string; vehicleNumber: string; vehicleType: VehicleType; locationId: string | null }[] }[];
+  agencies: {
+    id: string; name: string;
+    vehicles: { id: string; agencyId: string; vehicleNumber: string; vehicleType: VehicleType; locationId: string | null }[];
+    locations: { id: string; agencyId: string; name: string; city: string | null; state: string | null; pincode: string | null }[];
+    kitchenIds: string[];
+  }[];
   brands: { code: string; name: string }[];
   mealTypes: MealType[];
 }
@@ -224,9 +233,31 @@ export interface Dispatch {
   driverName: string | null; driverPhone: string | null; dispatchedAt: string | null;
   estimatedArrivalAt: string | null; status: DispatchStatus; notes: string | null; orderCount?: number;
 }
+/** One order row inside a dispatch detail, enriched with delivery + unit-lead contact. */
+export type DispatchDetailOrder = FoodOrder & {
+  propertyName?: string | null;
+  deliveryAddress?: string | null;
+  deliveryCity?: string | null;
+  deliveryPincode?: string | null;
+  unitLeadName?: string | null;
+  unitLeadPhone?: string | null;
+  unitLeadEmail?: string | null;
+  residentsCount: number;
+  totalQuantity: string | null;
+};
 export interface DispatchDetail extends Dispatch {
   kitchen?: Kitchen | null;
-  orders: (FoodOrder & { propertyName?: string | null })[];
+  orders: DispatchDetailOrder[];
+}
+/** One row of a dispatch's audit trail (status changes + actions). */
+export interface DispatchEvent {
+  id: string;
+  dispatchId: string;
+  status: DispatchStatus | string;
+  note: string | null;
+  actorId: string | null;
+  actorName?: string | null;
+  createdAt: string;
 }
 export interface MealConfig { id: string; mealType: MealType; displayLabel: string; brand: FoodBrand | null; sortOrder: number; isEnabled: boolean }
 export interface MealWindow { id: string; brand: FoodBrand; propertyId: string | null; mealType: MealType; cutoffTime: string | null; serviceTime: string | null; leadTimeMinutes: number; isActive: boolean }
@@ -368,6 +399,10 @@ export const foodKeys = {
   orderPreview: (p: Record<string, unknown>) => ["food", "order-preview", p] as const,
   dispatches: () => ["food", "dispatches"] as const,
   dispatch: (id: string) => ["food", "dispatch", id] as const,
+  dispatchEvents: (id: string) => ["food", "dispatch-events", id] as const,
+  activeVehicles: () => ["food", "active-vehicles"] as const,
+  agencyKitchens: (id: string) => ["food", "agency-kitchens", id] as const,
+  kitchenAgencies: (id: string) => ["food", "kitchen-agencies", id] as const,
   kitchens: (p: Record<string, unknown> = {}) => ["food", "kitchens", p] as const,
   mealConfig: () => ["food", "meal-config"] as const,
   mealWindows: (p: Record<string, unknown> = {}) => ["food", "meal-windows", p] as const,
@@ -547,6 +582,12 @@ export const foodApi = {
   createAgencyVehicle: (agencyId: string, b: Record<string, unknown>) => apiFetch<Envelope<AgencyVehicle>>(`/food/agencies/${agencyId}/vehicles`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
   updateAgencyVehicle: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<AgencyVehicle>>(`/food/agency-vehicles/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
   deleteAgencyVehicle: (id: string) => apiFetch<Envelope<unknown>>(`/food/agency-vehicles/${id}`, { method: "DELETE" }),
+  // Agency ↔ kitchen serving links. `search` filters by agency name; `vehicleSearch`
+  // matches agencies owning a vehicle whose number ilike-matches.
+  getAgencyKitchens: (agencyId: string) => apiFetch<Envelope<AgencyKitchenLink[]>>(`/food/agencies/${agencyId}/kitchens`).then((r) => r.data),
+  setAgencyKitchens: (agencyId: string, kitchenIds: string[]) =>
+    apiFetch<Envelope<{ agencyId: string; kitchenIds: string[] }>>(`/food/agencies/${agencyId}/kitchens`, { method: "PUT", body: JSON.stringify({ kitchenIds }) }).then((r) => r.data),
+  getKitchenAgencies: (kitchenId: string) => apiFetch<Envelope<KitchenAgencyLink[]>>(`/food/kitchens/${kitchenId}/agencies`).then((r) => r.data),
 
   listZones: () => apiFetch<Envelope<Zone[]>>(`/food/zones`).then((r) => r.data),
   createZone: (b: Record<string, unknown>) => apiFetch<Envelope<Zone>>(`/food/zones`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
@@ -570,8 +611,35 @@ export const foodApi = {
   // Dispatch trips
   listDispatches: () => apiFetch<Envelope<Dispatch[]>>(`/food/dispatches`).then((r) => r.data),
   getDispatch: (id: string) => apiFetch<Envelope<DispatchDetail>>(`/food/dispatches/${id}`).then((r) => r.data),
-  createDispatch: (b: Record<string, unknown>) => apiFetch<Envelope<Dispatch>>(`/food/dispatches`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
-  updateDispatchStatus: (id: string, status: DispatchStatus) => apiFetch<Envelope<Dispatch>>(`/food/dispatches/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }).then((r) => r.data),
+  // Vehicle ids currently on a LOADING/IN_TRANSIT trip (to disable in-use vehicles in the picker).
+  getActiveVehicles: () => apiFetch<Envelope<{ vehicleIds: string[] }>>(`/food/dispatches/active-vehicles`).then((r) => r.data.vehicleIds),
+  // Audit trail for one dispatch, newest-first.
+  getDispatchEvents: (id: string) => apiFetch<Envelope<DispatchEvent[]>>(`/food/dispatches/${id}/events`).then((r) => r.data),
+  // Create a LOADING dispatch from selected orders. Pass departNow:true to send it
+  // straight to IN_TRANSIT. Throws on 400 (missing orderIds/agency) / 422 (vehicle or
+  // kitchen validation) with the server's error message.
+  createDispatch: (b: Record<string, unknown>) => apiFetch<Envelope<Dispatch & { dispatchedCount: number }>>(`/food/dispatches`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  // Status transition. A 422 (`Cannot move from X to Y`) propagates as a thrown Error
+  // whose message is the server's transition explanation. `note` is optional audit text.
+  updateDispatchStatus: (id: string, status: DispatchStatus, note?: string) =>
+    apiFetch<Envelope<Dispatch>>(`/food/dispatches/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(note !== undefined ? { status, note } : { status }),
+    }).then((r) => r.data),
+  // Convenience: move a LOADING dispatch to IN_TRANSIT (depart now).
+  departDispatch: (id: string, note?: string) =>
+    apiFetch<Envelope<Dispatch>>(`/food/dispatches/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify(note !== undefined ? { status: "IN_TRANSIT", note } : { status: "IN_TRANSIT" }),
+    }).then((r) => r.data),
+  // Cancel a dispatch, reverting its DISPATCHED orders back to PREPARING.
+  cancelDispatch: (id: string, reason?: string) =>
+    apiFetch<Envelope<Dispatch & { revertedCount: number }>>(`/food/dispatches/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
+  // Mark a single order on a dispatch delivered (or undo). markTripDelivered rolls the
+  // whole trip to DELIVERED/PARTIAL once all active orders are delivered. Returns the
+  // (possibly transitioned) dispatch.
+  setOrderDelivered: (id: string, orderId: string, b: { delivered: boolean; remarks?: string; markTripDelivered?: boolean }) =>
+    apiFetch<Envelope<Dispatch>>(`/food/dispatches/${id}/orders/${orderId}`, { method: "PATCH", body: JSON.stringify(b) }).then((r) => r.data),
 
   // Kitchen accept / reject
   acceptOrder: (id: string) => apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/accept`, { method: "POST", body: "{}" }).then((r) => r.data),

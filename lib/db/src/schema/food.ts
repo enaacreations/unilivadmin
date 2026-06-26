@@ -115,13 +115,26 @@ export const foodScopeLevelEnum = pgEnum("food_scope_level", [
   "PROPERTY",
 ]);
 
-/** Dispatch trip status (Persona st.24). */
+/** Dispatch trip status (Persona st.24; CANCELLED for clean trip cancellation). */
 export const foodDispatchStatusEnum = pgEnum("food_dispatch_status", [
   "LOADING",
   "IN_TRANSIT",
   "DELIVERED",
   "PARTIAL",
+  "CANCELLED",
 ]);
+
+/**
+ * Allowed dispatch status transitions. Keyed by current status → array of
+ * statuses it may move to (terminal states map to []).
+ */
+export const DISPATCH_TRANSITIONS: Record<string, string[]> = {
+  LOADING: ["IN_TRANSIT", "CANCELLED"],
+  IN_TRANSIT: ["DELIVERED", "PARTIAL", "CANCELLED"],
+  PARTIAL: ["DELIVERED", "IN_TRANSIT"],
+  DELIVERED: [],
+  CANCELLED: [],
+};
 
 /** Channel a menu was shared through (Persona st.15). */
 export const foodMenuShareChannelEnum = pgEnum("food_menu_share_channel", [
@@ -399,6 +412,22 @@ export const agencyVehiclesTable = pgTable("agency_vehicles", {
 }, (t) => ({ agencyIdx: index("idx_agency_vehicles_agency").on(t.agencyId) }));
 
 /**
+ * Agency ↔ kitchen serving map. Restricts which kitchens an agency can be
+ * dispatched from, so the dispatch form only offers agencies serving the
+ * order's kitchen.
+ */
+export const agencyKitchensTable = pgTable("agency_kitchens", {
+  id: text("id").primaryKey(),
+  agencyId: text("agency_id").notNull().references(() => agenciesTable.id, { onDelete: "cascade" }),
+  kitchenId: text("kitchen_id").notNull().references(() => kitchensTable.id, { onDelete: "cascade" }),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => ({
+  agencyKitchenIdx: uniqueIndex("idx_agency_kitchens_agency_kitchen").on(t.agencyId, t.kitchenId),
+  kitchenIdx: index("idx_agency_kitchens_kitchen").on(t.kitchenId),
+}));
+
+/**
  * Kitchen master — orders are dispatched FROM a kitchen (Persona st.24 requires
  * Kitchen ID / location / address with PINCODE on the dispatched-order view).
  * brand null = shared kitchen serving both service sets.
@@ -668,6 +697,21 @@ export const foodOrderEventsTable = pgTable("food_order_events", {
 });
 
 /**
+ * Append-only dispatch-trip event log (mirrors foodOrderEventsTable). One row
+ * per dispatch status transition / notable action, powering the trip timeline.
+ */
+export const foodDispatchEventsTable = pgTable("food_dispatch_events", {
+  id: text("id").primaryKey(),
+  dispatchId: text("dispatch_id")
+    .notNull()
+    .references(() => foodDispatchesTable.id, { onDelete: "cascade" }),
+  status: foodDispatchStatusEnum("status").notNull(),
+  note: text("note"),
+  actorId: text("actor_id").references(() => usersTable.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => ({ dispatchIdx: index("idx_food_dispatch_events_dispatch").on(t.dispatchId) }));
+
+/**
  * Menu share audit (Persona st.15 "share the food menu with active guests").
  * recipients holds resident IDs / emails / phones depending on channel; a
  * shareToken backs an optional public link (st.14 download/share).
@@ -707,9 +751,11 @@ export type DeliveryPartner = typeof deliveryPartnersTable.$inferSelect;
 export type Agency = typeof agenciesTable.$inferSelect;
 export type AgencyLocation = typeof agencyLocationsTable.$inferSelect;
 export type AgencyVehicle = typeof agencyVehiclesTable.$inferSelect;
+export type AgencyKitchen = typeof agencyKitchensTable.$inferSelect;
 export type FoodOrder = typeof foodOrdersTable.$inferSelect;
 export type FoodOrderItem = typeof foodOrderItemsTable.$inferSelect;
 export type FoodOrderEvent = typeof foodOrderEventsTable.$inferSelect;
+export type FoodDispatchEvent = typeof foodDispatchEventsTable.$inferSelect;
 export type Kitchen = typeof kitchensTable.$inferSelect;
 export type FoodDispatch = typeof foodDispatchesTable.$inferSelect;
 export type FoodOrderBatch = typeof foodOrderBatchesTable.$inferSelect;

@@ -37,6 +37,7 @@ import {
   foodDispatchesTable,
   foodBrandsTable,
   complaintsTable,
+  agencyKitchensTable,
 } from "@workspace/db";
 import { and, eq, or, ilike, sql, desc, asc, gte, lte, lt, inArray, isNull, isNotNull } from "drizzle-orm";
 import type { AnyColumn } from "drizzle-orm";
@@ -67,7 +68,7 @@ import { notifyOrderEvent } from "../lib/notification-service.js";
 import { toCsv, toPdf, fmtDate, fmtDateTime, fileDateStamp, sanitizeForFilename } from "../lib/export-service.js";
 // Shared order cut-off enforcement (single source of truth lives in food-ops.ts,
 // alongside resolveCutoff()/atTime()) so /orders and /order-batches stay consistent.
-import { checkOrderCutoff } from "./food-ops.js";
+import { checkOrderCutoff, createDispatchForOrders } from "./food-ops.js";
 import { ymdToIstDayStart } from "../lib/tz.js";
 
 export const foodRouter: Router = Router();
@@ -525,7 +526,6 @@ foodRouter.post("/orders/dispatch/bulk", authenticate, authorize("FOOD_DISPATCH"
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const orders = await db.select().from(foodOrdersTable).where(inArray(foodOrdersTable.id, orderIds));
     const byId = new Map(orders.map((o) => [o.id, o]));
-    const now = new Date();
     const results: Array<{ orderId: string; status: "DISPATCHED" | "SKIPPED" | "FORBIDDEN" | "NOT_FOUND"; reason?: string }> = [];
 
     for (const oid of orderIds) {
@@ -536,16 +536,20 @@ foodRouter.post("/orders/dispatch/bulk", authenticate, authorize("FOOD_DISPATCH"
         results.push({ orderId: oid, status: "SKIPPED", reason: `Order is ${o.status}` });
         continue;
       }
-      await db.update(foodOrdersTable).set({
-        status: "DISPATCHED",
-        dispatchedAt: now,
-        dispatchStartedAt: o.dispatchStartedAt ?? now,
-        deliveryPartnerId: deliveryPartnerId ?? o.deliveryPartnerId ?? null,
-        dispatchedById: req.user!.id,
-        updatedAt: now,
-      }).where(eq(foodOrdersTable.id, oid));
-      await db.insert(foodOrderEventsTable).values({
-        id: newId(), orderId: oid, status: "DISPATCHED", note: "Order dispatched", actorId: req.user!.id,
+      // C8: route through the shared helper so every dispatched order gets a
+      // dispatch row (status LOADING) + dispatchId + a dispatch audit event.
+      // Each order may carry its own delivery partner / kitchen, so we create one
+      // single-order trip per order — preserving the per-order result reporting.
+      await db.transaction(async (tx) => {
+        await createDispatchForOrders(tx, {
+          orderIds: [oid],
+          agencyId: deliveryPartnerId ?? o.deliveryPartnerId ?? null,
+          kitchenId: o.kitchenId ?? null,
+          actorId: req.user!.id,
+        });
+        await tx.insert(foodOrderEventsTable).values({
+          id: newId(), orderId: oid, status: "DISPATCHED", note: "Order dispatched", actorId: req.user!.id,
+        });
       });
       results.push({ orderId: oid, status: "DISPATCHED" });
     }
@@ -880,16 +884,20 @@ foodRouter.post("/orders/:id/dispatch", authenticate, authorize("FOOD_DISPATCH",
       res.status(422).json({ success: false, error: `Cannot dispatch an order that is ${order.status}` });
       return;
     }
-    const [updated] = await db.update(foodOrdersTable).set({
-      status: "DISPATCHED",
-      dispatchedAt: now,
-      dispatchStartedAt: order.dispatchStartedAt ?? now,
-      deliveryPartnerId: b.deliveryPartnerId,
-      dispatchedById: req.user!.id,
-      updatedAt: now,
-    }).where(eq(foodOrdersTable.id, id)).returning();
-    await db.insert(foodOrderEventsTable).values({
-      id: newId(), orderId: id, status: "DISPATCHED", note: "Order dispatched", actorId: req.user!.id,
+    // C8: route through the shared helper so the order reliably carries a
+    // dispatchId + a dispatch row (status LOADING) + a dispatch audit event.
+    // The helper updates the order row; we re-select it for the response shape.
+    const [updated] = await db.transaction(async (tx) => {
+      await createDispatchForOrders(tx, {
+        orderIds: [id],
+        agencyId: b.deliveryPartnerId,
+        kitchenId: order.kitchenId ?? null,
+        actorId: req.user!.id,
+      });
+      await tx.insert(foodOrderEventsTable).values({
+        id: newId(), orderId: id, status: "DISPATCHED", note: "Order dispatched", actorId: req.user!.id,
+      });
+      return tx.select().from(foodOrdersTable).where(eq(foodOrdersTable.id, id));
     });
     {
       const dispItems = await db.select({ name: dishesTable.name, qty: foodOrderItemsTable.preparedQty, ordered: foodOrderItemsTable.orderedQty, unit: foodOrderItemsTable.unit })
@@ -1311,7 +1319,17 @@ foodRouter.get("/lookups", authenticate, async (req, res) => {
     const vehicleRows = await db.select({ id: agencyVehiclesTable.id, agencyId: agencyVehiclesTable.agencyId, vehicleNumber: agencyVehiclesTable.vehicleNumber, vehicleType: agencyVehiclesTable.vehicleType, locationId: agencyVehiclesTable.locationId })
       .from(agencyVehiclesTable).where(eq(agencyVehiclesTable.isActive, true));
     const vByA = new Map<string, any[]>(); for (const v of vehicleRows) { const a = vByA.get(v.agencyId) ?? []; a.push(v); vByA.set(v.agencyId, a); }
-    const agencies = agencyRows.map((a) => ({ ...a, vehicles: vByA.get(a.id) ?? [] }));
+    // B1: active service locations per agency (parallel to vehicles), so the
+    // dispatch UI can pick a drop/service location.
+    const locationRows = await db.select({ id: agencyLocationsTable.id, agencyId: agencyLocationsTable.agencyId, name: agencyLocationsTable.name, city: agencyLocationsTable.city, state: agencyLocationsTable.state, pincode: agencyLocationsTable.pincode })
+      .from(agencyLocationsTable).where(eq(agencyLocationsTable.isActive, true));
+    const lByA = new Map<string, any[]>(); for (const l of locationRows) { const a = lByA.get(l.agencyId) ?? []; a.push(l); lByA.set(l.agencyId, a); }
+    // B3: linked kitchen ids per agency (active links) so the dispatch UI can
+    // filter agencies by the order's kitchen.
+    const linkRows = await db.select({ agencyId: agencyKitchensTable.agencyId, kitchenId: agencyKitchensTable.kitchenId })
+      .from(agencyKitchensTable).where(eq(agencyKitchensTable.isActive, true));
+    const kByA = new Map<string, string[]>(); for (const k of linkRows) { const a = kByA.get(k.agencyId) ?? []; a.push(k.kitchenId); kByA.set(k.agencyId, a); }
+    const agencies = agencyRows.map((a) => ({ ...a, vehicles: vByA.get(a.id) ?? [], locations: lByA.get(a.id) ?? [], kitchenIds: kByA.get(a.id) ?? [] }));
     const brands = await db.select({ code: foodBrandsTable.code, name: foodBrandsTable.name })
       .from(foodBrandsTable).where(eq(foodBrandsTable.isActive, true)).orderBy(foodBrandsTable.name);
     res.json({
@@ -2110,14 +2128,27 @@ foodRouter.delete("/delivery-partners/:id", authenticate, authorize("FOOD_SETTIN
 foodRouter.get("/agencies", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
   try {
     const active = req.query["active"] as string | undefined;
-    const where = active !== undefined ? eq(agenciesTable.isActive, active === "true") : undefined;
+    const search = (req.query["search"] as string | undefined)?.trim();
+    const vehicleSearch = (req.query["vehicleSearch"] as string | undefined)?.trim();
+    // B2: filter by agency name (ilike) and/or by owning a vehicle whose number
+    // matches (ilike). vehicleSearch resolves to a set of agency ids via an
+    // EXISTS-style subquery so an agency surfaces if ANY of its vehicles match.
+    const conds = [] as ReturnType<typeof eq>[];
+    if (active !== undefined) conds.push(eq(agenciesTable.isActive, active === "true"));
+    if (search) conds.push(ilike(agenciesTable.name, `%${search}%`));
+    if (vehicleSearch) {
+      conds.push(sql`exists (select 1 from ${agencyVehiclesTable} where ${agencyVehiclesTable.agencyId} = ${agenciesTable.id} and ${ilike(agencyVehiclesTable.vehicleNumber, `%${vehicleSearch}%`)})`);
+    }
+    const where = conds.length ? and(...conds) : undefined;
     const agencies = await db.select().from(agenciesTable).where(where).orderBy(agenciesTable.name);
     const ids = agencies.map((a) => a.id);
     const vehicles = ids.length ? await db.select().from(agencyVehiclesTable).where(inArray(agencyVehiclesTable.agencyId, ids)) : [];
     const locations = ids.length ? await db.select().from(agencyLocationsTable).where(inArray(agencyLocationsTable.agencyId, ids)) : [];
+    const links = ids.length ? await db.select({ agencyId: agencyKitchensTable.agencyId, kitchenId: agencyKitchensTable.kitchenId }).from(agencyKitchensTable).where(and(inArray(agencyKitchensTable.agencyId, ids), eq(agencyKitchensTable.isActive, true))) : [];
     const vByA = new Map<string, any[]>(); for (const v of vehicles) { const a = vByA.get(v.agencyId) ?? []; a.push(v); vByA.set(v.agencyId, a); }
     const lByA = new Map<string, any[]>(); for (const l of locations) { const a = lByA.get(l.agencyId) ?? []; a.push(l); lByA.set(l.agencyId, a); }
-    res.json({ success: true, data: agencies.map((a) => ({ ...a, vehicles: vByA.get(a.id) ?? [], locations: lByA.get(a.id) ?? [] })) });
+    const kByA = new Map<string, string[]>(); for (const k of links) { const a = kByA.get(k.agencyId) ?? []; a.push(k.kitchenId); kByA.set(k.agencyId, a); }
+    res.json({ success: true, data: agencies.map((a) => ({ ...a, vehicles: vByA.get(a.id) ?? [], locations: lByA.get(a.id) ?? [], kitchenIds: kByA.get(a.id) ?? [] })) });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -2167,6 +2198,64 @@ foodRouter.delete("/agencies/:id", authenticate, authorize("FOOD_ORG", "delete")
     const [row] = await db.update(agenciesTable).set({ isActive: false, updatedAt: new Date() }).where(eq(agenciesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * B3 — Agency ↔ kitchen junction (agency_kitchens). Drives which agencies the
+ * dispatch UI offers for a given kitchen. Reads gated on FOOD_ORG view, writes
+ * on FOOD_ORG edit.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+// Linked (active) kitchens for an agency, joined to kitchen name/code.
+foodRouter.get("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+  try {
+    const rows = await db.select({
+      id: kitchensTable.id, name: kitchensTable.name, code: kitchensTable.code,
+      linkId: agencyKitchensTable.id, linkedAt: agencyKitchensTable.createdAt,
+    }).from(agencyKitchensTable)
+      .innerJoin(kitchensTable, eq(agencyKitchensTable.kitchenId, kitchensTable.id))
+      .where(and(eq(agencyKitchensTable.agencyId, req.params["id"]!), eq(agencyKitchensTable.isActive, true)))
+      .orderBy(kitchensTable.name);
+    res.json({ success: true, data: rows });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+// Replace-set the agency's linked kitchens. Wipes existing links then inserts the
+// provided ids active, so the unique (agencyId,kitchenId) index never collides.
+const setAgencyKitchensSchema = z.object({ kitchenIds: z.array(zId) }).passthrough();
+
+foodRouter.put("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+  try {
+    if (!validateBody(setAgencyKitchensSchema, req, res)) return;
+    const agencyId = req.params["id"]!;
+    const [agency] = await db.select({ id: agenciesTable.id }).from(agenciesTable).where(eq(agenciesTable.id, agencyId));
+    if (!agency) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    // De-dupe the requested ids so a repeated kitchenId can't violate the unique index.
+    const kitchenIds = Array.from(new Set((req.body?.kitchenIds as string[]) ?? []));
+    await db.transaction(async (tx) => {
+      await tx.delete(agencyKitchensTable).where(eq(agencyKitchensTable.agencyId, agencyId));
+      if (kitchenIds.length) {
+        await tx.insert(agencyKitchensTable).values(kitchenIds.map((kitchenId) => ({
+          id: newId(), agencyId, kitchenId, isActive: true,
+        })));
+      }
+    });
+    res.json({ success: true, data: { agencyId, kitchenIds } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+// Reverse lookup — active agencies linked to a kitchen, joined to agency name.
+foodRouter.get("/kitchens/:id/agencies", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+  try {
+    const rows = await db.select({
+      id: agenciesTable.id, name: agenciesTable.name, isActive: agenciesTable.isActive,
+      linkId: agencyKitchensTable.id, linkedAt: agencyKitchensTable.createdAt,
+    }).from(agencyKitchensTable)
+      .innerJoin(agenciesTable, eq(agencyKitchensTable.agencyId, agenciesTable.id))
+      .where(and(eq(agencyKitchensTable.kitchenId, req.params["id"]!), eq(agencyKitchensTable.isActive, true)))
+      .orderBy(agenciesTable.name);
+    res.json({ success: true, data: rows });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
