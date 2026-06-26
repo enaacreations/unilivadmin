@@ -8,6 +8,7 @@ import { authorize } from "../middlewares/authorize.js";
 import { pick, assertCanAssignRole, ROLE_RANK, isSuperAdmin } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
+import { writeAuditLog } from "../lib/wallet-service.js";
 
 function sanitizeUser(u: typeof usersTable.$inferSelect) {
   const { passwordHash: _, ...rest } = u;
@@ -53,6 +54,10 @@ usersRouter.post("/", authenticate, authorize("USERS", "create"), async (req, re
     if (fields.role) assertCanAssignRole(req.user!.role, fields.role);
     const passwordHash = await bcrypt.hash(req.body?.password || "TempPass@123", 12);
     const [row] = await db.insert(usersTable).values({ id: newId(), ...fields, passwordHash, updatedAt: new Date() }).returning();
+    // Audit (fire-and-forget; never blocks the create).
+    void writeAuditLog(req.user!.id, "USER_CREATED", "user", row.id, {
+      name: row.name, email: row.email, username: row.username, role: row.role, propertyId: row.propertyId,
+    }).catch(() => {});
     res.status(201).json({ success: true, data: sanitizeUser(row) });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
@@ -73,14 +78,32 @@ usersRouter.put("/:id", authenticate, authorize("USERS", "edit"), async (req, re
     }
     // If the body changes the role, the new role must be one the caller may grant.
     if (fields.role) assertCanAssignRole(callerRole, fields.role);
+    const roleChanged = fields.role !== undefined && fields.role !== target.role;
+    const wasActive = target.isActive;
     const [row] = await db.update(usersTable).set({ ...fields, updatedAt: new Date() }).where(eq(usersTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    // Audit (fire-and-forget). A role change is logged distinctly (ROLE_CHANGED)
+    // for compliance; a deactivation (isActive true→false) is logged as a
+    // dedicated USER_DEACTIVATED event in addition to the generic update.
+    void writeAuditLog(req.user!.id, roleChanged ? "ROLE_CHANGED" : "USER_UPDATED", "user", row.id, {
+      changed: Object.keys(fields),
+      ...(roleChanged ? { oldRole: target.role, newRole: row.role } : {}),
+    }).catch(() => {});
+    if (fields.isActive === false && wasActive) {
+      void writeAuditLog(req.user!.id, "USER_DEACTIVATED", "user", row.id, { oldStatus: "active", newStatus: "inactive" }).catch(() => {});
+    }
     res.json({ success: true, data: sanitizeUser(row) });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 usersRouter.delete("/:id", authenticate, authorize("USERS", "delete"), async (req, res) => {
   try {
-    await db.delete(usersTable).where(eq(usersTable.id, req.params["id"]!));
+    const targetId = req.params["id"]!;
+    const [target] = await db.select().from(usersTable).where(eq(usersTable.id, targetId));
+    await db.delete(usersTable).where(eq(usersTable.id, targetId));
+    // Audit (fire-and-forget) — capture identifying fields before they're gone.
+    void writeAuditLog(req.user!.id, "USER_DELETED", "user", targetId, {
+      name: target?.name ?? null, email: target?.email ?? null, role: target?.role ?? null,
+    }).catch(() => {});
     res.json({ success: true, message: "Deleted" });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

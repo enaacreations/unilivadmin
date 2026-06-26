@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { db, slaConfigTable, complaintRoutingTable, integrationStatusTable, auditLogTable, usersTable, systemConfigTable } from "@workspace/db";
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, and, gte, lte, sql } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
 import { isSuperAdmin } from "../lib/authz.js";
 import { newId } from "../lib/id.js";
+import { writeAuditLog } from "../lib/wallet-service.js";
 
 export const settingsRouter = Router();
 
@@ -24,9 +25,11 @@ settingsRouter.put("/sla/:category", authenticate, authorize("SETTINGS", "edit")
     const [existing] = await db.select().from(slaConfigTable).where(eq(slaConfigTable.category, cat));
     if (existing) {
       const [row] = await db.update(slaConfigTable).set({ slaHours: hours, updatedAt: new Date() }).where(eq(slaConfigTable.category, cat)).returning();
+      void writeAuditLog(req.user!.id, "SETTINGS_UPDATED", "settings", `SLA:${cat}`, { config: "SLA", category: cat, oldSlaHours: existing.slaHours, newSlaHours: hours }).catch(() => {});
       res.json({ success: true, data: row });
     } else {
       const [row] = await db.insert(slaConfigTable).values({ id: newId(), category: cat, slaHours: hours, updatedAt: new Date() }).returning();
+      void writeAuditLog(req.user!.id, "SETTINGS_UPDATED", "settings", `SLA:${cat}`, { config: "SLA", category: cat, newSlaHours: hours }).catch(() => {});
       res.json({ success: true, data: row });
     }
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
@@ -45,13 +48,16 @@ settingsRouter.post("/routing", authenticate, authorize("SETTINGS", "edit"), asy
     const { propertyId, category, assignedTo } = req.body || {};
     if (!propertyId || !category || !assignedTo) { res.status(400).json({ success: false, error: "propertyId, category, assignedTo are required" }); return; }
     const [row] = await db.insert(complaintRoutingTable).values({ id: newId(), propertyId, category, assignedTo, updatedAt: new Date() }).returning();
+    void writeAuditLog(req.user!.id, "SETTINGS_UPDATED", "settings", `ROUTING:${row.id}`, { config: "COMPLAINT_ROUTING", action: "create", propertyId, category, assignedTo }).catch(() => {});
     res.json({ success: true, data: row });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 settingsRouter.delete("/routing/:id", authenticate, authorize("SETTINGS", "delete"), async (req, res) => {
   try {
-    await db.delete(complaintRoutingTable).where(eq(complaintRoutingTable.id, req.params["id"] as string));
+    const routingId = req.params["id"] as string;
+    await db.delete(complaintRoutingTable).where(eq(complaintRoutingTable.id, routingId));
+    void writeAuditLog(req.user!.id, "SETTINGS_UPDATED", "settings", `ROUTING:${routingId}`, { config: "COMPLAINT_ROUTING", action: "delete" }).catch(() => {});
     res.json({ success: true });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
@@ -88,13 +94,50 @@ settingsRouter.put("/kyc-gate", authenticate, authorize("SETTINGS", "edit"), asy
     } else {
       await db.insert(integrationStatusTable).values({ id: newId(), name: "KYC_GATE", enabled, updatedAt: new Date() });
     }
+    void writeAuditLog(req.user!.id, "SETTINGS_UPDATED", "settings", "INTEGRATION:KYC_GATE", { config: "INTEGRATION", name: "KYC_GATE", oldEnabled: existing?.enabled ?? null, newEnabled: enabled }).catch(() => {});
     res.json({ success: true, data: { enabled } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-// Audit log (SUPER_ADMIN only)
-settingsRouter.get("/audit-log", authenticate, authorize("AUDIT_LOG", "view"), async (_req, res) => {
+// Audit log (SUPER_ADMIN only) — filterable + paginated (compliance).
+//
+// Query params (all optional):
+//   action  exact action match   (e.g. ROLE_CHANGED)
+//   entity  exact entity match   (e.g. user | property | settings)
+//   userId  exact actor id
+//   from    inclusive lower date bound YYYY-MM-DD (createdAt >= 00:00 of that day)
+//   to      inclusive upper date bound YYYY-MM-DD (createdAt <= 23:59:59.999 of that day)
+//   limit   page size, default 50, capped at 200
+//   offset  row offset, default 0
+//
+// Response: { success, data: rows[], meta: { total, limit, offset } }
+//   rows ordered by createdAt desc, each carries userName (left-joined).
+settingsRouter.get("/audit-log", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) => {
   try {
+    const q = req.query as Record<string, unknown>;
+
+    const conditions = [];
+    if (typeof q["action"] === "string" && q["action"]) conditions.push(eq(auditLogTable.action, q["action"]));
+    if (typeof q["entity"] === "string" && q["entity"]) conditions.push(eq(auditLogTable.entity, q["entity"]));
+    if (typeof q["userId"] === "string" && q["userId"]) conditions.push(eq(auditLogTable.userId, q["userId"]));
+    // Date bounds: parse YYYY-MM-DD; `to` is widened to end-of-day so the bound is inclusive.
+    if (typeof q["from"] === "string" && q["from"]) {
+      const d = new Date(`${q["from"]}T00:00:00.000Z`);
+      if (!Number.isNaN(d.getTime())) conditions.push(gte(auditLogTable.createdAt, d));
+    }
+    if (typeof q["to"] === "string" && q["to"]) {
+      const d = new Date(`${q["to"]}T23:59:59.999Z`);
+      if (!Number.isNaN(d.getTime())) conditions.push(lte(auditLogTable.createdAt, d));
+    }
+    const where = conditions.length ? and(...conditions) : undefined;
+
+    // Pagination: default 50, hard-capped at 200; non-negative offset.
+    const rawLimit = Number(q["limit"]);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.trunc(rawLimit), 200) : 50;
+    const rawOffset = Number(q["offset"]);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.trunc(rawOffset) : 0;
+
+    const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(auditLogTable).where(where);
     const rows = await db.select({
       id: auditLogTable.id,
       action: auditLogTable.action,
@@ -107,10 +150,28 @@ settingsRouter.get("/audit-log", authenticate, authorize("AUDIT_LOG", "view"), a
     })
       .from(auditLogTable)
       .leftJoin(usersTable, eq(auditLogTable.userId, usersTable.id))
+      .where(where)
       .orderBy(desc(auditLogTable.createdAt))
-      .limit(200);
-    res.json({ success: true, data: rows });
-  } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+      .limit(limit)
+      .offset(offset);
+    res.json({ success: true, data: rows, meta: { total: countResult.count, limit, offset } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+// Audit-log facets — distinct actions + entities present in the log, for the
+// UI filter dropdowns. SUPER_ADMIN only (same gate as the log itself).
+settingsRouter.get("/audit-log/facets", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) => {
+  try {
+    const actionRows = await db.selectDistinct({ action: auditLogTable.action }).from(auditLogTable).orderBy(auditLogTable.action);
+    const entityRows = await db.selectDistinct({ entity: auditLogTable.entity }).from(auditLogTable).orderBy(auditLogTable.entity);
+    res.json({
+      success: true,
+      data: {
+        actions: actionRows.map((r) => r.action).filter(Boolean),
+        entities: entityRows.map((r) => r.entity).filter(Boolean),
+      },
+    });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -187,6 +248,7 @@ settingsRouter.put("/otp-config", authenticate, async (req, res) => {
         .values({ id: newId(), key: u.key, value: u.value as never, description: u.description, updatedAt: new Date() })
         .onConflictDoUpdate({ target: systemConfigTable.key, set: { value: u.value as never, updatedAt: new Date() } });
     }
+    void writeAuditLog(req.user!.id, "SETTINGS_UPDATED", "settings", "OTP_CONFIG", { config: "OTP", changes: Object.fromEntries(updates.map((u) => [u.key, u.value])) }).catch(() => {});
 
     res.json({ success: true, data: await readOtpConfig() });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }

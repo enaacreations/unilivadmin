@@ -9,6 +9,7 @@ import { pick, assertPropertyAccess } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { resolveKitchenForPincode, isActiveBrand } from "../lib/food-service.js";
+import { writeAuditLog } from "../lib/wallet-service.js";
 
 const router = Router();
 
@@ -406,6 +407,14 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
     const [row] = await db.update(propertiesTable).set({ ...body, updatedAt: new Date() }).where(eq(propertiesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
 
+    // Audit (fire-and-forget): a status change (e.g. ACTIVE↔INACTIVE) is a
+    // compliance-relevant event, logged distinctly with old/new values.
+    if (body.status !== undefined && row.status !== existing.status) {
+      void writeAuditLog(req.user!.id, "PROPERTY_STATUS_CHANGED", "property", row.id, {
+        oldStatus: existing.status, newStatus: row.status, name: row.name, code: row.code,
+      }).catch(() => {});
+    }
+
     // Re-tag unit-leads and upsert the cut-off override (brand = the just-saved value).
     await assignUnitLeads(row.id, req.body?.unitLeadIds);
     await upsertPropertyCutoff(row.id, row.brand, req.body?.cutoffTime);
@@ -420,7 +429,13 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
 
 router.delete("/:id", authenticate, authorize("PROPERTIES", "delete"), async (req, res) => {
   try {
-    await db.delete(propertiesTable).where(eq(propertiesTable.id, req.params["id"]!));
+    const propertyId = req.params["id"]!;
+    const [existing] = await db.select().from(propertiesTable).where(eq(propertiesTable.id, propertyId));
+    await db.delete(propertiesTable).where(eq(propertiesTable.id, propertyId));
+    // Audit (fire-and-forget) — capture identifying fields before they're gone.
+    void writeAuditLog(req.user!.id, "PROPERTY_DELETED", "property", propertyId, {
+      name: existing?.name ?? null, code: existing?.code ?? null, city: existing?.city ?? null, status: existing?.status ?? null,
+    }).catch(() => {});
     res.json({ success: true, message: "Deleted" });
   } catch (err) {
     req.log.error(err);

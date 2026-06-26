@@ -1,8 +1,9 @@
-import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
+import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider, QueryCache } from "@tanstack/react-query";
 import { handleUnauthorized, redirectToLogin } from "@/lib/api-fetch";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ErrorBoundary } from "@/components/error-boundary";
 import NotFound from "@/pages/not-found";
 import { Layout, PageGuard } from "@/components/layout";
 import Forbidden from "@/pages/forbidden";
@@ -51,6 +52,7 @@ import Banking from "@/pages/banking";
 import Expenses from "@/pages/expenses";
 import Users from "@/pages/users";
 import Settings from "@/pages/settings";
+import AuditLog from "@/pages/audit-log";
 import Facility from "@/pages/facility";
 import Electricity from "@/pages/electricity";
 import ResidentAttendance from "@/pages/resident-attendance";
@@ -198,6 +200,7 @@ function Router() {
 
       <Route path="/users">{() => <ProtectedRoute component={Users} />}</Route>
       <Route path="/settings">{() => <ProtectedRoute component={Settings} />}</Route>
+      <Route path="/audit-log">{() => <ProtectedRoute component={AuditLog} />}</Route>
       <Route path="/dashboard/executive">{() => <ProtectedRoute component={ExecutiveDashboard} />}</Route>
       <Route path="/403">{() => <ProtectedRoute component={Forbidden} />}</Route>
       
@@ -206,12 +209,25 @@ function Router() {
   );
 }
 
+// Wraps the routed tree in the app-level ErrorBoundary. Lives inside
+// WouterRouter so it can read the current location and reset the boundary on
+// navigation — letting a user escape a crashed page via the sidebar without a
+// full reload. A render error in any page falls back to the branded screen.
+function RoutedApp() {
+  const [location] = useLocation();
+  return (
+    <ErrorBoundary resetKey={location}>
+      <Router />
+    </ErrorBoundary>
+  );
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <WouterRouter base={import.meta.env.BASE_URL?.replace(/\/$/, "") || ""}>
-          <Router />
+          <RoutedApp />
         </WouterRouter>
         <Toaster />
       </TooltipProvider>
