@@ -8,6 +8,7 @@
     "seed": "tsx ./src/seed.ts",
     "seed:food": "tsx ./src/seed-food.ts",
     "seed:food-extra": "tsx ./src/seed-food-extra.ts",
+    "seed:demo": "tsx ./src/seed-demo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
