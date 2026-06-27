@@ -16,19 +16,14 @@ import { withQuery } from "@/lib/nav-helpers";
 
 const inr = (n: number) => `₹${(n ?? 0).toLocaleString("en-IN")}`;
 
-// Card banner image. The /food/my-properties payload doesn't carry heroImageUrl,
-// so we fetch the property's photos and pick the hero (else the first by sortOrder).
-// Falls back to a placeholder when there are no photos or storage is unavailable.
-function PropertyBanner({ propertyId, name }: { propertyId: string; name: string }) {
-  const { data: photos = [] } = useQuery({
-    queryKey: foodKeys.propertyPhotos(propertyId),
-    queryFn: () => foodApi.listPropertyPhotos(propertyId),
-    staleTime: 5 * 60_000,
-  });
-  const hero = photos.find((p) => p.isHero) ?? photos[0];
-  const url = hero?.url ?? null;
+// Card banner image. The /food/my-properties payload now carries heroImageUrl
+// (resolved server-side over the caller's full accessible property set), so we
+// render it directly instead of calling the PROPERTIES-scoped /:id/photos route
+// (which 403s every property beyond the caller's own users.property_id).
+// Falls back to a placeholder when there's no hero or storage is unavailable.
+function PropertyBanner({ url, name }: { url: string | null; name: string }) {
   return (
-    <div className="aspect-[16/7] w-full overflow-hidden bg-surface" data-testid={`property-banner-${propertyId}`}>
+    <div className="aspect-[16/7] w-full overflow-hidden bg-surface" data-testid={`property-banner-${name}`}>
       {url ? (
         <img src={url} alt={name} className="h-full w-full object-cover" />
       ) : (
@@ -113,7 +108,7 @@ export default function FoodMyProperties() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {properties.map((p) => (
             <Card key={p.id} className="flex flex-col overflow-hidden">
-              <PropertyBanner propertyId={p.id} name={p.name} />
+              <PropertyBanner url={p.heroImageUrl ?? null} name={p.name} />
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">

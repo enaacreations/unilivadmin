@@ -38,8 +38,10 @@ import {
   paymentsTable,
   kycRequestsTable,
   systemConfigTable,
+  propertyPhotosTable,
 } from "@workspace/db";
-import { and, eq, or, ilike, sql, desc, gte, lte, inArray, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, or, ilike, sql, desc, asc, gte, lte, inArray, isNull, isNotNull } from "drizzle-orm";
+import { getObjectUrl, isStorageConfigured } from "@workspace/storage";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
@@ -2732,6 +2734,30 @@ foodOpsRouter.get("/my-properties", authenticate, authorize("FOOD_DASHBOARD", "v
     if (!props.length) { res.json({ success: true, data: [] }); return; }
     const propIds = props.map((p) => p.id);
 
+    // One hero photo per property, served directly so cards don't call the
+    // PROPERTIES-scoped /:id/photos route (which 403s every property beyond the
+    // caller's own users.property_id). Order hero-first then lowest sort_order,
+    // then keep the FIRST row seen per property.
+    const photoRows = await db
+      .select({ propertyId: propertyPhotosTable.propertyId, storageKey: propertyPhotosTable.storageKey })
+      .from(propertyPhotosTable)
+      .where(inArray(propertyPhotosTable.propertyId, propIds))
+      .orderBy(desc(propertyPhotosTable.isHero), asc(propertyPhotosTable.sortOrder));
+    const heroKeyByProp = new Map<string, string>();
+    for (const row of photoRows) {
+      if (!heroKeyByProp.has(row.propertyId)) heroKeyByProp.set(row.propertyId, row.storageKey);
+    }
+    const heroByProp = new Map<string, string | null>();
+    for (const [pid, key] of heroKeyByProp) {
+      let url: string | null = null;
+      try {
+        url = isStorageConfigured() ? await getObjectUrl(key) : null;
+      } catch {
+        url = null;
+      }
+      heroByProp.set(pid, url);
+    }
+
     const kitchens = await db.select({ id: kitchensTable.id, name: kitchensTable.name }).from(kitchensTable);
     const kitchenName = new Map(kitchens.map((k) => [k.id, k.name]));
 
@@ -2779,6 +2805,7 @@ foodOpsRouter.get("/my-properties", authenticate, authorize("FOOD_DASHBOARD", "v
         activeOrders: pend.active, awaitingDelivery: pend.awaitingDelivery,
         deliveredCount: deliveredByProp.get(p.id) ?? 0,
         configured: Boolean(p.brand && p.kitchenId),
+        heroImageUrl: heroByProp.get(p.id) ?? null,
       };
     });
     res.json({ success: true, data });

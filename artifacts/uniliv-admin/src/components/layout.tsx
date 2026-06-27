@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/breadcrumb"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { UserAvatar } from "@/components/ui/user-avatar"
 import { NotificationBell } from "@/components/notification-bell"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -263,10 +264,19 @@ function SidebarContent({
   )
 }
 
-function Logo() {
+/** Pretty-prints a UserRole enum ("UNIT_LEAD" → "Unit Lead"). */
+const roleLabel = (r?: string) =>
+  r ? r.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : ""
+
+function Logo({ personaLabel }: { personaLabel?: string }) {
   return (
-    <div className="flex items-center">
+    <div className="flex items-center gap-2">
       <img src="/brand/uniliv-logo.svg" alt="Uniliv" className="h-8 w-auto select-none" draggable={false} />
+      {personaLabel ? (
+        <Badge variant="secondary" className="text-[10px] font-medium leading-none px-2 py-0.5">
+          {personaLabel}
+        </Badge>
+      ) : null}
     </div>
   )
 }
@@ -280,6 +290,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const logout = useLogout()
   const queryClient = useQueryClient()
   const properties = (propertiesRes?.data || []) as Array<{ id: string; name: string }>
+
+  // Persona/role pill shown next to the wordmark (undefined while `me` loads).
+  const personaLabel = me ? (me.designation || roleLabel(me.role)) || undefined : undefined
 
   const [mobileOpen, setMobileOpen] = React.useState(false)
 
@@ -360,7 +373,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         )}
       >
         <div className="p-5">
-          <Logo />
+          <Logo personaLabel={personaLabel} />
         </div>
         <SidebarContent
           filteredGroups={filteredGroups}
@@ -388,7 +401,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         >
           <SheetHeader className="p-5 text-left">
             <SheetTitle asChild>
-              <div><Logo /></div>
+              <div><Logo personaLabel={personaLabel} /></div>
             </SheetTitle>
           </SheetHeader>
           <SidebarContent

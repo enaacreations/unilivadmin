@@ -16,7 +16,7 @@ import { FileSignature, Plus, Copy, ExternalLink, X, Download, FileCheck2, Shiel
 /** Canonical document name the backend uses for the rent agreement esign request. */
 const RENT_AGREEMENT_DOC_NAME = "Rent Agreement";
 
-type EsignRow = {
+export type EsignRow = {
   id: string;
   documentName: string;
   status: "PENDING" | "VIEWED" | "SIGNED" | "EXPIRED" | "VOIDED";
@@ -113,7 +113,7 @@ export function ResidentEsignTab({ residentId, residentName }: { residentId: str
  * gates resident activation: generate it when none exists, otherwise show its
  * status, a copy/open sign link, and the signed PDF once signed.
  */
-function RentAgreementBanner({
+export function RentAgreementBanner({
   residentId,
   agreement,
   onOpenDetail,

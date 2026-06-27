@@ -311,6 +311,7 @@ export interface MyPropertyCard {
   kitchenId: string | null; kitchenName: string | null;
   totalBeds: number; occupied: number; activeGuests: number; occupancyPct: number; monthlyRevenue: number;
   activeOrders: number; awaitingDelivery: number; deliveredCount: number; configured: boolean;
+  heroImageUrl?: string | null;
 }
 export interface RevenueData { months: { month: string; total: number }[] }
 export interface FullMenuMeal { mealType: MealType; label: string; dishes: { dishId: string; dishName: string; component: string; unit: string; slotLabel: string | null; sortOrder: number }[] }

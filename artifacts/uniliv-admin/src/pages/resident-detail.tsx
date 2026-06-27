@@ -61,7 +61,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ResidentKycTab } from "./resident-kyc-tab";
-import { ResidentEsignTab } from "./resident-esign-tab";
+import { ResidentEsignTab, RentAgreementBanner, type EsignRow } from "./resident-esign-tab";
 import { CheckoutModal } from "@/components/checkout-modal";
 import jsPDF from "jspdf";
 import { BellRing, RefreshCw, ArrowUpCircle } from "lucide-react";
@@ -135,7 +135,7 @@ export default function ResidentDetail() {
 
   // O25 — surface the rent-agreement gate. The most recent non-voided
   // 'Rent Agreement' esign request drives the signed/required indicator.
-  const { data: esignRes } = useQuery<{ data: Array<{ id: string; documentName: string; status: string; createdAt: string }> }>({
+  const { data: esignRes } = useQuery<{ data: EsignRow[] }>({
     queryKey: ["esign", id],
     queryFn: () => apiFetch(`/residents/${id}/esign`),
     enabled: !!id,
@@ -157,6 +157,7 @@ export default function ResidentDetail() {
   const [checkoutOpen, setCheckoutOpen] = React.useState(false);
   const [messageModalOpen, setMessageModalOpen] = React.useState(false);
   const [complaintModalOpen, setComplaintModalOpen] = React.useState(false);
+  const [activeTab, setActiveTab] = React.useState("profile");
 
   if (residentLoading) {
     return <div className="space-y-6"><Skeleton className="h-48 w-full" /><Skeleton className="h-96 w-full" /></div>;
@@ -176,23 +177,6 @@ export default function ResidentDetail() {
   });
   const outstanding = ledger.filter((l) => !l.isPaid).reduce((s, l) => s + (l.amount || 0), 0);
   const totalPaid = payments.filter((p) => p.status === "SUCCESS").reduce((s, p) => s + (p.amount || 0), 0);
-
-  const generateAgreement = () => {
-    const doc = new jsPDF();
-    doc.setFontSize(16);
-    doc.text("Tenancy Agreement", 20, 20);
-    doc.setFontSize(11);
-    let y = 40;
-    [
-      `Resident: ${resident.name}`,
-      `Property: ${resident.propertyName || "—"}`,
-      `Room: ${resident.roomNumber || "—"}`,
-      `Check-in: ${resident.checkInDate || "—"}`,
-      `Monthly Rent: Rs ${resident.monthlyRent || 0}`,
-      `Security Deposit: Rs ${resident.securityDeposit || 0}`,
-    ].forEach((line) => { doc.text(line, 20, y); y += 8; });
-    window.open(doc.output("bloburl"), "_blank");
-  };
 
   const generateReceipt = (p: PaymentDto) => {
     const doc = new jsPDF();
@@ -311,7 +295,7 @@ export default function ResidentDetail() {
         </Card>
       </div>
 
-      <Tabs defaultValue="profile">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="bg-surface">
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="ledger">Ledger</TabsTrigger>
@@ -488,9 +472,11 @@ export default function ResidentDetail() {
             ))}
           </div>
           <div className="mt-4">
-            <Button onClick={generateAgreement} variant="outline" data-testid="button-generate-agreement">
-              <FileText className="w-4 h-4 mr-2" /> Generate Agreement
-            </Button>
+            <RentAgreementBanner
+              residentId={id}
+              agreement={rentAgreement}
+              onOpenDetail={() => setActiveTab("esign")}
+            />
           </div>
         </TabsContent>
 
