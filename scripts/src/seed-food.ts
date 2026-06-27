@@ -55,22 +55,25 @@ type Component =
   | "BEVERAGE" | "SNACK" | "MILK";
 type Unit = "G" | "KG" | "ML" | "LITRE" | "PCS" | "PLATE" | "SERVING";
 
-/** Canonical unit + qty-per-resident for each component (PRD §7.9 rules). */
+/** Canonical unit + qty-per-resident for each component (PRD §7.9 rules).
+ *  Per-person serving sizes — realistic Indian-thali figures: a main veg ~150g,
+ *  dal ~180ml, rice ~150g, 2 rotis, ~100ml curd, ~50g salad, ~80g dessert,
+ *  ~150ml beverage, ~200ml night milk, ~100g snack, ~100g fruit. */
 const COMPONENT_RULE: Record<Component, { unit: Unit; qty: number }> = {
   HOT_FOOD:     { unit: "KG", qty: 0.18 },
   SABZI:        { unit: "KG", qty: 0.15 },
-  DAL:          { unit: "KG", qty: 0.2 },
+  DAL:          { unit: "LITRE", qty: 0.18 },
   RICE:         { unit: "KG", qty: 0.15 },
   BREAD:        { unit: "PCS", qty: 2 },
   SALAD:        { unit: "KG", qty: 0.05 },
   CURD_RAITA:   { unit: "LITRE", qty: 0.1 },
-  DESSERT:      { unit: "KG", qty: 0.1 },
+  DESSERT:      { unit: "KG", qty: 0.08 },
   PAPAD_PICKLE: { unit: "PCS", qty: 1 },
   PICKLE:       { unit: "KG", qty: 0.01 },
   CHUTNEY:      { unit: "KG", qty: 0.03 },
   FRUITS:       { unit: "KG", qty: 0.1 },
   BAKERY:       { unit: "PCS", qty: 1 },
-  BEVERAGE:     { unit: "LITRE", qty: 0.2 },
+  BEVERAGE:     { unit: "LITRE", qty: 0.15 },
   SNACK:        { unit: "KG", qty: 0.1 },
   MILK:         { unit: "LITRE", qty: 0.2 },
 };
@@ -233,6 +236,8 @@ const ZONES = [
 const CITIES = [
   { id: "city_delhi", name: "Delhi", zoneId: "zone_north" },
   { id: "city_gurugram", name: "Gurugram", zoneId: "zone_north" },
+  { id: "city_noida", name: "Noida", zoneId: "zone_north" },
+  { id: "city_jaipur", name: "Jaipur", zoneId: "zone_north" },
   { id: "city_mumbai", name: "Mumbai", zoneId: "zone_west" },
   { id: "city_pune", name: "Pune", zoneId: "zone_west" },
   { id: "city_bengaluru", name: "Bengaluru", zoneId: "zone_west" },
@@ -242,6 +247,8 @@ const CLUSTERS = [
   { id: "cluster_delhi_central", name: "Delhi Central", cityId: "city_delhi" },
   { id: "cluster_delhi_south", name: "Delhi South", cityId: "city_delhi" },
   { id: "cluster_ggn_cyberhub", name: "Gurugram Cyber Hub", cityId: "city_gurugram" },
+  { id: "cluster_noida_s104", name: "Noida Sector 104", cityId: "city_noida" },
+  { id: "cluster_jaipur_sitapura", name: "Jaipur Sitapura", cityId: "city_jaipur" },
   { id: "cluster_mumbai_andheri", name: "Mumbai Andheri", cityId: "city_mumbai" },
   { id: "cluster_pune_hinjewadi", name: "Pune Hinjewadi", cityId: "city_pune" },
   { id: "cluster_blr_koramangala", name: "Bengaluru Koramangala", cityId: "city_bengaluru" },
