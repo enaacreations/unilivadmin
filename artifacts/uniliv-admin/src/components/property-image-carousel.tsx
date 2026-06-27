@@ -1,13 +1,11 @@
 import * as React from "react";
-import { Image as ImageIcon } from "lucide-react";
+import { Image as ImageIcon, ChevronLeft, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
   Carousel,
   CarouselContent,
   CarouselItem,
-  CarouselPrevious,
-  CarouselNext,
   type CarouselApi,
 } from "@/components/ui/carousel";
 
@@ -81,7 +79,7 @@ export function PropertyImageCarousel({
 
   // Multiple images -> carousel with arrows + dots
   return (
-    <div className={cn("relative", wrapperClass)}>
+    <div className={cn("group relative", wrapperClass)}>
       <Carousel setApi={setApi} opts={{ loop: true }} className="w-full">
         <CarouselContent className="ml-0">
           {images.map((src, i) => (
@@ -96,9 +94,25 @@ export function PropertyImageCarousel({
             </CarouselItem>
           ))}
         </CarouselContent>
-        <CarouselPrevious className="left-2 top-1/2" />
-        <CarouselNext className="right-2 top-1/2" />
       </Carousel>
+
+      {/* Edge-centered prev/next — reveal on hover, subtle translucent pill */}
+      <button
+        type="button"
+        aria-label="Previous image"
+        onClick={() => api?.scrollPrev()}
+        className="absolute left-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-black/35 text-white opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-black/55 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        aria-label="Next image"
+        onClick={() => api?.scrollNext()}
+        className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-full bg-black/35 text-white opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-black/55 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </button>
 
       <div className="pointer-events-none absolute inset-x-0 bottom-2 flex items-center justify-center gap-1.5">
         {images.map((_, i) => (

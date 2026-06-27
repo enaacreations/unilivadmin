@@ -70,6 +70,13 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PropertyImageCarousel } from "@/components/property-image-carousel";
 import { PropertyPhotosManager } from "@/components/property-photos-manager";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
   PORTFOLIO_TYPE_LABELS,
   ATTR_LABELS,
   portfolioAttrFields,
@@ -430,7 +437,7 @@ function PropertyPhotoGallery({ propertyId, canEdit }: { propertyId: string; can
     queryKey: foodKeys.propertyPhotos(propertyId),
     queryFn: () => foodApi.listPropertyPhotos(propertyId),
   });
-  const [managing, setManaging] = React.useState(false);
+  const [manageOpen, setManageOpen] = React.useState(false);
   const urls = React.useMemo(
     () =>
       [...photos]
@@ -444,43 +451,49 @@ function PropertyPhotoGallery({ propertyId, canEdit }: { propertyId: string; can
   );
 
   // Non-editors with no photos: render nothing (as before). Editors always
-  // get the card so they can upload the first photo.
+  // get the card so they can open the manager and upload the first photo.
   if (!canEdit && (isLoading || photos.length === 0)) return null;
 
   return (
-    <Card data-testid="property-photo-gallery">
-      <CardContent className="p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="font-display font-semibold text-primary flex items-center gap-2">
-            <ImageIcon className="w-4 h-4" /> Photos
-          </h3>
-          {canEdit && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setManaging((m) => !m)}
-              data-testid="property-photos-manage-toggle"
-            >
-              {managing ? (
-                <>
-                  <ImageIcon className="w-4 h-4 mr-1" /> View
-                </>
-              ) : (
-                <>
-                  <Pencil className="w-4 h-4 mr-1" /> Manage
-                </>
-              )}
-            </Button>
-          )}
-        </div>
-        {canEdit && managing ? (
-          <PropertyPhotosManager propertyId={propertyId} className="" />
-        ) : (
+    <>
+      <Card data-testid="property-photo-gallery">
+        <CardContent className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="font-display font-semibold text-primary flex items-center gap-2">
+              <ImageIcon className="w-4 h-4" /> Photos
+            </h3>
+            {canEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setManageOpen(true)}
+                data-testid="property-photos-manage-toggle"
+              >
+                <Pencil className="w-4 h-4 mr-1" /> Manage Photos
+              </Button>
+            )}
+          </div>
           <PropertyImageCarousel images={urls} aspectClassName="aspect-video" />
-        )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+
+      {canEdit && (
+        <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Manage Photos</DialogTitle>
+              <DialogDescription>
+                Upload new images, set the primary photo, or remove existing ones.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[70vh] overflow-y-auto pr-1">
+              <PropertyPhotosManager propertyId={propertyId} />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
   );
 }
 
