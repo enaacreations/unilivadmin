@@ -92,6 +92,16 @@ const atTime = (d: Date, h: number, m: number) => {
 /** "yyyy-MM-dd" date-only for food serviceDate (IST, no tz drift). */
 const ymd = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/**
+ * IST midnight instant for a yyyy-MM-dd — mirrors the API's ymdToIstDayStart so a
+ * food order buckets on the right IST service day. serviceDate must be the DAY
+ * START, not the meal-hour moment: an evening (>=18:30 IST) timestamp would
+ * otherwise leak into the next day's "next order" window.
+ */
+const istDayStart = (ymdStr: string) => {
+  const [y, m, d] = ymdStr.split("-").map(Number);
+  return new Date(Date.UTC(y!, (m! - 1), d!, 0, 0, 0) - 5.5 * 60 * 60 * 1000);
+};
 
 /** Chunked batch insert with onConflictDoNothing. */
 async function insertChunked<T extends Record<string, unknown>>(
@@ -948,7 +958,7 @@ async function main() {
           residentsCount,
           totalQuantity: String(Math.round(totalQty * 1000) / 1000),
           status,
-          serviceDate: serviceMoment,
+          serviceDate: istDayStart(serviceDateStr),
           notes: null,
           dispatchedById: isDispatched ? (fnbSup ?? unitLeadId) : null,
           dispatchStartedAt: isDispatched ? new Date(serviceMoment.getTime() - 2 * 3_600_000) : null,
