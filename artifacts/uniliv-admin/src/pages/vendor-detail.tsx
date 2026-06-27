@@ -1,9 +1,9 @@
 import * as React from "react";
-import { useParams, useLocation, Link } from "wouter";
+import { useParams, useLocation } from "wouter";
 import { withQuery } from "@/lib/nav-helpers";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { ArrowLeft, Edit, Plus, Star, FileText, Trash2, AlertTriangle, ExternalLink } from "lucide-react";
+import { Edit, Plus, Star, FileText, Trash2, AlertTriangle, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -60,9 +60,6 @@ export default function VendorDetail() {
   return (
     <div className="space-y-6">
       <div>
-        <Link href="/vendors" className="text-sm text-muted-foreground inline-flex items-center hover:text-primary mb-2">
-          <ArrowLeft className="w-4 h-4 mr-1" /> Back to Vendors
-        </Link>
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-3xl font-display font-bold text-primary">{vendor.name}</h1>

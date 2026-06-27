@@ -44,7 +44,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  ChevronLeft,
   Phone,
   Mail,
   MessageSquare,
@@ -197,11 +196,6 @@ export default function ResidentDetail() {
 
   return (
     <div className="space-y-6">
-      <Link href="/residents">
-        <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground" data-testid="link-back-residents">
-          <ChevronLeft className="w-4 h-4 mr-1" /> Back to Residents
-        </Button>
-      </Link>
 
       <div className="flex justify-between items-start gap-4">
         <div className="flex items-center gap-4">

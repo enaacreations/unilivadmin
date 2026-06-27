@@ -13,7 +13,7 @@ import {
   useMarkAttendance,
   useUpdateAttendance,
 } from "@workspace/api-client-react";
-import { useParams, Link } from "wouter";
+import { useParams } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -41,7 +41,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ChevronLeft, LogOut, Plus, Check, X, FileText, Award, AlertTriangle, MessageSquare, FileCheck2, FileClock } from "lucide-react";
+import { LogOut, Plus, Check, X, FileText, Award, AlertTriangle, MessageSquare, FileCheck2, FileClock } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useToast } from "@/hooks/use-toast";
 
@@ -104,11 +104,6 @@ export default function EmployeeDetail() {
 
   return (
     <div className="space-y-6">
-      <Link href="/employees">
-        <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground hover:text-foreground">
-          <ChevronLeft className="w-4 h-4 mr-1" /> Back to Employees
-        </Button>
-      </Link>
 
       <div className="flex justify-between items-start gap-4">
         <div className="flex items-center gap-4">

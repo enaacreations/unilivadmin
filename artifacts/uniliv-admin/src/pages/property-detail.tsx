@@ -19,7 +19,7 @@ import {
   type BookingDto,
   type PropertyDto,
 } from "@workspace/api-client-react";
-import { useParams, Link, useLocation } from "wouter";
+import { useParams, useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -50,7 +50,6 @@ import {
 } from "@/components/ui/table";
 import {
   MapPin,
-  ChevronLeft,
   Bed,
   Users,
   AlertCircle,
@@ -631,11 +630,6 @@ export default function PropertyDetail() {
 
   return (
     <div className="space-y-6">
-      <Link href="/properties">
-        <Button variant="ghost" size="sm" className="mb-2 -ml-2 text-muted-foreground hover:text-foreground" data-testid="link-back-properties">
-          <ChevronLeft className="w-4 h-4 mr-1" /> Back to Properties
-        </Button>
-      </Link>
 
       <div className="flex justify-between items-start">
         <div>

@@ -5,7 +5,7 @@ import { Link } from "wouter"
 export interface PageHeaderProps extends React.HTMLAttributes<HTMLDivElement> {
   title: string
   subtitle?: string
-  breadcrumbs?: { label: string; href?: string }[]
+  breadcrumbs?: { label: string; href?: string; onClick?: () => void }[]
   action?: React.ReactNode
 }
 
@@ -22,6 +22,10 @@ export function PageHeader({ title, subtitle, breadcrumbs, action, className, ..
                   <Link href={crumb.href} className="hover:text-primary transition-colors">
                     {crumb.label}
                   </Link>
+                ) : crumb.onClick ? (
+                  <button type="button" onClick={crumb.onClick} className="hover:text-primary transition-colors">
+                    {crumb.label}
+                  </button>
                 ) : (
                   <span className="text-foreground font-medium">{crumb.label}</span>
                 )}

@@ -11,6 +11,7 @@
     "seed:demo": "tsx ./src/seed-demo.ts",
     "scrape:uniliv": "tsx ./src/scrape-uniliv.ts",
     "import:uniliv": "tsx ./src/import-uniliv-properties.ts",
+    "geocode:properties": "tsx ./src/geocode-properties.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

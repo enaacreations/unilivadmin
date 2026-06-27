@@ -4,17 +4,16 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import jsPDF from "jspdf";
 import {
-  UtensilsCrossed, ChefHat, Loader2, Building2, CalendarDays, Users,
-  Check, ChevronsUpDown, Clock, Lock, Download, Share2, Link2, Copy,
-  Soup, Info, Tag, AlertTriangle, Pencil, Zap, CheckCircle2, Truck, ArrowRight,
-  Image as ImageIcon, FileText, Mail, ChevronDown, ChevronLeft, Plus,
+  UtensilsCrossed, Loader2, Building2, CalendarDays, Users,
+  Check, Clock, Lock, Download, Share2, Link2, Copy,
+  Soup, Tag, AlertTriangle, Pencil, Zap, CheckCircle2, Truck, ArrowRight,
+  Image as ImageIcon, FileText, Mail, ChevronDown, Plus, RotateCcw,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NumberStepper } from "@/components/ui/number-stepper";
-import { BoundedScroll } from "@/components/ui/bounded-scroll";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,10 +21,10 @@ import { Separator } from "@/components/ui/separator";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { Accordion, AccordionItem, AccordionContent } from "@/components/ui/accordion";
+import * as AccordionPrimitive from "@radix-ui/react-accordion";
 import {
   Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle,
 } from "@/components/ui/drawer";
@@ -41,11 +40,12 @@ import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import { isSuperAdminRole } from "@/lib/permissions";
-import { useQueryParam, withQuery } from "@/lib/nav-helpers";
+import { useQueryParam } from "@/lib/nav-helpers";
 import { cn } from "@/lib/utils";
 
-/** Per-item override, keyed `${mealType}__${dishId}`. Editing is disabled for now
- *  ("coming soon"), so every dish is always included and quantities auto-compute. */
+/** Per-item override, keyed `${mealType}__${dishId}`. `excluded` drops the dish;
+ *  `persons` pins a per-dish headcount; `qty` pins an absolute quantity. Persons
+ *  cascades dish → meal → global headcount when not overridden. */
 type Override = { excluded?: boolean; persons?: number; qty?: number };
 
 const todayDate = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
@@ -73,20 +73,21 @@ export default function FoodPlaceOrder() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [, navigate] = useLocation();
-  const { setPropertyId: setGlobalProperty } = useAppStore();
+  const { propertyId: scopeProperty, setPropertyId } = useAppStore();
   const { can, role } = usePermissions();
   const canPlace = can("FOOD_PLACE_ORDER", "create");
   // Download menu stays for Unit Lead + FnB roles (only on the success state).
   const canDownload = role === "UNIT_LEAD" || isSuperAdminRole(role) || (role ?? "").startsWith("FNB_");
 
-  const [propertyOpen, setPropertyOpen] = React.useState(false);
-
   // The single lever: how many people we're serving. Drives every quantity.
   const [persons, setPersons] = React.useState<number>(1);
 
-  // Per-item overrides retained for derivation, but editing is disabled.
-  const [overrides] = React.useState<Record<string, Override>>({});
-  const [activeMeal, setActiveMeal] = React.useState<string>("");
+  // Per-dish overrides (exclude / custom persons / custom qty) + per-meal headcount.
+  const [overrides, setOverrides] = React.useState<Record<string, Override>>({});
+  const [mealPersons, setMealPersons] = React.useState<Record<string, number>>({});
+  // Which meal's accordion is open (single-open; first meal opens by default).
+  const [openMeal, setOpenMeal] = React.useState<string>("");
+  const openMealInit = React.useRef(false);
 
   // Success state (shown after a batch is placed).
   const [placed, setPlaced] = React.useState<{ batch: OrderBatch; orders: FoodOrder[] } | null>(null);
@@ -99,7 +100,7 @@ export default function FoodPlaceOrder() {
   const [shareLink, setShareLink] = React.useState<string | null>(null);
 
   // ── Lookups (properties carry inherited brand + kitchen) ──
-  const { data: lookups, isLoading: lookupsLoading } = useQuery({
+  const { data: lookups } = useQuery({
     queryKey: foodKeys.lookups(),
     queryFn: () => foodApi.lookups(),
   });
@@ -112,17 +113,19 @@ export default function FoodPlaceOrder() {
     queryFn: () => foodApi.nextOrders(),
   });
 
-  // The property in focus is driven entirely by the URL (?propertyId=). No param
-  // → the multi-property board. Selecting a row navigates here with the param.
+  // The property in focus comes from the global navbar property switcher
+  // (store.propertyId): "All Properties" (null) → the multi-property board; a
+  // specific property → its builder/status. A ?propertyId= deep-link (e.g. from
+  // My Properties) seeds the scope once, then we strip the param so the navbar
+  // switcher stays the single source of truth.
   const paramProperty = useQueryParam("propertyId");
-  const propertyId = React.useMemo(() => {
-    if (!paramProperty) return "";
-    const known = properties.some((p) => p.id === paramProperty) || (nextOrdersData ?? []).some((n) => n.propertyId === paramProperty);
-    return known ? paramProperty : "";
-  }, [paramProperty, properties, nextOrdersData]);
-
-  const selectProperty = (id: string) => { setGlobalProperty(id); navigate(withQuery("/food/place-order", { propertyId: id })); };
-  const backToBoard = () => navigate("/food/place-order");
+  React.useEffect(() => {
+    if (paramProperty) {
+      setPropertyId(paramProperty);
+      navigate("/food/place-order", { replace: true });
+    }
+  }, [paramProperty, setPropertyId, navigate]);
+  const propertyId = scopeProperty ?? "";
 
   const selectedProperty = properties.find((p) => p.id === propertyId);
   const myNext = (nextOrdersData ?? []).find((n) => n.propertyId === propertyId) ?? null;
@@ -174,14 +177,8 @@ export default function FoodPlaceOrder() {
     enabled: !!propertyId && configured,
   });
 
-  React.useEffect(() => {
-    if (!preview?.meals) return;
-    const firstOrderable = preview.meals.find((m) => !orderedSet.has(m.mealType));
-    setActiveMeal(firstOrderable?.mealType ?? preview.meals[0]?.mealType ?? "");
-  }, [preview, orderedSet]);
-
-  // Switching property re-evaluates from scratch: collapse the builder.
-  React.useEffect(() => { setShowBuilder(false); }, [propertyId]);
+  // Switching property/date re-evaluates from scratch: collapse the builder + clear edits.
+  React.useEffect(() => { setShowBuilder(false); setOverrides({}); setMealPersons({}); setOpenMeal(""); openMealInit.current = false; }, [propertyId, dateStr]);
 
   // ── Live full-day menu (for download / share on the success state) ──
   const { data: fullMenu, isLoading: menuLoading } = useQuery({
@@ -190,15 +187,27 @@ export default function FoodPlaceOrder() {
     enabled: !!propertyId && configured,
   });
 
-  /** Derived effective state for one dish. Checkboxes/edit are disabled, so every
-   *  dish is included by default and the quantity is always the auto-computed one. */
+  /** Derived effective state for one dish: included unless excluded; persons cascade
+   *  dish-override → meal-override → global headcount; quantity = pinned override or
+   *  persons × per-resident rate. `edited` = this dish has a manual persons/qty. */
   const effFor = React.useCallback((mt: string, dishId: string, qtyPerResident: number) => {
     const ov = overrides[itemKey(mt, dishId)];
     const included = !(ov?.excluded ?? false);
-    const p = ov?.persons ?? persons;
+    const p = ov?.persons ?? mealPersons[mt] ?? persons;
     const qty = ov?.qty ?? round3(p * qtyPerResident);
-    return { included, persons: p, qty };
-  }, [overrides, persons]);
+    const edited = ov?.persons != null || ov?.qty != null;
+    return { included, persons: p, qty, edited };
+  }, [overrides, mealPersons, persons]);
+
+  // ── Per-dish / per-meal edit handlers (the original "customise" editor) ──
+  const patchOverride = (key: string, patch: Override) =>
+    setOverrides((p) => ({ ...p, [key]: { ...p[key], ...patch } }));
+  const resetItem = (mt: string, dishId: string) =>
+    setOverrides((p) => { const n = { ...p }; const cur = { ...n[itemKey(mt, dishId)] }; delete cur.persons; delete cur.qty; n[itemKey(mt, dishId)] = cur; return n; });
+  const toggleAll = (mt: string, dishIds: string[], include: boolean) =>
+    setOverrides((p) => { const n = { ...p }; dishIds.forEach((d) => { n[itemKey(mt, d)] = { ...n[itemKey(mt, d)], excluded: !include }; }); return n; });
+  const setExcluded = (mt: string, dishId: string, excluded: boolean) =>
+    setOverrides((p) => ({ ...p, [itemKey(mt, dishId)]: { ...p[itemKey(mt, dishId)], excluded } }));
 
   // ── Derived order (only meals that have a menu AND aren't already ordered → one
   //    order each). Excluding already-ordered meals means a partial re-order only
@@ -220,6 +229,14 @@ export default function FoodPlaceOrder() {
     meals.forEach((m) => { countByMeal[m.mealType] = m.items.length; });
     return { meals, itemCount, mealCount: meals.length, countByMeal };
   }, [previewMeals, effFor]);
+
+  // Open the first included meal once it's available (single-open accordion); the
+  // user controls it from there.
+  React.useEffect(() => {
+    if (openMealInit.current) return;
+    const first = previewMeals.find((m) => (selection.countByMeal[m.mealType] ?? 0) > 0)?.mealType;
+    if (first) { setOpenMeal(first); openMealInit.current = true; }
+  }, [previewMeals, selection]);
 
   // ── Place order ──
   const placeMutation = useMutation({
@@ -448,7 +465,7 @@ export default function FoodPlaceOrder() {
         <PageHeader
           title="Order placed"
           subtitle="Your meal orders are in. Track each one below."
-          breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order", href: "/food/place-order" }, { label: selectedProperty?.name ?? "Property" }]}
+          breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order", onClick: () => { setPlaced(null); setPropertyId(null); } }, { label: selectedProperty?.name ?? "Property" }]}
         />
         <div className="mx-auto w-full max-w-2xl space-y-5">
           <Card>
@@ -505,7 +522,6 @@ export default function FoodPlaceOrder() {
                 <Share2 className="mr-2 h-4 w-4" /> Share menu
               </Button>
               <div className="ml-auto flex items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={() => { setPlaced(null); setShareLink(null); backToBoard(); }}>All properties</Button>
                 <Button size="sm" onClick={() => { setPlaced(null); setShareLink(null); }}>
                   View order status <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
                 </Button>
@@ -543,7 +559,7 @@ export default function FoodPlaceOrder() {
           properties={nextOrdersData ?? []}
           isLoading={nextOrdersData === undefined}
           canPlace={canPlace}
-          onOpen={selectProperty}
+          onOpen={setPropertyId}
         />
       </div>
     );
@@ -558,16 +574,12 @@ export default function FoodPlaceOrder() {
       <PageHeader
         title="Place Order"
         subtitle="Set the headcount once — quantities are calculated for every dish."
-        breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order", href: "/food/place-order" }, { label: selectedProperty?.name ?? "Property" }]}
+        breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order", onClick: () => setPropertyId(null) }, { label: selectedProperty?.name ?? "Property" }]}
       />
 
-      {/* Back to the multi-property board */}
-      <Button variant="ghost" size="sm" className="-mt-2 w-fit gap-1.5 text-muted-foreground" onClick={backToBoard}>
-        <ChevronLeft className="h-4 w-4" /> All properties
-      </Button>
-
-      {/* ── Cut-off banner ── */}
-      {orderingClosed ? (
+      {/* ── Cut-off banner — status view only; the builder shows the same cut-off
+            inline in its compact context card below. ── */}
+      {showStatus && (orderingClosed ? (
         <div className="flex items-center gap-2.5 rounded-lg border border-destructive/30 bg-destructive/8 px-4 py-3 text-sm text-destructive">
           <Lock className="h-4 w-4 shrink-0" />
           <span>
@@ -584,7 +596,7 @@ export default function FoodPlaceOrder() {
             <Zap className="h-3.5 w-3.5 text-accent" /> {countdown.text} left
           </span>
         </div>
-      ) : null}
+      ) : null)}
 
       {/* ── Status view — this property already has order(s) for the date. We lead
             with status (track / edit) instead of an empty builder; only the meals
@@ -657,80 +669,41 @@ export default function FoodPlaceOrder() {
         </div>
       )}
 
-      <div className={cn("grid grid-cols-1 lg:grid-cols-12 gap-6 items-start", showStatus && "hidden")}>
-        {/* ── Left: builder ── */}
-        <div className="lg:col-span-7 space-y-5">
-          {/* Service context — compact */}
-          <Card>
-            <CardContent className="p-4 space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end">
-                <div className="space-y-1.5 min-w-0">
-                  <Label className="text-xs text-muted-foreground">Property</Label>
-                  <Popover open={propertyOpen} onOpenChange={setPropertyOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" role="combobox" aria-expanded={propertyOpen} className="w-full justify-between font-normal" disabled={lookupsLoading}>
-                        <span className="flex items-center gap-2 truncate">
-                          <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                          <span className="truncate">{selectedProperty?.name ?? (lookupsLoading ? "Loading…" : "Select property")}</span>
-                          {brand && <Badge variant="secondary" className="ml-1 gap-1 text-[10px] shrink-0"><Tag className="h-2.5 w-2.5" />{brand}</Badge>}
-                        </span>
-                        <ChevronsUpDown className="h-4 w-4 opacity-50 shrink-0" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
-                      <Command>
-                        <CommandInput placeholder="Search properties…" />
-                        <CommandList>
-                          <CommandEmpty>No property found.</CommandEmpty>
-                          <CommandGroup>
-                            {properties.map((p) => (
-                              <CommandItem key={p.id} value={p.name} onSelect={() => { selectProperty(p.id); setPropertyOpen(false); }}>
-                                <Check className={cn("mr-2 h-4 w-4", propertyId === p.id ? "opacity-100" : "opacity-0")} />
-                                <span className="flex-1">{p.name}</span>
-                                {p.brand && <Badge variant="outline" className="ml-2 text-[10px]">{p.brand}</Badge>}
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        </CommandList>
-                      </Command>
-                    </PopoverContent>
-                  </Popover>
-                </div>
-                {/* Service date — read-only, the next orderable day for this property */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">Service date</Label>
-                  <div className="flex h-10 items-center gap-2 rounded-md border bg-muted/40 px-3 sm:w-[220px]" aria-readonly="true">
-                    <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="truncate text-sm">
-                      <span className="font-medium">{dayRelLabel}</span>
-                      <span className="text-muted-foreground"> · {dateLabel}</span>
-                    </span>
-                    <Lock className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  </div>
-                </div>
+      <div className={cn("mx-auto w-full max-w-3xl space-y-5", showStatus && "hidden")}>
+          {/* Order context — two labelled tiles: service day (+ cut-off countdown) and headcount. */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border bg-muted/30 px-4 py-3">
+              <p className="text-xs text-muted-foreground">Service day</p>
+              <div className="mt-1.5 flex items-center gap-2 text-sm font-medium">
+                <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
+                {dayRelLabel} <span className="font-normal text-muted-foreground">· {dateLabel}</span>
               </div>
-
-              {/* Hero headcount — the single lever */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-muted/30 p-3">
-                <div className="flex items-center gap-2.5">
-                  <Users className="h-5 w-5 text-accent" />
-                  <span className="text-sm font-medium">Serving</span>
-                  <NumberStepper value={persons} onChange={setPersons} min={0} aria-label="People being served" className="w-auto" />
-                  <span className="text-sm text-muted-foreground">people</span>
-                </div>
-                {overview && overview.activeGuests > 0 && (
-                  <button type="button" onClick={() => setPersons(overview.activeGuests)}
-                    className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors",
-                      persons === overview.activeGuests ? "bg-success/12 text-success" : "bg-muted text-muted-foreground hover:bg-muted/70")}>
-                    <Users className="h-3 w-3" /> {overview.activeGuests} active guests
-                  </button>
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs">
+                {orderingClosed ? (
+                  <><Lock className="h-3.5 w-3.5 shrink-0 text-destructive" /><span className="font-medium text-destructive">Closed{cutoffTime ? ` — ${cutoffTime} cut-off passed` : ""}</span></>
+                ) : cutoffDeadline ? (
+                  <><Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Closes {cutoffTime} · <span className="font-medium tabular-nums text-accent">{countdown.text} left</span></span></>
+                ) : (
+                  <span className="text-muted-foreground">No cut-off configured</span>
                 )}
-                <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Zap className="h-3.5 w-3.5 text-accent" /> quantities are updated live
-                </span>
               </div>
-            </CardContent>
-          </Card>
+            </div>
+            <div className="rounded-xl border bg-muted/30 px-4 py-3">
+              <p className="text-xs text-muted-foreground">Headcount</p>
+              <div className="mt-1.5 flex items-center gap-2">
+                <Users className="h-4 w-4 shrink-0 text-accent" />
+                <NumberStepper value={persons} onChange={setPersons} min={0} aria-label="People being served" className="w-auto" />
+                <span className="text-sm text-muted-foreground">people</span>
+              </div>
+              {overview && overview.activeGuests > 0 && (
+                <button type="button" onClick={() => setPersons(overview.activeGuests)}
+                  className={cn("mt-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors",
+                    persons === overview.activeGuests ? "bg-success/12 text-success" : "bg-muted text-muted-foreground hover:bg-muted/70")}>
+                  <Users className="h-3 w-3" /> Use {overview.activeGuests} active guests
+                </button>
+              )}
+            </div>
+          </div>
 
           {/* Per-meal builder */}
           {!configured ? (
@@ -746,163 +719,152 @@ export default function FoodPlaceOrder() {
               <EmptyState icon={Soup} title={`Nothing left to order for ${dayRelLabel.toLowerCase()}`} description={hasExistingOrders ? "Every meal on this property's menu for this date is already ordered." : `No menu is configured for this property's kitchen and brand on ${dateLabel}.`} />
             </CardContent></Card>
           ) : (
-            <Tabs value={activeMeal} onValueChange={setActiveMeal} className="space-y-3">
-              {/* Menu actions — surfaced as soon as a menu is loaded (not only post-order). */}
-              {(canDownload || hasMenu) && (
-                <div className="flex flex-wrap items-center gap-2">
-                  {canDownload && <MenuDownloadButton />}
-                  <Button type="button" variant="outline" size="sm" onClick={() => { setShareLink(null); setShareOpen(true); }} disabled={!hasMenu}>
-                    <Share2 className="mr-2 h-4 w-4" /> Share menu
-                  </Button>
-                </div>
-              )}
-              <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto bg-transparent p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="space-y-3">
+              {/* Meal selector — tap a meal to add/remove it from this batch. Un-picked
+                  meals are skipped; come back and order them anytime. Already-placed
+                  meals show as locked "ordered" chips. */}
+              <div className="flex flex-wrap items-center gap-2">
                 {previewMeals.map((meal) => {
-                  const count = selection.countByMeal[meal.mealType] ?? 0;
+                  const dishIds = meal.items.map((i) => i.dishId);
+                  const included = (selection.countByMeal[meal.mealType] ?? 0) > 0;
                   return (
-                    <TabsTrigger key={meal.mealType} value={meal.mealType}
-                      className="shrink-0 gap-2 rounded-lg border border-transparent px-3 py-2 data-[state=active]:border-border data-[state=active]:bg-card">
-                      <Soup className="h-3.5 w-3.5 text-accent" />
-                      <span className="font-medium">{meal.label}</span>
-                      <Badge variant={count > 0 ? "default" : "secondary"} className="h-5 min-w-5 justify-center px-1.5 text-[10px]">{count}</Badge>
-                    </TabsTrigger>
+                    <button key={meal.mealType} type="button" disabled={orderingClosed}
+                      onClick={() => toggleAll(meal.mealType, dishIds, !included)}
+                      aria-pressed={included}
+                      className={cn("inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors disabled:opacity-50",
+                        included
+                          ? "border-accent bg-accent text-white hover:bg-accent/90"
+                          : "border-border bg-transparent text-muted-foreground hover:bg-muted/50")}>
+                      {included ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                      {meal.label} · {meal.items.length}
+                    </button>
                   );
                 })}
-              </TabsList>
+                {orderedMeals
+                  .filter((o) => !previewMeals.some((m) => m.mealType === o.mealType))
+                  .map((o) => (
+                    <span key={o.orderId}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-success/25 bg-success/12 px-3.5 py-2 text-sm font-medium text-success">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> {o.label ?? MEAL_LABEL[o.mealType] ?? o.mealType} · ordered
+                    </span>
+                  ))}
+              </div>
+              <p className="px-0.5 text-xs text-muted-foreground">
+                {selection.mealCount} of {previewMeals.length} meal{previewMeals.length === 1 ? "" : "s"} in this order · tap to toggle — order the rest anytime.
+              </p>
 
-              {/* B3-16: This screen does NOT let the user pick individual dishes —
-                  the menu is auto-derived from the configured rotation/composition
-                  (per-dish include/exclude is "coming soon" and disabled below, so
-                  every dish is always included). There is therefore no dish selection
-                  to validate or hard-block here; the composition hard-block lives in
-                  Food Settings → Menu Rotation, where dishes are actually chosen. */}
-              {previewMeals.map((meal) => {
-                const dishIds = meal.items.map((i) => i.dishId);
+              {/* Per-dish include/exclude + quantity overrides are editable inline below.
+                  The order-batch endpoint accepts the resulting subset of dishes/quantities
+                  (each dishId is validated against the menu); composition rules are NOT
+                  hard-blocked on this path — that lives in Food Settings → Menu Rotation. */}
+              <Accordion type="single" collapsible value={openMeal} onValueChange={setOpenMeal} className="space-y-2.5">
+              {previewMeals.filter((meal) => (selection.countByMeal[meal.mealType] ?? 0) > 0).map((meal) => {
+                const mealHead = mealPersons[meal.mealType];
                 return (
-                  <TabsContent key={meal.mealType} value={meal.mealType} className="mt-0">
-                    <Card>
-                      <CardHeader className="flex-row items-center justify-between gap-3 space-y-0 py-3">
-                        {/* Select-all checkbox — DISABLED ("coming soon"); all dishes always included */}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <label className="flex items-center gap-2 text-sm opacity-60" aria-disabled="true">
-                              <Checkbox checked disabled aria-label={`Include all ${meal.label}`} />
-                              <span className="text-muted-foreground">All {dishIds.length} dishes included</span>
-                              <Badge variant="outline" className="text-[9px] uppercase">coming soon</Badge>
-                            </label>
-                          </TooltipTrigger>
-                          <TooltipContent>Selecting individual dishes is coming soon — all dishes are included for now.</TooltipContent>
-                        </Tooltip>
-                      </CardHeader>
-                      <Separator />
-                      <CardContent className="p-0">
-                        <BoundedScroll size="lg">
-                          <ul className="divide-y">
+                  <AccordionItem key={meal.mealType} value={meal.mealType} className="overflow-hidden rounded-xl border bg-card">
+                    <AccordionPrimitive.Header className="flex items-center gap-3 px-4 py-2.5">
+                      <AccordionPrimitive.Trigger className="group flex flex-1 items-center gap-2 text-left text-sm font-medium">
+                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
+                        <span>{meal.label} <span className="font-normal text-muted-foreground">· {meal.items.length} dishes</span></span>
+                      </AccordionPrimitive.Trigger>
+                      {/* Per-meal headcount lives in the header. stopPropagation so tapping the
+                          stepper adjusts persons without toggling the accordion. */}
+                      <div className="flex items-center gap-2" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+                        <span className="hidden text-xs text-muted-foreground sm:inline">persons</span>
+                        <NumberStepper value={mealHead ?? persons} min={0}
+                          onChange={(n) => setMealPersons((p) => ({ ...p, [meal.mealType]: n }))}
+                          aria-label={`${meal.label} persons`} className="w-auto" />
+                        {mealHead != null && mealHead !== persons && (
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground" aria-label="Reset meal persons"
+                            onClick={(e) => { e.stopPropagation(); setMealPersons((p) => { const n = { ...p }; delete n[meal.mealType]; return n; }); }}>
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    </AccordionPrimitive.Header>
+                    <AccordionContent className="p-0">
+                      <ul className="divide-y border-t">
                             {meal.items.map((it) => {
                               const e = effFor(meal.mealType, it.dishId, it.qtyPerResident);
                               return (
-                                <li key={it.dishId} className="flex items-center gap-3 px-4 py-2.5">
-                                  {/* Per-item include checkbox — DISABLED ("coming soon") */}
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <span className="inline-flex" aria-disabled="true">
-                                        <Checkbox checked disabled aria-label={`Include ${it.dishName}`} />
-                                      </span>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Including/excluding dishes is coming soon.</TooltipContent>
-                                  </Tooltip>
+                                <li key={it.dishId} className={cn("flex items-center gap-3 px-4 py-2.5", !e.included && "opacity-50")}>
+                                  <Checkbox checked={e.included} disabled={orderingClosed}
+                                    onCheckedChange={(v) => setExcluded(meal.mealType, it.dishId, !v)}
+                                    aria-label={`Include ${it.dishName}`} />
                                   <div className="min-w-0 flex-1">
-                                    <p className="truncate text-sm font-medium">{it.dishName}</p>
+                                    <div className="flex items-center gap-1.5">
+                                      <p className="truncate text-sm font-medium">{it.dishName}</p>
+                                      {e.edited && <Badge variant="default" className="text-[9px] px-1.5 py-0">edited</Badge>}
+                                    </div>
                                     <p className="truncate text-xs text-muted-foreground">
                                       {it.slotLabel ? `${it.slotLabel} · ` : ""}
-                                      {fmtQty(it.qtyPerResident, it.unit)}/person
+                                      {e.edited ? `${e.persons} persons` : `${fmtQty(it.qtyPerResident, it.unit)}/person`}
                                     </p>
                                   </div>
                                   <div className="shrink-0 text-right tabular-nums">
-                                    <span className="text-sm font-semibold">{fmtQty(e.qty, it.unit)}</span>
+                                    <span className={cn("text-sm font-semibold", !e.included && "text-muted-foreground")}>
+                                      {e.included ? fmtQty(e.qty, it.unit) : "—"}
+                                    </span>
                                   </div>
-                                  {/* Edit pencil — DISABLED ("coming soon") */}
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <span className="inline-flex">
-                                        <Button variant="ghost" size="icon" disabled className="h-8 w-8 shrink-0 text-muted-foreground" aria-label={`Customise ${it.dishName} (coming soon)`}>
-                                          <Pencil className="h-3.5 w-3.5" />
+                                  <Popover>
+                                    <PopoverTrigger asChild>
+                                      <Button variant="ghost" size="icon" disabled={orderingClosed || !e.included}
+                                        className={cn("h-8 w-8 shrink-0", e.edited ? "text-accent" : "text-muted-foreground")}
+                                        aria-label={`Customise ${it.dishName}`}>
+                                        <Pencil className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </PopoverTrigger>
+                                    <PopoverContent align="end" className="w-64 space-y-3">
+                                      <div>
+                                        <p className="text-sm font-medium">{it.dishName}</p>
+                                        <p className="text-xs text-muted-foreground">{fmtQty(it.qtyPerResident, it.unit)} per person</p>
+                                      </div>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <Label className="text-xs">Persons</Label>
+                                        <NumberStepper value={e.persons} min={0} className="w-auto"
+                                          onChange={(n) => patchOverride(itemKey(meal.mealType, it.dishId), { persons: n, qty: undefined })}
+                                          aria-label="Override persons" />
+                                      </div>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <Label className="text-xs">Quantity ({it.unit.toLowerCase()})</Label>
+                                        <NumberStepper value={e.qty} min={0} step={0.001} className="w-auto"
+                                          onChange={(n) => patchOverride(itemKey(meal.mealType, it.dishId), { qty: n })}
+                                          aria-label="Override quantity" />
+                                      </div>
+                                      {e.edited && (
+                                        <Button variant="outline" size="sm" className="w-full"
+                                          onClick={() => resetItem(meal.mealType, it.dishId)}>
+                                          <RotateCcw className="mr-2 h-3.5 w-3.5" /> Reset to calculated
                                         </Button>
-                                      </span>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Per-dish quantity editing is coming soon.</TooltipContent>
-                                  </Tooltip>
+                                      )}
+                                    </PopoverContent>
+                                  </Popover>
                                 </li>
                               );
                             })}
-                          </ul>
-                        </BoundedScroll>
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
+                      </ul>
+                    </AccordionContent>
+                  </AccordionItem>
                 );
               })}
-            </Tabs>
+              </Accordion>
+            </div>
           )}
-        </div>
-
-        {/* ── Right: summary ── */}
-        <div className="lg:col-span-5">
-          <Card className="lg:sticky lg:top-6">
-            <CardHeader className="pb-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="font-display flex items-center gap-2 text-base"><ChefHat className="h-5 w-5 text-accent" /> Order summary</CardTitle>
-                  <CardDescription className="mt-1 flex flex-wrap items-center gap-1.5">
-                    {brand && <Badge variant="secondary" className="text-[10px] uppercase tracking-wider">{brand}</Badge>}
-                    <span className="inline-flex items-center gap-1 text-xs"><Users className="h-3 w-3" /> {persons} people</span>
-                    <span className="inline-flex items-center gap-1 text-xs"><CalendarDays className="h-3 w-3" /> {dateLabel}</span>
-                  </CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <Separator />
-            <CardContent className="p-4">
-              {selection.mealCount === 0 ? (
-                <EmptyState icon={Info} title="Nothing to order" description="Set the headcount — every dish on tomorrow's menu is included automatically." />
-              ) : (
-                <BoundedScroll size="md">
-                  <div className="space-y-3 pr-1">
-                    {selection.meals.map((m) => (
-                      <div key={m.mealType} className="rounded-lg border">
-                        <div className="border-b px-3 py-2 text-sm font-semibold font-display">{m.label ?? MEAL_LABEL[m.mealType as keyof typeof MEAL_LABEL] ?? m.mealType}</div>
-                        <ul className="divide-y">
-                          {m.items.map((it) => (
-                            <li key={it.dishId} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm">
-                              <span className="truncate">{it.dishName}</span>
-                              <span className="shrink-0 text-muted-foreground tabular-nums">{fmtQty(it.orderedQty, it.unit)}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))}
-                  </div>
-                </BoundedScroll>
-              )}
-            </CardContent>
-            {selection.mealCount > 0 && (
-              <>
-                <Separator />
-                <div className="flex items-center justify-between p-4">
-                  <div className="text-sm">
-                    <span className="text-muted-foreground">{selection.mealCount} meal{selection.mealCount === 1 ? "" : "s"} · </span>
-                    <span className="font-semibold">{selection.itemCount} item{selection.itemCount === 1 ? "" : "s"}</span>
-                  </div>
-                  <Button onClick={handlePlace} disabled={saving || !canPlace || orderingClosed}>
-                    {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UtensilsCrossed className="mr-2 h-4 w-4" />}
-                    Place order
-                    {selection.itemCount > 0 && <Badge variant="secondary" className="ml-2 bg-white/20 text-white border-0">{selection.itemCount}</Badge>}
-                  </Button>
-                </div>
-              </>
-            )}
-          </Card>
-        </div>
+        {/* Place order action bar — totals + CTA. The per-meal dishes live in the
+            stacked sections above, so we don't repeat the dish list here. */}
+        {selection.mealCount > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
+            <div className="text-sm">
+              <span className="text-muted-foreground">{selection.mealCount} meal{selection.mealCount === 1 ? "" : "s"} · </span>
+              <span className="font-semibold">{selection.itemCount} item{selection.itemCount === 1 ? "" : "s"}</span>
+            </div>
+            <Button onClick={handlePlace} disabled={saving || !canPlace || orderingClosed}>
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UtensilsCrossed className="mr-2 h-4 w-4" />}
+              Place order
+              {selection.itemCount > 0 && <Badge variant="secondary" className="ml-2 bg-white/20 text-white border-0">{selection.itemCount}</Badge>}
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Share drawer — copy link OR dispatch to active guests (available pre-order too) */}

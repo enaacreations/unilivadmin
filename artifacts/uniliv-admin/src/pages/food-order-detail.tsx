@@ -3,7 +3,6 @@ import { useLocation, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
-  ArrowLeft,
   Truck,
   MapPin,
   User,
@@ -287,14 +286,6 @@ export default function FoodOrderDetail() {
           icon={PackageX}
           title="Order not found"
           description="We couldn't find this order. It may have been removed, or the link is incorrect."
-          action={
-            <Button
-              variant="outline"
-              onClick={() => navigate("/food/orders")}
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" /> Back to Orders
-            </Button>
-          }
         />
       </div>
     );
@@ -370,9 +361,6 @@ export default function FoodOrderDetail() {
                 <Ban className="w-4 h-4 mr-2" /> Cancel order
               </Button>
             )}
-            <Button variant="outline" onClick={() => navigate("/food/orders")}>
-              <ArrowLeft className="w-4 h-4 mr-2" /> Back to Orders
-            </Button>
           </div>
         }
       />
