@@ -40,7 +40,7 @@ import {
   systemConfigTable,
   propertyPhotosTable,
 } from "@workspace/db";
-import { and, eq, or, ilike, sql, desc, asc, gte, lte, inArray, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, or, ilike, sql, desc, asc, gte, lte, lt, inArray, notInArray, isNull, isNotNull } from "drizzle-orm";
 import { getObjectUrl, isStorageConfigured } from "@workspace/storage";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
@@ -62,7 +62,7 @@ import {
 import { notify, notifyOrderEvent } from "../lib/notification-service.js";
 import { toCsv, toPdf, toXls, fmtDate, fmtDateTime, fileDateStamp, sanitizeForFilename } from "../lib/export-service.js";
 import { blindIndex } from "../lib/field-crypto.js";
-import { istDayYmd, addDaysYmd, atIst } from "../lib/tz.js";
+import { istDayYmd, addDaysYmd, atIst, ymdToIstDayStart } from "../lib/tz.js";
 import { z } from "zod";
 
 export const foodOpsRouter: Router = Router();
@@ -1255,6 +1255,30 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
     const cutoffError = await checkOrderCutoff(brand, propertyId, sd);
     if (cutoffError) { res.status(422).json({ success: false, error: cutoffError }); return; }
 
+    // Dedupe guard — a property+meal+service-day already covered by a LIVE order
+    // (anything not cancelled/rejected) cannot be ordered again. This is the
+    // server-side backstop against duplicate orders; the UI also only ever offers
+    // the meals that are still un-ordered for the day.
+    const dayStart = ymdToIstDayStart(istDayYmd(sd));
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const liveOrders = await db
+      .select({ mealType: foodOrdersTable.mealType })
+      .from(foodOrdersTable)
+      .where(and(
+        eq(foodOrdersTable.propertyId, propertyId),
+        gte(foodOrdersTable.serviceDate, dayStart),
+        lt(foodOrdersTable.serviceDate, dayEnd),
+        notInArray(foodOrdersTable.status, ["CANCELLED", "REJECTED"]),
+      ));
+    const alreadyOrdered = new Set<string>(liveOrders.map((o) => o.mealType));
+    const mealsToPlace = meals.filter(
+      (m) => (MEAL_TYPES as readonly string[]).includes(m.mealType) && !alreadyOrdered.has(m.mealType),
+    );
+    if (!mealsToPlace.length) {
+      res.status(409).json({ success: false, error: "An order for the selected meal(s) already exists for this date." });
+      return;
+    }
+
     const now = new Date();
     const batchNumber = await nextSeq(`BATCH-${now.getFullYear()}-`, foodOrderBatchesTable.batchNumber, foodOrderBatchesTable);
     const [batch] = await db.insert(foodOrderBatchesTable).values({
@@ -1265,7 +1289,7 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
     const [prop] = await db.select({ name: propertiesTable.name }).from(propertiesTable).where(eq(propertiesTable.id, propertyId));
     const created: any[] = [];
 
-    for (const meal of meals) {
+    for (const meal of mealsToPlace) {
       if (!(MEAL_TYPES as readonly string[]).includes(meal.mealType)) continue; // skip invalid meal types
       const menu = await resolveMenu(kitchenId, brand, meal.mealType, sd);
       const allowed = new Set(menu.map((m) => m.dishId));
@@ -2820,6 +2844,100 @@ foodOpsRouter.get("/my-properties", authenticate, authorize("FOOD_DASHBOARD", "v
         images: imagesByProp.get(p.id) ?? [],
       };
     });
+    res.json({ success: true, data });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/**
+ * Next Orders board — for each accessible property, resolve the NEXT orderable
+ * service day (tomorrow, or the day after if tomorrow's cut-off has passed), the
+ * meals that have a menu that day, and which of them already have a LIVE order.
+ * Powers the multi-property "Next Orders" command centre so a unit lead sees, in
+ * one place, exactly which properties still need an order placed.
+ */
+foodOpsRouter.get("/next-orders", authenticate, authorize("FOOD_PLACE_ORDER", "view"), async (req, res) => {
+  try {
+    const ids = await resolveAccessiblePropertyIds(req.user!);
+    const where = ids === null ? undefined : (ids.length ? inArray(propertiesTable.id, ids) : sql`false`);
+    const props = await db.select({
+      id: propertiesTable.id, name: propertiesTable.name, city: propertiesTable.city,
+      brand: propertiesTable.brand, kitchenId: propertiesTable.kitchenId,
+    }).from(propertiesTable).where(where).orderBy(propertiesTable.name);
+    if (!props.length) { res.json({ success: true, data: [] }); return; }
+    const propIds = props.map((p) => p.id);
+
+    // Active-guest headcount per property (seeds the builder's "Serving" count).
+    const guests = await db.select({ propertyId: residentsTable.propertyId, c: sql<number>`count(*)::int` })
+      .from(residentsTable).where(and(inArray(residentsTable.propertyId, propIds), eq(residentsTable.status, "ACTIVE")))
+      .groupBy(residentsTable.propertyId);
+    const guestCount = new Map(guests.map((g) => [g.propertyId, g.c]));
+
+    // Enabled meal config — resolved once; gives per-meal display labels.
+    const mealCfg = await db.select().from(foodMealConfigTable).where(eq(foodMealConfigTable.isEnabled, true)).orderBy(foodMealConfigTable.sortOrder);
+    const labelByMeal = new Map(mealCfg.map((c) => [c.mealType, c.displayLabel]));
+
+    const todayYmd = istDayYmd(new Date());
+    const now = new Date();
+
+    const data = await Promise.all(props.map(async (p) => {
+      const { brand, kitchenId } = p;
+      const configured = Boolean(brand && kitchenId);
+      const activeGuests = guestCount.get(p.id) ?? 0;
+      const base = { propertyId: p.id, name: p.name, city: p.city, brand, configured, activeGuests };
+      if (!configured) {
+        return { ...base, serviceDate: addDaysYmd(todayYmd, 1), cutoffTime: null, cutoffAt: null, isPastCutoff: false, availableMeals: [], orderedMeals: [], status: "NOT_CONFIGURED" as const };
+      }
+
+      // Resolve the next orderable IST day: tomorrow unless its (day-before-
+      // anchored) cut-off has already passed, in which case the day after — whose
+      // cut-off is a further day out and therefore still in the future.
+      const cutoffTime = await resolveCutoff(brand!, p.id);
+      let serviceYmd = addDaysYmd(todayYmd, 1);
+      let cutoffAt = cutoffTime ? atIst(addDaysYmd(serviceYmd, -1), cutoffTime) : null;
+      if (cutoffAt && now > cutoffAt) {
+        serviceYmd = addDaysYmd(todayYmd, 2);
+        cutoffAt = cutoffTime ? atIst(addDaysYmd(serviceYmd, -1), cutoffTime) : null;
+      }
+      const isPastCutoff = Boolean(cutoffAt && now > cutoffAt);
+      const sd = ymdToIstDayStart(serviceYmd);
+      const dayEnd = new Date(sd.getTime() + 24 * 60 * 60 * 1000);
+
+      // Meals that have a resolvable menu for that day.
+      const availableMeals: { mealType: string; label: string }[] = [];
+      for (const c of mealCfg) {
+        if (c.brand && c.brand !== brand) continue;
+        const dishes = await resolveMenu(kitchenId!, brand!, c.mealType, sd);
+        if (dishes.length) availableMeals.push({ mealType: c.mealType, label: c.displayLabel });
+      }
+
+      // Live (non-cancelled/rejected) orders already on the books for that day.
+      const existing = await db.select({
+        id: foodOrdersTable.id, orderNumber: foodOrdersTable.orderNumber,
+        mealType: foodOrdersTable.mealType, status: foodOrdersTable.status,
+      }).from(foodOrdersTable).where(and(
+        eq(foodOrdersTable.propertyId, p.id),
+        gte(foodOrdersTable.serviceDate, sd),
+        lt(foodOrdersTable.serviceDate, dayEnd),
+        notInArray(foodOrdersTable.status, ["CANCELLED", "REJECTED"]),
+      ));
+      const orderedMeals = existing.map((o) => ({
+        mealType: o.mealType, orderId: o.id, orderNumber: o.orderNumber, status: o.status,
+        label: labelByMeal.get(o.mealType) ?? o.mealType,
+      }));
+      const orderedSet = new Set<string>(orderedMeals.map((o) => o.mealType));
+
+      let status: "NOT_ORDERED" | "PARTIAL" | "ORDERED" | "NO_MENU";
+      if (!availableMeals.length) {
+        status = orderedMeals.length ? "ORDERED" : "NO_MENU";
+      } else if (orderedMeals.length === 0) {
+        status = "NOT_ORDERED";
+      } else {
+        status = availableMeals.every((m) => orderedSet.has(m.mealType)) ? "ORDERED" : "PARTIAL";
+      }
+
+      return { ...base, serviceDate: serviceYmd, cutoffTime, cutoffAt: cutoffAt ? cutoffAt.toISOString() : null, isPastCutoff, availableMeals, orderedMeals, status };
+    }));
+
     res.json({ success: true, data });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

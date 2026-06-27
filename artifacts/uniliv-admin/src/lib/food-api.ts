@@ -314,6 +314,21 @@ export interface MyPropertyCard {
   heroImageUrl?: string | null;
   images?: string[];
 }
+// ─── Next Orders board (multi-property command centre) ────────────────────────
+export type NextOrderStatus = "NOT_ORDERED" | "PARTIAL" | "ORDERED" | "NO_MENU" | "NOT_CONFIGURED";
+export interface NextOrderMeal { mealType: MealType; label: string; orderId: string; orderNumber: string; status: OrderStatus }
+export interface NextOrderProperty {
+  propertyId: string; name: string; city: string | null; brand: string | null;
+  configured: boolean; activeGuests: number;
+  serviceDate: string;            // yyyy-MM-dd — next orderable IST day for this property
+  cutoffTime: string | null;      // "HH:MM"
+  cutoffAt: string | null;        // ISO instant the cut-off elapses for serviceDate
+  isPastCutoff: boolean;
+  availableMeals: { mealType: MealType; label: string }[];
+  orderedMeals: NextOrderMeal[];
+  status: NextOrderStatus;
+}
+
 export interface RevenueData { months: { month: string; total: number }[] }
 export interface FullMenuMeal { mealType: MealType; label: string; dishes: { dishId: string; dishName: string; component: string; unit: string; slotLabel: string | null; sortOrder: number }[] }
 export interface FullMenu { brand: FoodBrand; date: string; meals: FullMenuMeal[] }
@@ -417,6 +432,7 @@ export const foodKeys = {
   guests: (p: Record<string, unknown>) => ["food", "guests", p] as const,
   propertyOverview: (p: Record<string, unknown>) => ["food", "property-overview", p] as const,
   myProperties: () => ["food", "my-properties"] as const,
+  nextOrders: () => ["food", "next-orders"] as const,
   revenue: (p: Record<string, unknown>) => ["food", "revenue", p] as const,
   fullMenu: (p: Record<string, unknown>) => ["food", "full-menu", p] as const,
   kitchenByPincode: (pincode: string) => ["food", "kitchen-by-pincode", pincode] as const,
@@ -682,6 +698,7 @@ export const foodApi = {
 
   // Unit-Lead home insights
   myProperties: () => apiFetch<Envelope<MyPropertyCard[]>>(`/food/my-properties`).then((r) => r.data),
+  nextOrders: () => apiFetch<Envelope<NextOrderProperty[]>>(`/food/next-orders`).then((r) => r.data),
   propertyOverview: (p: Record<string, unknown> = {}) => apiFetch<Envelope<PropertyOverview | null>>(`/food/property-overview${qs(p)}`).then((r) => r.data),
   revenue: (p: Record<string, unknown> = {}) => apiFetch<Envelope<RevenueData>>(`/food/revenue${qs(p)}`).then((r) => r.data),
   guests: (p: Record<string, unknown> = {}) => apiFetch<Envelope<GuestRow[]>>(`/food/guests${qs(p)}`),

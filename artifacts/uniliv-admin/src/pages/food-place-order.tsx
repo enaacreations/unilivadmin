@@ -7,7 +7,7 @@ import {
   UtensilsCrossed, ChefHat, Loader2, Building2, CalendarDays, Users,
   Check, ChevronsUpDown, Clock, Lock, Download, Share2, Link2, Copy,
   Soup, Info, Tag, AlertTriangle, Pencil, Zap, CheckCircle2, Truck, ArrowRight,
-  Image as ImageIcon, FileText, Mail, ChevronDown,
+  Image as ImageIcon, FileText, Mail, ChevronDown, ChevronLeft, Plus,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -34,13 +34,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   foodApi, foodKeys, MEAL_LABEL, fmtQty,
-  type Cutoff, type FoodOrder, type OrderBatch, type OrderPreview, type PropertyOverview,
+  type FoodOrder, type OrderBatch, type OrderPreview, type PropertyOverview,
+  type NextOrderProperty, type NextOrderStatus,
 } from "@/lib/food-api";
 import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import { isSuperAdminRole } from "@/lib/permissions";
-import { useQueryParam } from "@/lib/nav-helpers";
+import { useQueryParam, withQuery } from "@/lib/nav-helpers";
 import { cn } from "@/lib/utils";
 
 /** Per-item override, keyed `${mealType}__${dishId}`. Editing is disabled for now
@@ -72,19 +73,13 @@ export default function FoodPlaceOrder() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [, navigate] = useLocation();
-  const { propertyId: storePropertyId } = useAppStore();
+  const { setPropertyId: setGlobalProperty } = useAppStore();
   const { can, role } = usePermissions();
   const canPlace = can("FOOD_PLACE_ORDER", "create");
   // Download menu stays for Unit Lead + FnB roles (only on the success state).
   const canDownload = role === "UNIT_LEAD" || isSuperAdminRole(role) || (role ?? "").startsWith("FNB_");
 
-  const [propertyId, setPropertyId] = React.useState<string>("");
   const [propertyOpen, setPropertyOpen] = React.useState(false);
-
-  // Service date is ALWAYS tomorrow (today + 1) and read-only — no picker.
-  const date = React.useMemo(() => addDays(todayDate(), 1), []);
-  const dateStr = format(date, "yyyy-MM-dd");
-  const dateLabel = format(date, "EEE, dd MMM yyyy");
 
   // The single lever: how many people we're serving. Drives every quantity.
   const [persons, setPersons] = React.useState<number>(1);
@@ -96,12 +91,9 @@ export default function FoodPlaceOrder() {
   // Success state (shown after a batch is placed).
   const [placed, setPlaced] = React.useState<{ batch: OrderBatch; orders: FoodOrder[] } | null>(null);
 
-  // po4 — when an order already exists for tomorrow we lead with an "already placed"
-  // panel instead of the builder. "Place another order" reveals the builder anyway.
+  // When a property already has order(s) for the date we lead with a status view.
+  // "Add the missing meal(s)" reveals the builder, scoped to un-ordered meals only.
   const [showBuilder, setShowBuilder] = React.useState(false);
-  // Set once the user places in THIS session, so we never bounce them back to the
-  // "already placed" panel after a successful batch.
-  const [placedThisSession, setPlacedThisSession] = React.useState(false);
 
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareLink, setShareLink] = React.useState<string | null>(null);
@@ -113,17 +105,38 @@ export default function FoodPlaceOrder() {
   });
   const properties = lookups?.properties ?? [];
 
+  // ── Next-order status across every property tagged to me (powers the board AND
+  //    the per-property gating: resolved service date, cut-off, ordered/missing). ──
+  const { data: nextOrdersData } = useQuery({
+    queryKey: foodKeys.nextOrders(),
+    queryFn: () => foodApi.nextOrders(),
+  });
+
+  // The property in focus is driven entirely by the URL (?propertyId=). No param
+  // → the multi-property board. Selecting a row navigates here with the param.
   const paramProperty = useQueryParam("propertyId");
-  React.useEffect(() => {
-    if (propertyId) return;
-    const valid = (id?: string | null) => !!id && properties.some((p) => p.id === id);
-    const wanted = valid(paramProperty) ? paramProperty! : valid(storePropertyId) ? storePropertyId! : (properties[0]?.id ?? "");
-    if (wanted) setPropertyId(wanted);
-  }, [properties, storePropertyId, paramProperty, propertyId]);
+  const propertyId = React.useMemo(() => {
+    if (!paramProperty) return "";
+    const known = properties.some((p) => p.id === paramProperty) || (nextOrdersData ?? []).some((n) => n.propertyId === paramProperty);
+    return known ? paramProperty : "";
+  }, [paramProperty, properties, nextOrdersData]);
+
+  const selectProperty = (id: string) => { setGlobalProperty(id); navigate(withQuery("/food/place-order", { propertyId: id })); };
+  const backToBoard = () => navigate("/food/place-order");
 
   const selectedProperty = properties.find((p) => p.id === propertyId);
-  const brand = selectedProperty?.brand ?? null;
-  const configured = Boolean(selectedProperty?.brand && selectedProperty?.kitchenId);
+  const myNext = (nextOrdersData ?? []).find((n) => n.propertyId === propertyId) ?? null;
+  const brand = selectedProperty?.brand ?? myNext?.brand ?? null;
+  const configured = selectedProperty ? Boolean(selectedProperty.brand && selectedProperty.kitchenId) : (myNext?.configured ?? false);
+
+  // Service date is the NEXT orderable IST day for this property (tomorrow, or the
+  // day after if tomorrow's cut-off has passed) — resolved server-side.
+  const tomorrowStr = React.useMemo(() => format(addDays(todayDate(), 1), "yyyy-MM-dd"), []);
+  const dateStr = myNext?.serviceDate ?? tomorrowStr;
+  const date = React.useMemo(() => { const [y, m, d] = dateStr.split("-").map(Number); return new Date(y, (m ?? 1) - 1, d ?? 1); }, [dateStr]);
+  const isTomorrow = dateStr === tomorrowStr;
+  const dateLabel = format(date, "EEE, dd MMM yyyy");
+  const dayRelLabel = isTomorrow ? "Tomorrow" : format(date, "EEE");
 
   // Seed headcount from the property's active-guest count.
   const { data: overview } = useQuery<PropertyOverview | null>({
@@ -135,25 +148,24 @@ export default function FoodPlaceOrder() {
     if (overview && overview.activeGuests > 0) setPersons(overview.activeGuests);
   }, [overview?.id]);
 
-  // ── Cut-offs (day-before-anchored cutoffAt / isPastCutoff from the server) ──
-  const { data: cutoffsRaw } = useQuery({
-    queryKey: foodKeys.cutoffs({ brand, propertyId, date: dateStr }),
-    queryFn: () => foodApi.cutoffs({ brand: brand!, propertyId, date: dateStr }),
-    enabled: !!propertyId && !!brand,
-  });
-  const cutoffByMeal = React.useMemo(() => {
-    const map: Record<string, Cutoff> = {};
-    (cutoffsRaw ?? []).forEach((c) => { map[c.mealType] = c; });
-    return map;
-  }, [cutoffsRaw]);
-
-  // Single cut-off applies to all meals. Derive the shared deadline for the banner.
-  const cutoffAny = cutoffsRaw?.[0];
-  const cutoffTime = cutoffAny?.cutoffTime ?? null;
-  const cutoffDeadline = cutoffAny?.cutoffAt ? new Date(cutoffAny.cutoffAt) : null;
+  // ── Cut-off (day-before-anchored cutoffAt / isPastCutoff, from next-orders) ──
+  const cutoffTime = myNext?.cutoffTime ?? null;
+  const cutoffDeadline = myNext?.cutoffAt ? new Date(myNext.cutoffAt) : null;
   const countdown = useCountdown(cutoffDeadline);
-  // Closed once the server says the (day-before) cut-off passed, or the live countdown elapses.
-  const orderingClosed = Boolean(cutoffAny?.isPastCutoff) || countdown.passed;
+  const orderingClosed = Boolean(myNext?.isPastCutoff) || countdown.passed;
+
+  // ── Ordered vs available vs still-missing meals for the resolved date ──
+  const orderedMeals = myNext?.orderedMeals ?? [];
+  const availableMeals = myNext?.availableMeals ?? [];
+  const orderedSet = React.useMemo(() => new Set(orderedMeals.map((m) => m.mealType)), [orderedMeals]);
+  const missingMeals = React.useMemo(() => availableMeals.filter((m) => !orderedSet.has(m.mealType)), [availableMeals, orderedSet]);
+  const knowsStatus = !!myNext;
+  const hasExistingOrders = orderedMeals.length > 0;
+  const fullyOrdered = knowsStatus && hasExistingOrders && missingMeals.length === 0;
+
+  // Show the status view when this property already has order(s) and the user
+  // hasn't opted into adding more.
+  const showStatus = knowsStatus && hasExistingOrders && !showBuilder;
 
   // ── Menu / per-resident rates (fetched ONCE per property+date) ──
   const { data: preview, isLoading: previewLoading } = useQuery<OrderPreview>({
@@ -164,32 +176,12 @@ export default function FoodPlaceOrder() {
 
   React.useEffect(() => {
     if (!preview?.meals) return;
-    setActiveMeal(preview.meals[0]?.mealType ?? "");
-  }, [preview]);
+    const firstOrderable = preview.meals.find((m) => !orderedSet.has(m.mealType));
+    setActiveMeal(firstOrderable?.mealType ?? preview.meals[0]?.mealType ?? "");
+  }, [preview, orderedSet]);
 
-  // ── po4 — existing orders for this property + tomorrow's service date ──
-  // An order is "already placed" if it is NOT CANCELLED and NOT REJECTED.
-  const { data: existingRes } = useQuery({
-    queryKey: foodKeys.orders({ propertyId, serviceDate: dateStr, scope: "place-order" }),
-    queryFn: () => foodApi.listOrders({
-      propertyId, serviceDate: dateStr,
-      status: "PLACED,PREPARING,DISPATCHED,DELIVERED",
-    }),
-    enabled: !!propertyId,
-  });
-  const existingOrders = existingRes?.data ?? [];
-  const hasExistingOrders = existingOrders.length > 0;
-
-  // Switching property re-evaluates from scratch: collapse the builder and forget
-  // the "placed this session" flag so the other property's existing orders show.
-  React.useEffect(() => {
-    setShowBuilder(false);
-    setPlacedThisSession(false);
-  }, [propertyId]);
-
-  // Show the "already placed" panel when orders exist, the user hasn't placed in
-  // this session, and they haven't explicitly opted into "place another order".
-  const showAlreadyPlaced = hasExistingOrders && !placedThisSession && !showBuilder;
+  // Switching property re-evaluates from scratch: collapse the builder.
+  React.useEffect(() => { setShowBuilder(false); }, [propertyId]);
 
   // ── Live full-day menu (for download / share on the success state) ──
   const { data: fullMenu, isLoading: menuLoading } = useQuery({
@@ -208,9 +200,15 @@ export default function FoodPlaceOrder() {
     return { included, persons: p, qty };
   }, [overrides, persons]);
 
-  // ── Derived order (only meals that have a menu produce items → one order each) ──
+  // ── Derived order (only meals that have a menu AND aren't already ordered → one
+  //    order each). Excluding already-ordered meals means a partial re-order only
+  //    ever places the meals still missing, never a duplicate. ──
+  const previewMeals = React.useMemo(
+    () => (preview?.meals ?? []).filter((m) => !orderedSet.has(m.mealType)),
+    [preview, orderedSet],
+  );
   const selection = React.useMemo(() => {
-    const meals = (preview?.meals ?? []).map((meal) => {
+    const meals = previewMeals.map((meal) => {
       const items = meal.items
         .map((it) => ({ it, e: effFor(meal.mealType, it.dishId, it.qtyPerResident) }))
         .filter(({ e }) => e.included && e.qty > 0)
@@ -221,7 +219,7 @@ export default function FoodPlaceOrder() {
     const countByMeal: Record<string, number> = {};
     meals.forEach((m) => { countByMeal[m.mealType] = m.items.length; });
     return { meals, itemCount, mealCount: meals.length, countByMeal };
-  }, [preview, effFor]);
+  }, [previewMeals, effFor]);
 
   // ── Place order ──
   const placeMutation = useMutation({
@@ -233,7 +231,7 @@ export default function FoodPlaceOrder() {
       qc.invalidateQueries({ queryKey: ["food"] });
       const n = res?.orders?.length ?? selection.mealCount;
       toast({ title: `${n} order${n === 1 ? "" : "s"} placed`, description: `${selectedProperty?.name ?? "Property"} • ${brand} • ${dateLabel}` });
-      setPlacedThisSession(true);
+      setShowBuilder(false);
       setPlaced({ batch: res.batch, orders: res.orders });
     },
     onError: (e: any) => toast({ title: e?.message || "Failed to place order", variant: "destructive" }),
@@ -242,8 +240,8 @@ export default function FoodPlaceOrder() {
   const handlePlace = () => {
     if (!propertyId) { toast({ title: "Select a property first", variant: "destructive" }); return; }
     if (!configured) { toast({ title: "Property not configured for ordering", variant: "destructive" }); return; }
-    if (orderingClosed) { toast({ title: "Ordering for tomorrow is closed", variant: "destructive" }); return; }
-    if (selection.mealCount === 0) { toast({ title: "No menu to order", description: "There is no menu configured for tomorrow.", variant: "destructive" }); return; }
+    if (orderingClosed) { toast({ title: `Ordering for ${dayRelLabel.toLowerCase()} is closed`, variant: "destructive" }); return; }
+    if (selection.mealCount === 0) { toast({ title: "No meals to order", description: "There's nothing left to order for this property on this date.", variant: "destructive" }); return; }
     placeMutation.mutate();
   };
 
@@ -449,8 +447,8 @@ export default function FoodPlaceOrder() {
       <div className="space-y-6">
         <PageHeader
           title="Order placed"
-          subtitle="Your meal orders are in. Track each one or place another."
-          breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order" }]}
+          subtitle="Your meal orders are in. Track each one below."
+          breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order", href: "/food/place-order" }, { label: selectedProperty?.name ?? "Property" }]}
         />
         <div className="mx-auto w-full max-w-2xl space-y-5">
           <Card>
@@ -507,9 +505,9 @@ export default function FoodPlaceOrder() {
                 <Share2 className="mr-2 h-4 w-4" /> Share menu
               </Button>
               <div className="ml-auto flex items-center gap-2">
-                <Button variant="ghost" size="sm" onClick={() => navigate("/food/orders")}>View all orders</Button>
+                <Button variant="ghost" size="sm" onClick={() => { setPlaced(null); setShareLink(null); backToBoard(); }}>All properties</Button>
                 <Button size="sm" onClick={() => { setPlaced(null); setShareLink(null); }}>
-                  Place another <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+                  View order status <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
                 </Button>
               </div>
             </CardContent>
@@ -531,6 +529,27 @@ export default function FoodPlaceOrder() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
+  // BOARD STATE — no property selected → next-order status for every property
+  // ════════════════════════════════════════════════════════════════════════
+  if (!propertyId) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Place Order"
+          subtitle="Every property tagged to you — see what still needs its next order, and place it."
+          breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order" }]}
+        />
+        <NextOrdersBoard
+          properties={nextOrdersData ?? []}
+          isLoading={nextOrdersData === undefined}
+          canPlace={canPlace}
+          onOpen={selectProperty}
+        />
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
   // PRE-ORDER STATE
   // ════════════════════════════════════════════════════════════════════════
   return (
@@ -539,22 +558,27 @@ export default function FoodPlaceOrder() {
       <PageHeader
         title="Place Order"
         subtitle="Set the headcount once — quantities are calculated for every dish."
-        breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order" }]}
+        breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order", href: "/food/place-order" }, { label: selectedProperty?.name ?? "Property" }]}
       />
+
+      {/* Back to the multi-property board */}
+      <Button variant="ghost" size="sm" className="-mt-2 w-fit gap-1.5 text-muted-foreground" onClick={backToBoard}>
+        <ChevronLeft className="h-4 w-4" /> All properties
+      </Button>
 
       {/* ── Cut-off banner ── */}
       {orderingClosed ? (
         <div className="flex items-center gap-2.5 rounded-lg border border-destructive/30 bg-destructive/8 px-4 py-3 text-sm text-destructive">
           <Lock className="h-4 w-4 shrink-0" />
           <span>
-            Ordering for tomorrow is closed{cutoffTime ? ` — the ${cutoffTime} cut-off has passed` : ""}.
+            Ordering for {dayRelLabel.toLowerCase()} ({dateLabel}) is closed{cutoffTime ? ` — the ${cutoffTime} cut-off has passed` : ""}.
           </span>
         </div>
       ) : cutoffDeadline ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-accent/30 bg-accent/5 px-4 py-3 text-sm">
           <Clock className="h-4 w-4 shrink-0 text-accent" />
           <span className="text-muted-foreground">
-            Order for tomorrow before today's {cutoffTime} cut-off.
+            Ordering for {dayRelLabel.toLowerCase()} ({dateLabel}) closes at {cutoffTime}.
           </span>
           <span className="ml-auto inline-flex items-center gap-1.5 font-medium tabular-nums">
             <Zap className="h-3.5 w-3.5 text-accent" /> {countdown.text} left
@@ -562,60 +586,78 @@ export default function FoodPlaceOrder() {
         </div>
       ) : null}
 
-      {/* ── po4 — "Order already placed for tomorrow" panel (instead of leading with the builder) ── */}
-      {showAlreadyPlaced && (
+      {/* ── Status view — this property already has order(s) for the date. We lead
+            with status (track / edit) instead of an empty builder; only the meals
+            that are still un-ordered can be added. ── */}
+      {showStatus && (
         <div className="mx-auto w-full max-w-2xl space-y-4">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base font-display flex items-center gap-2">
-                <CheckCircle2 className="h-5 w-5 text-success" /> Order already placed for tomorrow
+                <CheckCircle2 className="h-5 w-5 text-success" />
+                {fullyOrdered ? `All set for ${dayRelLabel.toLowerCase()}` : `Order in progress for ${dayRelLabel.toLowerCase()}`}
               </CardTitle>
               <CardDescription>
-                {selectedProperty?.name ?? "This property"} already has {existingOrders.length} order{existingOrders.length === 1 ? "" : "s"} for {dateLabel}. Track or edit them below.
+                {selectedProperty?.name ?? "This property"} · {dateLabel}.{" "}
+                {fullyOrdered
+                  ? "Every meal on the menu is ordered — track them below."
+                  : `${missingMeals.length} meal${missingMeals.length === 1 ? "" : "s"} still need ordering.`}
               </CardDescription>
             </CardHeader>
             <Separator />
             <CardContent className="p-0">
               <ul className="divide-y">
-                {existingOrders.map((o) => {
+                {orderedMeals.map((o) => {
                   const editable = o.status === "PLACED" || o.status === "PREPARING";
                   return (
-                    <li key={o.id} className="flex items-center gap-3 px-4 py-3">
+                    <li key={o.orderId} className="flex items-center gap-3 px-4 py-3">
                       <Soup className="h-4 w-4 shrink-0 text-accent" />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{MEAL_LABEL[o.mealType] ?? o.mealType}</p>
+                        <p className="truncate text-sm font-medium">{o.label ?? MEAL_LABEL[o.mealType] ?? o.mealType}</p>
                         <p className="truncate font-mono text-xs text-muted-foreground">{o.orderNumber}</p>
                       </div>
                       <StatusBadge status={o.status} />
                       {editable && (
                         <Button asChild variant="ghost" size="sm">
-                          <Link href={`/food/orders/${o.id}`}>
+                          <Link href={`/food/orders/${o.orderId}`}>
                             <Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit
                           </Link>
                         </Button>
                       )}
                       <Button asChild variant="outline" size="sm">
-                        <Link href={`/food/orders/${o.id}`}>
+                        <Link href={`/food/track?order=${encodeURIComponent(o.orderNumber)}`}>
                           <Truck className="mr-1.5 h-3.5 w-3.5" /> Track
                         </Link>
                       </Button>
                     </li>
                   );
                 })}
+                {missingMeals.map((m) => (
+                  <li key={m.mealType} className="flex items-center gap-3 bg-muted/20 px-4 py-3">
+                    <Soup className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-muted-foreground">{m.label}</p>
+                      <p className="truncate text-xs text-muted-foreground">Not ordered yet</p>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] uppercase">Pending</Badge>
+                  </li>
+                ))}
               </ul>
             </CardContent>
           </Card>
 
-          {/* Secondary action — place an additional order via the existing builder */}
-          <div className="flex items-center justify-end">
-            <Button type="button" variant="outline" size="sm" onClick={() => setShowBuilder(true)} disabled={orderingClosed}>
-              Place another order <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
-            </Button>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {canDownload ? <MenuDownloadButton /> : <span />}
+            {missingMeals.length > 0 && (
+              <Button type="button" size="sm" onClick={() => setShowBuilder(true)} disabled={orderingClosed || !canPlace}>
+                <Plus className="mr-1.5 h-3.5 w-3.5" /> Order {missingMeals.map((m) => m.label).join(", ")}
+              </Button>
+            )}
           </div>
         </div>
       )}
 
-      <div className={cn("grid grid-cols-1 lg:grid-cols-12 gap-6 items-start", showAlreadyPlaced && "hidden")}>
+      <div className={cn("grid grid-cols-1 lg:grid-cols-12 gap-6 items-start", showStatus && "hidden")}>
         {/* ── Left: builder ── */}
         <div className="lg:col-span-7 space-y-5">
           {/* Service context — compact */}
@@ -642,7 +684,7 @@ export default function FoodPlaceOrder() {
                           <CommandEmpty>No property found.</CommandEmpty>
                           <CommandGroup>
                             {properties.map((p) => (
-                              <CommandItem key={p.id} value={p.name} onSelect={() => { setPropertyId(p.id); setPropertyOpen(false); }}>
+                              <CommandItem key={p.id} value={p.name} onSelect={() => { selectProperty(p.id); setPropertyOpen(false); }}>
                                 <Check className={cn("mr-2 h-4 w-4", propertyId === p.id ? "opacity-100" : "opacity-0")} />
                                 <span className="flex-1">{p.name}</span>
                                 {p.brand && <Badge variant="outline" className="ml-2 text-[10px]">{p.brand}</Badge>}
@@ -654,13 +696,13 @@ export default function FoodPlaceOrder() {
                     </PopoverContent>
                   </Popover>
                 </div>
-                {/* Service date — read-only, always tomorrow */}
+                {/* Service date — read-only, the next orderable day for this property */}
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Service date</Label>
                   <div className="flex h-10 items-center gap-2 rounded-md border bg-muted/40 px-3 sm:w-[220px]" aria-readonly="true">
                     <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <span className="truncate text-sm">
-                      <span className="font-medium">Tomorrow</span>
+                      <span className="font-medium">{dayRelLabel}</span>
                       <span className="text-muted-foreground"> · {dateLabel}</span>
                     </span>
                     <Lock className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -699,9 +741,9 @@ export default function FoodPlaceOrder() {
             <Card><CardContent className="space-y-3 py-6">
               {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24 w-full rounded-lg" />)}
             </CardContent></Card>
-          ) : !preview || preview.meals.length === 0 ? (
+          ) : !preview || previewMeals.length === 0 ? (
             <Card><CardContent className="py-10">
-              <EmptyState icon={Soup} title="No menu for tomorrow" description="Nothing is configured for this property's kitchen and brand for tomorrow's service date." />
+              <EmptyState icon={Soup} title={`Nothing left to order for ${dayRelLabel.toLowerCase()}`} description={hasExistingOrders ? "Every meal on this property's menu for this date is already ordered." : `No menu is configured for this property's kitchen and brand on ${dateLabel}.`} />
             </CardContent></Card>
           ) : (
             <Tabs value={activeMeal} onValueChange={setActiveMeal} className="space-y-3">
@@ -715,7 +757,7 @@ export default function FoodPlaceOrder() {
                 </div>
               )}
               <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto bg-transparent p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {preview.meals.map((meal) => {
+                {previewMeals.map((meal) => {
                   const count = selection.countByMeal[meal.mealType] ?? 0;
                   return (
                     <TabsTrigger key={meal.mealType} value={meal.mealType}
@@ -734,7 +776,7 @@ export default function FoodPlaceOrder() {
                   every dish is always included). There is therefore no dish selection
                   to validate or hard-block here; the composition hard-block lives in
                   Food Settings → Menu Rotation, where dishes are actually chosen. */}
-              {preview.meals.map((meal) => {
+              {previewMeals.map((meal) => {
                 const dishIds = meal.items.map((i) => i.dishId);
                 return (
                   <TabsContent key={meal.mealType} value={meal.mealType} className="mt-0">
@@ -875,6 +917,155 @@ export default function FoodPlaceOrder() {
       />
     </div>
     </TooltipProvider>
+  );
+}
+
+/** Multi-property "Next Orders" board — one row per property tagged to the unit
+ *  lead, showing its next orderable day, what's already ordered, and the single
+ *  correct action (place / view status). Includes a one-click "order all pending". */
+function NextOrdersBoard({
+  properties, isLoading, canPlace, onOpen,
+}: {
+  properties: NextOrderProperty[];
+  isLoading: boolean;
+  canPlace: boolean;
+  onOpen: (propertyId: string) => void;
+}) {
+  const tomorrowStr = React.useMemo(() => format(addDays(todayDate(), 1), "yyyy-MM-dd"), []);
+  const fmtDay = (ymd: string) => {
+    const [y, m, d] = ymd.split("-").map(Number);
+    const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
+    return ymd === tomorrowStr ? `tomorrow · ${format(dt, "EEE, dd MMM")}` : format(dt, "EEE, dd MMM");
+  };
+
+  const rank = (s: NextOrderStatus) =>
+    s === "NOT_ORDERED" ? 0 : s === "PARTIAL" ? 1 : s === "ORDERED" ? 2 : s === "NO_MENU" ? 3 : 4;
+  const sorted = React.useMemo(
+    () => [...properties].sort((a, b) => rank(a.status) - rank(b.status) || a.name.localeCompare(b.name)),
+    [properties],
+  );
+  const orderable = properties.filter((p) => p.configured && p.availableMeals.length > 0);
+  const pending = properties.filter((p) => p.status === "NOT_ORDERED" || p.status === "PARTIAL");
+  const pendingCount = pending.length;
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-xl" />)}
+      </div>
+    );
+  }
+  if (properties.length === 0) {
+    return (
+      <Card><CardContent className="py-16">
+        <EmptyState icon={Building2} title="No properties tagged to you" description="Ask an administrator to assign you to one or more properties from the Organization console." />
+      </CardContent></Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Summary strip */}
+      {orderable.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/30 px-4 py-3 text-sm">
+          {pendingCount > 0 ? (
+            <>
+              <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+              <span><span className="font-medium">{pendingCount} of {orderable.length} propert{orderable.length === 1 ? "y" : "ies"}</span> still need their next order.</span>
+            </>
+          ) : (
+            <>
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+              <span>Every property has its next order placed.</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Rows */}
+      <div className="space-y-2.5">
+        {sorted.map((p) => (
+          <NextOrderRow key={p.propertyId} p={p} canPlace={canPlace} dayLabel={fmtDay(p.serviceDate)} onOpen={() => onOpen(p.propertyId)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** One property row on the Next Orders board. */
+function NextOrderRow({
+  p, canPlace, dayLabel, onOpen,
+}: { p: NextOrderProperty; canPlace: boolean; dayLabel: string; onOpen: () => void }) {
+  const ordered = p.orderedMeals;
+  const missing = p.availableMeals.filter((m) => !ordered.some((o) => o.mealType === m.mealType));
+
+  const statusMeta: Record<NextOrderStatus, { label: string; cls: string; icon: typeof CheckCircle2 }> = {
+    NOT_ORDERED: { label: "Not ordered", cls: "text-warning", icon: AlertTriangle },
+    PARTIAL: { label: `${missing.length} meal${missing.length === 1 ? "" : "s"} pending`, cls: "text-warning", icon: Clock },
+    ORDERED: { label: "Ordered", cls: "text-success", icon: CheckCircle2 },
+    NO_MENU: { label: "No menu", cls: "text-muted-foreground", icon: Soup },
+    NOT_CONFIGURED: { label: "Not configured", cls: "text-muted-foreground", icon: Lock },
+  };
+  const meta = statusMeta[p.status];
+  const StatusIcon = meta.icon;
+  const accent =
+    p.status === "ORDERED" ? "border-l-[var(--color-success)]" :
+    p.status === "NOT_ORDERED" || p.status === "PARTIAL" ? "border-l-[var(--color-warning)]" :
+    "border-l-transparent";
+  const muted = p.status === "NOT_CONFIGURED" || p.status === "NO_MENU";
+
+  return (
+    <Card className={cn("border-l-2", accent, muted && "bg-muted/30")}>
+      <CardContent className="flex flex-wrap items-center gap-x-4 gap-y-3 p-3.5">
+        <div className="min-w-[180px] flex-1">
+          <div className="flex items-center gap-2">
+            <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="truncate text-sm font-medium">{p.name}</span>
+            {p.brand && <Badge variant="secondary" className="gap-1 text-[10px]"><Tag className="h-2.5 w-2.5" />{p.brand}</Badge>}
+          </div>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {p.city ? `${p.city} · ` : ""}{p.activeGuests} active guest{p.activeGuests === 1 ? "" : "s"}
+            {p.configured && p.availableMeals.length > 0 ? ` · for ${dayLabel}` : ""}
+          </p>
+          {ordered.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {ordered.map((o) => (
+                <span key={o.orderId} className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[11px]">
+                  {o.label}
+                  <StatusBadge status={o.status} className="h-4 px-1 text-[9px]" />
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <span className={cn("inline-flex items-center gap-1.5 text-xs", meta.cls)}>
+          <StatusIcon className="h-3.5 w-3.5" /> {meta.label}
+        </span>
+
+        {/* The single correct action for this property's state */}
+        {p.status === "NOT_CONFIGURED" ? (
+          <Button size="sm" variant="outline" disabled>Place order</Button>
+        ) : p.status === "NO_MENU" ? (
+          <Button size="sm" variant="outline" disabled>No menu</Button>
+        ) : p.status === "NOT_ORDERED" ? (
+          <Button size="sm" onClick={onOpen} disabled={!canPlace}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" /> Place order
+          </Button>
+        ) : p.status === "PARTIAL" ? (
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={onOpen}>View status</Button>
+            <Button size="sm" onClick={onOpen} disabled={!canPlace}>
+              <Plus className="mr-1.5 h-3.5 w-3.5" /> Add {missing.length} meal{missing.length === 1 ? "" : "s"}
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" onClick={onOpen}>
+            <Truck className="mr-1.5 h-3.5 w-3.5" /> View status
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

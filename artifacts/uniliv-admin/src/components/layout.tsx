@@ -130,16 +130,22 @@ function NavGroupSection({
 
 /** Searchable, scroll-capped property scope selector (Popover + cmdk). */
 function PropertyScope({
-  properties, propertyId, onSelect, className,
+  properties, propertyId, onSelect, className, tone = "sidebar",
 }: {
   properties: Array<{ id: string; name: string }>
   propertyId: string | null
   onSelect: (id: string | null) => void
   className?: string
+  /** "sidebar" tints to the sidebar surface; "header" tints to the card header. */
+  tone?: "sidebar" | "header"
 }) {
   const [open, setOpen] = React.useState(false)
   const current = properties.find((p) => p.id === propertyId)
   const label = propertyId ? (current?.name ?? "Property") : "All Properties"
+  const toneCls = tone === "header"
+    ? "border-border bg-surface text-foreground hover:bg-muted/50"
+    : "border-sidebar-border bg-sidebar-foreground/[0.04] text-sidebar-foreground hover:bg-sidebar-foreground/[0.07]"
+  const mutedCls = tone === "header" ? "text-muted-foreground" : "text-sidebar-foreground/60"
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -149,13 +155,14 @@ function PropertyScope({
           aria-expanded={open}
           aria-label="Select property scope"
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-foreground/[0.04] px-3 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-foreground/[0.07] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+            "items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+            toneCls,
             className,
           )}
         >
-          <Building2 className="w-4 h-4 shrink-0 text-sidebar-foreground/60" />
+          <Building2 className={cn("w-4 h-4 shrink-0", mutedCls)} />
           <span className="flex-1 truncate text-left">{label}</span>
-          <ChevronsUpDown className="w-4 h-4 shrink-0 text-sidebar-foreground/50" />
+          <ChevronsUpDown className={cn("w-4 h-4 shrink-0", mutedCls)} />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[--radix-popover-trigger-width] min-w-56 p-0">
@@ -192,7 +199,7 @@ function PropertyScope({
 /** Shared sidebar inner content — reused by the desktop rail and the mobile Sheet. */
 function SidebarContent({
   filteredGroups, location, openGroup, onToggleGroup, properties, propertyId, onSelectProperty,
-  me, sidebarMode, onToggleSidebarMode, onLogout, onNavigate, showFooter = true,
+  me, sidebarMode, onToggleSidebarMode, onLogout, onNavigate, showFooter = true, showPropertyScope = true,
 }: {
   filteredGroups: NavGroup[]
   location: string
@@ -207,25 +214,42 @@ function SidebarContent({
   onLogout: () => void
   onNavigate?: () => void
   showFooter?: boolean
+  /** Hidden on desktop (the property scope lives in the header there); shown in the mobile drawer. */
+  showPropertyScope?: boolean
 }) {
   return (
     <>
-      <div className="px-4 pb-4 border-b border-sidebar-border">
-        <PropertyScope properties={properties} propertyId={propertyId} onSelect={onSelectProperty} />
-      </div>
+      {showPropertyScope && (
+        <div className="px-4 pb-4 border-b border-sidebar-border">
+          <PropertyScope properties={properties} propertyId={propertyId} onSelect={onSelectProperty} className="flex w-full" />
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto py-3 scrollbar-thin">
         <nav className="px-3 space-y-1">
-          {filteredGroups.map((group, i) => (
-            <NavGroupSection
-              key={group.title}
-              group={group}
-              location={location}
-              open={openGroup === group.title}
-              onToggle={onToggleGroup}
-              onNavigate={onNavigate}
-              divider={i > 0}
-            />
-          ))}
+          {filteredGroups.map((group, i) => {
+            // Home is pinned as a direct top-level link — no collapsible group
+            // header/accordion wrapping it.
+            if (group.title === "Home") {
+              return (
+                <div key={group.title} className="space-y-1">
+                  {group.items.map((item) => (
+                    <NavLink key={item.href} item={item} location={location} onNavigate={onNavigate} />
+                  ))}
+                </div>
+              )
+            }
+            return (
+              <NavGroupSection
+                key={group.title}
+                group={group}
+                location={location}
+                open={openGroup === group.title}
+                onToggle={onToggleGroup}
+                onNavigate={onNavigate}
+                divider={i > 0}
+              />
+            )
+          })}
         </nav>
       </div>
       {showFooter && (
@@ -273,7 +297,7 @@ function Logo({ personaLabel }: { personaLabel?: string }) {
     <div className="flex items-center gap-2">
       <img src="/brand/uniliv-logo.svg" alt="Uniliv" className="h-8 w-auto select-none" draggable={false} />
       {personaLabel ? (
-        <Badge variant="secondary" className="text-[10px] font-medium leading-none px-2 py-0.5">
+        <Badge variant="secondary" className="ml-auto text-[10px] font-medium leading-none px-2 py-0.5">
           {personaLabel}
         </Badge>
       ) : null}
@@ -372,7 +396,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           sidebarClass,
         )}
       >
-        <div className="p-5">
+        <div className="pl-7 pr-5 py-4 border-b border-sidebar-border">
           <Logo personaLabel={personaLabel} />
         </div>
         <SidebarContent
@@ -387,6 +411,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           sidebarMode={sidebarMode}
           onToggleSidebarMode={toggleSidebarMode}
           onLogout={handleLogout}
+          showPropertyScope={false}
         />
       </aside>
 
@@ -422,7 +447,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </Sheet>
 
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <header className="h-16 bg-card border-b border-border flex items-center justify-between px-4 sm:px-6 shrink-0 z-10">
+        <header className="h-16 bg-card border-b border-border grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-4 sm:px-6 shrink-0 z-10">
           <div className="flex items-center gap-3 min-w-0">
             <Button
               variant="ghost"
@@ -438,19 +463,29 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <GreetingClock name={me?.name} />
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}
-              className="hidden md:flex items-center gap-2 w-56 lg:w-72 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              aria-label="Search (Command-K)"
-            >
-              <Search className="h-4 w-4 shrink-0" />
-              <span className="flex-1 text-left">Search…</span>
-              <kbd className="pointer-events-none hidden lg:inline-flex h-5 select-none items-center gap-0.5 rounded border border-border bg-card px-1.5 font-mono text-[10px] font-medium text-muted-foreground">⌘K</kbd>
-            </button>
+          {/* Centered global search — the auto-width middle column with 1fr on each
+              side keeps it centered in the header regardless of the side content. */}
+          <button
+            type="button"
+            onClick={() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }))}
+            className="hidden md:flex items-center gap-2 w-72 lg:w-96 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            aria-label="Search (Command-K)"
+          >
+            <Search className="h-4 w-4 shrink-0" />
+            <span className="flex-1 text-left">Search…</span>
+            <kbd className="pointer-events-none hidden lg:inline-flex h-5 select-none items-center gap-0.5 rounded border border-border bg-card px-1.5 font-mono text-[10px] font-medium text-muted-foreground">⌘K</kbd>
+          </button>
+
+          <div className="flex items-center justify-end gap-2">
             <ThemeToggle />
             <NotificationBell />
+            <PropertyScope
+              tone="header"
+              properties={properties}
+              propertyId={propertyId}
+              onSelect={setPropertyId}
+              className="hidden md:flex w-44 lg:w-56"
+            />
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-surface">
