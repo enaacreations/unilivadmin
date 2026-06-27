@@ -194,48 +194,6 @@ export default function UnitLeadHome() {
         />
       </div>
 
-      {/* Filters: period + property */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="inline-flex items-center rounded-lg border border-border bg-card p-1">
-          {PERIOD_PRESETS.map((p) => (
-            <button
-              key={p.key}
-              type="button"
-              onClick={() => setPeriod(p.key)}
-              aria-pressed={period === p.key}
-              className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
-                period === p.key
-                  ? "bg-accent text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label className="text-xs text-muted-foreground">Property</Label>
-          <Select
-            value={scopedPropertyId ?? "ALL"}
-            onValueChange={(v) => setGlobalProperty(v === "ALL" ? null : v)}
-          >
-            <SelectTrigger className="w-56"><SelectValue placeholder="Property" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All properties</SelectItem>
-              {properties.map((p) => (
-                <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      {home && (
-        <p className="text-xs text-muted-foreground">
-          Showing {PERIOD_PRESETS.find((p) => p.key === period)?.label.toLowerCase()} ·{" "}
-          {format(new Date(home.range.from), "dd MMM yyyy")} – {format(new Date(home.range.to), "dd MMM yyyy")}
-        </p>
-      )}
-
       {/* Per-property breakdown cards */}
       <Card>
         <CardHeader>
@@ -285,6 +243,49 @@ export default function UnitLeadHome() {
           )}
         </CardContent>
       </Card>
+
+      {/* Filters: period + property — sits below the property overview, right above
+          the period-dependent charts it controls. */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="inline-flex items-center rounded-lg border border-border bg-card p-1">
+          {PERIOD_PRESETS.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => setPeriod(p.key)}
+              aria-pressed={period === p.key}
+              className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                period === p.key
+                  ? "bg-accent text-white shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs text-muted-foreground">Property</Label>
+          <Select
+            value={scopedPropertyId ?? "ALL"}
+            onValueChange={(v) => setGlobalProperty(v === "ALL" ? null : v)}
+          >
+            <SelectTrigger className="w-56"><SelectValue placeholder="Property" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All properties</SelectItem>
+              {properties.map((p) => (
+                <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {home && (
+        <p className="text-xs text-muted-foreground">
+          Showing {PERIOD_PRESETS.find((p) => p.key === period)?.label.toLowerCase()} ·{" "}
+          {format(new Date(home.range.from), "dd MMM yyyy")} – {format(new Date(home.range.to), "dd MMM yyyy")}
+        </p>
+      )}
 
       {/* ── Charts ──────────────────────────────────────────────────────────── */}
 
