@@ -107,6 +107,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: FULL, FOOD_DISPATCH: FULL, FOOD_CONFIRM_DELIVERY: VIEW,
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
+    // F&B managers own the food operating configuration (dishes, rotation,
+    // cutoffs, quantity rules) — and with it the Masters reference data, which
+    // shares the FOOD_SETTINGS gate.
+    FOOD_SETTINGS: FULL,
   },
   FNB_ZONAL_HEAD: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
@@ -134,10 +138,10 @@ export function homeForRole(_role: UserRole | undefined): string {
 }
 
 export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
-  [/^\/$/, "DASHBOARD"],
-  // Unit-Lead Home dashboard (WS7) — top-level, gated on the food module.
+  // Unit-Lead dashboard (WS7) — top-level, gated on the food module.
   [/^\/home/, "FOOD_DASHBOARD"],
   [/^\/dashboard\/executive/, "EXECUTIVE_DASHBOARD"],
+  [/^\/dashboard/, "DASHBOARD"],
   [/^\/properties/, "PROPERTIES"],
   [/^\/residents/, "RESIDENTS"],
   [/^\/complaints/, "COMPLAINTS"],

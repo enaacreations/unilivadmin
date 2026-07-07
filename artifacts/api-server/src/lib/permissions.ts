@@ -131,6 +131,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: VE, FOOD_DISPATCH: VE, FOOD_CONFIRM_DELIVERY: VIEW,
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
+    // F&B managers own the food operating configuration (dishes, rotation,
+    // cutoffs, quantity rules) — includes Masters, which shares this gate.
+    FOOD_SETTINGS: VE,
   },
   FNB_ZONAL_HEAD: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
