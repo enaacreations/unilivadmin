@@ -12,24 +12,21 @@ import {
 import { type Module } from "@/lib/permissions"
 
 /** `module` gates the item to roles that can view it; an item without a module
- *  (e.g. the All Modules launcher) is visible to every signed-in user. */
+ *  (e.g. the Home launcher) is visible to every signed-in user. */
 export type NavItem = { title: string; href: string; icon: LucideIcon; module?: Module }
 export type NavGroup = { title: string; items: NavItem[] }
 
 export const navGroups: NavGroup[] = [
-  // Home is pinned as its own single-item group at the very top so it stays
-  // visible regardless of which collapsible group the layout's accordion has
-  // open. The sidebar (components/layout.tsx) renders every navGroup as a
-  // collapsible NavGroupSection and keeps exactly one group expanded at a time;
-  // a one-item "Home" group placed first keeps Home directly under the logo,
-  // above the rest of the navigation, while Dashboard/Executive remain inside
-  // the collapsible Overview group below.
+  // "Home" is the /apps module launcher — the universal landing page. The
+  // sidebar (components/layout.tsx) pins this group at the top and otherwise
+  // shows only the group the current route belongs to; the launcher renders
+  // one card per remaining group.
   { title: "Home", items: [
-    { title: "All Modules", href: "/apps", icon: LayoutGrid },
-    { title: "Home", href: "/home", icon: Home, module: "FOOD_DASHBOARD" },
+    { title: "Home", href: "/apps", icon: LayoutGrid },
   ]},
   { title: "Overview", items: [
-    { title: "Dashboard", href: "/", icon: LayoutDashboard, module: "DASHBOARD" },
+    { title: "My Dashboard", href: "/home", icon: Home, module: "FOOD_DASHBOARD" },
+    { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard, module: "DASHBOARD" },
     { title: "Executive", href: "/dashboard/executive", icon: BarChart3, module: "EXECUTIVE_DASHBOARD" },
   ]},
   { title: "Properties", items: [

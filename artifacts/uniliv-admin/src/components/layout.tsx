@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { useAuthStore, useAppStore } from "@/lib/store"
 import { useLogout, useGetProperties, getGetPropertiesQueryKey } from "@workspace/api-client-react"
 import {
-  LogOut, Search, Menu, ChevronDown, Check, ChevronsUpDown, Building2, Sun, Moon,
+  LogOut, Search, Menu, Check, ChevronsUpDown, Building2,
 } from "lucide-react"
 import {
   Popover, PopoverContent, PopoverTrigger,
@@ -18,7 +18,6 @@ import {
 import {
   Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { UserAvatar } from "@/components/ui/user-avatar"
@@ -29,9 +28,6 @@ import { moduleForPath } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 import { navGroups, type NavGroup, type NavItem } from "@/lib/nav"
 import { CommandPalette, type CommandNavItem } from "@/components/command-palette"
-
-const NAV_OPEN_KEY = "uniliv_nav_open"
-const SIDEBAR_KEY = "uniliv_sidebar"
 
 /** Live greeting + date/time/day shown in the topbar (Persona st.37, st.39). */
 function GreetingClock({ name }: { name?: string }) {
@@ -80,51 +76,27 @@ function NavLink({ item, location, onNavigate }: { item: NavItem; location: stri
   )
 }
 
-/** Collapsible nav group with persisted open/closed state. */
-function NavGroupSection({
-  group, location, open, onToggle, onNavigate, divider,
+/** The open module's pages, under a static module label. The sidebar shows
+ *  only the module the user is inside; switching modules happens through the
+ *  pinned Home launcher (or ⌘K, which searches everything). */
+function ActiveModuleSection({
+  group, location, onNavigate,
 }: {
   group: NavGroup
   location: string
-  open: boolean
-  onToggle: (title: string, open: boolean) => void
   onNavigate?: () => void
-  /** Draw a hairline divider above this group (every group except the first). */
-  divider?: boolean
 }) {
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={(o) => onToggle(group.title, o)}
-      className={cn(divider && "mt-1.5 border-t border-sidebar-border pt-1.5")}
-    >
-      {/* Heading hierarchy: the open group reads as a strong section label;
-          collapsed groups recede. The active-item gradient rail lives on the
-          item itself (NavLink), never on the heading. */}
-      <CollapsibleTrigger
-        className={cn(
-          "group/nav flex w-full items-center justify-between px-3 py-1.5 rounded-lg text-[11px] uppercase tracking-widest transition-colors",
-          open
-            ? "font-semibold text-sidebar-foreground/85"
-            : "font-medium text-sidebar-foreground/55 hover:text-sidebar-foreground/80",
-        )}
-      >
-        <span>{group.title}</span>
-        <ChevronDown
-          className={cn(
-            "w-3.5 h-3.5 transition-transform duration-200",
-            open ? "text-sidebar-foreground/70" : "-rotate-90 text-sidebar-foreground/40",
-          )}
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0">
-        <div className="space-y-1 pt-1 pb-1">
-          {group.items.map((item) => (
-            <NavLink key={item.href} item={item} location={location} onNavigate={onNavigate} />
-          ))}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+    <div className="mt-1.5 border-t border-sidebar-border pt-1.5">
+      <p className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-sidebar-foreground/85">
+        {group.title}
+      </p>
+      <div className="space-y-1 pt-1 pb-1">
+        {group.items.map((item) => (
+          <NavLink key={item.href} item={item} location={location} onNavigate={onNavigate} />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -198,19 +170,17 @@ function PropertyScope({
 
 /** Shared sidebar inner content — reused by the desktop rail and the mobile Sheet. */
 function SidebarContent({
-  filteredGroups, location, openGroup, onToggleGroup, properties, propertyId, onSelectProperty,
-  me, sidebarMode, onToggleSidebarMode, onLogout, onNavigate, showFooter = true, showPropertyScope = true,
+  filteredGroups, location, activeGroup, properties, propertyId, onSelectProperty,
+  me, onLogout, onNavigate, showFooter = true, showPropertyScope = true,
 }: {
   filteredGroups: NavGroup[]
   location: string
-  openGroup: string | null
-  onToggleGroup: (title: string, open: boolean) => void
+  /** Title of the module the current route belongs to (null on module-less pages). */
+  activeGroup: string | null
   properties: Array<{ id: string; name: string }>
   propertyId: string | null
   onSelectProperty: (id: string | null) => void
   me: ReturnType<typeof usePermissions>["me"]
-  sidebarMode: "light" | "espresso"
-  onToggleSidebarMode: () => void
   onLogout: () => void
   onNavigate?: () => void
   showFooter?: boolean
@@ -226,30 +196,20 @@ function SidebarContent({
       )}
       <div className="flex-1 overflow-y-auto py-3 scrollbar-thin">
         <nav className="px-3 space-y-1">
-          {filteredGroups.map((group, i) => {
-            // Home is pinned as a direct top-level link — no collapsible group
-            // header/accordion wrapping it.
-            if (group.title === "Home") {
-              return (
-                <div key={group.title} className="space-y-1">
-                  {group.items.map((item) => (
-                    <NavLink key={item.href} item={item} location={location} onNavigate={onNavigate} />
-                  ))}
-                </div>
-              )
-            }
-            return (
-              <NavGroupSection
-                key={group.title}
-                group={group}
-                location={location}
-                open={openGroup === group.title}
-                onToggle={onToggleGroup}
-                onNavigate={onNavigate}
-                divider={i > 0}
-              />
-            )
-          })}
+          {/* Pinned links (the "Home" group: the module launcher) — always visible. */}
+          {filteredGroups.filter((g) => g.title === "Home").map((group) => (
+            <div key={group.title} className="space-y-1">
+              {group.items.map((item) => (
+                <NavLink key={item.href} item={item} location={location} onNavigate={onNavigate} />
+              ))}
+            </div>
+          ))}
+          {/* Only the module the user is inside — no other groups. */}
+          {activeGroup && activeGroup !== "Home" && filteredGroups
+            .filter((g) => g.title === activeGroup)
+            .map((group) => (
+              <ActiveModuleSection key={group.title} group={group} location={location} onNavigate={onNavigate} />
+            ))}
         </nav>
       </div>
       {showFooter && (
@@ -262,16 +222,6 @@ function SidebarContent({
                 {me?.designation || (me?.role || "ADMIN").replace(/_/g, " ")}
               </p>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onToggleSidebarMode}
-              aria-label={sidebarMode === "espresso" ? "Switch to light sidebar" : "Switch to espresso sidebar"}
-              title="Toggle sidebar appearance"
-              className="text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-foreground/10 shrink-0 h-8 w-8"
-            >
-              {sidebarMode === "espresso" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -320,20 +270,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   const [mobileOpen, setMobileOpen] = React.useState(false)
 
-  // Persisted sidebar appearance (light | espresso).
-  const [sidebarMode, setSidebarMode] = React.useState<"light" | "espresso">(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_KEY) === "espresso" ? "espresso" : "light"
-    } catch { return "light" }
-  })
-  const toggleSidebarMode = React.useCallback(() => {
-    setSidebarMode((prev) => {
-      const next = prev === "espresso" ? "light" : "espresso"
-      try { localStorage.setItem(SIDEBAR_KEY, next) } catch { /* ignore */ }
-      return next
-    })
-  }, [])
-
   const handleLogout = () => {
     logout.mutate(undefined, {
       onSettled: () => {
@@ -370,14 +306,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return found as { item: NavItem; group: string } | null
   }, [filteredGroups, location])
 
-  // Accordion nav: exactly one group open at a time — the active route's group
-  // by default; opening another collapses the rest. Everything else stays shut.
+  // The sidebar shows only the active route's module (plus the pinned links);
+  // there is no group accordion — modules are switched via the /apps launcher.
   const activeGroup = active?.group ?? null
-  const [openGroup, setOpenGroup] = React.useState<string | null>(activeGroup)
-  React.useEffect(() => { if (activeGroup) setOpenGroup(activeGroup) }, [activeGroup])
-  const toggleGroup = React.useCallback((title: string, open: boolean) => {
-    setOpenGroup(open ? title : null)
-  }, [])
+
+  // The launcher (/apps) is a full-width page: no sidebar, logo in the header.
+  const isLauncher = location === "/apps"
 
   const pageTitle = active?.item.title ?? "Dashboard"
   // A detail route is a deeper path than the matched nav item (e.g. /residents/:id, /food/orders/:id).
@@ -385,16 +319,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   React.useEffect(() => { document.title = `${pageTitle} | Uniliv` }, [pageTitle])
 
-  const sidebarClass = cn(sidebarMode === "espresso" && "sidebar-espresso")
-
   return (
     <div className="flex h-screen bg-surface overflow-hidden">
-      {/* Desktop sidebar */}
-      <aside
-        className={cn(
-          "w-64 bg-sidebar text-sidebar-foreground flex flex-col h-full shrink-0 border-r border-sidebar-border z-20 hidden md:flex",
-          sidebarClass,
-        )}
+      {/* Desktop sidebar — hidden on the launcher, which is the module switcher itself */}
+      {!isLauncher && <aside
+        className="w-64 bg-sidebar text-sidebar-foreground flex flex-col h-full shrink-0 border-r border-sidebar-border z-20 hidden md:flex"
       >
         <div className="pl-7 pr-5 py-4 border-b border-sidebar-border">
           <Logo personaLabel={personaLabel} />
@@ -402,27 +331,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <SidebarContent
           filteredGroups={filteredGroups}
           location={location}
-          openGroup={openGroup}
-          onToggleGroup={toggleGroup}
+          activeGroup={activeGroup}
           properties={properties}
           propertyId={propertyId}
           onSelectProperty={setPropertyId}
           me={me}
-          sidebarMode={sidebarMode}
-          onToggleSidebarMode={toggleSidebarMode}
           onLogout={handleLogout}
           showPropertyScope={false}
         />
-      </aside>
+      </aside>}
 
       {/* Mobile nav drawer */}
-      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+      {!isLauncher && <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent
           side="left"
-          className={cn(
-            "w-72 p-0 bg-sidebar text-sidebar-foreground border-sidebar-border flex flex-col",
-            sidebarClass,
-          )}
+          className="w-72 p-0 bg-sidebar text-sidebar-foreground border-sidebar-border flex flex-col"
         >
           <SheetHeader className="p-5 text-left">
             <SheetTitle asChild>
@@ -432,35 +355,39 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <SidebarContent
             filteredGroups={filteredGroups}
             location={location}
-            openGroup={openGroup}
-            onToggleGroup={toggleGroup}
+            activeGroup={activeGroup}
             properties={properties}
             propertyId={propertyId}
             onSelectProperty={setPropertyId}
             me={me}
-            sidebarMode={sidebarMode}
-            onToggleSidebarMode={toggleSidebarMode}
             onLogout={handleLogout}
             onNavigate={() => setMobileOpen(false)}
           />
         </SheetContent>
-      </Sheet>
+      </Sheet>}
 
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         <header className="h-16 bg-card border-b border-border grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-4 sm:px-6 shrink-0 z-10">
           <div className="flex items-center gap-3 min-w-0">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="md:hidden shrink-0"
-              aria-label="Open navigation"
-              onClick={() => setMobileOpen(true)}
-            >
-              <Menu className="w-5 h-5" />
-            </Button>
-            {/* Page heading lives in the page body. The detail-page breadcrumb is
-                rendered as a bar at the top of <main>, not in the header. */}
-            <GreetingClock name={me?.name} />
+            {isLauncher ? (
+              /* The launcher has no sidebar, so the brand lives in the header here. */
+              <Logo personaLabel={personaLabel} />
+            ) : (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="md:hidden shrink-0"
+                  aria-label="Open navigation"
+                  onClick={() => setMobileOpen(true)}
+                >
+                  <Menu className="w-5 h-5" />
+                </Button>
+                {/* Page heading lives in the page body. The detail-page breadcrumb is
+                    rendered as a bar at the top of <main>, not in the header. */}
+                <GreetingClock name={me?.name} />
+              </>
+            )}
           </div>
 
           {/* Centered global search — the auto-width middle column with 1fr on each

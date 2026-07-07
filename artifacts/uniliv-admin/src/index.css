@@ -100,7 +100,7 @@
   /* Signature gradient — use sparingly (logo, active rail, hero accents) */
   --brand-gradient: linear-gradient(120deg, #FF9A3D 0%, #F2603C 50%, #C2459A 100%);
 
-  /* Sidebar chrome — flippable; default = light. Add class .sidebar-espresso to go dark. */
+  /* Sidebar chrome — follows the global light/dark theme only. */
   --sidebar-bg: #FFFFFF;
   --sidebar-fg: #3A2C24;
   --sidebar-border: #EFE6DE;
@@ -117,13 +117,6 @@
   --app-font-mono: 'JetBrains Mono', monospace;
 
   --radius: .625rem;
-}
-
-/* Warm-dark "espresso" sidebar option (kept available behind one class). */
-.sidebar-espresso {
-  --sidebar-bg: #211712;
-  --sidebar-fg: rgba(255, 255, 255, 0.74);
-  --sidebar-border: #34261E;
 }
 
 /* Dark theme — flips content surfaces; coral brightens to read on dark. */

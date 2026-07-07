@@ -13,10 +13,6 @@ import { navGroups, type NavItem } from "@/lib/nav";
 import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 
-/** Launcher-only regrouping: the pinned sidebar "Home" group folds into the
- *  Overview card so the grid stays one card per real module. */
-const MERGE_INTO: Record<string, string> = { Home: "Overview" };
-
 const MODULE_ICON: Record<string, LucideIcon> = {
   Overview: LayoutDashboard,
   Properties: Building2,
@@ -71,16 +67,12 @@ export default function AppLauncher() {
   const [query, setQuery] = React.useState("");
 
   const modules = React.useMemo<ModuleCard[]>(() => {
-    const byTitle = new Map<string, ModuleCard>();
-    for (const g of navGroups) {
-      const title = MERGE_INTO[g.title] ?? g.title;
-      const items = g.items.filter((i) => i.href !== "/apps" && (!i.module || can(i.module, "view")));
-      if (items.length === 0) continue;
-      const card = byTitle.get(title) ?? { title, items: [] };
-      card.items.push(...items.filter((i) => !card.items.some((x) => x.href === i.href)));
-      byTitle.set(title, card);
-    }
-    return [...byTitle.values()];
+    return navGroups
+      .map((g) => ({
+        title: g.title,
+        items: g.items.filter((i) => i.href !== "/apps" && (!i.module || can(i.module, "view"))),
+      }))
+      .filter((m) => m.items.length > 0);
   }, [can]);
 
   // With a query: a module-title hit keeps the whole card; otherwise the card
@@ -97,7 +89,7 @@ export default function AppLauncher() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="All Modules"
+        title="Home"
         subtitle="Everything you can access, one tap away."
         action={
           <div className="relative w-full md:w-72">

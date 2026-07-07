@@ -13,7 +13,7 @@ export default function Forbidden() {
       </p>
       <div className="flex gap-2">
         <Button variant="outline" onClick={() => window.history.back()}>Go Back</Button>
-        <Button onClick={() => setLocation("/apps")}>All Modules</Button>
+        <Button onClick={() => setLocation("/apps")}>Home</Button>
       </div>
     </div>
   );

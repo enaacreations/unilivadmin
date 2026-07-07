@@ -128,10 +128,12 @@ function Router() {
       <Route path="/recover-username/:token" component={RecoverUsernamePage} />
       <Route path="/esign/sign/:token" component={EsignSignPage} />
       <Route path="/m/:token" component={SharedMenuPage} />
-      <Route path="/">{() => <ProtectedRoute component={Dashboard} />}</Route>
-      {/* App launcher — universal post-login landing; deliberately absent from
+      {/* Home = the module launcher; the root path is an alias for it. The ops
+          overview lives at /dashboard. /apps is deliberately absent from
           PATH_TO_MODULE so every authenticated role can open it. */}
+      <Route path="/">{() => <Redirect to="/apps" />}</Route>
       <Route path="/apps">{() => <ProtectedRoute component={AppLauncher} />}</Route>
+      <Route path="/dashboard">{() => <ProtectedRoute component={Dashboard} />}</Route>
       <Route path="/home">{() => <ProtectedRoute component={UnitLeadHome} />}</Route>
       <Route path="/properties">{() => <ProtectedRoute component={Properties} />}</Route>
       <Route path="/properties/:id">{() => <ProtectedRoute component={PropertyDetail} />}</Route>
