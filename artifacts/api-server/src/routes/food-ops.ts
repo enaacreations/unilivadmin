@@ -220,9 +220,12 @@ async function expectedDeliveryAt(brand: string, mealType: string, serviceDate: 
   return new Date(base.getTime() + (w.leadTimeMinutes ?? 0) * 60000);
 }
 
+// max-based (not count-based) so deleted rows can never cause a duplicate;
+// the zero-padded fixed width makes lexicographic max equal numeric max.
 async function nextSeq(prefix: string, column: any, table: any): Promise<string> {
-  const [row] = await db.select({ c: sql<number>`count(*)::int` }).from(table).where(sql`${column} like ${prefix + "%"}`);
-  return prefix + String((row?.c ?? 0) + 1).padStart(6, "0");
+  const [row] = await db.select({ m: sql<string | null>`max(${column})` }).from(table).where(sql`${column} like ${prefix + "%"}`);
+  const last = row?.m ? parseInt(String(row.m).slice(prefix.length), 10) : 0;
+  return prefix + String((Number.isFinite(last) ? last : 0) + 1).padStart(6, "0");
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -780,8 +783,9 @@ async function isDispatchAccessible(dispatchId: string, ids: string[] | null): P
 
 /** tx-aware variant of nextSeq so the dispatch number is allocated inside the same transaction. */
 async function nextSeqTx(tx: DbLike, prefix: string, column: any, table: any): Promise<string> {
-  const [row] = await tx.select({ c: sql<number>`count(*)::int` }).from(table).where(sql`${column} like ${prefix + "%"}`);
-  return prefix + String((row?.c ?? 0) + 1).padStart(6, "0");
+  const [row] = await tx.select({ m: sql<string | null>`max(${column})` }).from(table).where(sql`${column} like ${prefix + "%"}`);
+  const last = row?.m ? parseInt(String(row.m).slice(prefix.length), 10) : 0;
+  return prefix + String((Number.isFinite(last) ? last : 0) + 1).padStart(6, "0");
 }
 
 /** Append a dispatch lifecycle event (audit timeline; mirrors foodOrderEventsTable writes). */

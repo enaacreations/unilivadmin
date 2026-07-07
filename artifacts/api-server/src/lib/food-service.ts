@@ -555,15 +555,19 @@ export async function detectSharedIngredients(dishIds: string[]): Promise<Shared
     .map(([ingredientId, v]) => ({ ingredientId, name: v.name, dishIds: [...v.dishIds] }));
 }
 
-/** Generates the next human Order ID for the current year, e.g. ORD-2026-000123. */
+/** Generates the next human Order ID for the current year, e.g. ORD-2026-000123.
+ *  Derived from max(orderNumber), NOT count(*): counting breaks the moment any
+ *  order row is deleted (count+1 collides with a surviving higher number). The
+ *  zero-padded fixed width makes lexicographic max equal numeric max. */
 export async function nextOrderNumber(): Promise<string> {
   const year = new Date().getFullYear();
   const prefix = `ORD-${year}-`;
   const [row] = await db
-    .select({ c: sql<number>`count(*)::int` })
+    .select({ m: sql<string | null>`max(${foodOrdersTable.orderNumber})` })
     .from(foodOrdersTable)
     .where(sql`${foodOrdersTable.orderNumber} like ${prefix + "%"}`);
-  const seq = (row?.c ?? 0) + 1;
+  const last = row?.m ? parseInt(row.m.slice(prefix.length), 10) : 0;
+  const seq = (Number.isFinite(last) ? last : 0) + 1;
   return prefix + String(seq).padStart(6, "0");
 }
 
