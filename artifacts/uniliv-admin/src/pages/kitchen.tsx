@@ -96,7 +96,6 @@ export default function Kitchen() {
     { accessorKey: "allergens", header: "Allergens", cell: ({ row }: any) => (
       <div className="flex flex-wrap gap-1">{(row.original.allergens || []).slice(0, 3).map((a: string) => <Badge key={a} variant="secondary" className="text-xs">{a}</Badge>)}</div>
     )},
-    { accessorKey: "isActive", header: "Active", cell: ({ row }: any) => row.original.isActive ? <Badge>Active</Badge> : <Badge variant="outline">Inactive</Badge> },
     { id: "actions", header: "", cell: ({ row }: any) => (
       <div className="flex gap-1">
         <Button variant="ghost" size="icon" onClick={() => openEdit(row.original)}><Pencil className="h-4 w-4" /></Button>

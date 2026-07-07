@@ -40,7 +40,8 @@ export default function FacilityPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { propertyId } = useAppStore();
-  const { can } = usePermissions();
+  const { can, me } = usePermissions();
+  const isSingleProperty = Boolean(me?.propertyId);
   const [tab, setTab] = React.useState("assets");
 
   const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
@@ -163,7 +164,7 @@ export default function FacilityPage() {
               <BoundedScroll size="lg">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
-                  <th className="px-4 py-3">Code</th><th className="px-4 py-3">Name</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Property</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Warranty</th><th />
+                  <th className="px-4 py-3">Code</th><th className="px-4 py-3">Name</th><th className="px-4 py-3">Category</th>{!isSingleProperty && <th className="px-4 py-3">Property</th>}<th className="px-4 py-3">Status</th><th className="px-4 py-3">Warranty</th><th />
                 </tr></thead>
                 <tbody>
                   {assets.map((a) => (
@@ -171,7 +172,7 @@ export default function FacilityPage() {
                       <td className="px-4 py-3 font-mono">{a.assetCode}</td>
                       <td className="px-4 py-3 font-medium">{a.name}</td>
                       <td className="px-4 py-3"><Badge variant="outline">{a.category}</Badge></td>
-                      <td className="px-4 py-3">{a.propertyName || "—"}</td>
+                      {!isSingleProperty && <td className="px-4 py-3">{a.propertyName || "—"}</td>}
                       <td className="px-4 py-3"><Badge variant={a.status === "ACTIVE" ? "default" : "secondary"}>{a.status}</Badge></td>
                       <td className="px-4 py-3 text-xs">{a.warrantyExpiry ? format(new Date(a.warrantyExpiry), "dd MMM yyyy") : "—"}</td>
                       <td className="px-4 py-3 text-right">{can("FACILITY", "edit") && <Button size="sm" variant="ghost" onClick={() => openAssetModal(a)} data-testid={`button-edit-asset-${a.id}`}>Edit</Button>}</td>

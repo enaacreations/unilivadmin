@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 
 export default function Laundry() {
   const qc = useQueryClient();
@@ -105,6 +106,7 @@ export default function Laundry() {
       )
     }
   ];
+  const scopedColumns = useScopedColumns(columns, { singleProperty: ["propertyName"] });
 
   return (
     <div className="space-y-6">
@@ -145,7 +147,7 @@ export default function Laundry() {
         </Select>
       </div>
 
-      <DataTable columns={columns} data={filtered} isLoading={isLoading} />
+      <DataTable columns={scopedColumns as any} data={filtered} isLoading={isLoading} />
 
       <LogInwardModal open={createOpen} onOpenChange={setCreateOpen} />
 

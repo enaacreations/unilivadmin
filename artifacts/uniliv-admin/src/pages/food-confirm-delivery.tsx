@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 import {
   foodApi, foodKeys, MEAL_TYPES, BRANDS, MEAL_LABEL, fmtQty,
   type FoodOrder, type FoodOrderItem, type FoodOrderEvent,
@@ -138,12 +139,8 @@ export default function FoodConfirmDelivery() {
         </span>
       ),
     },
-    {
-      id: "status",
-      header: "Status",
-      cell: ({ row }: { row: { original: FoodOrder } }) => <StatusBadge status={row.original.status} />,
-    },
   ];
+  const scopedCols = useScopedColumns(cols as any, { singleProperty: ["propertyName", "brand"] });
 
   return (
     <div className="space-y-6">
@@ -186,7 +183,7 @@ export default function FoodConfirmDelivery() {
         </div>
       ) : (
         <DataTable
-          columns={cols as any}
+          columns={scopedCols as any}
           data={orders}
           isLoading={isLoading}
           onRowClick={(row: FoodOrder) => setDetailId(row.id)}

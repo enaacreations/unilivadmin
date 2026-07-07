@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { formatDistanceToNow } from "date-fns";
 import { usePermissions } from "@/lib/use-permissions";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 import { useAppStore } from "@/lib/store";
 import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 
@@ -58,6 +59,9 @@ export default function Dashboard() {
     { accessorKey: "roomNumber", header: "Room" },
     { accessorKey: "status", header: "Status", cell: ({ row }: any) => <StatusBadge status={row.original.status} /> },
   ];
+
+  // Property column is constant for property-scoped viewers (unit leads/wardens).
+  const scopedResidentCols = useScopedColumns(residentCols, { singleProperty: ["propertyName"] });
 
   const propertyData = properties.map(p => ({
     name: p.name,
@@ -198,7 +202,7 @@ export default function Dashboard() {
             <Card className="overflow-hidden flex flex-col">
               <CardHeader className="border-b bg-surface/50 pb-4"><CardTitle className="font-display text-base">Recent Residents</CardTitle></CardHeader>
               <div className="p-0 flex-1">
-                <DataTable columns={residentCols} data={residents} isLoading={residentsLoading} onRowClick={(row: any) => setLocation(`/residents/${row.id}`)} />
+                <DataTable columns={scopedResidentCols} data={residents} isLoading={residentsLoading} onRowClick={(row: any) => setLocation(`/residents/${row.id}`)} />
               </div>
             </Card>
           )}

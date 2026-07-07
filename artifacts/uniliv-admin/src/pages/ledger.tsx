@@ -8,6 +8,7 @@ import { format } from "date-fns"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Badge } from "@/components/ui/badge"
 import { Bot } from "lucide-react"
+import { useScopedColumns } from "@/lib/use-scoped-columns"
 
 export default function Ledger() {
   const { data: res, isLoading } = useGetResidents({} as any, { query: { queryKey: getGetResidentsQueryKey({} as any) } })
@@ -32,16 +33,17 @@ export default function Ledger() {
       cell: ({row}: any) => <StatusBadge status={row.original.status} />
     }
   ]
+  const scopedColumns = useScopedColumns(columns, { singleProperty: ["propertyName"] })
 
   return (
     <div className="space-y-6">
-      <PageHeader 
-        title="Resident Ledgers" 
+      <PageHeader
+        title="Resident Ledgers"
         subtitle="View financial transactions for all residents"
       />
 
-      <DataTable 
-        columns={columns}
+      <DataTable
+        columns={scopedColumns}
         data={residents}
         isLoading={isLoading}
         searchKey="name"

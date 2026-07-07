@@ -60,6 +60,7 @@ export default function FoodGuests() {
   const { propertyId: globalProperty, setPropertyId } = useAppStore();
   const propertyId = paramProperty ?? globalProperty ?? null;
   const { me } = usePermissions();
+  const isSingleProperty = Boolean(me?.propertyId);
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
@@ -289,7 +290,7 @@ export default function FoodGuests() {
                 <TableHead>Room</TableHead>
                 <TableHead>Gender</TableHead>
                 <TableHead>Guest Since</TableHead>
-                <TableHead>Property</TableHead>
+                {!isSingleProperty && <TableHead>Property</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -309,12 +310,14 @@ export default function FoodGuests() {
                     <TableCell><Skeleton className="h-4 w-12" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-16" /></TableCell>
                     <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-                    <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                    {!isSingleProperty && (
+                      <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                    )}
                   </TableRow>
                 ))
               ) : guests.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="p-0">
+                  <TableCell colSpan={isSingleProperty ? 5 : 6} className="p-0">
                     <EmptyState
                       icon={UsersRound}
                       title="No guests found"
@@ -370,9 +373,11 @@ export default function FoodGuests() {
                     <TableCell className="whitespace-nowrap text-muted-foreground">
                       {fmtDate(g.checkInDate)}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {g.propertyName || "—"}
-                    </TableCell>
+                    {!isSingleProperty && (
+                      <TableCell className="text-muted-foreground">
+                        {g.propertyName || "—"}
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))
               )}

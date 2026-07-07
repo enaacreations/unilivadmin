@@ -36,7 +36,8 @@ export default function ElectricityPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { propertyId } = useAppStore();
-  const { can } = usePermissions();
+  const { can, me } = usePermissions();
+  const isSingleProperty = Boolean(me?.propertyId);
   const [tab, setTab] = React.useState("meters");
 
   const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
@@ -171,14 +172,14 @@ export default function ElectricityPage() {
               <BoundedScroll size="lg">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
-                  <th className="px-4 py-3">Meter No.</th><th className="px-4 py-3">Label</th><th className="px-4 py-3">Property</th><th className="px-4 py-3">Room</th><th className="px-4 py-3">Resident</th><th className="px-4 py-3">Tariff</th><th />
+                  <th className="px-4 py-3">Meter No.</th><th className="px-4 py-3">Label</th>{!isSingleProperty && <th className="px-4 py-3">Property</th>}<th className="px-4 py-3">Room</th><th className="px-4 py-3">Resident</th><th className="px-4 py-3">Tariff</th><th />
                 </tr></thead>
                 <tbody>
                   {meters.map((m) => (
                     <tr key={m.id} className="border-t hover:bg-muted/20" data-testid={`meter-row-${m.id}`}>
                       <td className="px-4 py-3 font-mono">{m.meterNo}</td>
                       <td className="px-4 py-3">{m.label || "—"}</td>
-                      <td className="px-4 py-3">{m.propertyName || "—"}</td>
+                      {!isSingleProperty && <td className="px-4 py-3">{m.propertyName || "—"}</td>}
                       <td className="px-4 py-3">{m.roomNumber || "—"}</td>
                       <td className="px-4 py-3">{m.residentName || <span className="text-muted-foreground">—</span>}</td>
                       <td className="px-4 py-3 text-xs">{m.tariffName ? `${m.tariffName} · ₹${m.ratePerUnit}/u` : <span className="text-muted-foreground">—</span>}</td>

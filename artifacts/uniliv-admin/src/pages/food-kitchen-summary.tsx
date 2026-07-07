@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
-import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Badge } from "@/components/ui/badge";
@@ -407,7 +406,6 @@ function OpenOrdersPanel({
                   <th className="p-3 font-medium">Meal</th>
                   <th className="p-3 font-medium text-right">Residents</th>
                   <th className="p-3 font-medium text-right">Qty</th>
-                  <th className="p-3 font-medium">Status</th>
                   <th className="p-3 font-medium text-right">Action</th>
                 </tr>
               </thead>
@@ -429,7 +427,6 @@ function OpenOrdersPanel({
                     <td className="p-3 align-middle">{MEAL_LABEL[o.mealType]}</td>
                     <td className="p-3 align-middle text-right">{o.residentsCount}</td>
                     <td className="p-3 align-middle text-right font-medium">{fmtQty(o.totalQuantity)}</td>
-                    <td className="p-3 align-middle"><StatusBadge status={o.status} /></td>
                     <td className="p-3 align-middle text-right">
                       <Button
                         size="sm"

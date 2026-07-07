@@ -16,6 +16,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
 import { isSuperAdminRole } from "@/lib/permissions";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -312,6 +313,7 @@ export default function WalletPage() {
       ),
     },
   ];
+  const scopedColumns = useScopedColumns(columns, { singleProperty: ["propertyName"] });
 
   return (
     <div className="space-y-6">
@@ -389,7 +391,7 @@ export default function WalletPage() {
       </Card>
 
       <DataTable
-        columns={columns}
+        columns={scopedColumns}
         data={wallets}
         isLoading={isLoading}
         onRowClick={(row) => setLocation(`/wallet/${row.residentId}`)}

@@ -29,6 +29,7 @@ import {
   type FoodOrder, type FoodOrderItem, type AnalyticsData,
 } from "@/lib/food-api";
 import { useToast } from "@/hooks/use-toast";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 
 const PRIMARY = "var(--primary)";
 const ACCENT = "var(--accent)";
@@ -206,6 +207,7 @@ export default function FoodWaste() {
       cell: ({ row }: any) => <WindowBadge until={row.original.wasteEditableUntil} />,
     },
   ];
+  const scopedCols = useScopedColumns(cols as any, { singleProperty: ["propertyId", "brand"] });
 
   return (
     <div className="space-y-6">
@@ -322,7 +324,7 @@ export default function FoodWaste() {
       </div>
 
       <DataTable
-        columns={cols as any}
+        columns={scopedCols as any}
         data={orders}
         isLoading={isLoading}
         onRowClick={(row: FoodOrder) => setDetailId(row.id)}

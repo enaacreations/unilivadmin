@@ -21,6 +21,7 @@ import {
   type FoodOrder,
 } from "@/lib/food-api";
 import { useQueryParam } from "@/lib/nav-helpers";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 
 const ALL = "ALL";
 
@@ -163,6 +164,13 @@ export default function FoodOrders() {
     },
   ];
 
+  // Property-scoped viewers only ever see their own property; unit leads only
+  // ever see their own orders — drop the constant columns for them.
+  const scopedColumns = useScopedColumns(cols as any, {
+    singleProperty: ["propertyId"],
+    roles: { UNIT_LEAD: ["unitLeadName"] },
+  });
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -229,7 +237,7 @@ export default function FoodOrders() {
       </div>
 
       <DataTable
-        columns={cols as any}
+        columns={scopedColumns as any}
         data={orders}
         isLoading={isLoading}
         onRowClick={(row: any) => setLocation(`/food/orders/${row.id}`)}

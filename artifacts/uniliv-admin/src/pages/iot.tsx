@@ -32,7 +32,8 @@ export default function IoTPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { propertyId } = useAppStore();
-  const { can } = usePermissions();
+  const { can, me } = usePermissions();
+  const isSingleProperty = Boolean(me?.propertyId);
   const [tab, setTab] = React.useState("devices");
 
   const { data: propsRes } = useGetProperties(undefined, { query: { queryKey: getGetPropertiesQueryKey() } });
@@ -121,7 +122,7 @@ export default function IoTPage() {
               <BoundedScroll size="lg">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-left sticky top-0 z-10"><tr>
-                  <th className="px-4 py-3">Name</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Adapter</th><th className="px-4 py-3">Property / Room</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Last Seen</th><th />
+                  <th className="px-4 py-3">Name</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Adapter</th><th className="px-4 py-3">{isSingleProperty ? "Room" : "Property / Room"}</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Last Seen</th><th />
                 </tr></thead>
                 <tbody>
                   {devices.map((d) => (
@@ -129,7 +130,7 @@ export default function IoTPage() {
                       <td className="px-4 py-3 font-medium">{d.name}</td>
                       <td className="px-4 py-3 text-xs"><Badge variant="outline">{d.deviceType}</Badge></td>
                       <td className="px-4 py-3 text-xs">{d.adapter}</td>
-                      <td className="px-4 py-3 text-xs">{d.propertyName}{d.roomNumber ? ` · ${d.roomNumber}` : ""}</td>
+                      <td className="px-4 py-3 text-xs">{isSingleProperty ? (d.roomNumber || "—") : <>{d.propertyName}{d.roomNumber ? ` · ${d.roomNumber}` : ""}</>}</td>
                       <td className="px-4 py-3"><Badge variant={d.status === "ACTIVE" ? "default" : "secondary"}>{d.status}</Badge></td>
                       <td className="px-4 py-3 text-xs">{d.lastSeenAt ? formatDistanceToNow(new Date(d.lastSeenAt), { addSuffix: true }) : "Never"}</td>
                       <td className="px-4 py-3 text-right space-x-2">

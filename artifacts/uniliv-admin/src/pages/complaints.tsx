@@ -19,6 +19,7 @@ import { useLocation } from "wouter";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
 import { useAppStore } from "@/lib/store";
 import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 
 const CATEGORIES = ["ELECTRICAL", "PLUMBING", "INTERNET", "HOUSEKEEPING", "SECURITY", "FOOD", "LAUNDRY", "OTHER"];
 const SLA_MAP: Record<string, number> = {
@@ -122,6 +123,7 @@ export default function Complaints() {
     { id: "sla", header: "SLA Timer", cell: ({row}: any) => row.original.status !== "RESOLVED" && row.original.status !== "CLOSED" ? <SLATimer deadline={row.original.slaDeadline} slaHours={row.original.slaHours} /> : "—" },
     { accessorKey: "createdAt", header: "Created", cell: ({row}: any) => new Date(row.original.createdAt).toLocaleDateString() },
   ];
+  const scopedColumns = useScopedColumns(columns, { singleProperty: ["propertyName"] });
 
   return (
     <div className="space-y-6">
@@ -181,8 +183,8 @@ export default function Complaints() {
             </Select>
           </div>
           
-          <DataTable 
-            columns={columns}
+          <DataTable
+            columns={scopedColumns as any}
             data={complaints}
             isLoading={isLoading}
             onRowClick={(row) => setLocation(`/complaints/${row.id}`)}

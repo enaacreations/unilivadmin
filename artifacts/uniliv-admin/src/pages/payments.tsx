@@ -7,6 +7,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { format } from "date-fns"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useQueryParam } from "@/lib/nav-helpers"
+import { useScopedColumns } from "@/lib/use-scoped-columns"
 
 export default function Payments() {
   // Optional ?propertyId= scopes the page to one property (e.g. from My Properties → Revenue).
@@ -35,6 +36,7 @@ export default function Payments() {
       cell: ({row}: any) => <StatusBadge status={row.original.status} />
     }
   ]
+  const scopedColumns = useScopedColumns(columns, { singleProperty: ["propertyName"] })
 
   return (
     <div className="space-y-6">
@@ -43,8 +45,8 @@ export default function Payments() {
         subtitle={scopedName ? `Collections — ${scopedName}` : "Track payment receipts across the portfolio"}
       />
 
-      <DataTable 
-        columns={columns}
+      <DataTable
+        columns={scopedColumns}
         data={residents}
         isLoading={isLoading}
         searchKey="name"

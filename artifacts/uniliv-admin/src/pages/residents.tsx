@@ -29,6 +29,7 @@ import { BulkRentModal } from "@/components/bulk-rent-modal";
 import { BulkUploadDialog, type BulkColumn } from "@/components/bulk-upload-dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "@/lib/store";
+import { useScopedColumns } from "@/lib/use-scoped-columns";
 import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 
 // Column config for the bulk-upload template + header→key mapping. Keys match
@@ -161,6 +162,9 @@ export default function Residents() {
     },
   ];
 
+  // Property column is constant for property-scoped viewers (unit leads/wardens).
+  const scopedColumns = useScopedColumns(columns, { singleProperty: ["propertyName"] });
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -222,7 +226,7 @@ export default function Residents() {
         </div>
       </div>
 
-      <DataTable columns={columns as any} data={residents} isLoading={isLoading} />
+      <DataTable columns={scopedColumns as any} data={residents} isLoading={isLoading} />
 
       <ResidentFormModal open={createOpen} onOpenChange={setCreateOpen} />
       <BulkRentModal open={bulkOpen} onOpenChange={setBulkOpen} />

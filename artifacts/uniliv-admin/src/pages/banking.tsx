@@ -46,7 +46,6 @@ export default function BankingPage() {
     { accessorKey: "createdAt", header: "Imported", cell: ({row}:any) => format(new Date(row.original.createdAt), "dd MMM yyyy HH:mm") },
     { accessorKey: "fileName", header: "File", cell: ({row}:any) => <span className="font-medium">{row.original.fileName}</span> },
     { accessorKey: "accountLabel", header: "Account", cell: ({row}:any) => row.original.accountLabel || "—" },
-    { accessorKey: "totalLines", header: "Lines" },
     { accessorKey: "matchedLines", header: "Matched", cell: ({row}:any) => <span className="font-mono">{row.original.matchedLines}/{row.original.totalLines}</span> },
     { id: "actions", header: "", cell: ({row}:any) => (
       <Button size="sm" variant="outline" onClick={() => setSelectedImport(row.original.id)} data-testid={`button-view-import-${row.original.id}`}>
