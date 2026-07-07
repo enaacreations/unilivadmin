@@ -55,6 +55,9 @@ export default function MasterTable() {
   const canCreate = can("FOOD_SETTINGS", "create");
   const canEdit = can("FOOD_SETTINGS", "edit");
   const canDelete = can("FOOD_SETTINGS", "delete");
+  // Read-only viewers (e.g. AUDIT_READONLY) get no Actions column at all —
+  // every control inside it is edit/delete-gated, so it would render empty.
+  const showActions = canEdit || canDelete;
 
   const [search, setSearch] = React.useState("");
   const [debounced, setDebounced] = React.useState("");
@@ -330,7 +333,7 @@ export default function MasterTable() {
                 {displayCols.map((c) => (
                   <TableHead key={c.key}>{c.label}</TableHead>
                 ))}
-                <TableHead className="text-right">Actions</TableHead>
+                {showActions && <TableHead className="text-right">Actions</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -341,12 +344,12 @@ export default function MasterTable() {
                     {displayCols.map((c) => (
                       <TableCell key={c.key}><Skeleton className="h-6 w-full" /></TableCell>
                     ))}
-                    <TableCell><Skeleton className="h-6 w-16 ml-auto" /></TableCell>
+                    {showActions && <TableCell><Skeleton className="h-6 w-16 ml-auto" /></TableCell>}
                   </TableRow>
                 ))
               ) : data.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={displayCols.length + 2} className="h-32 text-center">
+                  <TableCell colSpan={displayCols.length + (showActions ? 2 : 1)} className="h-32 text-center">
                     <div className="flex flex-col items-center justify-center text-muted-foreground py-6">
                       <Database className="h-8 w-8 mb-2" />
                       <p>{debounced || includeInactive ? "No matching records." : "No records yet."}</p>
@@ -366,27 +369,29 @@ export default function MasterTable() {
                     {displayCols.map((c) => (
                       <TableCell key={c.key}>{renderCell(c, row)}</TableCell>
                     ))}
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-1">
-                        {canEdit && (
-                          <Switch
-                            checked={Boolean(row.isActive)}
-                            onCheckedChange={() => toggleActive(row)}
-                            aria-label="Toggle active"
-                          />
-                        )}
-                        {canEdit && (
-                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                        )}
-                        {canDelete && (
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeleteRow(row)}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
+                    {showActions && (
+                      <TableCell>
+                        <div className="flex items-center justify-end gap-1">
+                          {canEdit && (
+                            <Switch
+                              checked={Boolean(row.isActive)}
+                              onCheckedChange={() => toggleActive(row)}
+                              aria-label="Toggle active"
+                            />
+                          )}
+                          {canEdit && (
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row)}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => setDeleteRow(row)}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))
               )}

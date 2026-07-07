@@ -98,10 +98,55 @@ import { UtensilsCrossed, ChefHat } from "lucide-react";
 function bookingColumns({
   onEdit,
   onDelete,
+  canEdit,
+  canDelete,
 }: {
   onEdit: (b: BookingDto) => void;
   onDelete: (b: BookingDto) => void;
+  canEdit: boolean;
+  canDelete: boolean;
 }): ColumnDef<BookingDto, unknown>[] {
+  // Bookings mutate through the RESIDENTS module, so viewers without those
+  // rights (e.g. AUDIT_READONLY) get no actions column instead of buttons
+  // whose requests would 403.
+  const actionsCol: ColumnDef<BookingDto, unknown>[] = canEdit || canDelete ? [
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) => (
+        <div className="flex gap-1 justify-end">
+          {canEdit && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(row.original);
+              }}
+              data-testid={`button-edit-booking-${row.original.id}`}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </Button>
+          )}
+          {canDelete && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-destructive"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(row.original);
+              }}
+              data-testid={`button-delete-booking-${row.original.id}`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </Button>
+          )}
+        </div>
+      ),
+    },
+  ] : [];
   return [
     {
       accessorKey: "bookingNo",
@@ -138,38 +183,7 @@ function bookingColumns({
       header: "Status",
       cell: ({ row }) => <StatusBadge status={row.original.status} />,
     },
-    {
-      id: "actions",
-      header: "",
-      cell: ({ row }) => (
-        <div className="flex gap-1 justify-end">
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit(row.original);
-            }}
-            data-testid={`button-edit-booking-${row.original.id}`}
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7 text-destructive"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(row.original);
-            }}
-            data-testid={`button-delete-booking-${row.original.id}`}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </Button>
-        </div>
-      ),
-    },
+    ...actionsCol,
   ];
 }
 
@@ -1087,6 +1101,8 @@ export default function PropertyDetail() {
                         setBookingModalOpen(true);
                       },
                       onDelete: (b) => setBookingToDelete(b),
+                      canEdit: can("RESIDENTS", "edit"),
+                      canDelete: can("RESIDENTS", "delete"),
                     })}
                     data={bookings}
                   />

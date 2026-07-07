@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { PORTFOLIO_TYPES, PORTFOLIO_TYPE_LABELS, type PortfolioType } from "@/lib/portfolio-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { foodApi, foodKeys } from "@/lib/food-api";
+import { usePermissions } from "@/lib/use-permissions";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -42,6 +43,11 @@ export default function Properties() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  // View-only roles (wardens, unit leads, auditors) get no mutation
+  // affordances — their PUT/POST calls would only 403 server-side.
+  const { can } = usePermissions();
+  const canEditProperties = can("PROPERTIES", "edit");
+  const canCreateProperties = can("PROPERTIES", "create");
   const { data: propertiesRes, isLoading } = useGetProperties(undefined, {
     query: { queryKey: getGetPropertiesQueryKey() },
   });
@@ -244,7 +250,7 @@ export default function Properties() {
         return (
           <div className="flex items-center gap-2">
             <StatusBadge status={p.status} />
-            {toggleable && (
+            {toggleable && canEditProperties && (
               <Switch
                 checked={p.status === "ACTIVE"}
                 disabled={togglingId === p.id}
@@ -262,7 +268,7 @@ export default function Properties() {
         );
       },
     },
-    {
+    ...(canEditProperties ? [{
       id: "actions",
       header: "Actions",
       cell: ({ row }: any) => (
@@ -280,7 +286,7 @@ export default function Properties() {
           </Button>
         </div>
       ),
-    },
+    }] : []),
   ];
 
   return (
@@ -289,7 +295,7 @@ export default function Properties() {
         title="Properties"
         subtitle="Manage all co-living properties and buildings"
         action={
-          <Button
+          canCreateProperties && <Button
             className="bg-accent hover:bg-accent/90 text-white"
             onClick={openCreate}
             data-testid="button-add-property"
