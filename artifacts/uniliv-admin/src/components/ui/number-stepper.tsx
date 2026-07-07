@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Minus, Plus } from "lucide-react"
+import { ChevronDown, ChevronUp, Minus, Plus } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -20,6 +20,10 @@ export interface NumberStepperProps {
   step?: number
   disabled?: boolean
   className?: string
+  /** "sm" renders a compact h-7 control for dense rows (e.g. per-dish lists). */
+  size?: "default" | "sm"
+  /** Spinner layout: value with stacked up/down arrows instead of −/+ ends. */
+  spin?: boolean
   "aria-label"?: string
   /** Static unit label shown after the input (used when `unitOptions` is absent). */
   unit?: string
@@ -78,6 +82,8 @@ const NumberStepper = React.forwardRef<HTMLInputElement, NumberStepperProps>(
       step = 1,
       disabled,
       className,
+      size = "default",
+      spin = false,
       "aria-label": ariaLabel,
       unit,
       unitOptions,
@@ -87,6 +93,7 @@ const NumberStepper = React.forwardRef<HTMLInputElement, NumberStepperProps>(
   ) => {
     const atMin = typeof min === "number" && value <= min
     const atMax = typeof max === "number" && value >= max
+    const sm = size === "sm"
 
     const commit = (next: number) => {
       if (disabled) return
@@ -121,12 +128,65 @@ const NumberStepper = React.forwardRef<HTMLInputElement, NumberStepperProps>(
       onUnitChange?.(next)
     }
 
+    if (spin) {
+      const arrowCls = cn(
+        "flex flex-1 items-center justify-center text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-40",
+        sm ? "w-5" : "w-6"
+      )
+      return (
+        <div
+          role="group"
+          aria-label={ariaLabel}
+          className={cn(
+            "inline-flex items-stretch overflow-hidden rounded-md border border-input bg-transparent",
+            sm ? "h-7" : "h-9",
+            disabled && "cursor-not-allowed opacity-50",
+            className
+          )}
+        >
+          <Input
+            ref={ref}
+            type="number"
+            inputMode="numeric"
+            value={Number.isNaN(value) ? "" : value}
+            min={min}
+            max={max}
+            step={step}
+            disabled={disabled}
+            aria-label={ariaLabel}
+            onChange={handleInput}
+            onBlur={handleBlur}
+            className={cn(
+              "h-full rounded-none border-0 px-1 text-center tabular-nums",
+              sm ? "w-10 text-xs" : "w-12",
+              "focus-visible:ring-0 focus-visible:border-transparent",
+              "[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            )}
+          />
+          <div className="flex flex-col border-l border-input">
+            <button type="button" aria-label="Increase" disabled={disabled || atMax}
+              onClick={() => commit(value + step)} className={cn(arrowCls, "border-b border-input")}>
+              <ChevronUp className={sm ? "h-3 w-3" : "h-3.5 w-3.5"} />
+            </button>
+            <button type="button" aria-label="Decrease" disabled={disabled || atMin}
+              onClick={() => commit(value - step)} className={arrowCls}>
+              <ChevronDown className={sm ? "h-3 w-3" : "h-3.5 w-3.5"} />
+            </button>
+          </div>
+          {unit ? (
+            <span className={cn("self-center pl-1 pr-2 text-muted-foreground", sm ? "text-xs" : "text-sm")}>{unit}</span>
+          ) : null}
+        </div>
+      )
+    }
+
     const stepper = (
       <div
         role="group"
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex h-9 items-center rounded-md border border-input bg-transparent",
+          "inline-flex items-center rounded-md border border-input bg-transparent",
+          sm ? "h-7" : "h-9",
           disabled && "cursor-not-allowed opacity-50",
           !unitOptions && className
         )}
@@ -138,7 +198,10 @@ const NumberStepper = React.forwardRef<HTMLInputElement, NumberStepperProps>(
           aria-label="Decrease"
           disabled={disabled || atMin}
           onClick={() => commit(value - step)}
-          className="h-9 w-9 rounded-r-none border-0 border-r border-input"
+          className={cn(
+            "rounded-r-none border-0 border-r border-input",
+            sm ? "h-7 w-7 [&_svg]:h-3.5 [&_svg]:w-3.5" : "h-9 w-9"
+          )}
         >
           <Minus />
         </Button>
@@ -155,7 +218,8 @@ const NumberStepper = React.forwardRef<HTMLInputElement, NumberStepperProps>(
           onChange={handleInput}
           onBlur={handleBlur}
           className={cn(
-            "h-9 w-14 rounded-none border-0 px-1 text-center tabular-nums",
+            "rounded-none border-0 px-1 text-center tabular-nums",
+            sm ? "h-7 w-12 text-xs" : "h-9 w-14",
             "focus-visible:ring-0 focus-visible:border-transparent",
             "[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
           )}
@@ -167,12 +231,15 @@ const NumberStepper = React.forwardRef<HTMLInputElement, NumberStepperProps>(
           aria-label="Increase"
           disabled={disabled || atMax}
           onClick={() => commit(value + step)}
-          className="h-9 w-9 rounded-l-none border-0 border-l border-input"
+          className={cn(
+            "rounded-l-none border-0 border-l border-input",
+            sm ? "h-7 w-7 [&_svg]:h-3.5 [&_svg]:w-3.5" : "h-9 w-9"
+          )}
         >
           <Plus />
         </Button>
         {!unitOptions && unit ? (
-          <span className="pl-1 pr-2 text-sm text-muted-foreground">{unit}</span>
+          <span className={cn("pl-1 pr-2 text-muted-foreground", sm ? "text-xs" : "text-sm")}>{unit}</span>
         ) : null}
       </div>
     )

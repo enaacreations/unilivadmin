@@ -12,7 +12,6 @@ import {
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { NumberStepper } from "@/components/ui/number-stepper";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,7 +20,6 @@ import { Separator } from "@/components/ui/separator";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Accordion, AccordionItem, AccordionContent } from "@/components/ui/accordion";
 import * as AccordionPrimitive from "@radix-ui/react-accordion";
@@ -54,6 +52,8 @@ type Override = { excluded?: boolean; persons?: number; qty?: number };
 const todayDate = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 const itemKey = (mealType: string, dishId: string) => `${mealType}__${dishId}`;
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
+/** Sensible +/− increment per unit: whole numbers for countables, 0.1 for weights/volumes. */
+const qtyStep = (unit: string) => (["PCS", "PLATE", "SERVING", "UNIT"].includes(unit.toUpperCase()) ? 1 : 0.1);
 
 /** Live countdown to a deadline, formatted "Hh Mm Ss" (or "Mm Ss" under an hour). */
 function useCountdown(deadline: Date | null): { text: string; passed: boolean } {
@@ -91,6 +91,8 @@ export default function FoodPlaceOrder() {
   // Which meal's accordion is open (single-open; first meal opens by default).
   const [openMeal, setOpenMeal] = React.useState<string>("");
   const openMealInit = React.useRef(false);
+  // Which dish row is in edit mode (steppers shown); one at a time keeps rows calm.
+  const [editingItem, setEditingItem] = React.useState<string | null>(null);
 
   // Success state (shown after a batch is placed).
   const [placed, setPlaced] = React.useState<{ batch: OrderBatch; orders: FoodOrder[] } | null>(null);
@@ -138,6 +140,15 @@ export default function FoodPlaceOrder() {
     }
   }, [paramProperty, setPropertyId, navigate]);
   const propertyId = scopeProperty ?? "";
+
+  // A user tagged to exactly ONE property (the unit-lead persona) never needs
+  // the multi-property board — enter that property's builder/status directly
+  // instead of asking for one more click. The navbar scope follows, same as
+  // the ?propertyId= deep-link above.
+  const soleProperty = (nextOrdersData ?? []).length === 1 ? nextOrdersData![0]!.propertyId : null;
+  React.useEffect(() => {
+    if (!propertyId && soleProperty) setPropertyId(soleProperty);
+  }, [propertyId, soleProperty, setPropertyId]);
 
   const selectedProperty = properties.find((p) => p.id === propertyId);
   const myNext = (nextOrdersData ?? []).find((n) => n.propertyId === propertyId) ?? null;
@@ -197,6 +208,7 @@ export default function FoodPlaceOrder() {
   // edited value never leaks into the next scope's draft.
   React.useEffect(() => {
     setShowBuilder(false); setOverrides({}); setMealPersons({}); setOpenMeal(""); openMealInit.current = false;
+    setEditingItem(null);
     setPersons(seedPersons.current);
     draftRestoreDone.current = false; draftJustRestored.current = false; draftOwnsPersons.current = false;
     setDraftSavedAt(null); setDraftRestoredAt(null);
@@ -649,9 +661,11 @@ export default function FoodPlaceOrder() {
           subtitle="Every property tagged to you — see what still needs its next order, and place it."
           breadcrumbs={[{ label: "Food", href: "/food/orders" }, { label: "Place Order" }]}
         />
+        {/* soleProperty auto-selects in an effect — keep the skeleton up for that
+            frame so the one-row board never flashes before the builder opens. */}
         <NextOrdersBoard
           properties={nextOrdersData ?? []}
-          isLoading={nextOrdersData === undefined}
+          isLoading={nextOrdersData === undefined || !!soleProperty}
           canPlace={canPlace}
           onOpen={setPropertyId}
         />
@@ -889,13 +903,19 @@ export default function FoodPlaceOrder() {
                       </div>
                     </AccordionPrimitive.Header>
                     <AccordionContent className="p-0">
+                      {/* Rows read as calm text by default — "1.62 kg · 9 ppl" plus the
+                          pencil. Tapping the pencil swaps that one row into edit mode with
+                          inline persons/quantity steppers (editing persons recomputes the
+                          quantity; editing quantity pins it), a reset, and a done tick. */}
                       <ul className="divide-y border-t">
                             {meal.items.map((it) => {
                               const e = effFor(meal.mealType, it.dishId, it.qtyPerResident);
+                              const key = itemKey(meal.mealType, it.dishId);
+                              const editing = editingItem === key;
                               return (
-                                <li key={it.dishId} className={cn("flex items-center gap-3 px-4 py-2.5", !e.included && "opacity-50")}>
+                                <li key={it.dishId} className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5", !e.included && "opacity-50")}>
                                   <Checkbox checked={e.included} disabled={orderingClosed}
-                                    onCheckedChange={(v) => setExcluded(meal.mealType, it.dishId, !v)}
+                                    onCheckedChange={(v) => { setExcluded(meal.mealType, it.dishId, !v); if (!v && editing) setEditingItem(null); }}
                                     aria-label={`Include ${it.dishName}`} />
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-1.5">
@@ -904,47 +924,62 @@ export default function FoodPlaceOrder() {
                                     </div>
                                     <p className="truncate text-xs text-muted-foreground">
                                       {it.slotLabel ? `${it.slotLabel} · ` : ""}
-                                      {e.edited ? `${e.persons} persons` : `${fmtQty(it.qtyPerResident, it.unit)}/person`}
+                                      {fmtQty(it.qtyPerResident, it.unit)}/person
                                     </p>
                                   </div>
-                                  <div className="shrink-0 text-right tabular-nums">
-                                    <span className={cn("text-sm font-semibold", !e.included && "text-muted-foreground")}>
-                                      {e.included ? fmtQty(e.qty, it.unit) : "—"}
+                                  {!editing && (
+                                    <span className="shrink-0 text-right tabular-nums">
+                                      {e.included ? (
+                                        <>
+                                          <span className="text-sm font-semibold">{fmtQty(e.qty, it.unit)}</span>
+                                          <span className="text-xs text-muted-foreground"> · {e.persons} ppl</span>
+                                        </>
+                                      ) : (
+                                        <span className="text-sm font-semibold text-muted-foreground">—</span>
+                                      )}
                                     </span>
-                                  </div>
-                                  <Popover>
-                                    <PopoverTrigger asChild>
-                                      <Button variant="ghost" size="icon" disabled={orderingClosed || !e.included}
-                                        className={cn("h-8 w-8 shrink-0", e.edited ? "text-accent" : "text-muted-foreground")}
-                                        aria-label={`Customise ${it.dishName}`}>
-                                        <Pencil className="h-3.5 w-3.5" />
-                                      </Button>
-                                    </PopoverTrigger>
-                                    <PopoverContent align="end" className="w-64 space-y-3">
-                                      <div>
-                                        <p className="text-sm font-medium">{it.dishName}</p>
-                                        <p className="text-xs text-muted-foreground">{fmtQty(it.qtyPerResident, it.unit)} per person</p>
+                                  )}
+                                  {editing && e.included && (
+                                    <div className="flex w-full items-center justify-end gap-x-2 gap-y-2 sm:w-auto">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-[11px] text-muted-foreground">
+                                          <span className="sm:hidden">ppl</span>
+                                          <span className="hidden sm:inline">persons</span>
+                                        </span>
+                                        <NumberStepper size="sm" spin value={e.persons} min={0}
+                                          disabled={orderingClosed}
+                                          onChange={(n) => patchOverride(key, { persons: n, qty: undefined })}
+                                          aria-label={`${it.dishName} persons`} />
                                       </div>
-                                      <div className="flex items-center justify-between gap-2">
-                                        <Label className="text-xs">Persons</Label>
-                                        <NumberStepper value={e.persons} min={0} className="w-auto"
-                                          onChange={(n) => patchOverride(itemKey(meal.mealType, it.dishId), { persons: n, qty: undefined })}
-                                          aria-label="Override persons" />
-                                      </div>
-                                      <div className="flex items-center justify-between gap-2">
-                                        <Label className="text-xs">Quantity ({it.unit.toLowerCase()})</Label>
-                                        <NumberStepper value={e.qty} min={0} step={0.001} className="w-auto"
-                                          onChange={(n) => patchOverride(itemKey(meal.mealType, it.dishId), { qty: n })}
-                                          aria-label="Override quantity" />
+                                      <div className="flex items-center gap-1.5">
+                                        <NumberStepper size="sm" value={e.qty} min={0} step={qtyStep(it.unit)}
+                                          disabled={orderingClosed}
+                                          onChange={(n) => patchOverride(key, { qty: round3(n) })}
+                                          aria-label={`${it.dishName} quantity (${it.unit.toLowerCase()})`} />
+                                        <span className="text-[11px] text-muted-foreground">{it.unit.toLowerCase()}</span>
                                       </div>
                                       {e.edited && (
-                                        <Button variant="outline" size="sm" className="w-full"
+                                        <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground"
+                                          aria-label={`Reset ${it.dishName} to calculated`} title="Reset to calculated"
                                           onClick={() => resetItem(meal.mealType, it.dishId)}>
-                                          <RotateCcw className="mr-2 h-3.5 w-3.5" /> Reset to calculated
+                                          <RotateCcw className="h-3 w-3" />
                                         </Button>
                                       )}
-                                    </PopoverContent>
-                                  </Popover>
+                                      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-accent"
+                                        aria-label={`Done editing ${it.dishName}`} title="Done"
+                                        onClick={() => setEditingItem(null)}>
+                                        <Check className="h-4 w-4" />
+                                      </Button>
+                                    </div>
+                                  )}
+                                  {!editing && (
+                                    <Button variant="ghost" size="icon" disabled={orderingClosed || !e.included}
+                                      className={cn("h-8 w-8 shrink-0", e.edited ? "text-accent" : "text-muted-foreground")}
+                                      aria-label={`Edit ${it.dishName}`} title="Edit persons / quantity"
+                                      onClick={() => setEditingItem(key)}>
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                  )}
                                 </li>
                               );
                             })}
