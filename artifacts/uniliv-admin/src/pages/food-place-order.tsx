@@ -7,7 +7,7 @@ import {
   UtensilsCrossed, Loader2, Building2, CalendarDays, Users,
   Check, Clock, Lock, Download, Share2, Link2, Copy,
   Soup, Tag, AlertTriangle, Pencil, Zap, CheckCircle2, Truck, ArrowRight,
-  Image as ImageIcon, FileText, Mail, ChevronDown, Plus, RotateCcw,
+  Image as ImageIcon, FileText, Mail, ChevronDown, Plus, RotateCcw, History,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,9 @@ import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import { isSuperAdminRole } from "@/lib/permissions";
 import { useQueryParam } from "@/lib/nav-helpers";
+import {
+  orderDraftKey, loadOrderDraft, saveOrderDraft, removeOrderDraft, pruneOrderDrafts,
+} from "@/lib/order-draft";
 import { cn } from "@/lib/utils";
 
 /** Per-item override, keyed `${mealType}__${dishId}`. `excluded` drops the dish;
@@ -74,7 +77,7 @@ export default function FoodPlaceOrder() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const { propertyId: scopeProperty, setPropertyId } = useAppStore();
-  const { can, role } = usePermissions();
+  const { can, role, me } = usePermissions();
   const canPlace = can("FOOD_PLACE_ORDER", "create");
   // Download menu stays for Unit Lead + FnB roles (only on the success state).
   const canDownload = role === "UNIT_LEAD" || isSuperAdminRole(role) || (role ?? "").startsWith("FNB_");
@@ -99,6 +102,15 @@ export default function FoodPlaceOrder() {
   const [shareOpen, setShareOpen] = React.useState(false);
   const [shareLink, setShareLink] = React.useState<string | null>(null);
 
+  // ── Browser-local draft (localStorage only): edits autosave silently and are
+  //    restored on the next visit to the same (user, property, service date). ──
+  const draftRestoreDone = React.useRef(false);     // restore attempted for the current scope
+  const draftJustRestored = React.useRef(false);    // skip the autosave pass queued before restored state commits
+  const draftOwnsPersons = React.useRef(false);     // a restored draft holds `persons` — don't reseed from active guests
+  const seedPersons = React.useRef(1);              // pristine headcount baseline for dirty-checking
+  const [draftSavedAt, setDraftSavedAt] = React.useState<Date | null>(null);
+  const [draftRestoredAt, setDraftRestoredAt] = React.useState<Date | null>(null);
+
   // ── Lookups (properties carry inherited brand + kitchen) ──
   const { data: lookups } = useQuery({
     queryKey: foodKeys.lookups(),
@@ -108,7 +120,7 @@ export default function FoodPlaceOrder() {
 
   // ── Next-order status across every property tagged to me (powers the board AND
   //    the per-property gating: resolved service date, cut-off, ordered/missing). ──
-  const { data: nextOrdersData } = useQuery({
+  const { data: nextOrdersData, isPending: nextOrdersPending } = useQuery({
     queryKey: foodKeys.nextOrders(),
     queryFn: () => foodApi.nextOrders(),
   });
@@ -142,13 +154,16 @@ export default function FoodPlaceOrder() {
   const dayRelLabel = isTomorrow ? "Tomorrow" : format(date, "EEE");
 
   // Seed headcount from the property's active-guest count.
-  const { data: overview } = useQuery<PropertyOverview | null>({
+  const { data: overview, isPending: overviewPending } = useQuery<PropertyOverview | null>({
     queryKey: foodKeys.propertyOverview({ propertyId }),
     queryFn: () => foodApi.propertyOverview({ propertyId }),
     enabled: !!propertyId,
   });
   React.useEffect(() => {
-    if (overview && overview.activeGuests > 0) setPersons(overview.activeGuests);
+    if (overview && overview.activeGuests > 0) {
+      seedPersons.current = overview.activeGuests;
+      if (!draftOwnsPersons.current) setPersons(overview.activeGuests);
+    }
   }, [overview?.id]);
 
   // ── Cut-off (day-before-anchored cutoffAt / isPastCutoff, from next-orders) ──
@@ -177,8 +192,80 @@ export default function FoodPlaceOrder() {
     enabled: !!propertyId && configured,
   });
 
-  // Switching property/date re-evaluates from scratch: collapse the builder + clear edits.
-  React.useEffect(() => { setShowBuilder(false); setOverrides({}); setMealPersons({}); setOpenMeal(""); openMealInit.current = false; }, [propertyId, dateStr]);
+  // Switching property/date re-evaluates from scratch: collapse the builder +
+  // clear edits, and drop the headcount back to its last-known baseline so an
+  // edited value never leaks into the next scope's draft.
+  React.useEffect(() => {
+    setShowBuilder(false); setOverrides({}); setMealPersons({}); setOpenMeal(""); openMealInit.current = false;
+    setPersons(seedPersons.current);
+    draftRestoreDone.current = false; draftJustRestored.current = false; draftOwnsPersons.current = false;
+    setDraftSavedAt(null); setDraftRestoredAt(null);
+  }, [propertyId, dateStr]);
+
+  // Drafts for past service days can never be restored — clear them out once.
+  React.useEffect(() => { pruneOrderDrafts(format(todayDate(), "yyyy-MM-dd")); }, []);
+
+  // Restore the saved draft for this exact (user, property, service date) scope,
+  // once per scope. Declared after the reset effect above so a scope switch
+  // always wipes first, then restores. Waits for next-orders (authoritative
+  // service date + cut-off) and the property overview (headcount baseline) so
+  // the draft is validated against real data, never the tomorrow-fallback.
+  React.useEffect(() => {
+    if (!me?.id || !propertyId || draftRestoreDone.current) return;
+    if (nextOrdersPending || overviewPending) return;
+    draftRestoreDone.current = true;
+    const key = orderDraftKey(me.id, propertyId, dateStr);
+    if (orderingClosed) return;
+    const draft = loadOrderDraft(key);
+    if (!draft) return;
+    // A draft only matters while something is still orderable; once every
+    // available meal is ordered (or there's no menu) it can never apply — drop
+    // it instead of dead-ending the user past the order-status view.
+    const ordered = new Set((myNext?.orderedMeals ?? []).map((m) => m.mealType));
+    const anyOrderable = (myNext?.availableMeals ?? []).some((m) => !ordered.has(m.mealType));
+    if (myNext && !anyOrderable) { removeOrderDraft(key); return; }
+    setPersons(draft.persons);
+    setOverrides(draft.overrides);
+    setMealPersons(draft.mealPersons);
+    setShowBuilder(true); // resume where the user left off, past the status view
+    draftOwnsPersons.current = true;
+    draftJustRestored.current = true;
+    setDraftRestoredAt(new Date(draft.savedAt));
+    setDraftSavedAt(new Date(draft.savedAt));
+  }, [me?.id, propertyId, dateStr, orderingClosed, nextOrdersPending, overviewPending, myNext]);
+
+  // Autosave — every edit persists immediately (a synchronous localStorage
+  // write is cheap, and a debounce would lose the last edits when the user
+  // navigates away before it fires). A builder returned to its pristine state
+  // clears the stored draft so undone edits don't come back.
+  React.useEffect(() => {
+    if (!draftRestoreDone.current) return; // never touch storage before restore has run
+    if (draftJustRestored.current) { draftJustRestored.current = false; return; } // restored state hasn't committed yet
+    if (!me?.id || !propertyId || placed || orderingClosed) return;
+    const key = orderDraftKey(me.id, propertyId, dateStr);
+    const dirty =
+      Object.values(overrides).some((o) => o.excluded || o.persons != null || o.qty != null) ||
+      Object.keys(mealPersons).length > 0 ||
+      persons !== seedPersons.current;
+    if (!dirty) {
+      removeOrderDraft(key);
+      setDraftSavedAt(null);
+      return;
+    }
+    const now = new Date();
+    saveOrderDraft(key, { v: 1, savedAt: now.toISOString(), persons, overrides, mealPersons });
+    setDraftSavedAt(now);
+  }, [persons, overrides, mealPersons, me?.id, propertyId, dateStr, placed, orderingClosed]);
+
+  // "Start fresh" — drop the stored draft and reset the builder to calculated
+  // values (back to the status view when the property already has orders).
+  const discardDraft = () => {
+    if (me?.id && propertyId) removeOrderDraft(orderDraftKey(me.id, propertyId, dateStr));
+    setOverrides({}); setMealPersons({}); setPersons(seedPersons.current);
+    setShowBuilder(false);
+    draftOwnsPersons.current = false;
+    setDraftSavedAt(null); setDraftRestoredAt(null);
+  };
 
   // ── Live full-day menu (for download / share on the success state) ──
   const { data: fullMenu, isLoading: menuLoading } = useQuery({
@@ -248,6 +335,13 @@ export default function FoodPlaceOrder() {
       qc.invalidateQueries({ queryKey: ["food"] });
       const n = res?.orders?.length ?? selection.mealCount;
       toast({ title: `${n} order${n === 1 ? "" : "s"} placed`, description: `${selectedProperty?.name ?? "Property"} • ${brand} • ${dateLabel}` });
+      // The draft is consumed: drop it and every edit it captured — persons
+      // included, so the autosave's dirty-check can't resurrect it on the next
+      // render (e.g. when leaving the success screen).
+      if (me?.id && propertyId) removeOrderDraft(orderDraftKey(me.id, propertyId, dateStr));
+      setOverrides({}); setMealPersons({}); setPersons(seedPersons.current);
+      draftOwnsPersons.current = false;
+      setDraftSavedAt(null); setDraftRestoredAt(null);
       setShowBuilder(false);
       setPlaced({ batch: res.batch, orders: res.orders });
     },
@@ -670,6 +764,18 @@ export default function FoodPlaceOrder() {
       )}
 
       <div className={cn("mx-auto w-full max-w-3xl space-y-5", showStatus && "hidden")}>
+          {/* Draft-restored notice — edits from a previous visit were applied. */}
+          {draftRestoredAt && draftSavedAt && (
+            <div className="flex flex-wrap items-center gap-2.5 rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5 text-sm">
+              <History className="h-4 w-4 shrink-0 text-accent" />
+              <span className="text-muted-foreground">
+                Resumed your saved draft from {format(draftRestoredAt, "HH:mm")}{format(draftRestoredAt, "yyyy-MM-dd") !== format(new Date(), "yyyy-MM-dd") ? ` (${format(draftRestoredAt, "dd MMM")})` : ""}.
+              </span>
+              <Button variant="ghost" size="sm" className="ml-auto h-7" onClick={discardDraft}>
+                <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Start fresh
+              </Button>
+            </div>
+          )}
           {/* Order context — two labelled tiles: service day (+ cut-off countdown) and headcount. */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-xl border bg-muted/30 px-4 py-3">
@@ -857,6 +963,11 @@ export default function FoodPlaceOrder() {
             <div className="text-sm">
               <span className="text-muted-foreground">{selection.mealCount} meal{selection.mealCount === 1 ? "" : "s"} · </span>
               <span className="font-semibold">{selection.itemCount} item{selection.itemCount === 1 ? "" : "s"}</span>
+              {draftSavedAt && (
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Draft saved · {format(draftSavedAt, "HH:mm")}
+                </span>
+              )}
             </div>
             <Button onClick={handlePlace} disabled={saving || !canPlace || orderingClosed}>
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UtensilsCrossed className="mr-2 h-4 w-4" />}
