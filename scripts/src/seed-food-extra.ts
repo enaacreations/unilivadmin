@@ -140,12 +140,12 @@ async function assignResidentialProperties() {
       GROUP BY p.id ORDER BY active DESC, p.id`,
   )).rows as Array<{ id: string }>;
   if (rows.length < 2) { console.log("  ✓ not enough residential properties"); return; }
-  // unit2 → top property; unit1 → next property + (if available) a 2nd property to
-  // demo a unit lead managing MULTIPLE properties. Scope rows are rebuilt from
-  // scratch each run so re-seeding stays idempotent (no duplicate/clobbered rows).
+  // Exactly ONE property per unit lead (the real-world persona): unit2 → top
+  // property, unit1 → the next one. Scope rows are rebuilt from scratch each
+  // run so re-seeding stays idempotent (no duplicate/clobbered rows).
   const leads: Array<{ u: string; primary: string; props: string[] }> = [
     { u: "user_food_unit2", primary: rows[0]!.id, props: [rows[0]!.id] },
-    { u: "user_food_unit1", primary: rows[1]!.id, props: rows[2] ? [rows[1]!.id, rows[2]!.id] : [rows[1]!.id] },
+    { u: "user_food_unit1", primary: rows[1]!.id, props: [rows[1]!.id] },
   ];
   for (const l of leads) {
     await db.update(usersTable).set({ propertyId: l.primary, updatedAt: new Date() }).where(eq(usersTable.id, l.u));
@@ -161,7 +161,7 @@ async function assignResidentialProperties() {
     await pool.query(`UPDATE food_order_batches SET property_id=$1 WHERE unit_lead_id=$2`, [l.primary, l.u]);
   }
   const total = leads.reduce((n, l) => n + l.props.length, 0);
-  console.log(`  ✓ tagged ${leads.length} unit leads to ${total} properties (unit1 multi-property)`);
+  console.log(`  ✓ tagged ${leads.length} unit leads to ${total} properties (one each)`);
 }
 
 async function groupDispatchTrip() {
