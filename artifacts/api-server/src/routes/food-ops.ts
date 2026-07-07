@@ -161,8 +161,12 @@ async function resolveCutoff(brand: string, propertyId?: string): Promise<string
  * endpoints (POST /food/orders in food.ts and POST /food/order-batches here) so
  * the cut-off can't be bypassed by calling the API directly. A single cut-off per
  * brand/property applies to all meals on the service day. Rejects when:
- *   1. the service day is already in the past, or
- *   2. the resolved cut-off time for that service date has passed.
+ *   1. the service day is already in the past,
+ *   2. the resolved cut-off time for that service date has passed, or
+ *   3. the service day is beyond the NEXT orderable day — orders are strictly
+ *      for tomorrow (or the day after, once tomorrow's cut-off has passed,
+ *      mirroring /next-orders). Having tomorrow fully ordered never unlocks
+ *      ordering further ahead.
  * Returns a user-facing error string (caller responds 422), or null if allowed.
  */
 export async function checkOrderCutoff(
@@ -180,16 +184,29 @@ export async function checkOrderCutoff(
   if (serviceYmd < todayYmd) {
     return "Cannot place an order for a past date.";
   }
+  const cutoffTime = await resolveCutoff(brand, propertyId);
   // 2) Once the resolved cut-off passes, ordering is closed. The cut-off deadline
   //    is anchored on the DAY BEFORE the service date: an order for tomorrow must
   //    be placed by today's cut-off time (atIst(serviceDate - 1 day, cutoffTime)).
-  const cutoffTime = await resolveCutoff(brand, propertyId);
   const prevDayYmd = addDaysYmd(serviceYmd, -1);
   const cutoffAt = cutoffTime ? atIst(prevDayYmd, cutoffTime) : null;
   if (cutoffAt && now > cutoffAt) {
     const [y, m, d] = serviceYmd.split("-");
     const label = `${d}/${m}/${y}`;
     return `Ordering for ${label} is closed — the ${cutoffTime} cut-off has passed.`;
+  }
+  // 3) No ordering AHEAD of the next orderable day: tomorrow, or the day after
+  //    once tomorrow's cut-off (anchored today) has passed. This is the same
+  //    resolution /next-orders serves the UI, enforced here so a crafted request
+  //    can't pre-order future days.
+  let nextOrderableYmd = addDaysYmd(todayYmd, 1);
+  const tomorrowCutoffAt = cutoffTime ? atIst(todayYmd, cutoffTime) : null;
+  if (tomorrowCutoffAt && now > tomorrowCutoffAt) {
+    nextOrderableYmd = addDaysYmd(todayYmd, 2);
+  }
+  if (serviceYmd > nextOrderableYmd) {
+    const [y, m, d] = nextOrderableYmd.split("-");
+    return `Orders can only be placed for the next service day (${d}/${m}/${y}).`;
   }
   return null;
 }
