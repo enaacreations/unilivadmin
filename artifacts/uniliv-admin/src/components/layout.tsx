@@ -18,6 +18,9 @@ import {
 import {
   Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { UserAvatar } from "@/components/ui/user-avatar"
@@ -244,14 +247,49 @@ const roleLabel = (r?: string) =>
 
 function Logo({ personaLabel }: { personaLabel?: string }) {
   return (
-    <div className="flex items-center gap-2">
-      <img src="/brand/uniliv-logo.svg" alt="Uniliv" className="h-8 w-auto select-none" draggable={false} />
+    <div className="flex items-center gap-2 min-w-0">
+      <img src="/brand/uniliv-logo.svg" alt="Uniliv" className="h-8 w-auto shrink-0 select-none" draggable={false} />
       {personaLabel ? (
-        <Badge variant="secondary" className="ml-auto text-[10px] font-medium leading-none px-2 py-0.5">
-          {personaLabel}
+        <Badge
+          variant="secondary"
+          title={personaLabel}
+          className="ml-auto hidden min-w-0 max-w-full sm:inline-flex text-[10px] font-medium leading-none px-2 py-0.5"
+        >
+          <span className="min-w-0 truncate">{personaLabel}</span>
         </Badge>
       ) : null}
     </div>
+  )
+}
+
+/** Account menu in the header (top-right). Present on every page — including the
+ *  launcher, which has no sidebar (and therefore no other logout affordance). */
+function HeaderUserMenu({ name, subtitle, onLogout }: {
+  name?: string
+  subtitle?: string
+  onLogout: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="shrink-0 rounded-full" aria-label="Account menu">
+          <UserAvatar name={name} className="h-8 w-8" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel className="flex flex-col gap-0.5">
+          <span className="truncate text-sm font-medium">{name || "User"}</span>
+          {subtitle ? (
+            <span className="truncate text-xs font-normal text-muted-foreground">{subtitle}</span>
+          ) : null}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={onLogout} className="text-destructive focus:text-destructive">
+          <LogOut className="mr-2 h-4 w-4" />
+          Log out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -425,6 +463,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               onSelect={setPropertyId}
               className="hidden md:flex w-44 lg:w-56"
             />
+            <HeaderUserMenu name={me?.name} subtitle={personaLabel} onLogout={handleLogout} />
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-surface">
