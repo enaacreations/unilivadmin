@@ -20,7 +20,7 @@ const MODULE_ICON: Record<string, LucideIcon> = {
   People: Users,
   "Supply Chain": Truck,
   "Kitchen & Menu": ChefHat,
-  "Food Ordering": UtensilsCrossed,
+  "Food": UtensilsCrossed,
   Growth: TrendingUp,
   Finance: Landmark,
   Settings: Settings,
@@ -33,7 +33,7 @@ const MODULE_TINT: Record<string, string> = {
   People: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
   "Supply Chain": "bg-amber-500/10 text-amber-600 dark:text-amber-400",
   "Kitchen & Menu": "bg-orange-500/10 text-orange-600 dark:text-orange-400",
-  "Food Ordering": "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  "Food": "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   Growth: "bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-400",
   Finance: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
   Settings: "bg-slate-500/10 text-slate-600 dark:text-slate-400",
@@ -48,7 +48,7 @@ const MODULE_DESC: Record<string, string> = {
   People: "Employees, attendance, recruitment and learning",
   "Supply Chain": "Vendors, indents, purchase orders and inventory",
   "Kitchen & Menu": "Recipes and menu planning",
-  "Food Ordering": "Orders, kitchen, dispatch and delivery",
+  "Food": "Orders, kitchen, dispatch and delivery",
   Audits: "Inspections, findings, reviews and reports",
   Growth: "Sales pipeline and property leads",
   Finance: "Ledger, payments, billing and expenses",
@@ -58,7 +58,7 @@ const MODULE_DESC: Record<string, string> = {
 // Preferred landing page when a module tile is clicked (falls back to the
 // module's first accessible page). Food opens its dashboard, not /home.
 const MODULE_HOME: Record<string, string> = {
-  "Food Ordering": "/food/dashboard",
+  "Food": "/food/dashboard",
 };
 
 type ModuleCard = { title: string; items: NavItem[] };

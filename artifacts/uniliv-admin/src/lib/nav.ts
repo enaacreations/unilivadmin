@@ -65,7 +65,7 @@ export const navGroups: NavGroup[] = [
     { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES" },
     { title: "Menu Planning", href: "/menu-planning", icon: CalendarDays, module: "MENU_PLANNING" },
   ]},
-  { title: "Food Ordering", items: [
+  { title: "Food", items: [
     { title: "My Dashboard", href: "/home", icon: Home, module: "FOOD_DASHBOARD" },
     { title: "My Properties", href: "/food/my-properties", icon: Building2, module: "FOOD_DASHBOARD" },
     { title: "Active Guests", href: "/food/guests", icon: Users, module: "FOOD_DASHBOARD" },
