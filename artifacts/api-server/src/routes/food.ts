@@ -259,10 +259,11 @@ foodRouter.get("/dashboard", authenticate, authorize("FOOD_DASHBOARD", "view"), 
       awaitingDispatch: sql<number>`count(*) filter (where ${foodOrdersTable.status} = 'PREPARING')::int`,
     }).from(foodOrdersTable).where(pendWhere);
 
-    // Waste pending: DELIVERED, still within edit window, with any item missing wastedQty.
+    // Waste pending: DELIVERED, window has OPENED (cool-down elapsed), with
+    // any item missing wastedQty.
     const wasteConds = [
       eq(foodOrdersTable.status, "DELIVERED"),
-      gte(foodOrdersTable.wasteEditableUntil, new Date()),
+      lte(foodOrdersTable.wasteEditableUntil, new Date()),
       isNull(foodOrderItemsTable.wastedQty),
     ];
     if (scope) wasteConds.push(scope);
@@ -307,7 +308,8 @@ foodRouter.get("/waste-pending", authenticate, authorize("FOOD_DASHBOARD", "view
 
     const conds = [
       eq(foodOrdersTable.status, "DELIVERED"),
-      gte(foodOrdersTable.wasteEditableUntil, new Date()),
+      // Cool-down semantics: pending once the window has OPENED.
+      lte(foodOrdersTable.wasteEditableUntil, new Date()),
       isNull(foodOrderItemsTable.wastedQty),
     ];
     if (scope) conds.push(scope);
@@ -1169,8 +1171,12 @@ foodRouter.post("/orders/:id/waste", authenticate, authorize("FOOD_WASTE_TRACKIN
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(order.propertyId, ids)) { res.status(403).json({ success: false, error: "Order not accessible" }); return; }
     if (order.status !== "DELIVERED") { res.status(422).json({ success: false, error: "Waste can only be recorded for DELIVERED orders" }); return; }
-    if (!order.wasteEditableUntil || new Date() > order.wasteEditableUntil) {
-      res.status(422).json({ success: false, error: "Waste edit window closed" });
+    // Cool-down semantics (13-Jul): wasteEditableUntil marks when logging
+    // OPENS (delivered + wasteWindowMinutes) — the meal must be over before
+    // leftovers can be counted. No upper bound for now; the window duration
+    // will be tuned later.
+    if (!order.wasteEditableUntil || new Date() < order.wasteEditableUntil) {
+      res.status(422).json({ success: false, error: "Waste can be logged once the meal is over — the window hasn't opened yet" });
       return;
     }
 

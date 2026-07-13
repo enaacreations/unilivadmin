@@ -104,8 +104,11 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
     return { mealType, order, state: "none", time: "—", statusLine: "Not ordered" };
   }
   const s = order.status;
-  const wasteOpen =
-    !!order.wasteEditableUntil && parseISO(order.wasteEditableUntil).getTime() > now.getTime();
+  // Cool-down semantics: wasteEditableUntil is when logging OPENS — the meal
+  // must be over (delivered + window) before leftovers can be counted.
+  const wasteOpensAt = order.wasteEditableUntil ? parseISO(order.wasteEditableUntil) : null;
+  const wasteOpen = !!wasteOpensAt && now.getTime() >= wasteOpensAt.getTime();
+  const wasteWaitMins = wasteOpensAt ? Math.max(0, differenceInMinutes(wasteOpensAt, now)) : 0;
   if (s === "CANCELLED" || s === "REJECTED") {
     return {
       mealType, order, state: "cancelled",
@@ -121,8 +124,10 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
       state: wasteOpen ? "action-waste" : "done",
       time: fmtTime(order.deliveredAt) || "—",
       statusLine: wasteOpen
-        ? "Delivered — record any waste while the window is open"
-        : "Delivered & confirmed",
+        ? "Meal over — record any waste now"
+        : wasteOpensAt
+          ? `Delivered & confirmed — waste logging opens in ${wasteWaitMins}m`
+          : "Delivered & confirmed",
     };
   }
   if (s === "DISPATCHED") {
@@ -1238,9 +1243,12 @@ function WasteColumn({
   saving: boolean;
 }) {
   const active = state === "action-waste" && canWaste && !wasteRecorded;
-  const minsLeft = detail?.wasteEditableUntil
-    ? Math.max(0, differenceInMinutes(parseISO(detail.wasteEditableUntil), now))
-    : 0;
+  // Cool-down: wasteEditableUntil is when logging OPENS. While the meal is
+  // still on, show only the countdown — no dish editors.
+  const opensAt = detail?.wasteEditableUntil ? parseISO(detail.wasteEditableUntil) : null;
+  const waiting =
+    detail?.status === "DELIVERED" && !!opensAt && now.getTime() < opensAt.getTime() && !wasteRecorded;
+  const minsToOpen = opensAt ? Math.max(1, differenceInMinutes(opensAt, now)) : 0;
   const wasteStep = (unit: string) => (isFractionalUnit(unit) ? 0.5 : 1);
   const capOf = (i: OrderDetail["items"][number]) => num(i.receivedQty ?? i.preparedQty ?? i.orderedQty);
   const summary = (detail?.items ?? []).filter((i) => num(i.wastedQty) > 0);
@@ -1251,7 +1259,7 @@ function WasteColumn({
         label="Food waste"
         tone="var(--pop)"
         right={active ? (
-          <span className="font-mono text-[11px] font-semibold text-pop">closes in {minsLeft}m</span>
+          <span className="font-mono text-[11px] font-semibold text-pop">Open now</span>
         ) : undefined}
       />
       {wasteRecorded ? (
@@ -1307,8 +1315,20 @@ function WasteColumn({
             {saving ? "Saving…" : "Save waste ✓"}
           </button>
         </>
-      ) : state === "done" && !wasteRecorded ? (
-        <LockedPanel text="The waste window has closed for this meal" />
+      ) : waiting ? (
+        /* Cool-down running — prototype: lock, explainer, BIG centred timer.
+           No dish editors until the meal is actually over. */
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-2 py-[18px] text-center">
+          <Lock className="h-[26px] w-[26px] text-pop" />
+          <span className="text-[13px] text-muted-foreground">
+            Waste can be logged 1 hour after delivery
+          </span>
+          <span className="font-mono text-2xl font-semibold tabular-nums text-pop">
+            {minsToOpen} min
+          </span>
+        </div>
+      ) : state === "action-waste" && !canWaste ? (
+        <LockedPanel text="Waste is recorded by the property team" />
       ) : (
         <LockedPanel text="Opens once the delivery is confirmed" />
       )}

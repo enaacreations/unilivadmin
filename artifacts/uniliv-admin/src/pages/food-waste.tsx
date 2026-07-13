@@ -38,9 +38,11 @@ const ACCENT = "var(--accent)";
 const WASTE_UNITS = ["kg", "gram", "unit"];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Cool-down semantics (13-Jul): wasteEditableUntil marks when logging OPENS —
+// the meal must be over (delivered + window) before waste can be recorded.
 function isWindowOpen(order: { wasteEditableUntil: string | null }): boolean {
   if (!order.wasteEditableUntil) return false;
-  return isAfter(new Date(order.wasteEditableUntil), new Date());
+  return !isAfter(new Date(order.wasteEditableUntil), new Date());
 }
 
 function WindowBadge({ until }: { until: string | null }) {
@@ -51,17 +53,17 @@ function WindowBadge({ until }: { until: string | null }) {
       </Badge>
     );
   }
-  const open = isAfter(new Date(until), new Date());
+  const open = !isAfter(new Date(until), new Date());
   if (open) {
     return (
       <Badge variant="success" className="gap-1">
-        <Unlock className="h-3 w-3" /> Open · {formatDistanceToNowStrict(new Date(until))} left
+        <Unlock className="h-3 w-3" /> Open now
       </Badge>
     );
   }
   return (
     <Badge variant="secondary" className="gap-1">
-      <Lock className="h-3 w-3" /> Locked · {formatDistanceToNowStrict(new Date(until), { addSuffix: true })}
+      <Lock className="h-3 w-3" /> Opens {formatDistanceToNowStrict(new Date(until), { addSuffix: true })}
     </Badge>
   );
 }
@@ -213,7 +215,7 @@ export default function FoodWaste() {
     <div className="space-y-6">
       <PageHeader
         title="Waste Tracking"
-        subtitle="Record post-delivery wastage on delivered orders within the 1-hour edit window"
+        subtitle="Record wastage once a meal is over — logging opens 1 hour after delivery"
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -454,22 +456,20 @@ function WasteSheet({
             {locked ? (
               <Alert variant="destructive">
                 <Lock className="h-4 w-4" />
-                <AlertTitle>Waste editing locked</AlertTitle>
+                <AlertTitle>Waste logging hasn't opened yet</AlertTitle>
                 <AlertDescription>
-                  Waste is only editable within 1 hour of delivery.
+                  Waste can be logged 1 hour after delivery, once the meal is over.
                   {order.wasteEditableUntil && (
-                    <> Window closed {formatDistanceToNowStrict(new Date(order.wasteEditableUntil), { addSuffix: true })}.</>
+                    <> Opens {formatDistanceToNowStrict(new Date(order.wasteEditableUntil), { addSuffix: true })}.</>
                   )}
                 </AlertDescription>
               </Alert>
             ) : (
               <Alert>
                 <Clock className="h-4 w-4" />
-                <AlertTitle>Edit window open</AlertTitle>
+                <AlertTitle>Waste logging open</AlertTitle>
                 <AlertDescription>
-                  {order.wasteEditableUntil && (
-                    <>You have {formatDistanceToNowStrict(new Date(order.wasteEditableUntil))} left to record waste for this order.</>
-                  )}
+                  The meal is over — record what was left so the kitchen can tune quantities.
                 </AlertDescription>
               </Alert>
             )}
