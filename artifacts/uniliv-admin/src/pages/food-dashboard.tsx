@@ -1,9 +1,9 @@
 import * as React from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO, subDays } from "date-fns";
+import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO } from "date-fns";
 import {
-  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Flame, History, Loader2, Lock, MapPin, PartyPopper, Pencil, Truck, Trash2,
+  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, History, Loader2, Lock, MapPin, PartyPopper, Pencil, Truck, Trash2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -26,7 +26,6 @@ import {
   foodKeys,
   MEAL_LABEL,
   shortMeal,
-  groupLabel,
   isFractionalUnit,
   fmtQty,
   type FoodOrder,
@@ -68,6 +67,18 @@ function untilLabel(iso: string | null | undefined, now: Date): string {
   if (!iso) return "—";
   const mins = Math.max(0, differenceInMinutes(parseISO(iso), now));
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+/** Friendly "time until delivery" for an ETA — "~35 min", "~1 hr 20 min",
+ *  "any moment now". null when there's no ETA to show. */
+function deliverIn(iso: string | null | undefined, now: Date): string | null {
+  if (!iso) return null;
+  const mins = differenceInMinutes(parseISO(iso), now);
+  if (mins <= 1) return "any moment now";
+  if (mins < 60) return `~${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `~${h} hr ${m} min` : `~${h} hr`;
 }
 
 /** Journey state of one meal — drives the tab tint + which panel is live.
@@ -136,25 +147,31 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
           : "Delivered & confirmed",
     };
   }
+  // For everything still on its way, the tab time becomes a live delivery ETA
+  // ("~35 min") and the status line spells out that it's the delivery estimate.
+  const eta = deliverIn(order.expectedDeliveryAt, now);
+  const etaPhrase = eta ? (eta === "any moment now" ? "arriving any moment now" : `likely delivered in ${eta}`) : null;
   if (s === "DISPATCHED") {
     return {
       mealType, order, state: "action-confirm",
-      time: fmtTime(order.dispatchedAt) || "now",
-      statusLine: "At your gate — count it in",
+      time: eta ?? "now",
+      statusLine: etaPhrase ? `Out for delivery — ${etaPhrase}` : "At your gate — count it in",
     };
   }
   if (s === "PREPARING") {
+    const base = kitchenName ? `Cooking at ${kitchenName}` : "Cooking at the kitchen";
     return {
       mealType, order, state: "cooking",
-      time: order.expectedDeliveryAt ? `by ${fmtTime(order.expectedDeliveryAt)}` : "—",
-      statusLine: kitchenName ? `Cooking at ${kitchenName}` : "Cooking at the kitchen",
+      time: eta ?? "—",
+      statusLine: etaPhrase ? `${base} · ${etaPhrase}` : base,
     };
   }
   // PLACED / ACCEPTED
+  const base = s === "ACCEPTED" ? "Accepted by the kitchen" : "Waiting for the kitchen to accept";
   return {
     mealType, order, state: "waiting",
-    time: order.expectedDeliveryAt ? `by ${fmtTime(order.expectedDeliveryAt)}` : "—",
-    statusLine: s === "ACCEPTED" ? "Order in — accepted by the kitchen" : "Order in — waiting for the kitchen",
+    time: eta ?? "—",
+    statusLine: etaPhrase ? `${base} · ${etaPhrase}` : base,
   };
 }
 
@@ -365,51 +382,6 @@ export default function FoodDashboard() {
     )}&body=${encodeURIComponent(
       `Hi,\n\nThe order cut-off for ${missedDayStr} has passed and no food order is in for ${propertyLabel}. Please help arrange that day's meals with the kitchen.\n\nThanks`,
     )}`;
-
-  /* ── streak: consecutive days (ending today) with ≥1 live order ── */
-  // `to` is exclusive-ish on the server (serviceDate is a timestamp), so bound
-  // by tomorrow to make sure ALL of today's orders are included. The API
-  // clamps page size to 100, so page through the window (4 meals/day × 35
-  // days can exceed one page) and ask only for live statuses so cancelled
-  // churn doesn't eat the row budget.
-  const streakFrom = format(subDays(now, 35), "yyyy-MM-dd");
-  const streakTo = format(addDays(now, 1), "yyyy-MM-dd");
-  const { data: streakOrders } = useQuery({
-    queryKey: foodKeys.orders({ propertyId, streak: streakFrom }),
-    queryFn: async () => {
-      const params = {
-        propertyId: propertyId ?? undefined,
-        from: streakFrom,
-        to: streakTo,
-        status: "PLACED,ACCEPTED,PREPARING,DISPATCHED,DELIVERED",
-        limit: 100,
-      };
-      const first = await foodApi.listOrders({ ...params, page: 1 });
-      const rows = [...first.data];
-      const totalPages = Math.min(first.meta?.totalPages ?? 1, 3);
-      for (let p = 2; p <= totalPages; p++) {
-        rows.push(...(await foodApi.listOrders({ ...params, page: p })).data);
-      }
-      return rows;
-    },
-    enabled: !!propertyId && canReadOrders,
-    staleTime: 300_000,
-  });
-  const streakDays = React.useMemo(() => {
-    if (!streakOrders?.length) return 0;
-    const days = new Set(
-      streakOrders
-        // Normalise to the LOCAL calendar day (serviceDate is a timestamp).
-        .map((o) => format(parseISO(o.serviceDate), "yyyy-MM-dd")),
-    );
-    let n = 0;
-    let cursor = now;
-    while (n < 60 && days.has(format(cursor, "yyyy-MM-dd"))) {
-      n++;
-      cursor = subDays(cursor, 1);
-    }
-    return n;
-  }, [streakOrders, now]);
 
   /* ── per-meal service times for the order day ("by 2:00 PM" on the tabs
      and the detail head, like the prototype) ── */
@@ -628,7 +600,7 @@ export default function FoodDashboard() {
       toast({
         variant: "success",
         title: `${nextIsTomorrow ? "Tomorrow" : nextDayLabel}'s order sent`,
-        description: `${groupLabel(res.batch.batchNumber)} · ${res.orders.length} meal${res.orders.length === 1 ? "" : "s"}`,
+        description: `${res.orders.length} meal${res.orders.length === 1 ? "" : "s"} on the way to the kitchen`,
       });
     },
     onError: (e: unknown) => {
@@ -794,9 +766,7 @@ export default function FoodDashboard() {
                 {!nextIsTomorrow && myNext && !missedTomorrow ? (
                   <>Tomorrow's cut-off has passed — next up is {format(parseISO(myNext.serviceDate), "EEEE, dd MMM")}. </>
                 ) : null}
-                Send it before {myNext?.cutoffTime ?? "the cut-off"} to keep your{" "}
-                <strong className="text-accent-strong">{streakDays}-day streak</strong> alive{" "}
-                <Flame className="inline h-[15px] w-[15px] align-text-bottom text-warning" />
+                Send it before <strong className="text-accent-strong">{myNext?.cutoffTime ?? "the cut-off"}</strong> so it reaches the kitchen in time.
               </div>
             </div>
             <div className="text-center">
@@ -815,9 +785,8 @@ export default function FoodDashboard() {
           </div>
         </section>
       )}
-      {/* Placed-day status. Next to a missed-day incident it compresses to a
-          quiet one-liner — celebrating a streak that the miss is about to
-          break would be wrong, and the incident must stay dominant. */}
+      {/* Placed-day status — hidden next to a missed-day incident so the
+          incident stays the dominant message. */}
       {nextPlaced && !missedTomorrow && (
         <section className="flex items-center gap-3.5 rounded-[14px] bg-success-soft px-[22px] py-4">
           <span className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-success">
@@ -825,8 +794,7 @@ export default function FoodDashboard() {
           </span>
           <div className="flex-1">
             <div className="font-display font-bold tracking-[-0.012em] text-success">
-              {nextDayLabel}'s order is in — streak safe at {streakDays + 1} days{" "}
-              <Flame className="inline h-[15px] w-[15px] align-text-bottom text-warning" />
+              {nextDayLabel}'s order is in
             </div>
             <div className="mt-0.5 text-[13px] text-muted-foreground">
               {myNext ? format(parseISO(myNext.serviceDate), "EEEE, dd MMM") : ""} ·{" "}
@@ -978,14 +946,6 @@ export default function FoodDashboard() {
                   {MEAL_LABEL[selected.mealType]}
                 </span>
                 <span className="font-mono text-xs text-muted-foreground">{selected.time}</span>
-                {detail?.batchNumber && (
-                  <span
-                    className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-                    title="Group order ID — every meal placed together shares it"
-                  >
-                    {groupLabel(detail.batchNumber)}
-                  </span>
-                )}
                 <span className="flex-1" />
                 <span
                   className="rounded-full px-[11px] py-1 text-xs font-bold"

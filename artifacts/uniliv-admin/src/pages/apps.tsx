@@ -2,12 +2,11 @@ import * as React from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Search, LayoutDashboard, Building2, Wrench, Users, Truck,
+  LayoutDashboard, Building2, Wrench, Users, Truck,
   ChefHat, UtensilsCrossed, TrendingUp, Landmark, Settings, LayoutGrid,
   ClipboardCheck, MapPin,
   type LucideIcon,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { navGroups, type NavItem } from "@/lib/nav";
@@ -129,7 +128,6 @@ function useGreeting() {
 export default function AppLauncher() {
   const { me, can, role } = usePermissions();
   const { propertyId } = useAppStore();
-  const [query, setQuery] = React.useState("");
   const greeting = useGreeting();
 
   // Property line under the greeting — resolved from the food property cards
@@ -168,14 +166,6 @@ export default function AppLauncher() {
       .filter((m) => m.items.length > 0);
   }, [can, role]);
 
-  const q = query.trim().toLowerCase();
-  const visible = q
-    ? modules.filter((m) =>
-        m.title.toLowerCase().includes(q) ||
-        (MODULE_DESC[m.title] ?? "").toLowerCase().includes(q) ||
-        m.items.some((i) => i.title.toLowerCase().includes(q)))
-    : modules;
-
   return (
     <div className="flex animate-fade-up flex-col gap-7">
       {/* Personal hero — greeting + where the user works. */}
@@ -203,16 +193,6 @@ export default function AppLauncher() {
       <section>
         <div className="mb-3 flex items-center gap-3">
           <h2 className="flex-1 font-display text-base font-bold tracking-[-0.012em]">Your modules</h2>
-          <div className="relative w-full max-w-[220px]">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Find a module…"
-              aria-label="Find a module"
-              className="h-9 rounded-[10px] bg-card pl-8 text-[13px]"
-            />
-          </div>
         </div>
 
         {!me ? (
@@ -221,17 +201,15 @@ export default function AppLauncher() {
               <Skeleton key={i} className="aspect-square w-full rounded-[18px]" />
             ))}
           </div>
-        ) : visible.length === 0 ? (
+        ) : modules.length === 0 ? (
           <EmptyState
-            icon={Search}
-            title="No modules match"
-            description={q
-              ? `Nothing matches “${query.trim()}”. Try a different search.`
-              : "Your role has no modules assigned. Contact your administrator."}
+            icon={LayoutDashboard}
+            title="No modules yet"
+            description="Your role has no modules assigned. Contact your administrator."
           />
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
-            {visible.map((m) => (
+            {modules.map((m) => (
               <ModuleTile key={m.title} m={m} />
             ))}
           </div>
