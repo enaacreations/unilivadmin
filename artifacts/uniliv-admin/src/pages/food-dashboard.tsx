@@ -1617,7 +1617,7 @@ function OrderModePanel({
         ) : draftSavedAt ? (
           <>
             <Check className="h-3 w-3 text-success" strokeWidth={3} />
-            Changes saved · {format(draftSavedAt, "h:mm a")} — this order follows you on any device
+            Changes saved · {format(draftSavedAt, "h:mm a")}
           </>
         ) : (
           <>
