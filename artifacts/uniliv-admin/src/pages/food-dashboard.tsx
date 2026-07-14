@@ -343,6 +343,18 @@ export default function FoodDashboard() {
     nextOffset > 1 &&
     tomorrowOrders != null &&
     !tomorrowOrders.some((o) => o.status !== "CANCELLED" && o.status !== "REJECTED");
+  // The missed day is literal-tomorrow (journeyDay 1). Surface the incident
+  // inside the journey only when the user actually navigates to that day —
+  // not as a persistent top-of-page banner.
+  const selectedDayMissed = missedTomorrow && journeyDay === 1;
+  const propertyLabel = properties.find((p) => p.id === propertyId)?.name ?? "my property";
+  const missedDayStr = format(addDays(now, 1), "EEEE, dd MMM");
+  const missedMailto =
+    `mailto:${ADMIN_CONTACT_EMAIL}?subject=${encodeURIComponent(
+      `URGENT: missed food order for ${format(addDays(now, 1), "EEE, dd MMM")} — ${propertyLabel}`,
+    )}&body=${encodeURIComponent(
+      `Hi,\n\nThe order cut-off for ${missedDayStr} has passed and no food order is in for ${propertyLabel}. Please help arrange that day's meals with the kitchen.\n\nThanks`,
+    )}`;
 
   /* ── streak: consecutive days (ending today) with ≥1 live order ── */
   // `to` is exclusive-ish on the server (serviceDate is a timestamp), so bound
@@ -727,37 +739,6 @@ export default function FoodDashboard() {
     <div className="mx-auto flex max-w-[760px] animate-fade-up flex-col gap-6">
       {confetti}
 
-      {/* ── missed tomorrow: cut-off passed with no order in — incident ── */}
-      {missedTomorrow && (
-        <section className="flex flex-wrap items-center gap-3.5 rounded-[14px] border border-destructive/30 bg-danger-soft px-[22px] py-4">
-          <span className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-destructive">
-            <AlertTriangle className="h-4 w-4 text-white" strokeWidth={2.5} />
-          </span>
-          <div className="min-w-[220px] flex-1">
-            <div className="font-display font-bold tracking-[-0.012em] text-destructive">
-              Tomorrow has no food order — the cut-off has passed
-            </div>
-            <div className="mt-0.5 text-[13px] text-muted-foreground">
-              Nothing was ordered for {format(addDays(now, 1), "EEEE, dd MMM")} before the cut-off, and
-              the app can't take it anymore. Contact your admin right away so the kitchen can still plan
-              tomorrow's meals.
-            </div>
-          </div>
-          <a
-            href={`mailto:${ADMIN_CONTACT_EMAIL}?subject=${encodeURIComponent(
-              `URGENT: missed food order for ${format(addDays(now, 1), "EEE, dd MMM")} — ${properties.find((p) => p.id === propertyId)?.name ?? "my property"}`,
-            )}&body=${encodeURIComponent(
-              `Hi,\n\nThe order cut-off for ${format(addDays(now, 1), "EEEE, dd MMM")} has passed and no food order is in for ${properties.find((p) => p.id === propertyId)?.name ?? "my property"}. Please help arrange tomorrow's meals with the kitchen.\n\nThanks`,
-            )}`}
-            className="shrink-0"
-          >
-            <span className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-[10px] bg-destructive px-5 text-sm font-bold text-white transition-[filter] hover:brightness-105">
-              Contact admin
-            </span>
-          </a>
-        </section>
-      )}
-
       {/* ── tomorrow's order hero ── */}
       {nextPending && canPlace && (
         <section className="rounded-[14px] bg-brand-gradient p-[2px]">
@@ -853,6 +834,30 @@ export default function FoodDashboard() {
           </div>
         </div>
 
+        {/* Missed day: cut-off passed with no order in — show the incident
+            here (day-contextual), in place of the meal tabs + detail. */}
+        {selectedDayMissed ? (
+          <section className="flex flex-wrap items-center gap-3.5 rounded-2xl border border-destructive/30 bg-danger-soft px-[22px] py-5">
+            <span className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-destructive">
+              <AlertTriangle className="h-4 w-4 text-white" strokeWidth={2.5} />
+            </span>
+            <div className="min-w-[220px] flex-1">
+              <div className="font-display font-bold tracking-[-0.012em] text-destructive">
+                {dayLabel}'s order isn't in — the cut-off has passed
+              </div>
+              <div className="mt-0.5 text-[13px] text-muted-foreground">
+                Nothing was ordered for {missedDayStr} before the cut-off, and the app can't take it
+                anymore. Contact your admin right away so the kitchen can still plan the meals.
+              </div>
+            </div>
+            <a href={missedMailto} className="shrink-0">
+              <span className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-[10px] bg-destructive px-5 text-sm font-bold text-white transition-[filter] hover:brightness-105">
+                Contact admin
+              </span>
+            </a>
+          </section>
+        ) : (
+        <>
         {/* meal tabs */}
         {!canReadOrders ? (
           /* FNB/executive roles hold FOOD_DASHBOARD but not FOOD_ALL_ORDERS —
@@ -1010,6 +1015,8 @@ export default function FoodDashboard() {
             <Skeleton className="h-40 w-full" />
           )}
         </div>
+        )}
+        </>
         )}
       </section>
 

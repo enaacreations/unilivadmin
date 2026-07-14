@@ -2,36 +2,22 @@ import * as React from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow, isSameDay } from "date-fns";
-import {
-  AlertCircle, AlertTriangle, CalendarClock, CalendarDays, ClipboardCheck,
-  MapPin, Plus, RotateCcw, Undo2,
-} from "lucide-react";
-import { PageHeader } from "@/components/page-header";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { AlertCircle, ChevronRight, ClipboardCheck, MapPin, Plus, RotateCcw } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { apiFetch } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
-import {
-  AUDIT_STATE_BADGE, fmtDateTime, titleCase,
-  type ApiList, type AuditRow,
-} from "./lib";
-import { TypeBadge } from "./shared";
+import { fmtDateTime, titleCase, type ApiList, type AuditRow } from "./lib";
+import { cn } from "@/lib/utils";
 
-type GroupKey = "overdue" | "today" | "upcoming" | "rework";
+type GroupKey = "rework" | "overdue" | "today" | "upcoming";
 
-const GROUPS: {
-  key: GroupKey;
-  title: string;
-  icon: React.ComponentType<{ className?: string }>;
-  accent: string;
-}[] = [
-  { key: "rework", title: "Rework", icon: Undo2, accent: "text-red-600" },
-  { key: "overdue", title: "Overdue", icon: AlertTriangle, accent: "text-red-600" },
-  { key: "today", title: "Today", icon: CalendarClock, accent: "text-amber-600" },
-  { key: "upcoming", title: "Upcoming", icon: CalendarDays, accent: "text-muted-foreground" },
+// Section titles, in urgency order, with the tone their heading takes.
+const GROUPS: { key: GroupKey; title: string; tone: string }[] = [
+  { key: "rework", title: "Rework", tone: "text-destructive" },
+  { key: "overdue", title: "Overdue", tone: "text-destructive" },
+  { key: "today", title: "Today", tone: "text-warning" },
+  { key: "upcoming", title: "Upcoming", tone: "text-muted-foreground" },
 ];
 
 function groupOf(a: AuditRow): GroupKey {
@@ -50,43 +36,47 @@ function dueText(a: AuditRow): { text: string; urgent: boolean } {
   return { text: `Due in ${distance}`, urgent: false };
 }
 
+// auditType is the short code "UL" | "CM" | "CX" (lib.ts), not the role enum.
+const TYPE_LABEL: Record<string, string> = {
+  UL: "UL audit", CM: "CM audit", CX: "CX audit",
+};
+
 function AuditCard({ audit, onOpen }: { audit: AuditRow; onOpen: () => void }) {
   const due = dueText(audit);
   return (
-    <Card
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       onClick={onOpen}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
-      className="cursor-pointer transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex w-full items-center gap-4 rounded-[14px] border border-border bg-card px-[18px] py-4 text-left transition-colors hover:border-accent"
     >
-      <CardContent className="space-y-2 p-4">
-        <div className="flex items-center justify-between gap-2">
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
           <span className="font-mono text-xs text-muted-foreground">{audit.ticketNo}</span>
-          <TypeBadge type={audit.auditType} />
-        </div>
-        <p className="line-clamp-2 font-medium leading-snug">{audit.title}</p>
-        <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <span className="rounded-full bg-info-soft px-[9px] py-[3px] text-[11px] font-bold text-info">
+            {TYPE_LABEL[audit.auditType] ?? titleCase(audit.auditType)}
+          </span>
+        </span>
+        <span className="mt-1 block truncate font-semibold">{audit.title}</span>
+        <span className="mt-0.5 flex items-center gap-1.5 text-[13px] text-muted-foreground">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">
             {audit.propertyName ?? "—"}
             {audit.roomNumber ? ` · Room ${audit.roomNumber}` : ""}
             {audit.propertyCity ? `, ${audit.propertyCity}` : ""}
           </span>
-        </p>
-        <div className="flex min-h-11 items-center justify-between gap-2 pt-1">
-          <span
-            className={`text-sm ${due.urgent ? "font-medium text-red-600" : "text-muted-foreground"}`}
-            title={fmtDateTime(audit.dueAt)}
-          >
-            {due.text}
-          </span>
-          <Badge variant={AUDIT_STATE_BADGE[audit.state] ?? "outline"}>
-            {titleCase(audit.state)}
-          </Badge>
-        </div>
-      </CardContent>
-    </Card>
+        </span>
+      </span>
+      <span className="shrink-0 text-right">
+        <span
+          className={cn("block text-[13px] font-medium", due.urgent ? "text-destructive" : "text-muted-foreground")}
+          title={fmtDateTime(audit.dueAt)}
+        >
+          {due.text}
+        </span>
+        <span className="mt-1 block text-xs text-muted-foreground">{titleCase(audit.state)}</span>
+      </span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+    </button>
   );
 }
 
@@ -109,35 +99,38 @@ export default function MyAudits() {
   }, [audits]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <PageHeader
-        title="My Audits"
-        subtitle="Your assigned queue, sorted by due date — tap a card to open."
-        breadcrumbs={[{ label: "Audits" }, { label: "My Audits" }]}
-        action={
-          canCreate ? (
-            <Button asChild size="sm">
-              <Link href="/audits/new">
-                <Plus className="mr-1 h-4 w-4" /> New Audit
-              </Link>
-            </Button>
-          ) : undefined
-        }
-      />
+    <div className="mx-auto flex max-w-[640px] animate-fade-up flex-col gap-5">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-[220px] flex-1">
+          <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">My audits</h1>
+          <p className="text-sm text-muted-foreground">
+            Your checks, sorted by what's most urgent. Tap one to start.
+          </p>
+        </div>
+        {canCreate && (
+          <Link href="/audits/new">
+            <span className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-[10px] bg-accent px-3.5 text-[13px] font-bold text-white transition-[filter] hover:brightness-105">
+              <Plus className="h-4 w-4" /> New audit
+            </span>
+          </Link>
+        )}
+      </div>
 
       {myQuery.isLoading ? (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-40 w-full rounded-lg" />
-          ))}
+        <div className="flex flex-col gap-2.5">
+          {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-[92px] w-full rounded-[14px]" />)}
         </div>
       ) : myQuery.isError ? (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed p-12 text-center text-muted-foreground">
+        <div className="flex flex-col items-center gap-3 rounded-[14px] border border-dashed border-border p-12 text-center text-muted-foreground">
           <AlertCircle className="h-8 w-8 text-destructive" />
           <p className="text-sm">{(myQuery.error as Error)?.message || "Failed to load your queue."}</p>
-          <Button variant="outline" size="sm" onClick={() => myQuery.refetch()}>
-            <RotateCcw className="mr-2 h-3.5 w-3.5" /> Retry
-          </Button>
+          <button
+            type="button"
+            onClick={() => myQuery.refetch()}
+            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Retry
+          </button>
         </div>
       ) : audits.length === 0 ? (
         <EmptyState
@@ -146,17 +139,15 @@ export default function MyAudits() {
           description="No audits are assigned to you right now. New assignments will appear here."
         />
       ) : (
-        GROUPS.map(({ key, title, icon: Icon, accent }) => {
+        GROUPS.map(({ key, title, tone }) => {
           const items = grouped[key];
           if (items.length === 0) return null;
           return (
-            <section key={key} className="space-y-3">
-              <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                <Icon className={`h-4 w-4 ${accent}`} />
-                {title}
-                <Badge variant="secondary" className="tabular-nums">{items.length}</Badge>
+            <section key={key}>
+              <h2 className={cn("mb-2.5 text-xs font-bold uppercase tracking-[0.1em]", tone)}>
+                {title} · {items.length}
               </h2>
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              <div className="flex flex-col gap-2.5">
                 {items.map((a) => (
                   <AuditCard key={a.id} audit={a} onOpen={() => navigate(`/audits/${a.id}`)} />
                 ))}

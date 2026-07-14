@@ -2,31 +2,23 @@ import * as React from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  AlertCircle, AlertTriangle, Archive, BadgeCheck, CalendarClock,
-  CheckCircle2, ChevronDown, ListChecks, MapPin, RotateCcw,
+  AlertCircle, ChevronDown, ChevronRight, ListChecks, MapPin, RotateCcw,
 } from "lucide-react";
-import { PageHeader } from "@/components/page-header";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { apiFetch } from "@/lib/api-fetch";
 import { fmtDate, type ApiPage, type NcRow } from "./lib";
 import { NcStateBadge, SeverityBadge, SlaCountdown, useNowTick } from "./shared";
+import { cn } from "@/lib/utils";
 
 type GroupKey = "overdue" | "dueSoon" | "awaiting" | "onTrack";
 
-const GROUPS: {
-  key: GroupKey;
-  title: string;
-  icon: React.ComponentType<{ className?: string }>;
-  accent: string;
-}[] = [
-  { key: "overdue", title: "Overdue", icon: AlertTriangle, accent: "text-red-600" },
-  { key: "dueSoon", title: "Due soon", icon: CalendarClock, accent: "text-amber-600" },
-  { key: "awaiting", title: "Awaiting verification", icon: BadgeCheck, accent: "text-violet-600" },
-  { key: "onTrack", title: "On track", icon: CheckCircle2, accent: "text-emerald-600" },
+// Section titles in urgency order + the tone the heading takes.
+const GROUPS: { key: GroupKey; title: string; tone: string }[] = [
+  { key: "overdue", title: "Overdue — fix now", tone: "text-destructive" },
+  { key: "dueSoon", title: "Due soon", tone: "text-warning" },
+  { key: "awaiting", title: "Awaiting verification", tone: "text-pop" },
+  { key: "onTrack", title: "On track", tone: "text-success" },
 ];
 
 function groupOf(nc: NcRow): GroupKey | "terminal" {
@@ -41,38 +33,31 @@ function groupOf(nc: NcRow): GroupKey | "terminal" {
 
 function FindingCard({ nc, nowMs, onOpen }: { nc: NcRow; nowMs: number; onOpen: () => void }) {
   return (
-    <Card
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       onClick={onOpen}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
-      className="cursor-pointer transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex w-full items-center gap-4 rounded-[14px] border border-border bg-card px-[18px] py-4 text-left transition-colors hover:border-accent"
     >
-      <CardContent className="space-y-2 p-4">
-        <div className="flex items-center justify-between gap-2">
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
           <span className="font-mono text-xs text-muted-foreground">{nc.ncNo}</span>
           <SeverityBadge severity={nc.severity} />
-        </div>
-        <p className="line-clamp-2 font-medium leading-snug">{nc.description}</p>
-        <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        </span>
+        <span className="mt-1 block font-semibold leading-snug line-clamp-2">{nc.description}</span>
+        <span className="mt-0.5 flex items-center gap-1.5 text-[13px] text-muted-foreground">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">
             {nc.propertyName ?? "—"}
             <span className="font-mono text-xs"> · {nc.ticketNo}</span>
           </span>
-        </p>
-        <div className="flex min-h-11 items-center justify-between gap-2 pt-1">
-          <SlaCountdown
-            state={nc.state}
-            dueAt={nc.dueAt}
-            slaState={nc.slaState}
-            nowMs={nowMs}
-            className="text-sm"
-          />
-          <NcStateBadge state={nc.state} />
-        </div>
-      </CardContent>
-    </Card>
+        </span>
+      </span>
+      <span className="flex shrink-0 flex-col items-end gap-1.5 text-right">
+        <SlaCountdown state={nc.state} dueAt={nc.dueAt} slaState={nc.slaState} nowMs={nowMs} className="text-[13px] font-medium" />
+        <NcStateBadge state={nc.state} />
+      </span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+    </button>
   );
 }
 
@@ -96,29 +81,34 @@ export default function MyFindings() {
     return g;
   }, [ncs]);
 
-  const openNc = (id: string) => navigate(`/audits/findings/${id}`);
+  // Finding detail lives at /audits/ncs/:id (NcDetail); /audits/findings is the
+  // list route only, so navigating to /audits/findings/:id 404s.
+  const openNc = (id: string) => navigate(`/audits/ncs/${id}`);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <PageHeader
-        title="My Findings"
-        subtitle="Non-conformances you own, grouped by SLA urgency — tap a card to act."
-        breadcrumbs={[{ label: "Audits" }, { label: "My Findings" }]}
-      />
+    <div className="mx-auto flex max-w-[640px] animate-fade-up flex-col gap-5">
+      <div>
+        <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">Things to fix</h1>
+        <p className="text-sm text-muted-foreground">
+          Problems found in audits at your property. Fix them before the deadline.
+        </p>
+      </div>
 
       {myQuery.isLoading ? (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-40 w-full rounded-lg" />
-          ))}
+        <div className="flex flex-col gap-2.5">
+          {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-[92px] w-full rounded-[14px]" />)}
         </div>
       ) : myQuery.isError ? (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed p-12 text-center text-muted-foreground">
+        <div className="flex flex-col items-center gap-3 rounded-[14px] border border-dashed border-border p-12 text-center text-muted-foreground">
           <AlertCircle className="h-8 w-8 text-destructive" />
           <p className="text-sm">{(myQuery.error as Error)?.message || "Failed to load your findings."}</p>
-          <Button variant="outline" size="sm" onClick={() => myQuery.refetch()}>
-            <RotateCcw className="mr-2 h-3.5 w-3.5" /> Retry
-          </Button>
+          <button
+            type="button"
+            onClick={() => myQuery.refetch()}
+            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Retry
+          </button>
         </div>
       ) : ncs.length === 0 ? (
         <EmptyState
@@ -128,17 +118,15 @@ export default function MyFindings() {
         />
       ) : (
         <>
-          {GROUPS.map(({ key, title, icon: Icon, accent }) => {
+          {GROUPS.map(({ key, title, tone }) => {
             const items = grouped[key];
             if (items.length === 0) return null;
             return (
-              <section key={key} className="space-y-3">
-                <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                  <Icon className={`h-4 w-4 ${accent}`} />
-                  {title}
-                  <Badge variant="secondary" className="tabular-nums">{items.length}</Badge>
+              <section key={key}>
+                <h2 className={cn("mb-2.5 text-xs font-bold uppercase tracking-[0.1em]", tone)}>
+                  {title} · {items.length}
                 </h2>
-                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                <div className="flex flex-col gap-2.5">
                   {items.map((nc) => (
                     <FindingCard key={nc.id} nc={nc} nowMs={nowMs} onOpen={() => openNc(nc.id)} />
                   ))}
@@ -149,28 +137,23 @@ export default function MyFindings() {
 
           {/* Terminal findings, collapsed to a count */}
           {grouped.terminal.length > 0 && (
-            <section className="space-y-3">
+            <section>
               <button
                 type="button"
                 onClick={() => setTerminalOpen((o) => !o)}
-                className="flex min-h-11 items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                className="flex min-h-11 items-center gap-2 text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground hover:text-foreground"
               >
-                <Archive className="h-4 w-4" />
-                Closed / waived
-                <Badge variant="secondary" className="tabular-nums">{grouped.terminal.length}</Badge>
-                <ChevronDown
-                  className={`h-4 w-4 transition-transform ${terminalOpen ? "rotate-180" : ""}`}
-                />
+                Closed / waived · {grouped.terminal.length}
+                <ChevronDown className={cn("h-4 w-4 transition-transform", terminalOpen && "rotate-180")} />
               </button>
-              {terminalOpen && (
-                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {terminalOpen ? (
+                <div className="mt-2.5 flex flex-col gap-2.5">
                   {grouped.terminal.map((nc) => (
                     <FindingCard key={nc.id} nc={nc} nowMs={nowMs} onOpen={() => openNc(nc.id)} />
                   ))}
                 </div>
-              )}
-              {!terminalOpen && (
-                <p className="text-sm text-muted-foreground">
+              ) : (
+                <p className="mt-2 text-sm text-muted-foreground">
                   {grouped.terminal.length} finished finding{grouped.terminal.length === 1 ? "" : "s"} — resolved on{" "}
                   {fmtDate(grouped.terminal[0]?.closedAt ?? grouped.terminal[0]?.updatedAt)} and earlier.
                 </p>

@@ -32,6 +32,8 @@ import { useToast } from "@/hooks/use-toast";
 import { locateOnce } from "@/hooks/use-geolocation";
 import { apiFetch } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
+import { cn } from "@/lib/utils";
+import { useConfetti } from "@/components/ui/confetti";
 import { CameraCapture, type CaptureMeta } from "@/components/audits/camera-capture";
 import {
   AUDIT_STATE_BADGE, NC_SEVERITIES, NON_SCORED_TYPES,
@@ -192,21 +194,38 @@ function AnswerInput({
     case "PASS_FAIL": {
       const values = question.type === "YES_NO_NA" ? ["YES", "NO", "NA"] : ["PASS", "FAIL"];
       const current = String(a["value"] ?? "");
+      // Prototype segmented buttons — the "good" answer fills success, the
+      // "bad" answer fills danger, N/A fills muted; unselected stay outlined.
+      const tone: Record<string, string> = {
+        YES: "bg-success text-white border-transparent",
+        PASS: "bg-success text-white border-transparent",
+        NO: "bg-destructive text-white border-transparent",
+        FAIL: "bg-destructive text-white border-transparent",
+        NA: "bg-muted-foreground text-white border-transparent",
+      };
       return (
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          value={current}
-          disabled={!editable}
-          onValueChange={(v) => { if (v) onAnswer({ value: v }); }}
-          className="justify-start"
-        >
-          {values.map((v) => (
-            <ToggleGroupItem key={v} value={v} className="min-h-11 flex-1 text-base sm:flex-none sm:px-6">
-              {v === "NA" ? "N/A" : titleCase(v)}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+        <div className="flex flex-wrap gap-2">
+          {values.map((v) => {
+            const selected = current === v;
+            return (
+              <button
+                key={v}
+                type="button"
+                disabled={!editable}
+                // Re-tapping the current answer is a no-op (matches the old
+                // ToggleGroup) so it doesn't fire a redundant save / re-open
+                // the auto-NC dialog.
+                onClick={() => { if (current !== v) onAnswer({ value: v }); }}
+                className={cn(
+                  "inline-flex h-11 min-w-[76px] items-center justify-center rounded-[10px] border px-5 text-sm font-semibold transition-colors disabled:opacity-60",
+                  selected ? tone[v] : "border-border bg-background text-foreground hover:bg-muted",
+                )}
+              >
+                {v === "NA" ? "N/A" : titleCase(v)}
+              </button>
+            );
+          })}
+        </div>
       );
     }
     case "RATING": {
@@ -498,6 +517,16 @@ function QuestionCard({
             </div>
           )}
 
+          {/* Prototype: a raised finding reads as a full callout, not just a chip. */}
+          {nc && (
+            <div className="rounded-[10px] bg-danger-soft px-3.5 py-3 text-[13px]">
+              <div className="mb-0.5 font-semibold text-destructive">A finding was raised</div>
+              <div className="text-muted-foreground">
+                {nc.description ? `"${nc.description}" — ` : ""}the property team has been asked to fix it before its deadline.
+              </div>
+            </div>
+          )}
+
           {/* Answer input */}
           <AnswerInput
             question={question}
@@ -596,6 +625,7 @@ export default function AuditRunner() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const { me } = usePermissions();
+  const { confetti, fire: fireConfetti } = useConfetti();
 
   const runQuery = useQuery({
     queryKey: ["/audits", id, "run"],
@@ -1180,6 +1210,8 @@ export default function AuditRunner() {
         result: res.data.result,
         band: res.data.band,
       });
+      fireConfetti();
+      toast({ variant: "success", title: "Audit sent for review 🎉" });
       invalidateRun();
       qc.invalidateQueries({ queryKey: ["/audits"] });
     },
@@ -1224,6 +1256,7 @@ export default function AuditRunner() {
 
   return (
     <div className="mx-auto max-w-3xl pb-40">
+      {confetti}
       {/* Top bar */}
       <div className="sticky top-0 z-20 -mx-4 -mt-4 mb-4 border-b bg-surface/95 px-4 py-2.5 backdrop-blur sm:-mx-6 sm:-mt-6 sm:px-6">
         <div className="mx-auto flex max-w-3xl items-center gap-2">
@@ -1236,16 +1269,37 @@ export default function AuditRunner() {
           <span className="truncate font-mono text-sm font-semibold">{audit.ticketNo}</span>
           <Badge variant={AUDIT_STATE_BADGE[audit.state] ?? "outline"}>{titleCase(audit.state)}</Badge>
           <span className="flex-1" />
-          <span
-            className={`rounded-full border bg-card px-2.5 py-1 text-sm font-semibold tabular-nums ${scoreColorClass(provisionalPct)}`}
-            title="Provisional score (answered questions only)"
-          >
-            {provisionalPct != null ? `${provisionalPct.toFixed(1)}%` : "—"}
+          <span className="text-right leading-none" title="Provisional score (answered questions only)">
+            <span className={cn("block font-mono text-xl font-semibold tabular-nums", scoreColorClass(provisionalPct))}>
+              {provisionalPct != null ? `${provisionalPct.toFixed(0)}%` : "—"}
+            </span>
+            <span className="text-[9px] uppercase tracking-[0.08em] text-muted-foreground">live score</span>
           </span>
         </div>
       </div>
 
-      <p className="mb-4 text-sm text-muted-foreground">{audit.title}</p>
+      {/* Title + progress (prototype) */}
+      <h1 className="mb-1 font-display text-xl font-bold tracking-[-0.012em]">{audit.title}</h1>
+      <p className="mb-3 text-[13px] text-muted-foreground">
+        <span className="font-mono">{audit.ticketNo}</span>
+        {audit.propertyName ? ` · ${audit.propertyName}` : ""}
+      </p>
+      {progress.total > 0 && (
+        <>
+          <div className="mb-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-brand-gradient transition-[width] duration-300"
+              style={{ width: `${Math.round((progress.answered / progress.total) * 100)}%` }}
+            />
+          </div>
+          <p className="mb-4 text-[13px] text-muted-foreground">
+            {progress.answered} of {progress.total} answered
+            {progress.mandatoryLeft > 0
+              ? ` · ${progress.mandatoryLeft} required left`
+              : " · all required done"}
+          </p>
+        </>
+      )}
 
       {/* State gates */}
       {isAssignee && (audit.state === "SCHEDULED" || audit.state === "REJECTED") && (

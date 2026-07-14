@@ -8,7 +8,6 @@ import {
   Gauge, TrendingUp, Clock, AlertTriangle, ShieldCheck, Users,
   Table as TableIcon, PieChart as PieIcon,
 } from "lucide-react";
-import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -82,12 +81,11 @@ export default function AuditDashboard() {
   const maxVolume = volumeByTemplate.reduce((m, v) => Math.max(m, v.count), 0);
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Audit Dashboard"
-        subtitle="Program health across your permitted audit types."
-        breadcrumbs={[{ label: "Audits" }, { label: "Dashboard" }]}
-      />
+    <div className="animate-fade-up space-y-6">
+      <div>
+        <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">Audit dashboard</h1>
+        <p className="text-sm text-muted-foreground">Program health across your permitted audit types.</p>
+      </div>
 
       <div className="flex flex-wrap items-end gap-4">
         <Tabs value={typeTab} onValueChange={(v) => setTypeTab(v as "ALL" | AuditType)}>
