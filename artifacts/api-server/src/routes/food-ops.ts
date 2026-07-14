@@ -57,6 +57,7 @@ import {
   resolveMenu,
   getDefaultCutoffTime,
   getSystemConfigValue,
+  getWasteEditWindowMs,
   FOOD_DEFAULT_CUTOFF_KEY,
   FOOD_WASTE_WINDOW_KEY,
 } from "../lib/food-service.js";
@@ -1085,10 +1086,14 @@ foodOpsRouter.patch("/dispatches/:id/status", authenticate, authorize("FOOD_DISP
       // C2: reaching DELIVERED flips the linked (still-active) orders to DELIVERED
       // so the trip and its orders stay in sync.
       if (target === "DELIVERED" && current.status !== "DELIVERED") {
+        // Only DISPATCHED orders can flip to DELIVERED, and doing so opens the
+        // waste-logging window (same as unit-lead confirm) so leftovers can be
+        // recorded on trip-delivered orders too.
+        const wasteWindowMs = await getWasteEditWindowMs();
         const linked = await tx.select().from(foodOrdersTable).where(eq(foodOrdersTable.dispatchId, id));
         for (const o of linked) {
-          if (["DELIVERED", "CANCELLED", "REJECTED"].includes(o.status)) continue;
-          await tx.update(foodOrdersTable).set({ status: "DELIVERED", deliveredAt: o.deliveredAt ?? now, confirmedById: o.confirmedById ?? req.user!.id, updatedAt: now }).where(eq(foodOrdersTable.id, o.id));
+          if (!canTransition(o.status, "DELIVERED")) continue;
+          await tx.update(foodOrdersTable).set({ status: "DELIVERED", deliveredAt: o.deliveredAt ?? now, wasteEditableUntil: o.wasteEditableUntil ?? new Date(now.getTime() + wasteWindowMs), confirmedById: o.confirmedById ?? req.user!.id, updatedAt: now }).where(eq(foodOrdersTable.id, o.id));
           await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId: o.id, status: "DELIVERED", note: `Delivered with dispatch ${current.dispatchNumber}`, actorId: req.user!.id });
         }
       }
@@ -1128,10 +1133,12 @@ foodOpsRouter.patch("/dispatches/:id/orders/:orderId", authenticate, authorize("
     if (order.status === "CANCELLED" || order.status === "REJECTED") { res.status(422).json({ success: false, error: `Cannot change a ${order.status} order` }); return; }
 
     const now = new Date();
+    // Marking delivered opens the waste-logging window (parity with confirm).
+    const wasteWindowMs = await getWasteEditWindowMs();
     const result = await db.transaction(async (tx) => {
       // Toggle the single order.
       if (delivered) {
-        await tx.update(foodOrdersTable).set({ status: "DELIVERED", deliveredAt: order.deliveredAt ?? now, confirmedById: order.confirmedById ?? req.user!.id, deliveryRemarks: remarks ?? order.deliveryRemarks ?? null, updatedAt: now }).where(eq(foodOrdersTable.id, orderId));
+        await tx.update(foodOrdersTable).set({ status: "DELIVERED", deliveredAt: order.deliveredAt ?? now, wasteEditableUntil: order.wasteEditableUntil ?? new Date(now.getTime() + wasteWindowMs), confirmedById: order.confirmedById ?? req.user!.id, deliveryRemarks: remarks ?? order.deliveryRemarks ?? null, updatedAt: now }).where(eq(foodOrdersTable.id, orderId));
         await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId, status: "DELIVERED", note: remarks ? `Delivered: ${remarks}` : `Delivered (dispatch ${trip.dispatchNumber})`, actorId: req.user!.id });
       } else {
         // Revert: a delivered order goes back to DISPATCHED (still on the trip).
