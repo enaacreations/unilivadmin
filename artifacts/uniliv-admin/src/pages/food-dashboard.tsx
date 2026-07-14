@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO } from "date-fns";
 import {
-  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, History, Loader2, Lock, MapPin, PartyPopper, Pencil, Truck, Trash2,
+  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, PartyPopper, Pencil, Truck, Trash2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -961,6 +961,13 @@ export default function FoodDashboard() {
                         ? "Delivered & confirmed · waste recorded ✓"
                         : selected.statusLine}
                 </span>
+                {!orderMode && selected.order != null && canReadOrders && (
+                  <Link href={`/food/orders/${selected.order.id}`}>
+                    <span className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
+                      <Eye className="h-3.5 w-3.5" /> View order
+                    </span>
+                  </Link>
+                )}
                 {canCancelThis && (
                   <button
                     type="button"
