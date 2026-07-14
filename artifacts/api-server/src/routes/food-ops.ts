@@ -989,16 +989,23 @@ foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit
     const dispatchable = orders.filter((o) => isAccessible(o.propertyId, ids) && canTransition(o.status, "DISPATCHED"));
     if (!dispatchable.length) { res.status(422).json({ success: false, error: "No dispatchable orders in selection — orders must be PREPARING." }); return; }
 
-    // C5: kitchen integrity. If a kitchen is named, the agency must serve it
-    // (agency_kitchens) and every dispatchable order must share that kitchen.
-    const kitchenId = b.kitchenId ?? null;
+    // C5: kitchen integrity, DERIVED from the orders (never trusted from the
+    // client's kitchenId, which used to gate this whole block — an omitted
+    // kitchenId then bypassed both checks). A van is one kitchen: the dispatchable
+    // orders may resolve to at most one kitchen, and the agency must serve it.
+    // Orders with no kitchen (kitchen-agnostic) impose no constraint.
+    const orderKitchens = [...new Set(dispatchable.map((o) => o.kitchenId).filter((k): k is string => k != null))];
+    if (orderKitchens.length > 1) {
+      res.status(422).json({ success: false, error: "All dispatchable orders must share one kitchen" }); return;
+    }
+    // Effective kitchen = the orders' kitchen; fall back to the client hint only
+    // when the orders carry none (so the trip still records a kitchen if given).
+    const kitchenId = orderKitchens[0] ?? b.kitchenId ?? null;
     if (kitchenId) {
       const [link] = await db.select({ id: agencyKitchensTable.id }).from(agencyKitchensTable)
         .where(and(eq(agencyKitchensTable.agencyId, agencyId), eq(agencyKitchensTable.kitchenId, kitchenId), eq(agencyKitchensTable.isActive, true)))
         .limit(1);
       if (!link) { res.status(422).json({ success: false, error: "Agency does not serve this kitchen" }); return; }
-      const mismatch = dispatchable.some((o) => o.kitchenId != null && o.kitchenId !== kitchenId);
-      if (mismatch) { res.status(422).json({ success: false, error: "All dispatchable orders must share the selected kitchen" }); return; }
     }
 
     const now = new Date();
