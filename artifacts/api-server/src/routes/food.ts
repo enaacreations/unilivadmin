@@ -46,7 +46,7 @@ import type { AnyColumn } from "drizzle-orm";
 import { canTransition } from "../lib/order-transitions.js";
 import { z } from "zod";
 import { authenticate } from "../middlewares/auth.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 import { can, type UserRole } from "../lib/permissions.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -348,7 +348,21 @@ foodRouter.get("/waste-pending", authenticate, authorize("FOOD_DASHBOARD", "view
  * Orders
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/orders", authenticate, authorize("FOOD_ALL_ORDERS", "view"), async (req, res) => {
+// Shared order-list: the All Orders page (FOOD_ALL_ORDERS), the Dispatch queue
+// (FOOD_DISPATCH) and the Kitchen board's open-orders panel (FOOD_KITCHEN_SUMMARY)
+// all read from here. Gate on any of those so operational roles (F&B managers,
+// who have no "All Orders" page) can still load the orders they act on.
+//
+// Two limits keep operational access from becoming full order-ledger access:
+//   • property scope — resolveAccessiblePropertyIds below (note: F&B roles are in
+//     the broad-fallback set, so an UNSCOPED F&B user still sees all properties —
+//     scope only narrows once they have scope rows / a home property); and
+//   • status — callers WITHOUT FOOD_ALL_ORDERS are clamped to the live pipeline
+//     (PLACED/ACCEPTED/PREPARING/DISPATCHED) and never see terminal history
+//     (DELIVERED/CANCELLED/REJECTED), which stays FOOD_ALL_ORDERS-only. That
+//     mirrors the sibling /orders/:id and /orders/track restrictions.
+const OPERATIONAL_ORDER_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "DISPATCHED"];
+foodRouter.get("/orders", authenticate, authorizeAny(["FOOD_ALL_ORDERS", "FOOD_DISPATCH", "FOOD_KITCHEN_SUMMARY"], "view"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const ids = await resolveAccessiblePropertyIds(req.user!);
@@ -366,7 +380,20 @@ foodRouter.get("/orders", authenticate, authorize("FOOD_ALL_ORDERS", "view"), as
     const search = req.query["search"] as string | undefined;
 
     // status accepts a single value or a CSV of statuses.
-    const statuses = status ? status.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    let statuses = status ? status.split(",").map((s) => s.trim()).filter(Boolean) : [];
+
+    // Clamp non-FOOD_ALL_ORDERS callers to the operational pipeline: intersect an
+    // explicit status filter with the allowlist, or default to it when none given.
+    // If the caller asked ONLY for restricted statuses, the intersection is empty
+    // → return nothing rather than silently widening to the whole pipeline.
+    if (!can(req.user!.role as UserRole, "FOOD_ALL_ORDERS", "view")) {
+      const requested = statuses.length ? statuses : OPERATIONAL_ORDER_STATUSES;
+      statuses = requested.filter((s) => OPERATIONAL_ORDER_STATUSES.includes(s));
+      if (statuses.length === 0) {
+        res.json({ success: true, data: [], meta: buildMeta(0, page, limit) });
+        return;
+      }
+    }
 
     const conds = [] as ReturnType<typeof eq>[];
     if (scope) conds.push(scope);

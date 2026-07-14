@@ -39,6 +39,7 @@ import {
 } from "@/lib/food-api";
 import { useToast } from "@/hooks/use-toast";
 import { MealIcon } from "@/components/meal-icon";
+import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 
 const ALL = "ALL";
@@ -56,6 +57,11 @@ export default function FoodKitchenSummary() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const { confetti, fire } = useConfetti();
+  const { can } = usePermissions();
+  // Opening an order navigates to /food/orders/:id, which is server- AND route-
+  // gated on FOOD_ALL_ORDERS. F&B roles run the kitchen board without that grant,
+  // so for them the order number is plain text, not a link to a Forbidden page.
+  const canReadOrders = can("FOOD_ALL_ORDERS", "view");
 
   const [date, setDate] = React.useState(() => format(new Date(), "yyyy-MM-dd"));
   const [brand, setBrand] = React.useState<string>(ALL);
@@ -359,6 +365,7 @@ export default function FoodKitchenSummary() {
         onPrepareAll={markAllPreparing}
         bulkPreparing={bulkPreparing}
         mealBusy={startingMeal !== null}
+        canOpenOrder={canReadOrders}
         onOpenOrder={(id) => setLocation(`/food/orders/${id}`)}
       />
     </div>
@@ -511,6 +518,7 @@ function OpenOrdersPanel({
   onPrepareAll,
   bulkPreparing,
   mealBusy,
+  canOpenOrder,
   onOpenOrder,
 }: {
   orders: FoodOrder[];
@@ -521,6 +529,7 @@ function OpenOrdersPanel({
   onPrepareAll: () => void;
   bulkPreparing: boolean;
   mealBusy: boolean;
+  canOpenOrder: boolean;
   onOpenOrder: (id: string) => void;
 }) {
   return (
@@ -581,13 +590,19 @@ function OpenOrdersPanel({
                 {orders.map((o) => (
                   <tr key={o.id} className="border-b last:border-0 hover:bg-muted/30">
                     <td className="p-3 align-middle">
-                      <button
-                        type="button"
-                        className="font-mono text-xs tabular-nums text-primary hover:underline"
-                        onClick={() => onOpenOrder(o.id)}
-                      >
-                        {o.orderNumber}
-                      </button>
+                      {canOpenOrder ? (
+                        <button
+                          type="button"
+                          className="font-mono text-xs tabular-nums text-primary hover:underline"
+                          onClick={() => onOpenOrder(o.id)}
+                        >
+                          {o.orderNumber}
+                        </button>
+                      ) : (
+                        <span className="font-mono text-xs tabular-nums text-foreground">
+                          {o.orderNumber}
+                        </span>
+                      )}
                       <div className="mt-0.5 text-[11px] text-muted-foreground">
                         {o.brand}
                       </div>
