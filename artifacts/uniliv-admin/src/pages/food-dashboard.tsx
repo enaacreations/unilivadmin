@@ -26,6 +26,7 @@ import {
   foodKeys,
   MEAL_LABEL,
   shortMeal,
+  groupLabel,
   isFractionalUnit,
   fmtQty,
   type FoodOrder,
@@ -627,7 +628,7 @@ export default function FoodDashboard() {
       toast({
         variant: "success",
         title: `${nextIsTomorrow ? "Tomorrow" : nextDayLabel}'s order sent`,
-        description: `Group ${res.batch.batchNumber} · ${res.orders.length} meal${res.orders.length === 1 ? "" : "s"}`,
+        description: `${groupLabel(res.batch.batchNumber)} · ${res.orders.length} meal${res.orders.length === 1 ? "" : "s"}`,
       });
     },
     onError: (e: unknown) => {
@@ -982,7 +983,7 @@ export default function FoodDashboard() {
                     className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
                     title="Group order ID — every meal placed together shares it"
                   >
-                    {detail.batchNumber}
+                    {groupLabel(detail.batchNumber)}
                   </span>
                 )}
                 <span className="flex-1" />

@@ -756,6 +756,9 @@ export const ORDER_STATUS_PILL: Record<OrderStatus, { label: string; cls: string
 export const serviceDayKey = (iso: string) => format(parseISO(iso), "yyyy-MM-dd");
 /** Short display name — "High Tea / Evening Snacks" → "High Tea". */
 export const shortMeal = (m: MealType): string => MEAL_LABEL[m].split(" /")[0];
+/** User-facing label for a group order id. The stored token is "BATCH-YYYY-…"
+ *  (internal); users see "GROUP-YYYY-…" — same running number, friendlier word. */
+export const groupLabel = (batchNumber: string): string => batchNumber.replace(/^BATCH-/i, "GROUP-");
 // Meal/dish glyphs are now crisp SVGs — see MealIcon / DishIcon in
 // components/meal-icon.tsx (replaced the old MEAL_EMOJI/dishEmoji maps).
 /** True for units ordered in fractional steps (0.5) with 1-decimal display.

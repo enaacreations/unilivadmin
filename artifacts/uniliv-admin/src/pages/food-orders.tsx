@@ -20,7 +20,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   foodApi, foodKeys, MEAL_TYPES, BRANDS, ORDER_STATUSES, MEAL_LABEL, ORDER_STATUS_PILL,
-  fmtQty, serviceDayKey,
+  fmtQty, serviceDayKey, groupLabel,
   type FoodOrder,
 } from "@/lib/food-api";
 import { useQueryParam } from "@/lib/nav-helpers";
@@ -471,7 +471,7 @@ export default function FoodOrders() {
                         className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
                         title="Group order ID — every meal placed together shares it"
                       >
-                        {day.batchNumber}
+                        {groupLabel(day.batchNumber)}
                       </span>
                     )}
                   </span>
@@ -525,7 +525,7 @@ export default function FoodOrders() {
                                 a single-batch day shows it once in the header. */}
                             {!day.batchNumber && o.batchNumber && (
                               <span className="font-mono text-[10px] text-muted-foreground" title="Group order ID">
-                                {o.batchNumber}
+                                {groupLabel(o.batchNumber)}
                               </span>
                             )}
                           </span>

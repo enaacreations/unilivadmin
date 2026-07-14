@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
 import {
-  foodApi, foodKeys, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty,
+  foodApi, foodKeys, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty, groupLabel,
   type OrderStatus, type FoodOrderEvent,
 } from "@/lib/food-api";
 import { useQueryParam } from "@/lib/nav-helpers";
@@ -186,7 +186,7 @@ export default function FoodTrack() {
                   className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
                   title="Group order ID — every meal placed together shares it"
                 >
-                  {order.batchNumber}
+                  {groupLabel(order.batchNumber)}
                 </span>
               )}
               <span className="flex-1 font-display text-base font-bold tracking-[-0.012em]">
