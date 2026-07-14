@@ -346,7 +346,7 @@ export default function FoodOrders() {
           </DropdownMenu>
           <Button
             className="h-9 rounded-[12px] bg-accent font-bold text-white hover:bg-accent/90"
-            onClick={() => setLocation("/food/place-order")}
+            onClick={() => setLocation("/food/dashboard")}
           >
             <Plus className="mr-2 h-4 w-4" /> Place Order
           </Button>
@@ -498,7 +498,14 @@ export default function FoodOrders() {
                           <span className="text-[13.5px] font-semibold">
                             {MEAL_LABEL[o.mealType] ?? o.mealType}
                           </span>
-                          <span className="font-mono text-xs text-accent-strong">{o.orderNumber}</span>
+                          <span className="flex flex-col leading-tight">
+                            <span className="font-mono text-xs text-accent-strong">{o.orderNumber}</span>
+                            {o.batchNumber && (
+                              <span className="font-mono text-[10px] text-muted-foreground" title="Group order ID">
+                                {o.batchNumber}
+                              </span>
+                            )}
+                          </span>
                           <span className="font-mono text-[12.5px] tabular-nums sm:text-right">
                             {o.residentsCount}
                           </span>

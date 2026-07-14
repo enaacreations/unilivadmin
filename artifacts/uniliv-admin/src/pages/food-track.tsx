@@ -181,6 +181,14 @@ export default function FoodTrack() {
           <div className="rounded-[14px] border border-border bg-card p-5">
             <div className="flex flex-wrap items-center gap-2.5">
               <span className="font-mono text-sm font-semibold tabular-nums">{order.orderNumber}</span>
+              {order.batchNumber && (
+                <span
+                  className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                  title="Group order ID — every meal placed together shares it"
+                >
+                  {order.batchNumber}
+                </span>
+              )}
               <span className="flex-1 font-display text-base font-bold tracking-[-0.012em]">
                 {MEAL_LABEL[order.mealType] ?? order.mealType}
               </span>

@@ -203,12 +203,12 @@ export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
   // Forbidden screen instead of a dead search page. (If track should open up
   // to kitchen personas, gate BOTH sides on FOOD_DELIVERY_TRACKING instead.)
   [/^\/food\/track/, "FOOD_ALL_ORDERS"],
-  [/^\/food\/place-order/, "FOOD_PLACE_ORDER"],
   [/^\/food\/kitchen-summary/, "FOOD_KITCHEN_SUMMARY"],
   [/^\/food\/dispatch/, "FOOD_DISPATCH"],
-  [/^\/food\/confirm-delivery/, "FOOD_CONFIRM_DELIVERY"],
+  // /food/place-order, /food/confirm-delivery, /food/waste were folded into
+  // Food Overview and their routes removed; the modules still gate the inline
+  // actions there.
   [/^\/food\/waste-analytics/, "FOOD_REPORTS"],
-  [/^\/food\/waste/, "FOOD_WASTE_TRACKING"],
   [/^\/food\/reports/, "FOOD_REPORTS"],
   [/^\/food\/settings/, "FOOD_SETTINGS"],
   [/^\/food\/guests/, "FOOD_DASHBOARD"],

@@ -3,12 +3,19 @@ import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO, subDays } from "date-fns";
 import {
-  AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, History, Lock, MapPin, Pencil, Truck, Trash2,
+  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Flame, History, Loader2, Lock, MapPin, PartyPopper, Pencil, Truck, Trash2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
+import { MealIcon, DishIcon } from "@/components/meal-icon";
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { useAppStore } from "@/lib/store";
@@ -18,9 +25,7 @@ import {
   foodApi,
   foodKeys,
   MEAL_LABEL,
-  MEAL_EMOJI,
   shortMeal,
-  dishEmoji,
   isFractionalUnit,
   fmtQty,
   type FoodOrder,
@@ -250,6 +255,10 @@ export default function FoodDashboard() {
   const canPlace = can("FOOD_PLACE_ORDER", "create");
   const canConfirm = can("FOOD_CONFIRM_DELIVERY", "edit") || can("FOOD_CONFIRM_DELIVERY", "create");
   const canWaste = can("FOOD_WASTE_TRACKING", "edit") || can("FOOD_WASTE_TRACKING", "create");
+  // Cancel mirrors the server guard (food.ts POST /orders/:id/cancel): either
+  // permission, on a pre-dispatch order.
+  const canCancel = can("FOOD_PLACE_ORDER", "edit") || can("FOOD_KITCHEN_SUMMARY", "edit");
+  const canViewReports = can("FOOD_REPORTS", "view");
   // GET /food/orders(+/:id) is server-gated on FOOD_ALL_ORDERS. Some food
   // personas (FNB supervisor/manager/zonal head, SVP) hold FOOD_DASHBOARD but
   // not FOOD_ALL_ORDERS — for them every order query would 403. Gate the
@@ -482,6 +491,11 @@ export default function FoodDashboard() {
      show the inline place-order UI (prototype); already-ordered meals show
      their normal Track/Received/Waste detail. ── */
   const orderMode = orderDay && !!selected && isMissing(selected.mealType);
+  // Inline cancel is offered only for a real, pre-dispatch order the caller may
+  // cancel — never while still placing (orderMode) or once dispatched/closed.
+  const canCancelThis =
+    !orderMode && !!selected?.order && canCancel &&
+    (selected.order.status === "PLACED" || selected.order.status === "ACCEPTED" || selected.order.status === "PREPARING");
   const [headcount, setHeadcount] = React.useState<number | null>(null);
   const effectiveHead = headcount ?? myNext?.activeGuests ?? overview?.activeGuests ?? 1;
   const { data: preview } = useQuery({
@@ -556,14 +570,17 @@ export default function FoodDashboard() {
   // Debounced autosave of every edit (headcount / per-dish overrides).
   const draftDirty = headcount != null || Object.keys(dishOverrides).length > 0;
   const [draftSavedAt, setDraftSavedAt] = React.useState<Date | null>(null);
+  const [savingDraft, setSavingDraft] = React.useState(false);
   React.useEffect(() => {
     if (!draftParams || !nextPending || !canPlace || !draftDirty) return;
     if (restoredFor.current !== draftId) return; // wait for the restore pass
     const t = setTimeout(() => {
+      setSavingDraft(true);
       foodApi
         .saveOrderDraft({ ...draftParams, payload: { v: 1, headcount, overrides: dishOverrides } })
         .then(() => setDraftSavedAt(new Date()))
-        .catch(() => {/* draft persistence is best-effort */});
+        .catch(() => {/* draft persistence is best-effort */})
+        .finally(() => setSavingDraft(false));
     }, 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -610,7 +627,7 @@ export default function FoodDashboard() {
       toast({
         variant: "success",
         title: `${nextIsTomorrow ? "Tomorrow" : nextDayLabel}'s order sent`,
-        description: `1 group order, ${res.orders.length} child order${res.orders.length === 1 ? "" : "s"}`,
+        description: `Group ${res.batch.batchNumber} · ${res.orders.length} meal${res.orders.length === 1 ? "" : "s"}`,
       });
     },
     onError: (e: unknown) => {
@@ -626,11 +643,16 @@ export default function FoodDashboard() {
   const [ack, setAck] = React.useState(false);
   const [received, setReceived] = React.useState<Record<string, number>>({});
   const [reason, setReason] = React.useState<string | null>(null);
+  /* ── inline cancel dialog state ── */
+  const [cancelOpen, setCancelOpen] = React.useState(false);
+  const [cancelReason, setCancelReason] = React.useState("");
   React.useEffect(() => {
-    // Reset the receive form whenever the focused order changes.
+    // Reset the receive + cancel forms whenever the focused order changes.
     setAck(false);
     setReceived({});
     setReason(null);
+    setCancelOpen(false);
+    setCancelReason("");
   }, [selectedOrderId]);
 
   const sentOf = (i: { orderedQty: string; preparedQty: string | null }) =>
@@ -687,12 +709,32 @@ export default function FoodDashboard() {
       fire();
       toast({
         variant: "success",
-        title: any ? "Waste recorded — thanks for keeping it honest" : "Zero waste recorded — brilliant! 🎉",
+        title: any ? "Waste recorded — thanks for keeping it honest" : "Zero waste recorded — brilliant!",
       });
     },
     onError: (e: unknown) => {
       toast({
         title: "Couldn't record waste",
+        description: e instanceof Error ? e.message : "Please try again",
+        variant: "destructive",
+      });
+    },
+  });
+
+  /* ── cancel the focused (pre-dispatch) order, with an optional reason ── */
+  const cancelMutation = useMutation({
+    mutationFn: () => foodApi.cancelOrder(selectedOrderId!, cancelReason.trim() || undefined),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["food", "orders"] });
+      qc.invalidateQueries({ queryKey: ["food", "order"] });
+      qc.invalidateQueries({ queryKey: foodKeys.nextOrders() });
+      setCancelOpen(false);
+      setCancelReason("");
+      toast({ variant: "warning", title: "Order cancelled", description: "The kitchen has been notified." });
+    },
+    onError: (e: unknown) => {
+      toast({
+        title: "Couldn't cancel the order",
         description: e instanceof Error ? e.message : "Please try again",
         variant: "destructive",
       });
@@ -752,7 +794,8 @@ export default function FoodDashboard() {
                   <>Tomorrow's cut-off has passed — next up is {format(parseISO(myNext.serviceDate), "EEEE, dd MMM")}. </>
                 ) : null}
                 Send it before {myNext?.cutoffTime ?? "the cut-off"} to keep your{" "}
-                <strong className="text-accent-strong">{streakDays}-day streak</strong> alive 🔥
+                <strong className="text-accent-strong">{streakDays}-day streak</strong> alive{" "}
+                <Flame className="inline h-[15px] w-[15px] align-text-bottom text-warning" />
               </div>
             </div>
             <div className="text-center">
@@ -781,7 +824,8 @@ export default function FoodDashboard() {
           </span>
           <div className="flex-1">
             <div className="font-display font-bold tracking-[-0.012em] text-success">
-              {nextDayLabel}'s order is in — streak safe at {streakDays + 1} days 🔥
+              {nextDayLabel}'s order is in — streak safe at {streakDays + 1} days{" "}
+              <Flame className="inline h-[15px] w-[15px] align-text-bottom text-warning" />
             </div>
             <div className="mt-0.5 text-[13px] text-muted-foreground">
               {myNext ? format(parseISO(myNext.serviceDate), "EEEE, dd MMM") : ""} ·{" "}
@@ -896,7 +940,7 @@ export default function FoodDashboard() {
                   }}
                 >
                   <span className="flex w-full items-center gap-2">
-                    <span className="text-lg leading-none">{MEAL_EMOJI[s.mealType]}</span>
+                    <MealIcon meal={s.mealType} size={26} />
                     <span className="flex-1 text-left font-display text-[15px] font-bold tracking-[-0.012em]">
                       {shortMeal(s.mealType)}
                     </span>
@@ -933,6 +977,14 @@ export default function FoodDashboard() {
                   {MEAL_LABEL[selected.mealType]}
                 </span>
                 <span className="font-mono text-xs text-muted-foreground">{selected.time}</span>
+                {detail?.batchNumber && (
+                  <span
+                    className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                    title="Group order ID — every meal placed together shares it"
+                  >
+                    {detail.batchNumber}
+                  </span>
+                )}
                 <span className="flex-1" />
                 <span
                   className="rounded-full px-[11px] py-1 text-xs font-bold"
@@ -949,6 +1001,15 @@ export default function FoodDashboard() {
                         ? "Delivered & confirmed · waste recorded ✓"
                         : selected.statusLine}
                 </span>
+                {canCancelThis && (
+                  <button
+                    type="button"
+                    onClick={() => setCancelOpen(true)}
+                    className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-danger-soft px-2.5 py-1 text-xs font-semibold text-destructive transition-colors hover:bg-destructive hover:text-white"
+                  >
+                    <Ban className="h-3.5 w-3.5" /> Cancel
+                  </button>
+                )}
               </div>
 
               {orderMode ? (
@@ -972,6 +1033,7 @@ export default function FoodDashboard() {
                   sending={placeMutation.isPending}
                   mealsCount={missingMeals.length}
                   draftSavedAt={draftSavedAt}
+                  savingDraft={savingDraft}
                 />
               ) : selected.order == null ? (
                 <div className="rounded-[12px] border border-dashed border-border px-4 py-9 text-center text-sm text-muted-foreground">
@@ -1020,8 +1082,17 @@ export default function FoodDashboard() {
         )}
       </section>
 
-      {/* ── footer: previous orders ── */}
-      <div className="flex justify-end">
+      {/* ── footer: quick links to full order history + reports ── */}
+      <div className="flex flex-wrap justify-end gap-2">
+        {canViewReports && (
+          <Link href="/food/reports">
+            <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
+              <BarChart3 className="h-3.5 w-3.5" />
+              Reports
+              <ChevronRight className="h-[13px] w-[13px]" />
+            </span>
+          </Link>
+        )}
         <Link href="/food/orders">
           <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
             <History className="h-3.5 w-3.5" />
@@ -1030,6 +1101,39 @@ export default function FoodDashboard() {
           </span>
         </Link>
       </div>
+
+      {/* ── inline cancel dialog (optional reason → audit trail) ── */}
+      <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Ban className="h-5 w-5 text-warning" /> Cancel order
+            </DialogTitle>
+            <DialogDescription>
+              This order will be cancelled and removed from the kitchen queue.
+              Optionally share a reason for the audit trail.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="dash-cancel-reason">Reason (optional)</Label>
+            <Textarea
+              id="dash-cancel-reason"
+              rows={3}
+              placeholder="e.g. Residents away, duplicate order…"
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCancelOpen(false)} disabled={cancelMutation.isPending}>
+              Keep order
+            </Button>
+            <Button variant="destructive" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending}>
+              {cancelMutation.isPending ? "Cancelling…" : "Cancel order"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1287,7 +1391,10 @@ function WasteColumn({
               ))}
             </div>
           ) : (
-            <div className="text-xs text-muted-foreground">Zero waste recorded — brilliant! 🎉</div>
+            <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+              Zero waste recorded — brilliant!
+              <PartyPopper className="h-3.5 w-3.5 text-success" />
+            </div>
           )}
         </>
       ) : active ? (
@@ -1347,7 +1454,7 @@ function WasteColumn({
 
 function OrderModePanel({
   myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, headcount, setHeadcount, previewMeals,
-  selectedMeal, dishQty, dishPersons, setDishPersons, bumpDish, onSend, sending, mealsCount, draftSavedAt,
+  selectedMeal, dishQty, dishPersons, setDishPersons, bumpDish, onSend, sending, mealsCount, draftSavedAt, savingDraft,
 }: {
   myNextCutoffAt: string | null;
   myNextCutoffTime: string | null;
@@ -1372,6 +1479,7 @@ function OrderModePanel({
   sending: boolean;
   mealsCount: number;
   draftSavedAt: Date | null;
+  savingDraft: boolean;
 }) {
   // The dish grid shows the selected meal (tabs above switch meals); the send
   // button submits every missing meal at once — exactly like the prototype.
@@ -1440,12 +1548,7 @@ function OrderModePanel({
                   )}
                 >
                   <div className="flex items-center gap-2.5">
-                    <span
-                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-xl"
-                      style={{ background: "color-mix(in srgb, #FF9A3D 16%, var(--card))" }}
-                    >
-                      {dishEmoji(d.dishName, meal.mealType)}
-                    </span>
+                    <DishIcon name={d.dishName} meal={meal.mealType} size={40} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[13.5px] font-semibold">{d.dishName}</span>
                       <span className="block text-[11px] text-muted-foreground">{d.unit.toLowerCase()}</span>
@@ -1504,11 +1607,24 @@ function OrderModePanel({
         </div>
       )}
 
-      {draftSavedAt && (
-        <div className="mt-2 text-center text-[11px] text-muted-foreground">
-          Draft saved to your account · {format(draftSavedAt, "h:mm a")} — it follows you on any device
-        </div>
-      )}
+      {/* Always-on reassurance that edits persist — autosaves silently, so the
+         tester (and users) can see the draft is being kept. */}
+      <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+        {savingDraft ? (
+          <>
+            <Loader2 className="h-3 w-3 animate-spin" /> Saving…
+          </>
+        ) : draftSavedAt ? (
+          <>
+            <Check className="h-3 w-3 text-success" strokeWidth={3} />
+            Changes saved · {format(draftSavedAt, "h:mm a")} — this order follows you on any device
+          </>
+        ) : (
+          <>
+            <Check className="h-3 w-3" strokeWidth={3} /> Changes are saved automatically as you edit
+          </>
+        )}
+      </div>
       <button
         type="button"
         disabled={sending || previewMeals.length === 0}

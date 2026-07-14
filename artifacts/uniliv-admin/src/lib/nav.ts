@@ -4,7 +4,7 @@ import {
   PackageCheck, Boxes, ChefHat, CalendarDays, TrendingUp, MapPin,
   BookOpen, CreditCard, Shield, Settings, BarChart3,
   Repeat, BellRing, Landmark, Receipt, Wrench, Zap, ClipboardCheck, Radio, Wallet,
-  UtensilsCrossed, ListOrdered, FilePlus2, Soup, Send, CheckCircle2, Trash2, SlidersHorizontal,
+  UtensilsCrossed, ListOrdered, Soup, Send, SlidersHorizontal,
   Network, Home, LayoutGrid,
   DoorOpen, CalendarCheck, CalendarX, LineChart, Recycle, Database, ScrollText,
   Gauge, AlertTriangle, ListChecks, Kanban, BadgeCheck, FileBarChart,
@@ -83,13 +83,15 @@ export const navGroups: NavGroup[] = [
     { title: "Food Overview", href: "/food/dashboard", icon: UtensilsCrossed, module: "FOOD_DASHBOARD" },
     { title: "Organization", href: "/food/organization", icon: Network, module: "FOOD_ORG" },
     { title: "All Orders", href: "/food/orders", icon: ListOrdered, module: "FOOD_ALL_ORDERS" },
-    { title: "Place Order", href: "/food/place-order", icon: FilePlus2, module: "FOOD_PLACE_ORDER", hideFor: ["UNIT_LEAD"] },
     { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY" },
     { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH" },
     { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES" },
     { title: "Menu Planning", href: "/menu-planning", icon: CalendarDays, module: "MENU_PLANNING" },
-    { title: "Confirm Delivery", href: "/food/confirm-delivery", icon: CheckCircle2, module: "FOOD_CONFIRM_DELIVERY", hideFor: ["UNIT_LEAD"] },
-    { title: "Waste Tracking", href: "/food/waste", icon: Trash2, module: "FOOD_WASTE_TRACKING", hideFor: ["UNIT_LEAD"] },
+    // Place Order / Confirm Delivery / Waste Tracking were folded into the
+    // Food Overview single page (place order, receive, log waste inline), so
+    // the standalone pages + routes were removed. Their permission MODULES
+    // (FOOD_PLACE_ORDER / FOOD_CONFIRM_DELIVERY / FOOD_WASTE_TRACKING) remain —
+    // they still gate those inline actions on Food Overview.
     { title: "Reports", href: "/food/reports", icon: BarChart3, module: "FOOD_REPORTS" },
     { title: "Waste Analytics", href: "/food/waste-analytics", icon: Recycle, module: "FOOD_REPORTS", hideFor: ["UNIT_LEAD"] },
     { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS" },

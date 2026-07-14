@@ -52,6 +52,9 @@ export interface FoodOrder {
   rejectedAt: string | null;
   rejectionReason: string | null;
   batchId: string | null;
+  /** Friendly group id (BATCH-2026-000123) shared by every meal placed together;
+   *  joined in on order list/detail reads. null for legacy single-meal orders. */
+  batchNumber?: string | null;
   kitchenId: string | null;
   dispatchId: string | null;
   expectedDeliveryAt: string | null;
@@ -751,31 +754,10 @@ export const ORDER_STATUS_PILL: Record<OrderStatus, { label: string; cls: string
 };
 /** Normalise a serviceDate ISO timestamp to its LOCAL calendar-day key ("yyyy-MM-dd"). */
 export const serviceDayKey = (iso: string) => format(parseISO(iso), "yyyy-MM-dd");
-/** Meal emoji for the gamified journey/order surfaces (one source of truth). */
-export const MEAL_EMOJI: Record<MealType, string> = {
-  BREAKFAST: "🍳", LUNCH: "🍛", SNACKS: "🍪", DINNER: "🍜",
-};
 /** Short display name — "High Tea / Evening Snacks" → "High Tea". */
 export const shortMeal = (m: MealType): string => MEAL_LABEL[m].split(" /")[0];
-/** Best-effort emoji for a dish name; falls back to the meal's emoji. */
-export function dishEmoji(name: string, mealType: MealType): string {
-  const n = name.toLowerCase();
-  if (/\b(tea|chai|coffee)\b/.test(n)) return "☕";
-  if (/\b(milk|lassi|buttermilk)\b/.test(n)) return "🥛";
-  if (/\b(juice)\b/.test(n)) return "🧃";
-  if (/\b(egg|omelette|omelet)\b/.test(n)) return "🥚";
-  if (/\b(rice|pulao|biryani|jeera|khichdi)\b/.test(n)) return "🍚";
-  if (/\b(roti|chapati|paratha|naan|puri|bread|toast)\b/.test(n)) return "🫓";
-  if (/\b(dal|sambar|rajma|chole|curry|kadhi)\b/.test(n)) return "🍲";
-  if (/\b(salad)\b/.test(n)) return "🥗";
-  if (/\b(fruit|banana|apple)\b/.test(n)) return "🍎";
-  if (/\b(samosa|pakora|vada|cutlet)\b/.test(n)) return "🥟";
-  if (/\b(sweet|halwa|kheer|gulab|dessert|laddu|ladoo)\b/.test(n)) return "🍮";
-  if (/\b(chicken)\b/.test(n)) return "🍗";
-  if (/\b(fish)\b/.test(n)) return "🐟";
-  if (/\b(paneer)\b/.test(n)) return "🧀";
-  return MEAL_EMOJI[mealType];
-}
+// Meal/dish glyphs are now crisp SVGs — see MealIcon / DishIcon in
+// components/meal-icon.tsx (replaced the old MEAL_EMOJI/dishEmoji maps).
 /** True for units ordered in fractional steps (0.5) with 1-decimal display.
  *  Unit values are the DB enum: G/KG/ML/LITRE/PCS/PLATE/SERVING. */
 export const isFractionalUnit = (u: string): boolean => /^(kg|litre)$/i.test(u.trim());

@@ -314,7 +314,7 @@ export default function FoodOrderDetail() {
     <div className="space-y-6">
       <PageHeader
         title={order.orderNumber}
-        subtitle={`${order.propertyName ?? "—"} · ${MEAL_LABEL[order.mealType]}`}
+        subtitle={`${order.propertyName ?? "—"} · ${MEAL_LABEL[order.mealType]}${order.batchNumber ? ` · Group ${order.batchNumber}` : ""}`}
         breadcrumbs={[
           { label: "Food", href: "/food" },
           { label: "Orders", href: "/food/orders" },

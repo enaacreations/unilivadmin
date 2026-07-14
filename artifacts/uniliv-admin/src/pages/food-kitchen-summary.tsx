@@ -29,7 +29,6 @@ import {
   MEAL_TYPES,
   BRANDS,
   MEAL_LABEL,
-  MEAL_EMOJI,
   shortMeal,
   fmtQty,
   type KitchenSummary,
@@ -38,6 +37,7 @@ import {
   type MealType,
 } from "@/lib/food-api";
 import { useToast } from "@/hooks/use-toast";
+import { MealIcon } from "@/components/meal-icon";
 import { cn } from "@/lib/utils";
 
 const ALL = "ALL";
@@ -388,8 +388,8 @@ function MealPrepCard({
       {/* Header row */}
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-4">
         <div className="min-w-0 flex-1">
-          <h2 className="font-display text-[17px] font-bold tracking-[-0.012em]">
-            <span aria-hidden className="mr-1.5">{MEAL_EMOJI[mealType]}</span>
+          <h2 className="flex items-center gap-1.5 font-display text-[17px] font-bold tracking-[-0.012em]">
+            <MealIcon meal={mealType} size={22} />
             {MEAL_LABEL[mealType]}
           </h2>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
@@ -587,8 +587,10 @@ function OpenOrdersPanel({
                       {o.propertyName || propName(o.propertyId)}
                     </td>
                     <td className="p-3 align-middle">
-                      <span aria-hidden className="mr-1">{MEAL_EMOJI[o.mealType]}</span>
-                      {shortMeal(o.mealType)}
+                      <span className="inline-flex items-center gap-1.5">
+                        <MealIcon meal={o.mealType} size={18} />
+                        {shortMeal(o.mealType)}
+                      </span>
                     </td>
                     <td className="p-3 text-right align-middle font-mono tabular-nums">
                       {o.residentsCount}

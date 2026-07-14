@@ -85,11 +85,8 @@ import WalletDetail from "@/pages/wallet-detail";
 // Food Ordering & Kitchen Operations
 import FoodDashboard from "@/pages/food-dashboard";
 import FoodOrders from "@/pages/food-orders";
-import FoodPlaceOrder from "@/pages/food-place-order";
 import FoodKitchenSummary from "@/pages/food-kitchen-summary";
 import FoodDispatch from "@/pages/food-dispatch";
-import FoodConfirmDelivery from "@/pages/food-confirm-delivery";
-import FoodWaste from "@/pages/food-waste";
 import FoodReports from "@/pages/food-reports";
 import FoodWasteAnalytics from "@/pages/food-waste-analytics";
 import FoodSettings from "@/pages/food-settings";
@@ -192,13 +189,11 @@ function Router() {
       <Route path="/food/organization">{() => <ProtectedRoute component={FoodOrganization} />}</Route>
       <Route path="/food/orders">{() => <ProtectedRoute component={FoodOrders} />}</Route>
       <Route path="/food/orders/:id">{() => <ProtectedRoute component={FoodOrderDetail} />}</Route>
-      <Route path="/food/place-order">{() => <ProtectedRoute component={FoodPlaceOrder} />}</Route>
       <Route path="/food/track">{() => <ProtectedRoute component={FoodTrack} />}</Route>
       <Route path="/food/guests">{() => <ProtectedRoute component={FoodGuests} />}</Route>
       <Route path="/food/kitchen-summary">{() => <ProtectedRoute component={FoodKitchenSummary} />}</Route>
       <Route path="/food/dispatch">{() => <ProtectedRoute component={FoodDispatch} />}</Route>
-      <Route path="/food/confirm-delivery">{() => <ProtectedRoute component={FoodConfirmDelivery} />}</Route>
-      <Route path="/food/waste">{() => <ProtectedRoute component={FoodWaste} />}</Route>
+      {/* Place Order / Confirm Delivery / Waste moved into Food Overview. */}
       <Route path="/food/reports">{() => <ProtectedRoute component={FoodReports} />}</Route>
       <Route path="/food/waste-analytics">{() => <ProtectedRoute component={FoodWasteAnalytics} />}</Route>
       <Route path="/food/settings">{() => <ProtectedRoute component={FoodSettings} />}</Route>

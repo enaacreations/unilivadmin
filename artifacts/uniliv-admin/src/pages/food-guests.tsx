@@ -43,8 +43,8 @@ function fmtSince(value: string | null): string | null {
 
 export default function FoodGuests() {
   // A ?propertyId= deep-link (e.g. from a My Properties card) SEEDS the global
-  // scope once and is then stripped from the URL — same pattern as
-  // food-place-order. If the param stayed, it would permanently override the
+  // scope once and is then stripped from the URL. If the param stayed, it would
+  // permanently override the
   // on-page Select (which writes the global store), making "All Properties"
   // unreachable.
   const paramProperty = useQueryParam("propertyId");

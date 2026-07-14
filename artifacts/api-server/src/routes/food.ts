@@ -39,6 +39,7 @@ import {
   complaintsTable,
   agencyKitchensTable,
   foodOrderDraftsTable,
+  foodOrderBatchesTable,
 } from "@workspace/db";
 import { and, eq, or, ilike, sql, desc, asc, gte, lte, lt, inArray, isNull, isNotNull } from "drizzle-orm";
 import type { AnyColumn } from "drizzle-orm";
@@ -389,9 +390,11 @@ foodRouter.get("/orders", authenticate, authorize("FOOD_ALL_ORDERS", "view"), as
       o: foodOrdersTable,
       propertyName: propertiesTable.name,
       unitLeadName: usersTable.name,
+      batchNumber: foodOrderBatchesTable.batchNumber,
     }).from(foodOrdersTable)
       .leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
       .leftJoin(usersTable, eq(foodOrdersTable.unitLeadId, usersTable.id))
+      .leftJoin(foodOrderBatchesTable, eq(foodOrdersTable.batchId, foodOrderBatchesTable.id))
       .where(where)
       .orderBy(desc(foodOrdersTable.createdAt))
       .limit(limit).offset(offset);
@@ -401,6 +404,7 @@ foodRouter.get("/orders", authenticate, authorize("FOOD_ALL_ORDERS", "view"), as
       totalQuantity: r.o.totalQuantity != null ? Number(r.o.totalQuantity) : null,
       propertyName: r.propertyName,
       unitLeadName: r.unitLeadName,
+      batchNumber: r.batchNumber,
     }));
     res.json({ success: true, data, meta: buildMeta(c.count, page, limit) });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
@@ -760,12 +764,14 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
       deliveryPartnerName: agenciesTable.name,
       kitchen: kitchensTable,
       dispatch: foodDispatchesTable,
+      batchNumber: foodOrderBatchesTable.batchNumber,
     }).from(foodOrdersTable)
       .leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
       .leftJoin(usersTable, eq(foodOrdersTable.unitLeadId, usersTable.id))
       .leftJoin(agenciesTable, eq(foodOrdersTable.deliveryPartnerId, agenciesTable.id))
       .leftJoin(kitchensTable, eq(foodOrdersTable.kitchenId, kitchensTable.id))
       .leftJoin(foodDispatchesTable, eq(foodOrdersTable.dispatchId, foodDispatchesTable.id))
+      .leftJoin(foodOrderBatchesTable, eq(foodOrdersTable.batchId, foodOrderBatchesTable.id))
       .where(eq(foodOrdersTable.id, id));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
 
@@ -794,6 +800,7 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
         deliveryPartnerName: row.deliveryPartnerName,
         kitchen: row.kitchen ?? null,
         dispatch: row.dispatch ?? null,
+        batchNumber: row.batchNumber,
         items: items.map((r) => ({
           ...r.it,
           dishName: r.dishName,
