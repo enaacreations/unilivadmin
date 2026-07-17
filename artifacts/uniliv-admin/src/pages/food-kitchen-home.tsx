@@ -102,17 +102,12 @@ export default function FoodKitchenHome() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { confetti, fire } = useConfetti();
-  const { role, can } = usePermissions();
+  const { can } = usePermissions();
   // Accept/prepare are FOOD_KITCHEN_SUMMARY edit; sending a van is
   // FOOD_DISPATCH edit — mirror the server so view-only roles (auditors,
   // leadership) get a read-only board instead of buttons that 403.
   const canKitchen = can("FOOD_KITCHEN_SUMMARY", "edit");
   const canDispatch = can("FOOD_DISPATCH", "edit");
-  const roleLabel =
-    role === "FNB_MANAGER" ? "F&B manager view"
-    : role === "FNB_SUPERVISOR" ? "F&B supervisor view"
-    : role === "FNB_ZONAL_HEAD" ? "F&B zonal head view"
-    : "Kitchen view";
 
   // ── Day navigation: yesterday / today / tomorrow ──────────────────────────
   const [day, setDay] = React.useState(0);
@@ -367,19 +362,12 @@ export default function FoodKitchenHome() {
     <div className="mx-auto flex max-w-[760px] animate-fade-up flex-col gap-6">
       {confetti}
 
-      {/* Header */}
+      {/* Header — the title IS the kitchen this login runs (user decision:
+          no persona/kitchen badges; the page is simply "your kitchen"). */}
       <div>
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
-          <span className="rounded-full bg-info-soft px-[9px] py-[3px] text-[10px] font-bold uppercase tracking-[.08em] text-info">
-            {roleLabel}
-          </span>
-          {kitchenScopeLabel && (
-            <span className="rounded-full bg-success-soft px-[9px] py-[3px] text-[10px] font-bold uppercase tracking-[.08em] text-success">
-              {kitchenScopeLabel}
-            </span>
-          )}
-        </div>
-        <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">Kitchen Home</h1>
+        <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">
+          {kitchenScopeLabel ?? "Kitchen Home"}
+        </h1>
         <p className="text-sm text-muted-foreground">
           Your kitchen day — accept orders, cook, and send the vans from one place.
         </p>
