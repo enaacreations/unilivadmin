@@ -550,8 +550,8 @@ export default function FoodKitchenHome() {
               )}
             </div>
 
-            {/* Pipeline: accept → cook → send */}
-            <div className="grid items-stretch gap-3 md:grid-cols-3">
+            {/* Pipeline: accept + cook side by side; dispatch gets the full row */}
+            <div className="grid items-stretch gap-3 md:grid-cols-2">
               {/* Accept */}
               <div className="flex flex-col rounded-[12px] border border-border bg-background px-4 py-3.5">
                 <ColumnHead
@@ -618,63 +618,80 @@ export default function FoodKitchenHome() {
                 )}
               </div>
 
-              {/* Send */}
-              <div className="flex flex-col rounded-[12px] border border-border bg-background px-4 py-3.5">
-                <ColumnHead
-                  icon={<Truck className="h-[13px] w-[13px]" strokeWidth={2.5} />}
-                  label="Dispatch"
-                  tone="var(--success)"
-                  right={selected.preparing.length > 0 ? (
-                    <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{selected.preparing.length}</span>
-                  ) : undefined}
+            </div>
+
+            {/* Dispatch — the full-width work area: one van card per kitchen */}
+            <div className="mt-3 rounded-[12px] border border-border bg-background px-4 py-3.5">
+              <ColumnHead
+                icon={<Truck className="h-[13px] w-[13px]" strokeWidth={2.5} />}
+                label="Dispatch"
+                tone="var(--success)"
+                right={selected.preparing.length > 0 ? (
+                  <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                    {selected.preparing.length} to send
+                  </span>
+                ) : undefined}
+              />
+              {selected.preparing.length === 0 ? (
+                <ColumnEmpty
+                  text={selected.dispatched.length > 0
+                    ? "All vans are out."
+                    : "Cooking orders appear here when they're ready to go."}
                 />
-                {selected.preparing.length === 0 ? (
-                  <ColumnEmpty
-                    text={selected.dispatched.length > 0
-                      ? "All vans are out."
-                      : "Cooking orders appear here when they're ready to go."}
-                  />
-                ) : (
-                  <div className="flex flex-1 flex-col">
-                    <div className="flex-1">
-                      {vanGroups(selected).map(([kid, group]) => {
-                        const many = vanGroups(selected).length > 1;
-                        return (
-                          <div key={kid ?? "none"} className="mb-1.5 last:mb-0">
-                            {many && (
-                              <div className="mt-1 text-[11px] font-semibold text-muted-foreground">
-                                {kitchenName(kid)}
-                              </div>
-                            )}
-                            {group.map((o) => <OrderRow key={o.id} o={o} />)}
-                            {!canDispatch ? null : hasPartnerFor(kid) ? (
-                              <button
-                                type="button"
-                                onClick={() => openReview(kid, group)}
-                                disabled={!!busy}
-                                className="mt-2 h-10 w-full rounded-[9px] bg-success text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                Dispatch ({group.length})
-                              </button>
-                            ) : (
-                              <div className="mt-2 flex items-start gap-1.5 rounded-[9px] bg-warning-soft px-2.5 py-2 text-[11px] text-warning">
-                                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                <span>No partner serves {kitchenName(kid)} — link one in Masters.</span>
-                              </div>
-                            )}
+              ) : (
+                <div className={cn("grid gap-2.5", vanGroups(selected).length > 1 && "md:grid-cols-2")}>
+                  {vanGroups(selected).map(([kid, group]) => {
+                    const meals = group.reduce((s, o) => s + (o.residentsCount || 0), 0);
+                    const partner = kid
+                      ? agencies.find((a) => (a.kitchenIds ?? []).includes(kid))
+                      : undefined;
+                    return (
+                      <div
+                        key={kid ?? "none"}
+                        className="flex flex-col rounded-[10px] border border-border bg-card px-3.5 py-3"
+                      >
+                        {/* Van head: kitchen + load summary */}
+                        <div className="mb-1.5 flex items-center gap-2.5">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-success-soft text-success">
+                            <Truck className="h-4 w-4" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[13.5px] font-semibold">{kitchenName(kid)}</div>
+                            <div className="truncate text-[11px] text-muted-foreground">
+                              {group.length} stop{group.length === 1 ? "" : "s"} · {meals} meals
+                              {partner ? ` · ${partner.name}` : ""}
+                            </div>
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                {selected.dispatched.length > 0 && (
-                  <div className="mt-2.5 flex items-center gap-1.5 text-[12px] font-semibold text-success">
-                    <Truck className="h-3.5 w-3.5" />
-                    {selected.dispatched.length} on the road
-                  </div>
-                )}
-              </div>
+                        </div>
+                        <div className="flex-1">
+                          {group.map((o) => <OrderRow key={o.id} o={o} />)}
+                        </div>
+                        {!canDispatch ? null : hasPartnerFor(kid) ? (
+                          <button
+                            type="button"
+                            onClick={() => openReview(kid, group)}
+                            disabled={!!busy}
+                            className="mt-2.5 h-10 w-full rounded-[9px] bg-success text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Dispatch ({group.length})
+                          </button>
+                        ) : (
+                          <div className="mt-2.5 flex items-start gap-1.5 rounded-[9px] bg-warning-soft px-2.5 py-2 text-[11px] text-warning">
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            <span>No partner serves {kitchenName(kid)} — link one in Masters.</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {selected.dispatched.length > 0 && (
+                <div className="mt-2.5 flex items-center gap-1.5 text-[12px] font-semibold text-success">
+                  <Truck className="h-3.5 w-3.5" />
+                  {selected.dispatched.length} on the road
+                </div>
+              )}
             </div>
           </div>
         ) : null}
