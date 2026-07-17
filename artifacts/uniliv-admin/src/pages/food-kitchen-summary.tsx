@@ -104,7 +104,9 @@ export default function FoodKitchenSummary() {
   // ─── Contributing open orders (PLACED awaiting accept, ACCEPTED awaiting prep) ─
   const ordersParams: Record<string, unknown> = {
     status: "PLACED,ACCEPTED",
-    date,
+    // GET /food/orders filters exact days via `serviceDate` — the old `date`
+    // key was silently ignored, so the panel listed open orders from ALL days.
+    serviceDate: date,
     brand: brand === ALL ? undefined : brand,
     mealType: mealType === ALL ? undefined : mealType,
     propertyId: propertyId === ALL ? undefined : propertyId,

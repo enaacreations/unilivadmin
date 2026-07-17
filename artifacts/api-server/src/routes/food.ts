@@ -1252,22 +1252,30 @@ foodRouter.get("/kitchen-summary", authenticate, authorize("FOOD_KITCHEN_SUMMARY
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const scope = scopeOrdersCondition(ids);
 
-    const date = parseDate(req.query["date"]);
+    const dateRaw = req.query["date"] as string | undefined;
     const brand = req.query["brand"] as string | undefined;
     const mealType = req.query["mealType"] as string | undefined;
     const clusterId = req.query["clusterId"] as string | undefined;
     const propertyId = req.query["propertyId"] as string | undefined;
 
-    const conds = [inArray(foodOrdersTable.status, ["PLACED", "PREPARING"])];
+    // The cook plan covers every order the kitchen still has to cook: freshly
+    // placed, accepted, and already on the stove. Excluding ACCEPTED made the
+    // plan vanish the moment orders were accepted (until prep started).
+    const conds = [inArray(foodOrdersTable.status, ["PLACED", "ACCEPTED", "PREPARING"])];
     if (scope) conds.push(scope);
     if (brand) conds.push(eq(foodOrdersTable.brand, brand as never));
     if (mealType) conds.push(eq(foodOrdersTable.mealType, mealType as never));
     if (propertyId) conds.push(eq(foodOrdersTable.propertyId, propertyId));
-    if (date) {
-      const lo = new Date(date); lo.setHours(0, 0, 0, 0);
+    // `date` is an IST calendar day, filtered with the same half-open IST
+    // window as GET /orders. The old host-local setHours + inclusive `lte`
+    // window drifted on non-IST hosts (whole plan a day off on UTC) and its
+    // upper bound landed exactly on the next IST day-start, pulling tomorrow's
+    // orders into today's plan.
+    if (dateRaw && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw)) {
+      const lo = ymdToIstDayStart(dateRaw);
       const hi = new Date(lo.getTime() + 86400000);
       conds.push(gte(foodOrdersTable.serviceDate, lo));
-      conds.push(lte(foodOrdersTable.serviceDate, hi));
+      conds.push(lt(foodOrdersTable.serviceDate, hi));
     }
     if (clusterId) conds.push(eq(propertiesTable.clusterId, clusterId));
 
