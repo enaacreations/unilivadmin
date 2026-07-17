@@ -85,6 +85,7 @@ import WalletDetail from "@/pages/wallet-detail";
 // Food Ordering & Kitchen Operations
 import FoodDashboard from "@/pages/food-dashboard";
 import FoodOrders from "@/pages/food-orders";
+import FoodKitchenHome from "@/pages/food-kitchen-home";
 import FoodKitchenSummary from "@/pages/food-kitchen-summary";
 import FoodDispatch from "@/pages/food-dispatch";
 import FoodReports from "@/pages/food-reports";
@@ -191,6 +192,7 @@ function Router() {
       <Route path="/food/orders/:id">{() => <ProtectedRoute component={FoodOrderDetail} />}</Route>
       <Route path="/food/track">{() => <ProtectedRoute component={FoodTrack} />}</Route>
       <Route path="/food/guests">{() => <ProtectedRoute component={FoodGuests} />}</Route>
+      <Route path="/food/kitchen-home">{() => <ProtectedRoute component={FoodKitchenHome} />}</Route>
       <Route path="/food/kitchen-summary">{() => <ProtectedRoute component={FoodKitchenSummary} />}</Route>
       <Route path="/food/dispatch">{() => <ProtectedRoute component={FoodDispatch} />}</Route>
       {/* Place Order / Confirm Delivery / Waste moved into Food Overview. */}

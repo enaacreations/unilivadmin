@@ -169,7 +169,10 @@ export const isSuperAdminRole = (role: UserRole | undefined): boolean =>
  * dashboard (the launcher is still reachable from the logo / Home).
  */
 export function homeForRole(role: UserRole | undefined): string {
-  if (role === "FNB_MANAGER") return "/food/kitchen-summary";
+  // F&B managers land on Kitchen Home — the journey dashboard where they
+  // accept, cook and dispatch the day's meals (Kitchen Summary remains the
+  // detailed cook-plan sheet, one click away).
+  if (role === "FNB_MANAGER") return "/food/kitchen-home";
   return "/apps";
 }
 
@@ -205,6 +208,7 @@ export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
   // Forbidden screen instead of a dead search page. (If track should open up
   // to kitchen personas, gate BOTH sides on FOOD_DELIVERY_TRACKING instead.)
   [/^\/food\/track/, "FOOD_ALL_ORDERS"],
+  [/^\/food\/kitchen-home/, "FOOD_KITCHEN_SUMMARY"],
   [/^\/food\/kitchen-summary/, "FOOD_KITCHEN_SUMMARY"],
   [/^\/food\/dispatch/, "FOOD_DISPATCH"],
   // /food/place-order, /food/confirm-delivery, /food/waste were folded into

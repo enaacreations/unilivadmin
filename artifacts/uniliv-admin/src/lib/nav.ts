@@ -8,7 +8,7 @@ import {
   Network, LayoutGrid,
   DoorOpen, CalendarCheck, CalendarX, LineChart, Recycle, Database, ScrollText,
   Gauge, AlertTriangle, ListChecks, Kanban, BadgeCheck, FileBarChart,
-  CalendarClock, FileStack, Library,
+  CalendarClock, FileStack, Library, CookingPot,
   type LucideIcon,
 } from "lucide-react"
 import { type Module, type UserRole } from "@/lib/permissions"
@@ -86,6 +86,10 @@ export const navGroups: NavGroup[] = [
     { title: "Food Overview", href: "/food/dashboard", icon: UtensilsCrossed, module: "FOOD_DASHBOARD", hideFor: ["FNB_MANAGER"] },
     { title: "Organization", href: "/food/organization", icon: Network, module: "FOOD_ORG" },
     { title: "All Orders", href: "/food/orders", icon: ListOrdered, module: "FOOD_ALL_ORDERS" },
+    // Kitchen Home is the F&B journey dashboard (accept → cook → dispatch per
+    // meal) and the FNB_MANAGER landing page; Kitchen Summary stays as the
+    // detailed cook-plan sheet with per-property splits.
+    { title: "Kitchen Home", href: "/food/kitchen-home", icon: CookingPot, module: "FOOD_KITCHEN_SUMMARY" },
     { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY" },
     { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH" },
     { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES" },
