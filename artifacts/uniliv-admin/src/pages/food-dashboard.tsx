@@ -551,7 +551,16 @@ export default function FoodDashboard() {
       }
       // v3+: per-meal staff. v1/v2 drafts have no staffCounts → stays {} → 0.
       if (p.staffCounts && typeof p.staffCounts === "object") setStaffCounts(p.staffCounts);
-      if (p.overrides && typeof p.overrides === "object") setDishOverrides(p.overrides);
+      if (p.overrides && typeof p.overrides === "object") {
+        // Overrides are people-only now. Sanitize legacy pre-deploy drafts that
+        // pinned an absolute `qty` (a removed feature) down to their `persons`
+        // pin so no stale, no-longer-honored qty lingers in state.
+        const clean: Record<string, DishOverride> = {};
+        for (const [k, v] of Object.entries(p.overrides)) {
+          if (v && typeof (v as DishOverride).persons === "number") clean[k] = { persons: (v as DishOverride).persons };
+        }
+        setDishOverrides(clean);
+      }
     }
   }, [serverDraft, draftId]);
   // Debounced autosave of every edit (per-meal residents/staff / per-dish overrides).

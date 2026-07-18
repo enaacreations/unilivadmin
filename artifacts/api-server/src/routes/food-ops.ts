@@ -1295,9 +1295,12 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
     if (!validateBody(orderBatchSchema, req, res)) return;
     const b = req.body || {};
     const { propertyId, serviceDate } = b;
-    const persons = b.persons != null ? Number(b.persons) : (b.residentsCount != null ? Number(b.residentsCount) : 0);
+    // Headcounts are clamped non-negative so a crafted negative can never be
+    // stored (it would corrupt the residents+staff analytics sums) — mirrors the
+    // edit endpoint's non-negative guard.
+    const persons = Math.max(0, b.persons != null ? Number(b.persons) : (b.residentsCount != null ? Number(b.residentsCount) : 0));
     // Batch-level staff fallback (0 when unspecified) for meals that omit staffCount.
-    const staffScalar = b.staffCount != null ? Number(b.staffCount) : 0;
+    const staffScalar = Math.max(0, b.staffCount != null ? Number(b.staffCount) : 0);
     type MealIn = { mealType: string; quantity?: number; residentsCount?: number; staffCount?: number; items?: Array<{ dishId: string; personsCount?: number; orderedQty: number; unit?: string }> };
     const meals: MealIn[] = Array.isArray(b.meals) ? b.meals : [];
     if (!propertyId || !serviceDate || !meals.length) {
@@ -1359,8 +1362,8 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       // This meal's headcount (per-meal), falling back to the batch scalar. Staff
       // eat the same food, so the per-dish personsCount + quantities are driven by
       // the TOTAL (residents + staff); the split is persisted on the order row.
-      const mealResidents = meal.residentsCount != null ? Number(meal.residentsCount) : persons;
-      const mealStaff = meal.staffCount != null ? Number(meal.staffCount) : staffScalar;
+      const mealResidents = Math.max(0, meal.residentsCount != null ? Number(meal.residentsCount) : persons);
+      const mealStaff = Math.max(0, meal.staffCount != null ? Number(meal.staffCount) : staffScalar);
       const mealPersons = mealResidents + mealStaff;
 
       // Per-item editing path, else legacy quantity path.
