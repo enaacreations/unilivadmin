@@ -497,6 +497,11 @@ export default function FoodKitchenHome() {
   // Clicking a property NAME opens a right-side sheet with that order's dish
   // breakdown, so the kitchen sees exactly what was asked before acting.
   const [sheetOrder, setSheetOrder] = React.useState<FoodOrder | null>(null);
+  // "Full summary" opens the selected meal's complete cook plan (every dish with
+  // its per-property split) inline in a sheet, instead of routing to the
+  // standalone Kitchen Summary page.
+  const [summaryOpen, setSummaryOpen] = React.useState(false);
+  React.useEffect(() => { setSummaryOpen(false); }, [selected?.mealType, day]);
   const { data: sheetItems, isLoading: sheetLoading } = useQuery({
     queryKey: ["food", "kitchen-items", sheetOrder?.id],
     queryFn: () => foodApi.kitchenItems(sheetOrder!.id),
@@ -752,11 +757,13 @@ export default function FoodKitchenHome() {
               >
                 {stateShort(selected.state, selected.placed.length)}
               </span>
-              <Link href="/food/kitchen-summary">
-                <span className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-                  <Soup className="h-3.5 w-3.5" /> Full summary
-                </span>
-              </Link>
+              <button
+                type="button"
+                onClick={() => setSummaryOpen(true)}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+              >
+                <Soup className="h-3.5 w-3.5" /> Full summary
+              </button>
             </div>
 
             {/* Cook plan */}
@@ -1097,6 +1104,74 @@ export default function FoodKitchenHome() {
                     </div>
                     <p className="text-[13px]">{sheetOrder.notes}</p>
                   </div>
+                )}
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Full summary sheet — the meal's complete cook plan with per-property splits */}
+      <Sheet open={summaryOpen} onOpenChange={setSummaryOpen}>
+        <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
+          {selected && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="flex items-center gap-2.5 font-display text-lg font-bold tracking-[-0.012em]">
+                  <MealIcon meal={selected.mealType} size={26} />
+                  {MEAL_LABEL[selected.mealType]} · cook plan
+                </SheetTitle>
+                <SheetDescription>
+                  {[
+                    kitchenScopeLabel,
+                    `${selected.people} people`,
+                    (() => {
+                      const props = new Set(selected.dishes.flatMap((d) => d.byProperty.map((bp) => bp.propertyId)));
+                      return props.size > 0 ? `${props.size} propert${props.size === 1 ? "y" : "ies"}` : null;
+                    })(),
+                  ].filter(Boolean).join(" · ")}
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="mt-4 flex flex-col gap-3">
+                {selected.dishes.length === 0 ? (
+                  <div className="rounded-[12px] border border-dashed border-border px-4 py-8 text-center text-[13px] text-muted-foreground">
+                    No cook plan for {shortMeal(selected.mealType).toLowerCase()} {dayLabel.toLowerCase()} — it fills in as orders land.
+                  </div>
+                ) : (
+                  selected.dishes.map((d) => (
+                    <div key={`${d.dishId}|${d.unit}`} className="rounded-[12px] border border-border bg-background px-4 py-3">
+                      {/* dish head: icon + name + total */}
+                      <div className="mb-2 flex items-center gap-2.5">
+                        <DishIcon name={d.dishName} meal={selected.mealType} size={34} />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[14px] font-bold tracking-[-0.006em]">{d.dishName}</div>
+                          {d.component && (
+                            <div className="text-[11px] uppercase tracking-[.06em] text-muted-foreground">
+                              {d.component.replace(/_/g, " ")}
+                            </div>
+                          )}
+                        </div>
+                        <span className="shrink-0 text-right font-mono text-[14px] font-bold tabular-nums">
+                          {fmtQty(d.displayQty)}{" "}
+                          <span className="text-[10.5px] font-bold uppercase text-muted-foreground">{d.displayUnit}</span>
+                        </span>
+                      </div>
+                      {/* per-property split */}
+                      {d.byProperty.map((bp) => (
+                        <div
+                          key={bp.propertyId}
+                          className="flex items-center justify-between gap-2 border-t border-dashed border-border py-1.5"
+                        >
+                          <span className="min-w-0 truncate text-[13px] text-muted-foreground">{bp.propertyName}</span>
+                          <span className="shrink-0 font-mono text-[12.5px] font-semibold tabular-nums">
+                            {fmtQty(bp.qty)}{" "}
+                            <span className="text-[10px] font-bold uppercase text-muted-foreground">{d.displayUnit}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ))
                 )}
               </div>
             </>
