@@ -87,21 +87,25 @@ export const navGroups: NavGroup[] = [
     { title: "Organization", href: "/food/organization", icon: Network, module: "FOOD_ORG" },
     { title: "All Orders", href: "/food/orders", icon: ListOrdered, module: "FOOD_ALL_ORDERS" },
     // Kitchen Home is the F&B journey dashboard (accept → cook → dispatch per
-    // meal) and the FNB_MANAGER landing page; Kitchen Summary stays as the
-    // detailed cook-plan sheet with per-property splits.
+    // meal) and the FNB_MANAGER landing page. F&B managers now run entirely
+    // from it: Kitchen Summary, Dispatch, Recipes, Menu Planning, Waste
+    // Analytics and Settings are hidden for that persona (the routes still
+    // exist for other roles + deep links) so their Food nav is just Kitchen
+    // Home + Reports. Other kitchen roles (supervisor, ops-excellence, admin)
+    // still see the full set.
     { title: "Kitchen Home", href: "/food/kitchen-home", icon: CookingPot, module: "FOOD_KITCHEN_SUMMARY" },
-    { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY" },
-    { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH" },
-    { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES" },
-    { title: "Menu Planning", href: "/menu-planning", icon: CalendarDays, module: "MENU_PLANNING" },
+    { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY", hideFor: ["FNB_MANAGER"] },
+    { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH", hideFor: ["FNB_MANAGER"] },
+    { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES", hideFor: ["FNB_MANAGER"] },
+    { title: "Menu Planning", href: "/menu-planning", icon: CalendarDays, module: "MENU_PLANNING", hideFor: ["FNB_MANAGER"] },
     // Place Order / Confirm Delivery / Waste Tracking were folded into the
     // Food Overview single page (place order, receive, log waste inline), so
     // the standalone pages + routes were removed. Their permission MODULES
     // (FOOD_PLACE_ORDER / FOOD_CONFIRM_DELIVERY / FOOD_WASTE_TRACKING) remain —
     // they still gate those inline actions on Food Overview.
     { title: "Reports", href: "/food/reports", icon: BarChart3, module: "FOOD_REPORTS" },
-    { title: "Waste Analytics", href: "/food/waste-analytics", icon: Recycle, module: "FOOD_REPORTS", hideFor: ["UNIT_LEAD"] },
-    { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS" },
+    { title: "Waste Analytics", href: "/food/waste-analytics", icon: Recycle, module: "FOOD_REPORTS", hideFor: ["UNIT_LEAD", "FNB_MANAGER"] },
+    { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS", hideFor: ["FNB_MANAGER"] },
   ]},
   { title: "Audits", items: [
     { title: "Audit Dashboard", href: "/audits/dashboard", icon: Gauge, module: "AUDIT_DASHBOARD" },

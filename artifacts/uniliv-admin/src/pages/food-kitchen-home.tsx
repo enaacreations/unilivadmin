@@ -17,7 +17,6 @@ import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { MealIcon, DishIcon } from "@/components/meal-icon";
@@ -113,12 +112,16 @@ export default function FoodKitchenHome() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { confetti, fire } = useConfetti();
-  const { can } = usePermissions();
+  const { role, can } = usePermissions();
   // Accept/prepare are FOOD_KITCHEN_SUMMARY edit; sending a van is
   // FOOD_DISPATCH edit — mirror the server so view-only roles (auditors,
   // leadership) get a read-only board instead of buttons that 403.
   const canKitchen = can("FOOD_KITCHEN_SUMMARY", "edit");
   const canDispatch = can("FOOD_DISPATCH", "edit");
+  // F&B managers run entirely from Kitchen Home — the standalone Kitchen
+  // Summary / Dispatch pages are hidden from their nav, so don't link out to
+  // them here either. Other kitchen roles still get the shortcuts.
+  const showSideSurfaces = role !== "FNB_MANAGER";
 
   // ── Day navigation: yesterday / today / tomorrow ──────────────────────────
   const [day, setDay] = React.useState(0);
@@ -166,8 +169,6 @@ export default function FoodKitchenHome() {
   const { data: lookups } = useQuery({ queryKey: foodKeys.lookups(), queryFn: () => foodApi.lookups() });
   const agencies = lookups?.agencies ?? [];
   const { data: kitchens = [] } = useQuery({ queryKey: foodKeys.kitchens(), queryFn: () => foodApi.listKitchens() });
-  const kitchenName = (id: string | null) =>
-    id ? kitchens.find((k) => k.id === id)?.name ?? "this kitchen" : "the kitchen";
 
   // "Your kitchen" identity chip — F&B manager logins are one-per-kitchen, so
   // the header names the kitchen this login runs. Heads/admins see all.
@@ -264,24 +265,8 @@ export default function FoodKitchenHome() {
     }
   };
 
-  // PREPARING orders grouped per kitchen — a van is one kitchen, so each group
-  // becomes its own trip (kitchen-agnostic orders ride together as one group).
-  const vanGroups = (s: Slot): Array<[string | null, FoodOrder[]]> => {
-    const m = new Map<string | null, FoodOrder[]>();
-    for (const o of s.preparing) {
-      const k = o.kitchenId ?? null;
-      m.set(k, [...(m.get(k) ?? []), o]);
-    }
-    return [...m.entries()];
-  };
-
-  // Whether any partner can serve this group at all (kitchen-bound groups need
-  // an agency_kitchens link; kitchen-agnostic groups can use any partner).
-  const hasPartnerFor = (kid: string | null) =>
-    kid ? agencies.some((a) => (a.kitchenIds ?? []).includes(kid)) : agencies.length > 0;
-
   // ── Order-details sheet ───────────────────────────────────────────────────
-  // Clicking any property row opens a right-side sheet with that order's dish
+  // Clicking a property NAME opens a right-side sheet with that order's dish
   // breakdown, so the kitchen sees exactly what was asked before acting.
   const [sheetOrder, setSheetOrder] = React.useState<FoodOrder | null>(null);
   const { data: sheetItems, isLoading: sheetLoading } = useQuery({
@@ -291,88 +276,117 @@ export default function FoodKitchenHome() {
     staleTime: 60_000,
   });
 
-  // ── Review & dispatch dialog ──────────────────────────────────────────────
-  // Clicking "Dispatch (N)" opens a review of what the van will carry — the
-  // per-dish send amounts for each property (editable while PREPARING; saved
-  // as preparedQty, the figure the unit lead's receive step checks against) —
-  // plus the trip details (partner, vehicle, ETA), then creates the trip.
-  const [review, setReview] = React.useState<{ kid: string | null; orders: FoodOrder[] } | null>(null);
-  const [reviewItems, setReviewItems] = React.useState<Record<string, KitchenItem[]>>({});
-  const [qtyDraft, setQtyDraft] = React.useState<Record<string, string>>({});
-  const [reviewLoading, setReviewLoading] = React.useState(false);
-  const [trip, setTrip] = React.useState({
-    agencyId: "", vehicleId: "", vehicleNumber: "", driverName: "", driverPhone: "", etaMinutes: "",
-  });
+  // ── Dispatch board ────────────────────────────────────────────────────────
+  // One row per ready (PREPARING) order: pick its delivery partner, tick the
+  // ones going out, and dispatch them together. Orders are grouped into trips
+  // by (kitchen, partner) — for a single-kitchen manager that's just "one trip
+  // per partner", so a mixed selection can go out across several partners at once.
+  const partnersFor = (o: FoodOrder) =>
+    o.kitchenId ? agencies.filter((a) => (a.kitchenIds ?? []).includes(o.kitchenId!)) : agencies;
+  const defaultPartnerId = (o: FoodOrder) => partnersFor(o)[0]?.id ?? "";
+  const [rowPartner, setRowPartner] = React.useState<Record<string, string>>({});
+  const partnerIdOf = (o: FoodOrder) => rowPartner[o.id] ?? defaultPartnerId(o);
+  const partnerNameOf = (o: FoodOrder) => agencies.find((a) => a.id === partnerIdOf(o))?.name ?? "";
+  const [picked, setPicked] = React.useState<Set<string>>(new Set());
+  const toggleRow = (id: string) =>
+    setPicked((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  const dialogAgencies = review?.kid
-    ? agencies.filter((a) => (a.kitchenIds ?? []).includes(review.kid!))
-    : agencies;
-  const dialogVehicles = agencies.find((a) => a.id === trip.agencyId)?.vehicles ?? [];
+  // Keep the selection valid as the queue changes (dispatched orders drop out).
+  React.useEffect(() => {
+    const live = new Set(orders.filter((o) => o.status === "PREPARING").map((o) => o.id));
+    setPicked((prev) => {
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [orders]);
 
-  const openReview = async (kid: string | null, group: FoodOrder[]) => {
-    // Kitchen-bound: default to the first partner serving the kitchen (server
-    // validates the link). Kitchen-agnostic: no default — pick explicitly.
-    const defaultAgency = kid ? (agencies.find((a) => (a.kitchenIds ?? []).includes(kid))?.id ?? "") : "";
-    setReview({ kid, orders: group });
-    setTrip({ agencyId: defaultAgency, vehicleId: "", vehicleNumber: "", driverName: "", driverPhone: "", etaMinutes: "" });
-    setReviewItems({});
-    setQtyDraft({});
-    setReviewLoading(true);
-    try {
-      const results = await Promise.all(group.map(async (o) => [o.id, await foodApi.kitchenItems(o.id)] as const));
-      const map: Record<string, KitchenItem[]> = {};
-      const drafts: Record<string, string> = {};
-      for (const [oid, items] of results) {
-        map[oid] = items;
-        for (const it of items) drafts[it.id] = String(it.preparedQty ?? it.orderedQty ?? 0);
-      }
-      setReviewItems(map);
-      setQtyDraft(drafts);
-    } catch (e: any) {
-      toast({ title: e?.message || "Could not load dish quantities", variant: "destructive" });
-    }
-    setReviewLoading(false);
+  const dispatchable = selected?.preparing ?? [];
+  const pickedOrders = dispatchable.filter((o) => picked.has(o.id) && !!partnerIdOf(o));
+  const pickedPeople = pickedOrders.reduce((n, o) => n + (o.residentsCount || 0), 0);
+  const pickedPartnerCount = new Set(pickedOrders.map((o) => partnerIdOf(o))).size;
+  const dispatchedTotal = (selected?.dispatched.length ?? 0);
+  const boardTotal = dispatchable.length + dispatchedTotal;
+
+  const selectAllReady = () => {
+    const loadable = dispatchable.filter((o) => !!partnerIdOf(o));
+    const allOn = loadable.length > 0 && loadable.every((o) => picked.has(o.id));
+    setPicked(allOn ? new Set() : new Set(loadable.map((o) => o.id)));
   };
 
-  const dispatchNow = async () => {
-    if (!review || busy) return;
-    const agency = agencies.find((a) => a.id === trip.agencyId);
-    if (!agency) { toast({ title: "Pick a delivery partner first", variant: "destructive" }); return; }
+  const dispatchSelected = async () => {
+    if (busy || pickedOrders.length === 0) return;
+    // Group into trips by (kitchen, partner) — the server allows one kitchen +
+    // one agency per trip and validates the agency serves that kitchen.
+    const groups = new Map<string, { agencyId: string; kitchenId: string | null; ids: string[] }>();
+    for (const o of pickedOrders) {
+      const agencyId = partnerIdOf(o);
+      const key = `${o.kitchenId ?? "none"}::${agencyId}`;
+      const g = groups.get(key) ?? { agencyId, kitchenId: o.kitchenId ?? null, ids: [] };
+      g.ids.push(o.id);
+      groups.set(key, g);
+    }
+    setBusy("dispatch");
+    let ok = 0, fail = 0;
+    for (const g of groups.values()) {
+      try {
+        await foodApi.createDispatch({ orderIds: g.ids, agencyId: g.agencyId, kitchenId: g.kitchenId ?? undefined });
+        ok += g.ids.length;
+      } catch { fail += g.ids.length; }
+    }
+    setPicked(new Set());
+    await invalidate();
+    setBusy(null);
+    if (fail === 0) {
+      fire();
+      toast({ title: "Dispatched", description: `${ok} order${ok === 1 ? "" : "s"} sent across ${groups.size} trip${groups.size === 1 ? "" : "s"}.`, variant: "success" });
+    } else {
+      toast({ title: `${ok} dispatched, ${fail} failed`, variant: fail > ok ? "destructive" : "warning" });
+    }
+  };
+
+  // ── Quantities dialog ─────────────────────────────────────────────────────
+  // "Quantities" on a row opens the editable send-amounts for that one order
+  // (saved as preparedQty — what the unit lead's receive step checks against).
+  const [qtyOrder, setQtyOrder] = React.useState<FoodOrder | null>(null);
+  const [qtyItems, setQtyItems] = React.useState<KitchenItem[]>([]);
+  const [qtyDraft, setQtyDraft] = React.useState<Record<string, string>>({});
+  const [qtyLoading, setQtyLoading] = React.useState(false);
+
+  const openQuantities = async (o: FoodOrder) => {
+    setQtyOrder(o);
+    setQtyItems([]);
+    setQtyDraft({});
+    setQtyLoading(true);
+    try {
+      const items = await foodApi.kitchenItems(o.id);
+      setQtyItems(items);
+      setQtyDraft(Object.fromEntries(items.map((it) => [it.id, String(it.preparedQty ?? it.orderedQty ?? 0)])));
+    } catch (e: any) {
+      toast({ title: e?.message || "Could not load quantities", variant: "destructive" });
+    }
+    setQtyLoading(false);
+  };
+
+  const saveQuantities = async () => {
+    if (!qtyOrder || busy) return;
     if (Object.values(qtyDraft).some((v) => !Number.isFinite(Number(v)) || Number(v) < 0)) {
-      toast({ title: "Send quantities must be zero or more", variant: "destructive" });
+      toast({ title: "Quantities must be zero or more", variant: "destructive" });
       return;
     }
-    setBusy("send:review");
+    const changed = qtyItems
+      .filter((it) => qtyDraft[it.id] != null && Number(qtyDraft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0))
+      .map((it) => ({ id: it.id, preparedQty: Number(qtyDraft[it.id]) }));
+    setBusy("qty");
     try {
-      // Persist adjusted send amounts first (only what actually changed).
-      for (const o of review.orders) {
-        const changed = (reviewItems[o.id] ?? [])
-          .filter((it) => qtyDraft[it.id] != null && Number(qtyDraft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0))
-          .map((it) => ({ id: it.id, preparedQty: Number(qtyDraft[it.id]) }));
-        if (changed.length) await foodApi.updateKitchenItems(o.id, changed);
+      if (changed.length) {
+        await foodApi.updateKitchenItems(qtyOrder.id, changed);
+        toast({ title: "Quantities updated", variant: "success" });
+        await invalidate();
       }
-      const eta = trip.etaMinutes.trim();
-      const created = await foodApi.createDispatch({
-        orderIds: review.orders.map((o) => o.id),
-        agencyId: agency.id,
-        kitchenId: review.kid ?? undefined,
-        vehicleId: trip.vehicleId || undefined,
-        vehicleNumber: trip.vehicleNumber.trim() || undefined,
-        driverName: trip.driverName.trim() || undefined,
-        driverPhone: trip.driverPhone.trim() || undefined,
-        etaMinutes: eta ? Number(eta) : undefined,
-      });
-      fire();
-      toast({
-        title: "Dispatched",
-        description: created?.dispatchNumber ? `Trip ${created.dispatchNumber} is on its way with ${agency.name}` : undefined,
-        variant: "success",
-      });
-      setReview(null);
+      setQtyOrder(null);
     } catch (e: any) {
-      toast({ title: e?.message || "Could not create the trip", variant: "destructive" });
+      toast({ title: e?.message || "Could not save quantities", variant: "destructive" });
     }
-    await invalidate();
     setBusy(null);
   };
 
@@ -659,76 +673,147 @@ export default function FoodKitchenHome() {
 
             </div>
 
-            {/* Dispatch — the full-width work area: one van card per kitchen */}
+            {/* Dispatch board — pick a partner per property, then dispatch one,
+                a few, or all together. */}
             <div className="mt-3 rounded-[12px] border border-border bg-background px-4 py-3.5">
-              <ColumnHead
-                icon={<Truck className="h-[13px] w-[13px]" strokeWidth={2.5} />}
-                label="Dispatch"
-                tone="var(--success)"
-                right={selected.preparing.length > 0 ? (
+              <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-success">Dispatch board</span>
+                  {dispatchable.length > 0 && (
+                    <span className="text-[12px] text-muted-foreground">
+                      pick a partner per property, then send them out
+                    </span>
+                  )}
+                </div>
+                {boardTotal > 0 && (
                   <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                    {selected.preparing.length} to send
+                    {dispatchedTotal} of {boardTotal} dispatched
                   </span>
-                ) : undefined}
-              />
-              {selected.preparing.length === 0 ? (
+                )}
+              </div>
+
+              {dispatchable.length === 0 ? (
                 <ColumnEmpty
                   text={selected.dispatched.length > 0
-                    ? "All vans are out."
+                    ? "Everything's on the road."
                     : "Cooking orders appear here when they're ready to go."}
                 />
               ) : (
-                <div className={cn("grid gap-2.5", vanGroups(selected).length > 1 && "md:grid-cols-2")}>
-                  {vanGroups(selected).map(([kid, group]) => {
-                    const meals = group.reduce((s, o) => s + (o.residentsCount || 0), 0);
-                    const partner = kid
-                      ? agencies.find((a) => (a.kitchenIds ?? []).includes(kid))
-                      : undefined;
-                    return (
-                      <div
-                        key={kid ?? "none"}
-                        className="flex flex-col rounded-[10px] border border-border bg-card px-3.5 py-3"
+                <>
+                  {canDispatch && (
+                    <div className="mb-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={selectAllReady}
+                        className="text-[12px] font-semibold text-muted-foreground transition-colors hover:text-accent"
                       >
-                        {/* Van head: kitchen + load summary */}
-                        <div className="mb-1.5 flex items-center gap-2.5">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-success-soft text-success">
-                            <Truck className="h-4 w-4" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-[13.5px] font-semibold">{kitchenName(kid)}</div>
-                            <div className="truncate text-[11px] text-muted-foreground">
-                              {group.length} stop{group.length === 1 ? "" : "s"} · {meals} meals
-                              {partner ? ` · ${partner.name}` : ""}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex-1">
-                          {group.map((o) => <OrderRow key={o.id} o={o} onOpen={setSheetOrder} />)}
-                        </div>
-                        {!canDispatch ? null : hasPartnerFor(kid) ? (
+                        {dispatchable.every((o) => picked.has(o.id)) ? "Clear selection" : "Select all"}
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="flex flex-col gap-2">
+                    {dispatchable.map((o) => {
+                      const isPicked = picked.has(o.id);
+                      const rowPartners = partnersFor(o);
+                      const noPartner = rowPartners.length === 0;
+                      return (
+                        <div
+                          key={o.id}
+                          className={cn(
+                            "flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[10px] border px-3 py-2.5 transition-colors",
+                            isPicked ? "border-accent bg-accent/5" : "border-border bg-card",
+                          )}
+                        >
+                          {/* select */}
+                          {canDispatch && (
+                            <button
+                              type="button"
+                              onClick={() => !noPartner && toggleRow(o.id)}
+                              disabled={noPartner}
+                              aria-label={isPicked ? `Unselect ${o.propertyName}` : `Select ${o.propertyName}`}
+                              className={cn(
+                                "flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] border-2 transition-colors",
+                                isPicked ? "border-accent bg-accent text-white" : "border-border bg-background",
+                                noPartner && "cursor-not-allowed opacity-40",
+                              )}
+                            >
+                              {isPicked && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+                            </button>
+                          )}
+
+                          {/* property — click the name to see the order details */}
                           <button
                             type="button"
-                            onClick={() => openReview(kid, group)}
-                            disabled={!!busy}
-                            className="mt-2.5 h-10 w-full rounded-[9px] bg-success text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => setSheetOrder(o)}
+                            className="group min-w-0 flex-1 text-left"
                           >
-                            Dispatch ({group.length})
+                            <div className="truncate text-[15px] font-bold tracking-[-0.006em] transition-colors group-hover:text-accent-strong">
+                              {o.propertyName ?? "Property"}
+                            </div>
+                            <div className="truncate font-mono text-[12px] tabular-nums text-muted-foreground">
+                              {o.orderNumber} · {o.residentsCount ?? 0} people
+                            </div>
                           </button>
-                        ) : (
-                          <div className="mt-2.5 flex items-start gap-1.5 rounded-[9px] bg-warning-soft px-2.5 py-2 text-[11px] text-warning">
-                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                            <span>No partner serves {kitchenName(kid)} — link one in Masters.</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+
+                          {/* per-property partner + quantities */}
+                          {canDispatch && (
+                            <div className="flex shrink-0 items-center gap-2">
+                              {noPartner ? (
+                                <span className="flex items-center gap-1.5 rounded-full bg-warning-soft px-3 py-1.5 text-[11px] font-semibold text-warning">
+                                  <AlertCircle className="h-3.5 w-3.5" /> No partner
+                                </span>
+                              ) : (
+                                <Select value={partnerIdOf(o)} onValueChange={(v) => setRowPartner((p) => ({ ...p, [o.id]: v }))}>
+                                  <SelectTrigger className="h-9 min-w-[168px] gap-1.5 rounded-full border-border bg-card font-semibold">
+                                    <Truck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {rowPartners.map((a) => (<SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>))}
+                                  </SelectContent>
+                                </Select>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openQuantities(o)}
+                                className="h-9 rounded-full border border-border bg-card px-3.5 text-[13px] font-semibold text-foreground transition-colors hover:border-accent hover:text-accent"
+                              >
+                                Quantities
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Sticky dispatch bar — appears once something is selected */}
+                  {canDispatch && pickedOrders.length > 0 && (
+                    <div className="sticky bottom-3 z-10 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-[12px] border border-border bg-card px-4 py-3 shadow-lg">
+                      <span className="text-[13px] font-semibold">
+                        {pickedOrders.length} selected · {pickedPeople} people
+                      </span>
+                      <button
+                        type="button"
+                        onClick={dispatchSelected}
+                        disabled={!!busy}
+                        className="inline-flex h-11 items-center gap-2 rounded-[10px] bg-success px-5 text-sm font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {busy === "dispatch"
+                          ? "Dispatching…"
+                          : `Dispatch ${pickedOrders.length} order${pickedOrders.length === 1 ? "" : "s"} · ${pickedPartnerCount} partner${pickedPartnerCount === 1 ? "" : "s"}`}
+                        <span aria-hidden>→</span>
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
-              {selected.dispatched.length > 0 && (
+
+              {selected.dispatched.length > 0 && dispatchable.length > 0 && (
                 <div className="mt-2.5 flex items-center gap-1.5 text-[12px] font-semibold text-success">
                   <Truck className="h-3.5 w-3.5" />
-                  {selected.dispatched.length} on the road
+                  {selected.dispatched.length} already on the road
                 </div>
               )}
             </div>
@@ -736,187 +821,96 @@ export default function FoodKitchenHome() {
         ) : null}
       </section>
 
-      {/* Quick links */}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Link href="/food/kitchen-summary">
-          <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-            <Soup className="h-3.5 w-3.5" />
-            Full kitchen summary
-            <ChevronRight className="h-[13px] w-[13px]" />
-          </span>
-        </Link>
-        <Link href="/food/dispatch">
-          <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-            <History className="h-3.5 w-3.5" />
-            Dispatch board
-            <ChevronRight className="h-[13px] w-[13px]" />
-          </span>
-        </Link>
-      </div>
+      {/* Quick links — only for roles that keep the standalone pages */}
+      {showSideSurfaces && (
+        <div className="flex flex-wrap justify-end gap-2">
+          <Link href="/food/kitchen-summary">
+            <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
+              <Soup className="h-3.5 w-3.5" />
+              Full kitchen summary
+              <ChevronRight className="h-[13px] w-[13px]" />
+            </span>
+          </Link>
+          <Link href="/food/dispatch">
+            <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
+              <History className="h-3.5 w-3.5" />
+              Dispatch board
+              <ChevronRight className="h-[13px] w-[13px]" />
+            </span>
+          </Link>
+        </div>
+      )}
 
-      {/* Review & dispatch dialog */}
-      <Dialog open={!!review} onOpenChange={(o) => { if (!o && busy !== "send:review") setReview(null); }}>
-        <DialogContent className="max-h-[85vh] gap-4 overflow-y-auto sm:max-w-lg">
+      {/* Quantities dialog — the per-dish send amounts for one order */}
+      <Dialog open={!!qtyOrder} onOpenChange={(o) => { if (!o && busy !== "qty") setQtyOrder(null); }}>
+        <DialogContent className="max-h-[85vh] gap-4 overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="font-display text-lg font-bold tracking-[-0.012em]">
-              Review &amp; dispatch · {review ? kitchenName(review.kid) : ""}
+              Quantities · {qtyOrder?.propertyName ?? "Property"}
             </DialogTitle>
             <DialogDescription>
-              Check what the van carries — adjust any dish amount per property, then send it.
+              What the kitchen is sending for {qtyOrder ? shortMeal(qtyOrder.mealType) : "this meal"}. Adjust any
+              amount — it's what the property checks against on delivery.
             </DialogDescription>
           </DialogHeader>
 
-          {/* Per-property dish amounts (saved as the kitchen's send figures) */}
-          <div className="flex flex-col gap-2.5">
-            {review?.orders.map((o) => (
-              <div key={o.id} className="rounded-[12px] border border-border bg-background px-4 py-3">
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <span className="min-w-0 truncate text-[13px] font-semibold">{o.propertyName ?? "Property"}</span>
-                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
-                    {o.residentsCount ?? 0} ppl
-                  </span>
-                </div>
-                {reviewLoading ? (
-                  <Skeleton className="h-16 w-full" />
-                ) : (reviewItems[o.id] ?? []).length === 0 ? (
-                  <div className="py-2 text-center text-[12px] text-muted-foreground">
-                    No dish breakdown on this order.
-                  </div>
-                ) : (
-                  (reviewItems[o.id] ?? []).map((it) => {
-                    const changed =
-                      qtyDraft[it.id] != null &&
-                      Number(qtyDraft[it.id]) !== (it.orderedQty ?? 0);
-                    return (
-                      <div
-                        key={it.id}
-                        className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-0"
-                      >
-                        <span className="flex min-w-0 flex-1 items-center gap-2">
-                          <DishIcon name={it.dishName ?? ""} meal={o.mealType} size={28} />
-                          <span className="min-w-0 truncate text-[13px]">{it.dishName ?? "Item"}</span>
-                        </span>
-                        <span className="flex shrink-0 items-center gap-1.5">
-                          {changed && it.orderedQty != null && (
-                            <span className="font-mono text-[11px] tabular-nums text-muted-foreground line-through">
-                              {fmtQty(it.orderedQty)}
-                            </span>
-                          )}
-                          <Input
-                            type="number"
-                            min={0}
-                            step={isFractionalUnit(it.unit) ? 0.5 : 1}
-                            value={qtyDraft[it.id] ?? ""}
-                            onChange={(e) => setQtyDraft((d) => ({ ...d, [it.id]: e.target.value }))}
-                            className="h-8 w-24 text-right font-mono text-[12.5px] tabular-nums"
-                          />
-                          <span className="w-10 text-[10px] font-bold uppercase tracking-[.06em] text-muted-foreground">
-                            {it.unit}
-                          </span>
-                        </span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            ))}
-          </div>
-
-          {/* Trip details — same options as the Dispatch board's trip builder */}
           <div className="rounded-[12px] border border-border bg-background px-4 py-3">
-            <div className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
-              Trip details
-            </div>
-            <div className="grid gap-2.5 sm:grid-cols-2">
-              <div className="sm:col-span-2">
-                <Label className="mb-1 block text-xs">Delivery partner</Label>
-                <Select
-                  value={trip.agencyId}
-                  onValueChange={(v) => setTrip((t) => ({ ...t, agencyId: v, vehicleId: "", vehicleNumber: "" }))}
-                >
-                  <SelectTrigger className="h-9"><SelectValue placeholder="Pick a delivery partner" /></SelectTrigger>
-                  <SelectContent>
-                    {dialogAgencies.map((a) => (<SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label className="mb-1 block text-xs">Vehicle</Label>
-                <Select
-                  value={trip.vehicleId}
-                  onValueChange={(v) => {
-                    const veh = dialogVehicles.find((x) => x.id === v);
-                    setTrip((t) => ({ ...t, vehicleId: v, vehicleNumber: veh?.vehicleNumber ?? t.vehicleNumber }));
-                  }}
-                  disabled={dialogVehicles.length === 0}
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder={dialogVehicles.length ? "Pick a vehicle" : "No vehicles on file"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {dialogVehicles.map((v) => (
-                      <SelectItem key={v.id} value={v.id}>{v.vehicleNumber} · {v.vehicleType}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label className="mb-1 block text-xs">Vehicle number</Label>
-                <Input
-                  value={trip.vehicleNumber}
-                  onChange={(e) => setTrip((t) => ({ ...t, vehicleNumber: e.target.value }))}
-                  placeholder="KA05AB1234"
-                  className="h-9"
-                />
-              </div>
-              <div>
-                <Label className="mb-1 block text-xs">Driver name</Label>
-                <Input
-                  value={trip.driverName}
-                  onChange={(e) => setTrip((t) => ({ ...t, driverName: e.target.value }))}
-                  placeholder="Optional"
-                  className="h-9"
-                />
-              </div>
-              <div>
-                <Label className="mb-1 block text-xs">Driver phone</Label>
-                <Input
-                  value={trip.driverPhone}
-                  onChange={(e) => setTrip((t) => ({ ...t, driverPhone: e.target.value }))}
-                  placeholder="Optional"
-                  className="h-9"
-                />
-              </div>
-              <div>
-                <Label className="mb-1 block text-xs">ETA (minutes)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={trip.etaMinutes}
-                  onChange={(e) => setTrip((t) => ({ ...t, etaMinutes: e.target.value }))}
-                  placeholder="e.g. 45"
-                  className="h-9"
-                />
-              </div>
-            </div>
+            {qtyLoading ? (
+              <Skeleton className="h-28 w-full" />
+            ) : qtyItems.length === 0 ? (
+              <div className="py-3 text-center text-[13px] text-muted-foreground">No dish breakdown on this order.</div>
+            ) : (
+              qtyItems.map((it) => {
+                const changed = qtyDraft[it.id] != null && Number(qtyDraft[it.id]) !== (it.orderedQty ?? 0);
+                return (
+                  <div
+                    key={it.id}
+                    className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-0"
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <DishIcon name={it.dishName ?? ""} meal={qtyOrder?.mealType ?? "LUNCH"} size={28} />
+                      <span className="min-w-0 truncate text-[13px]">{it.dishName ?? "Item"}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {changed && it.orderedQty != null && (
+                        <span className="font-mono text-[11px] tabular-nums text-muted-foreground line-through">
+                          {fmtQty(it.orderedQty)}
+                        </span>
+                      )}
+                      <Input
+                        type="number"
+                        min={0}
+                        step={isFractionalUnit(it.unit) ? 0.5 : 1}
+                        value={qtyDraft[it.id] ?? ""}
+                        onChange={(e) => setQtyDraft((d) => ({ ...d, [it.id]: e.target.value }))}
+                        className="h-8 w-24 text-right font-mono text-[12.5px] tabular-nums"
+                      />
+                      <span className="w-10 text-[10px] font-bold uppercase tracking-[.06em] text-muted-foreground">
+                        {it.unit}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })
+            )}
           </div>
 
           <DialogFooter className="gap-2 sm:gap-2">
             <button
               type="button"
-              onClick={() => setReview(null)}
-              disabled={busy === "send:review"}
+              onClick={() => setQtyOrder(null)}
+              disabled={busy === "qty"}
               className="h-11 rounded-[10px] border border-border bg-card px-5 text-sm font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
             >
               Cancel
             </button>
             <button
               type="button"
-              onClick={dispatchNow}
-              disabled={!!busy || !trip.agencyId || reviewLoading}
-              className="h-11 rounded-[10px] bg-success px-6 text-sm font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={saveQuantities}
+              disabled={!!busy || qtyLoading}
+              className="h-11 rounded-[10px] bg-accent px-6 text-sm font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {busy === "send:review" ? "Dispatching…" : `Dispatch (${review?.orders.length ?? 0})`}
+              {busy === "qty" ? "Saving…" : "Save quantities"}
             </button>
           </DialogFooter>
         </DialogContent>
