@@ -11,9 +11,6 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
-} from "@/components/ui/dialog";
-import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
@@ -122,6 +119,186 @@ function ColumnEmpty({ text }: { text: string }) {
   return (
     <div className="flex flex-1 items-center justify-center px-2 py-5 text-center text-[13px] text-muted-foreground">
       {text}
+    </div>
+  );
+}
+
+/**
+ * One Dispatch-board row: property + per-property partner picker, expandable
+ * into an inline dish-quantity editor (the old "Quantities" modal, now inside
+ * the row's accordion). Dispatched orders stay on the board as a read-only
+ * "done" row showing partner · batch · time.
+ */
+function DispatchRow({
+  o, done, doneText, canDispatch, busy, isPicked, onToggle, partners, partnerId, onPartner, onSaved,
+}: {
+  o: FoodOrder;
+  done: boolean;
+  doneText: string;
+  canDispatch: boolean;
+  busy: string | null;
+  isPicked: boolean;
+  onToggle: () => void;
+  partners: { id: string; name: string }[];
+  partnerId: string;
+  onPartner: (id: string) => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const { toast } = useToast();
+  const [open, setOpen] = React.useState(false);
+  const { data: items, isLoading } = useQuery({
+    queryKey: ["food", "kitchen-items", o.id],
+    queryFn: () => foodApi.kitchenItems(o.id),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const [draft, setDraft] = React.useState<Record<string, string>>({});
+  React.useEffect(() => {
+    if (items) setDraft(Object.fromEntries(items.map((it) => [it.id, String(it.preparedQty ?? it.orderedQty ?? 0)])));
+  }, [items]);
+  const [saving, setSaving] = React.useState(false);
+  const noPartner = !done && partners.length === 0;
+  const dirty = !!items && items.some((it) => draft[it.id] != null && Number(draft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0));
+
+  const save = async () => {
+    if (!items || saving) return;
+    if (Object.values(draft).some((v) => !Number.isFinite(Number(v)) || Number(v) < 0)) {
+      toast({ title: "Quantities must be zero or more", variant: "destructive" }); return;
+    }
+    const changed = items
+      .filter((it) => draft[it.id] != null && Number(draft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0))
+      .map((it) => ({ id: it.id, preparedQty: Number(draft[it.id]) }));
+    if (!changed.length) return;
+    setSaving(true);
+    try {
+      await foodApi.updateKitchenItems(o.id, changed);
+      toast({ title: "Quantities updated", variant: "success" });
+      await onSaved();
+    } catch (e: any) {
+      toast({ title: e?.message || "Could not save quantities", variant: "destructive" });
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div
+      className={cn(
+        "rounded-[10px] border transition-colors",
+        done ? "border-success/40 bg-success-soft/40" : isPicked ? "border-accent bg-accent/5" : "border-border bg-card",
+      )}
+    >
+      <div className="flex items-center gap-2.5 px-3 py-2.5">
+        {/* select / done */}
+        {done ? (
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-success text-white">
+            <Check className="h-3.5 w-3.5" strokeWidth={3} />
+          </span>
+        ) : canDispatch ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            disabled={noPartner}
+            aria-label={isPicked ? `Unselect ${o.propertyName}` : `Select ${o.propertyName}`}
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] border-2 transition-colors",
+              isPicked ? "border-accent bg-accent text-white" : "border-border bg-background",
+              noPartner && "cursor-not-allowed opacity-40",
+            )}
+          >
+            {isPicked && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+          </button>
+        ) : null}
+
+        {/* property — click to expand the dishes */}
+        <button type="button" onClick={() => setOpen((v) => !v)} className="group flex min-w-0 flex-1 items-center gap-1.5 text-left">
+          <span className="min-w-0">
+            <span className="block truncate text-[15px] font-bold tracking-[-0.006em]">{o.propertyName ?? "Property"}</span>
+            <span className="block truncate font-mono text-[12px] tabular-nums text-muted-foreground">
+              {o.orderNumber} · {o.residentsCount ?? 0} people
+            </span>
+          </span>
+          <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+        </button>
+
+        {/* right side: done summary, partner picker, or no-partner warning */}
+        {done ? (
+          <span className="shrink-0 text-right text-[13px] font-semibold text-success">{doneText}</span>
+        ) : canDispatch ? (
+          noPartner ? (
+            <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-warning-soft px-2.5 py-1.5 text-[11px] font-semibold text-warning">
+              <AlertCircle className="h-3.5 w-3.5" /> No partner
+            </span>
+          ) : (
+            <Select value={partnerId} onValueChange={onPartner}>
+              <SelectTrigger className="h-8 w-auto min-w-[128px] gap-1.5 rounded-full border-border bg-card px-3 text-[12px] font-semibold">
+                <Truck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {partners.map((a) => (<SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>))}
+              </SelectContent>
+            </Select>
+          )
+        ) : null}
+      </div>
+
+      {/* accordion content: the order's dishes (editable while ready, read-only once sent) */}
+      {open && (
+        <div className="border-t border-border/70 px-3 py-2.5">
+          {isLoading ? (
+            <Skeleton className="h-16 w-full" />
+          ) : !items?.length ? (
+            <div className="py-2 text-center text-[12px] text-muted-foreground">No dish breakdown on this order.</div>
+          ) : (
+            <>
+              {items.map((it) => {
+                const changed = draft[it.id] != null && Number(draft[it.id]) !== (it.orderedQty ?? 0);
+                return (
+                  <div key={it.id} className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-0">
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <DishIcon name={it.dishName ?? ""} meal={o.mealType} size={26} />
+                      <span className="min-w-0 truncate text-[13px]">{it.dishName ?? "Item"}</span>
+                    </span>
+                    {done ? (
+                      <span className="shrink-0 font-mono text-[12.5px] font-semibold tabular-nums">
+                        {fmtQty(it.preparedQty ?? it.orderedQty ?? 0)}{" "}
+                        <span className="text-[10px] font-bold uppercase text-muted-foreground">{it.unit}</span>
+                      </span>
+                    ) : (
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        {changed && it.orderedQty != null && (
+                          <span className="font-mono text-[11px] tabular-nums text-muted-foreground line-through">{fmtQty(it.orderedQty)}</span>
+                        )}
+                        <Input
+                          type="number"
+                          min={0}
+                          step={isFractionalUnit(it.unit) ? 0.5 : 1}
+                          value={draft[it.id] ?? ""}
+                          onChange={(e) => setDraft((d) => ({ ...d, [it.id]: e.target.value }))}
+                          className="h-8 w-20 text-right font-mono text-[12.5px] tabular-nums"
+                        />
+                        <span className="w-9 text-[10px] font-bold uppercase tracking-[.06em] text-muted-foreground">{it.unit}</span>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              {!done && canDispatch && (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={save}
+                    disabled={saving || !dirty || !!busy}
+                    className="h-8 rounded-full bg-accent px-4 text-[12px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {saving ? "Saving…" : "Save quantities"}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -388,50 +565,24 @@ export default function FoodKitchenHome() {
     }
   };
 
-  // ── Quantities dialog ─────────────────────────────────────────────────────
-  // "Quantities" on a row opens the editable send-amounts for that one order
-  // (saved as preparedQty — what the unit lead's receive step checks against).
-  const [qtyOrder, setQtyOrder] = React.useState<FoodOrder | null>(null);
-  const [qtyItems, setQtyItems] = React.useState<KitchenItem[]>([]);
-  const [qtyDraft, setQtyDraft] = React.useState<Record<string, string>>({});
-  const [qtyLoading, setQtyLoading] = React.useState(false);
-
-  const openQuantities = async (o: FoodOrder) => {
-    setQtyOrder(o);
-    setQtyItems([]);
-    setQtyDraft({});
-    setQtyLoading(true);
-    try {
-      const items = await foodApi.kitchenItems(o.id);
-      setQtyItems(items);
-      setQtyDraft(Object.fromEntries(items.map((it) => [it.id, String(it.preparedQty ?? it.orderedQty ?? 0)])));
-    } catch (e: any) {
-      toast({ title: e?.message || "Could not load quantities", variant: "destructive" });
-    }
-    setQtyLoading(false);
-  };
-
-  const saveQuantities = async () => {
-    if (!qtyOrder || busy) return;
-    if (Object.values(qtyDraft).some((v) => !Number.isFinite(Number(v)) || Number(v) < 0)) {
-      toast({ title: "Quantities must be zero or more", variant: "destructive" });
-      return;
-    }
-    const changed = qtyItems
-      .filter((it) => qtyDraft[it.id] != null && Number(qtyDraft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0))
-      .map((it) => ({ id: it.id, preparedQty: Number(qtyDraft[it.id]) }));
-    setBusy("qty");
-    try {
-      if (changed.length) {
-        await foodApi.updateKitchenItems(qtyOrder.id, changed);
-        toast({ title: "Quantities updated", variant: "success" });
-        await invalidate();
-      }
-      setQtyOrder(null);
-    } catch (e: any) {
-      toast({ title: e?.message || "Could not save quantities", variant: "destructive" });
-    }
-    setBusy(null);
+  // Dispatched rows stay on the board as a "done" row showing partner · batch ·
+  // time. A "batch" is one trip (createDispatch call); orders sharing a
+  // dispatchId went out together, numbered 1..N by dispatch time within the meal.
+  const dispatchedForMeal = selected?.dispatched ?? [];
+  const batchNumOf = React.useMemo(() => {
+    const trips = [...new Set(dispatchedForMeal.filter((o) => o.dispatchId).map((o) => o.dispatchId as string))]
+      .map((id) => ({
+        id,
+        t: Math.min(...dispatchedForMeal.filter((o) => o.dispatchId === id).map((o) => (o.dispatchedAt ? Date.parse(o.dispatchedAt) : 0))),
+      }))
+      .sort((a, b) => a.t - b.t);
+    return new Map(trips.map((x, i) => [x.id, i + 1] as const));
+  }, [dispatchedForMeal]);
+  const doneLabel = (o: FoodOrder) => {
+    const partner = o.deliveryPartnerName ?? agencies.find((a) => a.id === o.deliveryPartnerId)?.name ?? "Dispatched";
+    const batch = o.dispatchId ? batchNumOf.get(o.dispatchId) : undefined;
+    const time = o.dispatchedAt ? format(parseISO(o.dispatchedAt), "h:mm a").toLowerCase() : "";
+    return [partner, batch ? `batch ${batch}` : null, time || null].filter(Boolean).join(" · ");
   };
 
   const loading = ordersLoading || summaryLoading;
@@ -760,15 +911,11 @@ export default function FoodKitchenHome() {
                 )}
               </div>
 
-              {dispatchable.length === 0 ? (
-                <ColumnEmpty
-                  text={selected.dispatched.length > 0
-                    ? "Everything's on the road."
-                    : "Cooking orders appear here when they're ready to go."}
-                />
+              {dispatchable.length === 0 && dispatchedForMeal.length === 0 ? (
+                <ColumnEmpty text="Cooking orders appear here when they're ready to go." />
               ) : (
                 <>
-                  {canDispatch && (
+                  {canDispatch && dispatchable.length > 0 && (
                     <div className="mb-2 flex justify-end">
                       <button
                         type="button"
@@ -781,79 +928,39 @@ export default function FoodKitchenHome() {
                   )}
 
                   <div className="flex flex-col gap-2">
-                    {dispatchable.map((o) => {
-                      const isPicked = picked.has(o.id);
-                      const rowPartners = partnersFor(o);
-                      const noPartner = rowPartners.length === 0;
-                      return (
-                        <div
-                          key={o.id}
-                          className={cn(
-                            "flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[10px] border px-3 py-2.5 transition-colors",
-                            isPicked ? "border-accent bg-accent/5" : "border-border bg-card",
-                          )}
-                        >
-                          {/* select */}
-                          {canDispatch && (
-                            <button
-                              type="button"
-                              onClick={() => !noPartner && toggleRow(o.id)}
-                              disabled={noPartner}
-                              aria-label={isPicked ? `Unselect ${o.propertyName}` : `Select ${o.propertyName}`}
-                              className={cn(
-                                "flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] border-2 transition-colors",
-                                isPicked ? "border-accent bg-accent text-white" : "border-border bg-background",
-                                noPartner && "cursor-not-allowed opacity-40",
-                              )}
-                            >
-                              {isPicked && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
-                            </button>
-                          )}
-
-                          {/* property — click the name to see the order details */}
-                          <button
-                            type="button"
-                            onClick={() => setSheetOrder(o)}
-                            className="group min-w-0 flex-1 text-left"
-                          >
-                            <div className="truncate text-[15px] font-bold tracking-[-0.006em] transition-colors group-hover:text-accent-strong">
-                              {o.propertyName ?? "Property"}
-                            </div>
-                            <div className="truncate font-mono text-[12px] tabular-nums text-muted-foreground">
-                              {o.orderNumber} · {o.residentsCount ?? 0} people
-                            </div>
-                          </button>
-
-                          {/* per-property partner + quantities */}
-                          {canDispatch && (
-                            <div className="flex shrink-0 items-center gap-2">
-                              {noPartner ? (
-                                <span className="flex items-center gap-1.5 rounded-full bg-warning-soft px-3 py-1.5 text-[11px] font-semibold text-warning">
-                                  <AlertCircle className="h-3.5 w-3.5" /> No partner
-                                </span>
-                              ) : (
-                                <Select value={partnerIdOf(o)} onValueChange={(v) => setRowPartner((p) => ({ ...p, [o.id]: v }))}>
-                                  <SelectTrigger className="h-9 min-w-[168px] gap-1.5 rounded-full border-border bg-card font-semibold">
-                                    <Truck className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {rowPartners.map((a) => (<SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>))}
-                                  </SelectContent>
-                                </Select>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => openQuantities(o)}
-                                className="h-9 rounded-full border border-border bg-card px-3.5 text-[13px] font-semibold text-foreground transition-colors hover:border-accent hover:text-accent"
-                              >
-                                Quantities
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {/* ready orders first (actionable), then the dispatched ones (done) */}
+                    {dispatchable.map((o) => (
+                      <DispatchRow
+                        key={o.id}
+                        o={o}
+                        done={false}
+                        doneText=""
+                        canDispatch={canDispatch}
+                        busy={busy}
+                        isPicked={picked.has(o.id)}
+                        onToggle={() => toggleRow(o.id)}
+                        partners={partnersFor(o)}
+                        partnerId={partnerIdOf(o)}
+                        onPartner={(v) => setRowPartner((p) => ({ ...p, [o.id]: v }))}
+                        onSaved={invalidate}
+                      />
+                    ))}
+                    {dispatchedForMeal.map((o) => (
+                      <DispatchRow
+                        key={o.id}
+                        o={o}
+                        done
+                        doneText={doneLabel(o)}
+                        canDispatch={canDispatch}
+                        busy={busy}
+                        isPicked={false}
+                        onToggle={() => {}}
+                        partners={[]}
+                        partnerId=""
+                        onPartner={() => {}}
+                        onSaved={invalidate}
+                      />
+                    ))}
                   </div>
 
                   {/* Sticky dispatch bar — appears once something is selected */}
@@ -876,13 +983,6 @@ export default function FoodKitchenHome() {
                     </div>
                   )}
                 </>
-              )}
-
-              {selected.dispatched.length > 0 && dispatchable.length > 0 && (
-                <div className="mt-2.5 flex items-center gap-1.5 text-[12px] font-semibold text-success">
-                  <Truck className="h-3.5 w-3.5" />
-                  {selected.dispatched.length} already on the road
-                </div>
               )}
             </div>
           </div>
@@ -908,81 +1008,6 @@ export default function FoodKitchenHome() {
           </Link>
         </div>
       )}
-
-      {/* Quantities dialog — the per-dish send amounts for one order */}
-      <Dialog open={!!qtyOrder} onOpenChange={(o) => { if (!o && busy !== "qty") setQtyOrder(null); }}>
-        <DialogContent className="max-h-[85vh] gap-4 overflow-y-auto sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="font-display text-lg font-bold tracking-[-0.012em]">
-              Quantities · {qtyOrder?.propertyName ?? "Property"}
-            </DialogTitle>
-            <DialogDescription>
-              What the kitchen is sending for {qtyOrder ? shortMeal(qtyOrder.mealType) : "this meal"}. Adjust any
-              amount — it's what the property checks against on delivery.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="rounded-[12px] border border-border bg-background px-4 py-3">
-            {qtyLoading ? (
-              <Skeleton className="h-28 w-full" />
-            ) : qtyItems.length === 0 ? (
-              <div className="py-3 text-center text-[13px] text-muted-foreground">No dish breakdown on this order.</div>
-            ) : (
-              qtyItems.map((it) => {
-                const changed = qtyDraft[it.id] != null && Number(qtyDraft[it.id]) !== (it.orderedQty ?? 0);
-                return (
-                  <div
-                    key={it.id}
-                    className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-0"
-                  >
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                      <DishIcon name={it.dishName ?? ""} meal={qtyOrder?.mealType ?? "LUNCH"} size={28} />
-                      <span className="min-w-0 truncate text-[13px]">{it.dishName ?? "Item"}</span>
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1.5">
-                      {changed && it.orderedQty != null && (
-                        <span className="font-mono text-[11px] tabular-nums text-muted-foreground line-through">
-                          {fmtQty(it.orderedQty)}
-                        </span>
-                      )}
-                      <Input
-                        type="number"
-                        min={0}
-                        step={isFractionalUnit(it.unit) ? 0.5 : 1}
-                        value={qtyDraft[it.id] ?? ""}
-                        onChange={(e) => setQtyDraft((d) => ({ ...d, [it.id]: e.target.value }))}
-                        className="h-8 w-24 text-right font-mono text-[12.5px] tabular-nums"
-                      />
-                      <span className="w-10 text-[10px] font-bold uppercase tracking-[.06em] text-muted-foreground">
-                        {it.unit}
-                      </span>
-                    </span>
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          <DialogFooter className="gap-2 sm:gap-2">
-            <button
-              type="button"
-              onClick={() => setQtyOrder(null)}
-              disabled={busy === "qty"}
-              className="h-11 rounded-[10px] border border-border bg-card px-5 text-sm font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={saveQuantities}
-              disabled={!!busy || qtyLoading}
-              className="h-11 rounded-[10px] bg-accent px-6 text-sm font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy === "qty" ? "Saving…" : "Save quantities"}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Order-details sheet — what this property ordered */}
       <Sheet open={!!sheetOrder} onOpenChange={(o) => { if (!o) setSheetOrder(null); }}>
