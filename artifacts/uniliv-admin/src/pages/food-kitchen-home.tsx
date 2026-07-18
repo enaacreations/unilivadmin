@@ -210,14 +210,11 @@ function DispatchRow({
         ) : null}
 
         {/* property — click to expand the dishes */}
-        <button type="button" onClick={() => setOpen((v) => !v)} className="group flex min-w-0 flex-1 items-center gap-1.5 text-left">
-          <span className="min-w-0">
-            <span className="block truncate text-[15px] font-bold tracking-[-0.006em]">{o.propertyName ?? "Property"}</span>
-            <span className="block truncate font-mono text-[12px] tabular-nums text-muted-foreground">
-              {o.orderNumber} · {o.residentsCount ?? 0} people
-            </span>
+        <button type="button" onClick={() => setOpen((v) => !v)} className="group min-w-0 flex-1 text-left">
+          <span className="block truncate text-[15px] font-bold tracking-[-0.006em]">{o.propertyName ?? "Property"}</span>
+          <span className="block truncate font-mono text-[12px] tabular-nums text-muted-foreground">
+            {o.orderNumber} · {o.residentsCount ?? 0} people
           </span>
-          <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
         </button>
 
         {/* right side: done summary, partner picker, or no-partner warning */}
@@ -240,6 +237,16 @@ function DispatchRow({
             </Select>
           )
         ) : null}
+
+        {/* accordion toggle — last thing on the row, after the partner select */}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-label={open ? "Collapse dishes" : "Show dishes"}
+          className="shrink-0 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronRight className={cn("h-4 w-4 transition-transform", open && "rotate-90")} />
+        </button>
       </div>
 
       {/* accordion content: the order's dishes (editable while ready, read-only once sent) */}
