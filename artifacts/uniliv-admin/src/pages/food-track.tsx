@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
 import {
-  foodApi, foodKeys, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty, groupLabel,
+  foodApi, foodKeys, orderPeople, MEAL_LABEL, orderStatusPill, shortMeal, fmtQty, groupLabel,
   type OrderStatus, type FoodOrderEvent,
 } from "@/lib/food-api";
 import { useQueryParam } from "@/lib/nav-helpers";
@@ -50,9 +50,9 @@ export default function FoodTrack() {
   // ACCEPTED is a live pre-dispatch stage (kitchen has taken the order), so it
   // belongs here too. Only 8 pills render — no need for a bigger page.
   const { data: activeOrders = [] } = useQuery({
-    queryKey: foodKeys.orders({ status: "PLACED,ACCEPTED,PREPARING,DISPATCHED", limit: 8, scope: "track-active" }),
+    queryKey: foodKeys.orders({ status: "PLACED,ACCEPTED,DISPATCHED", limit: 8, scope: "track-active" }),
     queryFn: () =>
-      foodApi.listOrders({ status: "PLACED,ACCEPTED,PREPARING,DISPATCHED", limit: 8 }).then((r) => r.data),
+      foodApi.listOrders({ status: "PLACED,ACCEPTED,DISPATCHED", limit: 8 }).then((r) => r.data),
     staleTime: 60_000,
   });
 
@@ -90,12 +90,12 @@ export default function FoodTrack() {
   // Mirrors food-order-detail.tsx: cancellable while pre-dispatch, by order
   // placers or kitchen staff.
   const isPreDispatch =
-    order?.status === "PLACED" || order?.status === "ACCEPTED" || order?.status === "PREPARING";
+    order?.status === "PLACED" || order?.status === "ACCEPTED";
   const canCancel =
     !!order && isPreDispatch &&
     (can("FOOD_PLACE_ORDER", "edit") || can("FOOD_KITCHEN_SUMMARY", "edit"));
 
-  const pill = order ? ORDER_STATUS_PILL[order.status] : null;
+  const pill = order ? orderStatusPill(order.status) : null;
 
   return (
     <div className="mx-auto flex w-full max-w-[640px] flex-col gap-[18px] animate-fade-up">
@@ -199,7 +199,7 @@ export default function FoodTrack() {
               )}
             </div>
             <div className="mt-1 text-[13px] text-muted-foreground">
-              {order.propertyName ?? "—"} · {order.residentsCount} people · {fmtDate(order.serviceDate)}
+              {order.propertyName ?? "—"} · {orderPeople(order)} people · {fmtDate(order.serviceDate)}
             </div>
 
             <TrackTimeline status={order.status} events={order.events ?? []} />
@@ -296,15 +296,14 @@ export default function FoodTrack() {
 }
 
 // ─── Vertical journey timeline ───────────────────────────────────────────────
-// Always renders the full canonical path (Placed → Accepted → Preparing →
-// Dispatched → Delivered) so an order shows where it IS and what's ahead;
+// Always renders the full canonical path (Placed → Accepted →
+// Dispatched → Received) so an order shows where it IS and what's ahead;
 // terminal states (Cancelled / Rejected) end the path with a red node.
 const HAPPY_PATH: { key: OrderStatus; label: string }[] = [
   { key: "PLACED", label: "Order placed" },
   { key: "ACCEPTED", label: "Accepted by kitchen" },
-  { key: "PREPARING", label: "Preparing" },
   { key: "DISPATCHED", label: "Dispatched" },
-  { key: "DELIVERED", label: "Delivered" },
+  { key: "DELIVERED", label: "Received" },
 ];
 
 type StepState = "done" | "pending" | "terminal";

@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO } from "date-fns";
 import {
-  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, PartyPopper, Pencil, Truck, Trash2,
+  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, PartyPopper, Truck, Trash2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -26,6 +26,7 @@ import {
   foodApi,
   foodKeys,
   MEAL_LABEL,
+  MEAL_TYPES,
   shortMeal,
   isFractionalUnit,
   fmtQty,
@@ -42,7 +43,7 @@ import {
 const ADMIN_CONTACT_EMAIL = "admin@uniliv.com";
 
 /** Per-dish order-mode override: pin a headcount, an absolute qty, or both. */
-type DishOverride = { qty?: number; persons?: number };
+type DishOverride = { persons?: number };
 
 const num = (v: string | null | undefined): number => {
   const n = v == null ? NaN : parseFloat(v);
@@ -83,14 +84,13 @@ function deliverIn(iso: string | null | undefined, now: Date): string | null {
 }
 
 /** Journey state of one meal — drives the tab tint + which panel is live.
- *  done=success, action=needs the user now, cooking=info, waiting=muted. */
-type MealState = "done" | "action-confirm" | "action-waste" | "cooking" | "waiting" | "cancelled" | "none";
+ *  done=success, action=needs the user now, waiting=muted. */
+type MealState = "done" | "action-confirm" | "action-waste" | "waiting" | "cancelled" | "none";
 
 const STATE_TINT: Record<MealState, string> = {
   done: "var(--success)",
   "action-confirm": "var(--warning)",
   "action-waste": "var(--pop)",
-  cooking: "var(--info)",
   waiting: "var(--muted)",
   cancelled: "var(--muted)",
   none: "var(--muted)",
@@ -100,7 +100,6 @@ const STATE_SHORT: Record<MealState, string> = {
   done: "Done",
   "action-confirm": "At gate",
   "action-waste": "Log waste",
-  cooking: "Cooking",
   waiting: "Scheduled",
   cancelled: "Cancelled",
   none: "Not ordered",
@@ -144,8 +143,8 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
       statusLine: wasteOpen
         ? "Meal over — record any waste now"
         : wasteOpensAt
-          ? `Delivered & confirmed — waste logging opens in ${wasteWaitMins}m`
-          : "Delivered & confirmed",
+          ? `Received & confirmed — waste logging opens in ${wasteWaitMins}m`
+          : "Received & confirmed",
     };
   }
   // For everything still on its way, the tab time becomes a live delivery ETA
@@ -157,14 +156,6 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
       mealType, order, state: "action-confirm",
       time: eta ?? "now",
       statusLine: etaPhrase ? `Out for delivery — ${etaPhrase}` : "At your gate — count it in",
-    };
-  }
-  if (s === "PREPARING") {
-    const base = kitchenName ? `Cooking at ${kitchenName}` : "Cooking at the kitchen";
-    return {
-      mealType, order, state: "cooking",
-      time: eta ?? "—",
-      statusLine: etaPhrase ? `${base} · ${etaPhrase}` : base,
     };
   }
   // PLACED / ACCEPTED
@@ -180,9 +171,8 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
 const LADDER: { status: OrderStatus; label: string }[] = [
   { status: "PLACED", label: "Order placed" },
   { status: "ACCEPTED", label: "Accepted by kitchen" },
-  { status: "PREPARING", label: "Preparing" },
   { status: "DISPATCHED", label: "Dispatched" },
-  { status: "DELIVERED", label: "Delivered & confirmed" },
+  { status: "DELIVERED", label: "Received & confirmed" },
 ];
 
 /* ─────────────────────────── tiny primitives ─────────────────────────── */
@@ -469,49 +459,56 @@ export default function FoodDashboard() {
   // cancel — never while still placing (orderMode) or once dispatched/closed.
   const canCancelThis =
     !orderMode && !!selected?.order && canCancel &&
-    (selected.order.status === "PLACED" || selected.order.status === "ACCEPTED" || selected.order.status === "PREPARING");
-  const [headcount, setHeadcount] = React.useState<number | null>(null);
-  const effectiveHead = headcount ?? myNext?.activeGuests ?? overview?.activeGuests ?? 1;
+    (selected.order.status === "PLACED" || selected.order.status === "ACCEPTED");
+  // Headcount is set PER MEAL — attendance genuinely differs across
+  // breakfast/lunch/high-tea/dinner, so each meal step carries its own count.
+  const [headcounts, setHeadcounts] = React.useState<Partial<Record<MealType, number>>>({});
+  // Per-meal STAFF count. Staff eat the same food, so the kitchen cooks for
+  // residents + staff. Kept in a SEPARATE map (residentsCount stays residents-
+  // only for clean analytics); defaults to 0 so a blank/legacy meal's total
+  // equals residents.
+  const [staffCounts, setStaffCounts] = React.useState<Partial<Record<MealType, number>>>({});
+  const baseHead = myNext?.activeGuests ?? overview?.activeGuests ?? 1;
+  // Residents only — drives the residentsCount column (min 1).
+  const residentsFor = (mealType: MealType): number => headcounts[mealType] ?? baseHead;
+  // Staff only — drives the new staffCount column (0 when unset).
+  const staffFor = (mealType: MealType): number => staffCounts[mealType] ?? 0;
+  // TOTAL people eating this meal = residents + staff. Every quantity (dish qty,
+  // per-dish persons default) is computed from this.
+  const effHeadFor = (mealType: MealType): number => residentsFor(mealType) + staffFor(mealType);
+  const setResidentsFor = (mealType: MealType, n: number) =>
+    setHeadcounts((h) => ({ ...h, [mealType]: Math.max(1, n) }));
+  const setStaffFor = (mealType: MealType, n: number) =>
+    setStaffCounts((s) => ({ ...s, [mealType]: Math.max(0, n) }));
   const { data: preview } = useQuery({
     queryKey: foodKeys.orderPreview({ propertyId, serviceDate: myNext?.serviceDate, persons: 1 }),
     queryFn: () =>
       foodApi.orderPreview({ propertyId: propertyId!, serviceDate: myNext!.serviceDate, persons: 1 }),
     enabled: orderDay && !!propertyId && !!myNext,
   });
-  // Per-dish overrides, keyed `${mealType}:${dishId}`. `persons` pins a
-  // per-dish headcount (qty recomputes from it); `qty` pins an absolute
-  // quantity (wins over everything) — same model as the full builder.
+  // Per-dish overrides, keyed `${mealType}:${dishId}`. `persons` pins how many
+  // people eat THAT dish; the quantity is always derived (qtyPerResident ×
+  // persons) and never edited directly.
   const [dishOverrides, setDishOverrides] = React.useState<Record<string, DishOverride>>({});
   // Order-mode edits belong to ONE property — dishIds are a shared catalogue,
-  // so carrying overrides (or a manual headcount) across a property switch
+  // so carrying overrides (or manual headcounts) across a property switch
   // would place the next property's order with the previous one's numbers.
   React.useEffect(() => {
-    setHeadcount(null);
+    setHeadcounts({});
+    setStaffCounts({});
     setDishOverrides({});
   }, [propertyId]);
-  const dishStep = (unit: string) => (isFractionalUnit(unit) ? 0.5 : 5);
   const dishKey = (mealType: MealType, dishId: string) => `${mealType}:${dishId}`;
   const dishPersons = (mealType: MealType, dishId: string): number =>
-    dishOverrides[dishKey(mealType, dishId)]?.persons ?? effectiveHead;
+    dishOverrides[dishKey(mealType, dishId)]?.persons ?? effHeadFor(mealType);
   const dishQty = (mealType: MealType, dishId: string, perResident: number, unit: string): number => {
-    const o = dishOverrides[dishKey(mealType, dishId)];
-    if (o?.qty != null) return o.qty;
-    const raw = perResident * (o?.persons ?? effectiveHead);
+    const raw = perResident * dishPersons(mealType, dishId);
     return isFractionalUnit(unit) ? Math.round(raw * 10) / 10 : Math.round(raw);
   };
-  const bumpDish = (mealType: MealType, dishId: string, perResident: number, unit: string, dir: 1 | -1) => {
-    const cur = dishQty(mealType, dishId, perResident, unit);
-    const next = Math.max(0, Math.round((cur + dir * dishStep(unit)) * 10) / 10);
-    setDishOverrides((q) => ({
-      ...q,
-      [dishKey(mealType, dishId)]: { ...q[dishKey(mealType, dishId)], qty: next },
-    }));
-  };
   const setDishPersonsOverride = (mealType: MealType, dishId: string, persons: number) => {
-    // Pinning persons clears any absolute qty so the quantity recomputes.
     setDishOverrides((q) => ({
       ...q,
-      [dishKey(mealType, dishId)]: { persons: Math.max(1, persons), qty: undefined },
+      [dishKey(mealType, dishId)]: { persons: Math.max(1, persons) },
     }));
   };
 
@@ -533,16 +530,35 @@ export default function FoodDashboard() {
     if (!draftId || restoredFor.current === draftId || serverDraft === undefined) return;
     restoredFor.current = draftId;
     const p = serverDraft?.payload as
-      | { v: number; headcount: number | null; overrides: Record<string, DishOverride> }
+      | {
+          v: number;
+          headcounts?: Partial<Record<MealType, number>>;
+          staffCounts?: Partial<Record<MealType, number>>;
+          headcount?: number | null;
+          overrides: Record<string, DishOverride>;
+        }
       | null
       | undefined;
-    if (p && p.v === 1) {
-      if (p.headcount != null) setHeadcount(p.headcount);
+    if (p) {
+      if (p.headcounts && typeof p.headcounts === "object") {
+        // v2+: per-meal residents.
+        setHeadcounts(p.headcounts);
+      } else if (typeof p.headcount === "number") {
+        // Legacy v1 draft (single scalar) — apply it to every meal so a
+        // resumed pre-deploy draft keeps the count the lead had set.
+        const h = p.headcount;
+        setHeadcounts(Object.fromEntries(MEAL_TYPES.map((m) => [m, h])) as Partial<Record<MealType, number>>);
+      }
+      // v3+: per-meal staff. v1/v2 drafts have no staffCounts → stays {} → 0.
+      if (p.staffCounts && typeof p.staffCounts === "object") setStaffCounts(p.staffCounts);
       if (p.overrides && typeof p.overrides === "object") setDishOverrides(p.overrides);
     }
   }, [serverDraft, draftId]);
-  // Debounced autosave of every edit (headcount / per-dish overrides).
-  const draftDirty = headcount != null || Object.keys(dishOverrides).length > 0;
+  // Debounced autosave of every edit (per-meal residents/staff / per-dish overrides).
+  const draftDirty =
+    Object.keys(headcounts).length > 0 ||
+    Object.keys(staffCounts).length > 0 ||
+    Object.keys(dishOverrides).length > 0;
   const [draftSavedAt, setDraftSavedAt] = React.useState<Date | null>(null);
   const [savingDraft, setSavingDraft] = React.useState(false);
   React.useEffect(() => {
@@ -551,14 +567,14 @@ export default function FoodDashboard() {
     const t = setTimeout(() => {
       setSavingDraft(true);
       foodApi
-        .saveOrderDraft({ ...draftParams, payload: { v: 1, headcount, overrides: dishOverrides } })
+        .saveOrderDraft({ ...draftParams, payload: { v: 3, headcounts, staffCounts, overrides: dishOverrides } })
         .then(() => setDraftSavedAt(new Date()))
         .catch(() => {/* draft persistence is best-effort */})
         .finally(() => setSavingDraft(false));
     }, 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headcount, dishOverrides, draftId, nextPending, canPlace, draftDirty]);
+  }, [headcounts, staffCounts, dishOverrides, draftId, nextPending, canPlace, draftDirty]);
 
   const placeMutation = useMutation({
     mutationFn: () => {
@@ -567,6 +583,10 @@ export default function FoodDashboard() {
         .filter((m) => missing.has(m.mealType))
         .map((m) => ({
           mealType: m.mealType,
+          // residentsCount stays residents-ONLY (clean analytics); staffCount is
+          // the new sibling. The kitchen cooks for residents + staff = total.
+          residentsCount: residentsFor(m.mealType),
+          staffCount: staffFor(m.mealType),
           items: m.items
             .map((it) => ({
               dishId: it.dishId,
@@ -580,7 +600,9 @@ export default function FoodDashboard() {
       return foodApi.placeOrderBatch({
         propertyId: propertyId!,
         serviceDate: myNext!.serviceDate,
-        persons: effectiveHead,
+        // Batch-level fallbacks; each meal carries its own residents/staff above.
+        persons: missingMeals[0] ? residentsFor(missingMeals[0].mealType) : baseHead,
+        staffCount: missingMeals[0] ? staffFor(missingMeals[0].mealType) : 0,
         meals,
       });
     },
@@ -588,7 +610,8 @@ export default function FoodDashboard() {
       // The draft served its purpose — clear it (server + local, best-effort).
       if (draftParams) void foodApi.deleteOrderDraft(draftParams).catch(() => {});
       setDishOverrides({});
-      setHeadcount(null);
+      setHeadcounts({});
+      setStaffCounts({});
       setDraftSavedAt(null);
       // Targeted refresh: order lists (incl. streak + journey), the placed
       // day's details, next-orders state and the (now deleted) draft. A broad
@@ -753,15 +776,18 @@ export default function FoodDashboard() {
     <div className="mx-auto flex max-w-[760px] animate-fade-up flex-col gap-6">
       {confetti}
 
-      {/* ── tomorrow's order hero ── */}
-      {nextPending && canPlace && (
+      {/* ── next-order hero: a reminder + shortcut to the order day. Hidden once
+          you're actually ON that day (orderDay) — the wizard there already
+          carries the send action, so the banner would just waste space. Compact
+          on mobile (description hidden, full-width button). ── */}
+      {nextPending && canPlace && !orderDay && (
         <section className="rounded-[14px] bg-brand-gradient p-[2px]">
-          <div className="flex flex-wrap items-center gap-[18px] rounded-[12px] bg-card px-6 py-5">
-            <div className="min-w-[220px] flex-1">
-              <div className="font-display text-lg font-bold tracking-[-0.012em]">
+          <div className="flex flex-wrap items-center gap-3 rounded-[12px] bg-card px-4 py-3.5 sm:gap-[18px] sm:px-6 sm:py-5">
+            <div className="min-w-0 flex-1 sm:min-w-[220px]">
+              <div className="font-display text-[15px] font-bold tracking-[-0.012em] sm:text-lg">
                 {nextDayLabel}'s order isn't in yet
               </div>
-              <div className="mt-1 text-[13px] text-muted-foreground">
+              <div className="mt-1 hidden text-[13px] text-muted-foreground sm:block">
                 {!nextIsTomorrow && myNext && !missedTomorrow ? (
                   <>Tomorrow's cut-off has passed — next up is {format(parseISO(myNext.serviceDate), "EEEE, dd MMM")}. </>
                 ) : null}
@@ -769,7 +795,7 @@ export default function FoodDashboard() {
               </div>
             </div>
             <div className="text-center">
-              <div className="font-mono text-[22px] font-semibold tabular-nums text-warning">
+              <div className="font-mono text-lg font-semibold tabular-nums text-warning sm:text-[22px]">
                 {untilLabel(myNext?.cutoffAt, now)}
               </div>
               <div className="text-[11px] text-muted-foreground">left</div>
@@ -777,7 +803,7 @@ export default function FoodDashboard() {
             <button
               type="button"
               onClick={() => setJourneyDay(nextOffset)}
-              className="h-[52px] rounded-[12px] bg-accent px-6 font-display text-base font-bold tracking-[-0.012em] text-white transition-[filter] hover:brightness-105"
+              className="h-11 w-full rounded-[12px] bg-accent px-4 font-display text-sm font-bold tracking-[-0.012em] text-white transition-[filter] hover:brightness-105 sm:h-[52px] sm:w-auto sm:px-6 sm:text-base"
             >
               Send {nextIsTomorrow ? "tomorrow" : nextDayLabel}'s order →
             </button>
@@ -958,7 +984,7 @@ export default function FoodDashboard() {
                     : selected.order == null
                       ? "Not ordered"
                       : displayState === "done" && wasteRecorded
-                        ? "Delivered & confirmed · waste recorded ✓"
+                        ? "Received & confirmed · waste recorded ✓"
                         : selected.statusLine}
                 </span>
                 {!orderMode && selected.order != null && canReadOrders && (
@@ -986,16 +1012,19 @@ export default function FoodDashboard() {
                   now={now}
                   dayWord={nextIsTomorrow ? "tomorrow" : `on ${nextDayLabel}`}
                   dayPossessive={nextIsTomorrow ? "tomorrow's" : `${nextDayLabel}'s`}
-                  headcount={effectiveHead}
-                  setHeadcount={setHeadcount}
+                  residents={residentsFor(selected.mealType)}
+                  setResidents={(n) => setResidentsFor(selected.mealType, n)}
+                  staff={staffFor(selected.mealType)}
+                  setStaff={(n) => setStaffFor(selected.mealType, n)}
                   previewMeals={(preview?.meals ?? []).filter((m) =>
                     missingMeals.some((x) => x.mealType === m.mealType),
                   )}
                   selectedMeal={selected.mealType}
+                  orderedMeals={missingMeals.map((m) => m.mealType)}
+                  onSelectMeal={setPickedMeal}
                   dishQty={dishQty}
                   dishPersons={dishPersons}
                   setDishPersons={setDishPersonsOverride}
-                  bumpDish={bumpDish}
                   onSend={() => placeMutation.mutate()}
                   sending={placeMutation.isPending}
                   mealsCount={missingMeals.length}
@@ -1194,7 +1223,7 @@ function ReceiveColumn({
         <>
           <div className="mb-2 flex items-center gap-2">
             <CheckDot done />
-            <span className="text-[13px] font-semibold text-success">Delivered & confirmed</span>
+            <span className="text-[13px] font-semibold text-success">Received & confirmed</span>
           </div>
           <div className="flex flex-col">
             {(detail?.items ?? []).map((i) => (
@@ -1293,13 +1322,11 @@ function ReceiveColumn({
       ) : (
         <LockedPanel
           text={
-            state === "cooking"
-              ? "Cooking now — confirm once it arrives at your gate"
-              : journeyDay === 1
-                ? "Arrives tomorrow — confirm at the gate"
-                : state === "action-confirm" && !canConfirm
-                  ? "Awaiting confirmation by the property team"
-                  : "Waiting for delivery"
+            journeyDay === 1
+              ? "Arrives tomorrow — confirm at the gate"
+              : state === "action-confirm" && !canConfirm
+                ? "Awaiting confirmation by the property team"
+                : "Waiting for delivery"
           }
         />
       )}
@@ -1420,8 +1447,8 @@ function WasteColumn({
 /* ───────────────────────── order mode (tomorrow) ───────────────────────── */
 
 function OrderModePanel({
-  myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, headcount, setHeadcount, previewMeals,
-  selectedMeal, dishQty, dishPersons, setDishPersons, bumpDish, onSend, sending, mealsCount, draftSavedAt, savingDraft,
+  myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, residents, setResidents, staff, setStaff, previewMeals,
+  selectedMeal, orderedMeals, onSelectMeal, dishQty, dishPersons, setDishPersons, onSend, sending, mealsCount, draftSavedAt, savingDraft,
 }: {
   myNextCutoffAt: string | null;
   myNextCutoffTime: string | null;
@@ -1430,31 +1457,42 @@ function OrderModePanel({
   dayWord: string;
   /** "tomorrow's" or "Wednesday's" — for the send button. */
   dayPossessive: string;
-  headcount: number;
-  setHeadcount: (updater: number | null) => void;
+  /** Residents eating the selected meal (min 1). */
+  residents: number;
+  setResidents: (n: number) => void;
+  /** Staff eating the selected meal (min 0). Same food as residents. */
+  staff: number;
+  setStaff: (n: number) => void;
   previewMeals: Array<{
     mealType: MealType;
     label: string;
     items: Array<{ dishId: string; dishName: string; unit: string; qtyPerResident: number }>;
   }>;
   selectedMeal: MealType | null;
+  /** The orderable meals in tab order — drives the "Next: {meal}" CTA. */
+  orderedMeals: MealType[];
+  onSelectMeal: (mealType: MealType) => void;
   dishQty: (mealType: MealType, dishId: string, perResident: number, unit: string) => number;
   dishPersons: (mealType: MealType, dishId: string) => number;
   setDishPersons: (mealType: MealType, dishId: string, persons: number) => void;
-  bumpDish: (mealType: MealType, dishId: string, perResident: number, unit: string, dir: 1 | -1) => void;
   onSend: () => void;
   sending: boolean;
   mealsCount: number;
   draftSavedAt: Date | null;
   savingDraft: boolean;
 }) {
-  // The dish grid shows the selected meal (tabs above switch meals); the send
-  // button submits every missing meal at once — exactly like the prototype.
+  // The dish grid shows the selected meal; the unit lead walks meal by meal via
+  // the sticky "Next" CTA, and the last meal's CTA places every meal at once.
   const meal =
     previewMeals.find((m) => m.mealType === selectedMeal) ?? previewMeals[0] ?? null;
-  // One dish editable at a time (pencil → persons/qty steppers → check).
-  const [editing, setEditing] = React.useState<string | null>(null);
+  // Wizard position within the orderable meals — the last meal sends the order.
+  const mealIdx = selectedMeal ? orderedMeals.indexOf(selectedMeal) : -1;
+  const isLastMeal = mealIdx === -1 || mealIdx >= orderedMeals.length - 1;
+  const nextMeal = isLastMeal ? null : orderedMeals[mealIdx + 1] ?? null;
   return (
+    // The dishes flow naturally — no fixed-height scroll box — so every dish is
+    // visible as you scroll the page. Long menus aren't crammed into a small
+    // internal scroll region; the CTA is a normal footer at the end of the list.
     <>
       <div className="mb-3.5 flex items-center gap-2.5 rounded-[10px] bg-warning-soft px-3.5 py-2.5 text-[13px]">
         <Clock className="h-[15px] w-[15px] shrink-0 text-warning" />
@@ -1464,142 +1502,151 @@ function OrderModePanel({
         </span>
       </div>
 
-      <div className="mb-3.5 flex flex-wrap items-center gap-3.5">
-        <div className="min-w-[160px] flex-1">
-          <div className="font-display text-sm font-bold tracking-[-0.012em]">Who's eating {dayWord}?</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            Dishes below adjust automatically. Switch tabs above to edit each meal.
+      <div className="mb-3.5 rounded-[10px] border border-border bg-background/60 px-3.5 py-3">
+        <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <div className="min-w-[160px] flex-1">
+            <div className="font-display text-sm font-bold tracking-[-0.012em]">
+              Who's eating {meal?.label ?? "this meal"} {dayWord}?
+            </div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              Quantities below fill in from the total. Each meal has its own count.
+            </div>
+          </div>
+          {/* Total = residents + staff — the number the kitchen cooks for. */}
+          <div className="text-xs text-muted-foreground">
+            Total{" "}
+            <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
+              {residents + staff}
+            </span>{" "}
+            ppl
           </div>
         </div>
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => setHeadcount(Math.max(1, headcount - 1))}
-            aria-label="Fewer people"
-            className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
-          >
-            −
-          </button>
-          <span className="min-w-[64px] text-center font-mono text-base font-semibold tabular-nums">
-            {headcount} ppl
-          </span>
-          <button
-            type="button"
-            onClick={() => setHeadcount(headcount + 1)}
-            aria-label="More people"
-            className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
-          >
-            +
-          </button>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2.5">
+          <div className="flex items-center gap-2.5">
+            <span className="w-[64px] text-xs font-semibold text-muted-foreground">Residents</span>
+            <button
+              type="button"
+              onClick={() => setResidents(Math.max(1, residents - 1))}
+              aria-label="Fewer residents"
+              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
+            >
+              −
+            </button>
+            <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums">
+              {residents}
+            </span>
+            <button
+              type="button"
+              onClick={() => setResidents(residents + 1)}
+              aria-label="More residents"
+              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
+            >
+              +
+            </button>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <span className="w-[64px] text-xs font-semibold text-muted-foreground">Staff</span>
+            <button
+              type="button"
+              onClick={() => setStaff(Math.max(0, staff - 1))}
+              aria-label="Fewer staff"
+              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
+            >
+              −
+            </button>
+            <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums">
+              {staff}
+            </span>
+            <button
+              type="button"
+              onClick={() => setStaff(staff + 1)}
+              aria-label="More staff"
+              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
+            >
+              +
+            </button>
+          </div>
         </div>
       </div>
 
       {meal == null ? (
         <Skeleton className="h-32 w-full" />
       ) : (
-        /* Bounded scroll keeps long menus manageable — the send button and
-           headcount stay in view no matter how many dishes a meal has. */
-        <div className="-mr-1 max-h-[420px] overflow-y-auto pr-1">
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            {meal.items.map((d) => {
-              const key = `${meal.mealType}:${d.dishId}`;
-              const qty = dishQty(meal.mealType, d.dishId, d.qtyPerResident, d.unit);
-              const ppl = dishPersons(meal.mealType, d.dishId);
-              const isEditing = editing === key;
-              return (
-                <div
-                  key={d.dishId}
-                  className={cn(
-                    "rounded-[12px] border bg-background px-3 py-2.5",
-                    isEditing ? "border-accent/50" : "border-border",
-                  )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <DishIcon name={d.dishName} meal={meal.mealType} size={40} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13.5px] font-semibold">{d.dishName}</span>
-                      <span className="block text-[11px] text-muted-foreground">{d.unit.toLowerCase()}</span>
-                    </span>
-                    {isEditing ? (
-                      <button
-                        type="button"
-                        onClick={() => setEditing(null)}
-                        aria-label="Done editing"
-                        className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-border bg-card text-accent hover:bg-muted"
-                      >
-                        <Check className="h-4 w-4" strokeWidth={3} />
-                      </button>
-                    ) : (
-                      <span className="flex shrink-0 items-center gap-2">
-                        <span className="text-right">
-                          <span className="font-mono text-[13.5px] font-semibold tabular-nums">{qty}</span>{" "}
-                          <span className="text-[11px] text-muted-foreground">
-                            {d.unit.toLowerCase()} · {ppl} ppl
-                          </span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setEditing(key)}
-                          aria-label={`Edit ${d.dishName}`}
-                          className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                      </span>
-                    )}
-                  </div>
-                  {isEditing && (
-                    <div className="mt-2 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 border-t border-dashed border-border pt-2">
-                      <span className="text-[11px] text-muted-foreground">persons</span>
-                      <MiniStepper
-                        value={ppl}
-                        display={String(ppl)}
-                        onMinus={() => setDishPersons(meal.mealType, d.dishId, ppl - 1)}
-                        onPlus={() => setDishPersons(meal.mealType, d.dishId, ppl + 1)}
-                      />
-                      <span className="text-[11px] text-muted-foreground">qty</span>
-                      <MiniStepper
-                        value={qty}
-                        display={String(qty)}
-                        onMinus={() => bumpDish(meal.mealType, d.dishId, d.qtyPerResident, d.unit, -1)}
-                        onPlus={() => bumpDish(meal.mealType, d.dishId, d.qtyPerResident, d.unit, 1)}
-                      />
-                      <span className="text-[11px] text-muted-foreground">{d.unit.toLowerCase()}</span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          {meal.items.map((d) => {
+            const qty = dishQty(meal.mealType, d.dishId, d.qtyPerResident, d.unit);
+            const ppl = dishPersons(meal.mealType, d.dishId);
+            return (
+              <div
+                key={d.dishId}
+                className="flex items-center gap-2.5 rounded-[12px] border border-border bg-background px-3 py-2.5"
+              >
+                <DishIcon name={d.dishName} meal={meal.mealType} size={40} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13.5px] font-semibold">{d.dishName}</span>
+                  {/* Quantity is derived (portion × people) and shown read-only. */}
+                  <span className="block text-[11px] text-muted-foreground">
+                    <span className="font-mono font-semibold tabular-nums text-foreground">{qty}</span>{" "}
+                    {d.unit.toLowerCase()}
+                  </span>
+                </span>
+                {/* The +/- sets how many PEOPLE eat this dish — the quantity
+                    recomputes live; the quantity itself is never edited. */}
+                <MiniStepper
+                  value={ppl}
+                  display={`${ppl} ppl`}
+                  onMinus={() => setDishPersons(meal.mealType, d.dishId, ppl - 1)}
+                  onPlus={() => setDishPersons(meal.mealType, d.dishId, ppl + 1)}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* Always-on reassurance that edits persist — autosaves silently, so the
-         tester (and users) can see the draft is being kept. */}
-      <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-        {savingDraft ? (
-          <>
-            <Loader2 className="h-3 w-3 animate-spin" /> Saving…
-          </>
-        ) : draftSavedAt ? (
-          <>
-            <Check className="h-3 w-3 text-success" strokeWidth={3} />
-            Changes saved · {format(draftSavedAt, "h:mm a")}
-          </>
+      {/* Footer action bar at the end of the dish list: the unit lead reviews
+         each meal, then "Next" walks to the following meal; on the last meal the
+         CTA places every meal at once. */}
+      <div className="-mx-[18px] mt-3.5 border-t border-border bg-card px-[18px] pb-[2px] pt-2.5">
+        {/* Always-on reassurance that edits persist — autosaves silently. */}
+        <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+          {savingDraft ? (
+            <>
+              <Loader2 className="h-3 w-3 animate-spin" /> Saving…
+            </>
+          ) : draftSavedAt ? (
+            <>
+              <Check className="h-3 w-3 text-success" strokeWidth={3} />
+              Changes saved · {format(draftSavedAt, "h:mm a")}
+            </>
+          ) : (
+            <>
+              <Check className="h-3 w-3" strokeWidth={3} /> Changes are saved automatically as you edit
+            </>
+          )}
+        </div>
+        {isLastMeal ? (
+          <button
+            type="button"
+            disabled={sending || previewMeals.length === 0}
+            onClick={onSend}
+            className="h-[52px] w-full rounded-[12px] bg-success font-display text-[15px] font-bold tracking-[-0.012em] text-white transition-[filter] hover:brightness-105 disabled:opacity-60"
+          >
+            {sending
+              ? "Sending…"
+              : `Place ${dayPossessive} order — all ${mealsCount} meal${mealsCount === 1 ? "" : "s"} ✓`}
+          </button>
         ) : (
-          <>
-            <Check className="h-3 w-3" strokeWidth={3} /> Changes are saved automatically as you edit
-          </>
+          <button
+            type="button"
+            onClick={() => nextMeal && onSelectMeal(nextMeal)}
+            className="flex h-[52px] w-full items-center justify-center gap-1.5 rounded-[12px] bg-accent font-display text-[15px] font-bold tracking-[-0.012em] text-white transition-[filter] hover:brightness-105"
+          >
+            Next: {nextMeal ? shortMeal(nextMeal) : ""}
+            <ChevronRight className="h-[18px] w-[18px]" strokeWidth={2.5} />
+          </button>
         )}
       </div>
-      <button
-        type="button"
-        disabled={sending || previewMeals.length === 0}
-        onClick={onSend}
-        className="mt-3.5 h-[52px] w-full rounded-[12px] bg-success font-display text-[15px] font-bold tracking-[-0.012em] text-white transition-[filter] hover:brightness-105 disabled:opacity-60"
-      >
-        {sending ? "Sending…" : `Send ${dayPossessive} order — all ${mealsCount} meal${mealsCount === 1 ? "" : "s"} ✓`}
-      </button>
     </>
   );
 }

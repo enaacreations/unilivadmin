@@ -586,7 +586,7 @@ async function main() {
   const unitLeads = FOOD_USERS.filter((u) => u.role === "UNIT_LEAD");
 
   // Lifecycle plan: one order per status per unit lead's property.
-  const STATUSES = ["PLACED", "PREPARING", "DISPATCHED", "DELIVERED", "CANCELLED"] as const;
+  const STATUSES = ["PLACED", "ACCEPTED", "DISPATCHED", "DELIVERED", "CANCELLED"] as const;
   type Status = (typeof STATUSES)[number];
 
   interface OrderPlan {
@@ -599,7 +599,7 @@ async function main() {
 
   const PLANS: OrderPlan[] = [
     { status: "PLACED",     brand: "UNILIV", meal: "LUNCH",     residentsCount: 80, serviceOffsetDays: 1 },
-    { status: "PREPARING",  brand: "UNILIV", meal: "BREAKFAST", residentsCount: 60, serviceOffsetDays: 0 },
+    { status: "ACCEPTED",   brand: "UNILIV", meal: "BREAKFAST", residentsCount: 60, serviceOffsetDays: 0 },
     { status: "DISPATCHED", brand: "HUDDLE", meal: "DINNER",    residentsCount: 45, serviceOffsetDays: 0 },
     { status: "DELIVERED",  brand: "UNILIV", meal: "LUNCH",     residentsCount: 90, serviceOffsetDays: -1 },
     { status: "CANCELLED",  brand: "HUDDLE", meal: "SNACKS",    residentsCount: 30, serviceOffsetDays: -2 },
@@ -630,7 +630,8 @@ async function main() {
       // Lifecycle-dependent timestamps & actors.
       const isDispatched = plan.status === "DISPATCHED" || plan.status === "DELIVERED";
       const isDelivered = plan.status === "DELIVERED";
-      const isPreparing = plan.status === "PREPARING" || isDispatched;
+      // Every post-PLACED, non-cancelled order has been accepted by the kitchen.
+      const isAccepted = plan.status === "ACCEPTED" || isDispatched;
       const isCancelled = plan.status === "CANCELLED";
       const deliveryPartnerId = isDispatched
         ? deliveryPartnerIds[orderSeq % deliveryPartnerIds.length]!
@@ -662,7 +663,8 @@ async function main() {
         deliveredAt,
         deliveryRemarks: isDelivered ? "Delivered in full, verified by unit lead." : null,
         wasteEditableUntil,
-        preparingAt: isPreparing ? new Date(serviceDate.getTime() - 4 * 3_600_000) : null,
+        acceptedAt: isAccepted ? new Date(serviceDate.getTime() - 5 * 3_600_000) : null,
+        acceptedById: isAccepted ? "user_food_fnbsup" : null,
         cancelledAt: isCancelled ? createdAt : null,
         cancelReason: isCancelled ? "Resident count dropped; meal not required." : null,
         createdById: lead.id,
@@ -670,9 +672,9 @@ async function main() {
         updatedAt: new Date(),
       });
 
-      // Items: ordered always; prepared at dispatch; received + wasted at delivery.
+      // Items: ordered always; prepared qty backfilled at accept; received + wasted at delivery.
       for (const c of computed) {
-        const preparedQty = isDispatched ? c.orderedQty : null;
+        const preparedQty = isAccepted ? c.orderedQty : null;
         // Delivered: receive most of it, waste a small slice.
         const wastedQty = isDelivered ? Math.round(c.orderedQty * 0.08 * 1000) / 1000 : null;
         const receivedQty = isDelivered ? Math.round((c.orderedQty - (wastedQty ?? 0)) * 1000) / 1000 : null;
@@ -698,9 +700,9 @@ async function main() {
       if (isCancelled) {
         pushEvent("CANCELLED", "Order cancelled before dispatch.", lead.id, createdAt);
       } else {
-        if (isPreparing) {
-          pushEvent("PREPARING", "Kitchen started preparation.", "user_food_fnbsup",
-            new Date(serviceDate.getTime() - 4 * 3_600_000));
+        if (isAccepted) {
+          pushEvent("ACCEPTED", "Order accepted by kitchen.", "user_food_fnbsup",
+            new Date(serviceDate.getTime() - 5 * 3_600_000));
         }
         if (isDispatched) {
           pushEvent("DISPATCHED", "Dispatched to property.", dispatcherId!,

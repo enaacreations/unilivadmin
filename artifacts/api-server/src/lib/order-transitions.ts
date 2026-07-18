@@ -1,18 +1,17 @@
 /**
  * Canonical food-order lifecycle. Every transition endpoint enforces exactly
  * one hop from this table, so the chain
- *   PLACED → ACCEPTED → PREPARING → DISPATCHED → DELIVERED
+ *   PLACED → ACCEPTED → DISPATCHED → DELIVERED
  * (with REJECTED / CANCELLED off-ramps) can't be skipped or reordered. Keeping
  * the rules in one place stops the guards drifting apart (e.g. dispatch used to
- * allow a PLACED order straight through, and prepare used to reject ACCEPTED).
+ * allow a PLACED order straight through).
  */
 export type FoodOrderStatus =
-  | "PLACED" | "ACCEPTED" | "REJECTED" | "PREPARING" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
+  | "PLACED" | "ACCEPTED" | "REJECTED" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
 
 export const ORDER_NEXT: Record<FoodOrderStatus, FoodOrderStatus[]> = {
   PLACED: ["ACCEPTED", "REJECTED", "CANCELLED"],
-  ACCEPTED: ["PREPARING", "REJECTED", "CANCELLED"],
-  PREPARING: ["DISPATCHED", "CANCELLED"],
+  ACCEPTED: ["DISPATCHED", "REJECTED", "CANCELLED"],
   DISPATCHED: ["DELIVERED"],
   DELIVERED: [],
   CANCELLED: [],

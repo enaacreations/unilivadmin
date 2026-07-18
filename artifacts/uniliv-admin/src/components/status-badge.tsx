@@ -16,7 +16,7 @@ export function StatusBadge({ status, className, ...props }: StatusBadgeProps) {
     variant = "info";
   } else if (["BREACH", "HIGH", "CRITICAL", "FAILED", "REJECTED", "CANCELLED", "OVERDUE", "DAMAGED", "SLA_BREACH", "URGENT"].includes(normalizedStatus)) {
     variant = "destructive";
-  } else if (["PENDING", "IN_PROGRESS", "IN_TRANSIT", "PROCESSING", "IN_WASH", "MEDIUM", "PREPARING"].includes(normalizedStatus)) {
+  } else if (["PENDING", "IN_PROGRESS", "IN_TRANSIT", "PROCESSING", "IN_WASH", "MEDIUM"].includes(normalizedStatus)) {
     variant = "warning";
   } else if (["INACTIVE", "CLOSED", "ARCHIVED"].includes(normalizedStatus)) {
     variant = "secondary";

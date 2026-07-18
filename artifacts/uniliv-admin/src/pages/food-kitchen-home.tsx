@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, addDays, parseISO } from "date-fns";
 import {
   ChevronLeft, ChevronRight, Check, AlertCircle, Truck, Soup, Inbox,
-  CookingPot, History,
+  History,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -20,7 +20,7 @@ import { MealIcon, DishIcon } from "@/components/meal-icon";
 import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 import {
-  foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty, isFractionalUnit,
+  foodApi, foodKeys, orderPeople, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty, isFractionalUnit,
   type FoodOrder, type MealType, type KitchenSummaryDish, type KitchenItem,
 } from "@/lib/food-api";
 
@@ -32,20 +32,18 @@ const SERVE_BY: Record<MealType, string> = {
 
 /** The kitchen's journey state for one meal — drives tab tint + pill, in the
  *  same visual grammar as the unit lead's Food Overview meal states. */
-type KState = "accept" | "cook" | "dispatch" | "transit" | "quiet";
+type KState = "accept" | "dispatch" | "transit" | "quiet";
 
 const STATE_TINT: Record<KState, string> = {
   accept: "var(--warning)",   // orders waiting to be accepted — act now
-  cook: "var(--pop)",         // accepted, waiting for the stove
-  dispatch: "var(--info)",    // in the kitchen — dispatch when ready
+  dispatch: "var(--info)",    // accepted — dispatch when ready
   transit: "var(--success)",  // everything's on the road
   quiet: "var(--muted)",
 };
 
 const stateShort = (s: KState, n: number): string =>
   s === "accept" ? `${n} to accept`
-  : s === "cook" ? "Ready to cook"
-  : s === "dispatch" ? "In the kitchen"
+  : s === "dispatch" ? "Ready to send"
   : s === "transit" ? "On the road"
   : "No orders";
 
@@ -53,7 +51,6 @@ type Slot = {
   mealType: MealType;
   placed: FoodOrder[];
   accepted: FoodOrder[];
-  preparing: FoodOrder[];
   dispatched: FoodOrder[];
   live: FoodOrder[];
   dishes: KitchenSummaryDish[];
@@ -77,12 +74,9 @@ function ColumnHead({ icon, label, tone, right }: {
   );
 }
 
-type RowAction = { label: string; onClick: () => void; disabled?: boolean; className: string };
-
 /** One property · headcount row inside a pipeline column. Clicking the property
- *  name opens the order-details sheet; an optional per-row action (Accept /
- *  Start) lets the kitchen act on this one property without touching the rest. */
-function OrderRow({ o, onOpen, action }: { o: FoodOrder; onOpen: (o: FoodOrder) => void; action?: RowAction }) {
+ *  name opens the order-details sheet. */
+function OrderRow({ o, onOpen }: { o: FoodOrder; onOpen: (o: FoodOrder) => void }) {
   return (
     <div className="flex w-full items-center gap-2 border-b border-dashed border-border py-1.5 last:border-0">
       <button
@@ -96,21 +90,8 @@ function OrderRow({ o, onOpen, action }: { o: FoodOrder; onOpen: (o: FoodOrder) 
         <ChevronRight className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
       </button>
       <span className="shrink-0 font-mono text-[12px] tabular-nums text-muted-foreground">
-        {o.residentsCount ?? 0} ppl
+        {orderPeople(o)} ppl
       </span>
-      {action && (
-        <button
-          type="button"
-          onClick={action.onClick}
-          disabled={action.disabled}
-          className={cn(
-            "h-7 shrink-0 rounded-full px-2.5 text-[12px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60",
-            action.className,
-          )}
-        >
-          {action.label}
-        </button>
-      )}
     </div>
   );
 }
@@ -213,7 +194,7 @@ function DispatchRow({
         <button type="button" onClick={() => setOpen((v) => !v)} className="group min-w-0 flex-1 text-left">
           <span className="block truncate text-[15px] font-bold tracking-[-0.006em]">{o.propertyName ?? "Property"}</span>
           <span className="block truncate font-mono text-[12px] tabular-nums text-muted-foreground">
-            {o.orderNumber} · {o.residentsCount ?? 0} people
+            {o.orderNumber} · {orderPeople(o)} people
           </span>
         </button>
 
@@ -351,7 +332,7 @@ export default function FoodKitchenHome() {
   // covered — otherwise a big day silently truncates and "Accept all" would
   // celebrate while unfetched PLACED orders remain. Bounded at 5 pages as a
   // runaway stop (500 live orders in one day means something else is wrong).
-  const ordersParams = { serviceDate: date, status: "PLACED,ACCEPTED,PREPARING,DISPATCHED", limit: 100 };
+  const ordersParams = { serviceDate: date, status: "PLACED,ACCEPTED,DISPATCHED", limit: 100 };
   const { data: orders = [], isLoading: ordersLoading } = useQuery({
     queryKey: foodKeys.orders(ordersParams),
     queryFn: async () => {
@@ -386,24 +367,21 @@ export default function FoodKitchenHome() {
     const live = orders.filter((o) => o.mealType === mealType);
     const placed = live.filter((o) => o.status === "PLACED");
     const accepted = live.filter((o) => o.status === "ACCEPTED");
-    const preparing = live.filter((o) => o.status === "PREPARING");
     const dispatched = live.filter((o) => o.status === "DISPATCHED");
     const dishes = summary?.meals.find((m) => m.mealType === mealType)?.dishes ?? [];
-    const people = live.reduce((s, o) => s + (o.residentsCount || 0), 0);
+    const people = live.reduce((s, o) => s + orderPeople(o), 0);
     const state: KState =
       placed.length ? "accept"
-      : accepted.length ? "cook"
-      : preparing.length ? "dispatch"
+      : accepted.length ? "dispatch"
       : dispatched.length ? "transit"
       : "quiet";
-    return { mealType, placed, accepted, preparing, dispatched, live, dishes, people, state };
+    return { mealType, placed, accepted, dispatched, live, dishes, people, state };
   });
 
   // Auto-focus the meal that needs a hand; a manual pick always wins.
   const selected: Slot =
     (pickedMeal && slots.find((s) => s.mealType === pickedMeal)) ||
     slots.find((s) => s.state === "accept") ||
-    slots.find((s) => s.state === "cook") ||
     slots.find((s) => s.state === "dispatch") ||
     slots.find((s) => s.live.length > 0 || s.dishes.length > 0) ||
     slots[0];
@@ -450,49 +428,6 @@ export default function FoodKitchenHome() {
   const acceptEverything = () =>
     runAccept(slots.flatMap((s) => s.placed), `${dayLabel}'s orders`, "accept:ALL");
 
-  // Per-property accept / start — act on a single order without touching the rest.
-  const acceptOne = async (o: FoodOrder) => {
-    if (busy) return;
-    setBusy(`accept:one:${o.id}`);
-    try {
-      await foodApi.acceptOrder(o.id);
-      await invalidate();
-      toast({ title: `${o.propertyName ?? "Order"} accepted`, variant: "success" });
-    } catch (e: any) {
-      toast({ title: e?.message || "Could not accept the order", variant: "destructive" });
-    }
-    setBusy(null);
-  };
-  const cookOne = async (o: FoodOrder) => {
-    if (busy) return;
-    setBusy(`cook:one:${o.id}`);
-    try {
-      await foodApi.prepareOrder(o.id);
-      await invalidate();
-      toast({ title: `${o.propertyName ?? "Order"} is on the stove`, variant: "success" });
-    } catch (e: any) {
-      toast({ title: e?.message || "Could not start cooking", variant: "destructive" });
-    }
-    setBusy(null);
-  };
-
-  const startCooking = async (s: Slot) => {
-    if (busy || s.accepted.length === 0) return;
-    setBusy(`cook:${s.mealType}`);
-    let ok = 0, fail = 0;
-    for (const o of s.accepted) {
-      try { await foodApi.prepareOrder(o.id); ok++; } catch { fail++; }
-    }
-    await invalidate();
-    setBusy(null);
-    if (fail === 0) {
-      fire();
-      toast({ title: `${shortMeal(s.mealType)} is on the stove`, description: `${ok} order${ok === 1 ? "" : "s"} marked Preparing.`, variant: "success" });
-    } else {
-      toast({ title: `${ok} started, ${fail} failed`, variant: fail > ok ? "destructive" : "warning" });
-    }
-  };
-
   // ── Order-details sheet ───────────────────────────────────────────────────
   // Clicking a property NAME opens a right-side sheet with that order's dish
   // breakdown, so the kitchen sees exactly what was asked before acting.
@@ -510,7 +445,7 @@ export default function FoodKitchenHome() {
   });
 
   // ── Dispatch board ────────────────────────────────────────────────────────
-  // One row per ready (PREPARING) order: pick its delivery partner, tick the
+  // One row per ready (ACCEPTED) order: pick its delivery partner, tick the
   // ones going out, and dispatch them together. Orders are grouped into trips
   // by (kitchen, partner) — for a single-kitchen manager that's just "one trip
   // per partner", so a mixed selection can go out across several partners at once.
@@ -526,16 +461,16 @@ export default function FoodKitchenHome() {
 
   // Keep the selection valid as the queue changes (dispatched orders drop out).
   React.useEffect(() => {
-    const live = new Set(orders.filter((o) => o.status === "PREPARING").map((o) => o.id));
+    const live = new Set(orders.filter((o) => o.status === "ACCEPTED").map((o) => o.id));
     setPicked((prev) => {
       const next = new Set([...prev].filter((id) => live.has(id)));
       return next.size === prev.size ? prev : next;
     });
   }, [orders]);
 
-  const dispatchable = selected?.preparing ?? [];
+  const dispatchable = selected?.accepted ?? [];
   const pickedOrders = dispatchable.filter((o) => picked.has(o.id) && !!partnerIdOf(o));
-  const pickedPeople = pickedOrders.reduce((n, o) => n + (o.residentsCount || 0), 0);
+  const pickedPeople = pickedOrders.reduce((n, o) => n + orderPeople(o), 0);
   const pickedPartnerCount = new Set(pickedOrders.map((o) => partnerIdOf(o))).size;
   const dispatchedTotal = (selected?.dispatched.length ?? 0);
   const boardTotal = dispatchable.length + dispatchedTotal;
@@ -612,7 +547,7 @@ export default function FoodKitchenHome() {
           {kitchenScopeLabel ?? "Kitchen Home"}
         </h1>
         <p className="text-sm text-muted-foreground">
-          Your kitchen day — accept orders, cook, and send the vans from one place.
+          Your kitchen day — accept orders and send the vans from one place.
         </p>
       </div>
 
@@ -653,7 +588,7 @@ export default function FoodKitchenHome() {
               Everything&rsquo;s accepted
             </div>
             <div className="mt-0.5 text-[13px] text-muted-foreground">
-              {format(dayDate, "EEEE, dd MMM")} · {totalPeople} people · cook, then send the vans below.
+              {format(dayDate, "EEEE, dd MMM")} · {totalPeople} people · send the vans below.
             </div>
           </div>
         </section>
@@ -703,7 +638,7 @@ export default function FoodKitchenHome() {
             {slots.map((s) => {
               const t = STATE_TINT[s.state];
               const isSel = s.mealType === selected?.mealType;
-              const actionable = s.state === "accept" || s.state === "cook";
+              const actionable = s.state === "accept" || s.state === "dispatch";
               return (
                 <button
                   key={s.mealType}
@@ -812,8 +747,8 @@ export default function FoodKitchenHome() {
               )}
             </div>
 
-            {/* Pipeline: accept + cook side by side; dispatch gets the full row */}
-            <div className="grid items-stretch gap-3 md:grid-cols-2">
+            {/* New orders to accept — dispatch board gets the full row below */}
+            <div className="grid items-stretch gap-3">
               {/* Accept */}
               <div className="flex flex-col rounded-[12px] border border-border bg-background px-4 py-3.5">
                 <ColumnHead
@@ -830,17 +765,7 @@ export default function FoodKitchenHome() {
                   <>
                     <div className="flex-1">
                       {selected.placed.map((o) => (
-                        <OrderRow
-                          key={o.id}
-                          o={o}
-                          onOpen={setSheetOrder}
-                          action={canKitchen ? {
-                            label: busy === `accept:one:${o.id}` ? "…" : "Accept",
-                            onClick: () => acceptOne(o),
-                            disabled: !!busy,
-                            className: "bg-warning",
-                          } : undefined}
-                        />
+                        <OrderRow key={o.id} o={o} onOpen={setSheetOrder} />
                       ))}
                     </div>
                     {canKitchen && (
@@ -851,53 +776,6 @@ export default function FoodKitchenHome() {
                         className="mt-3 h-10 w-full rounded-[9px] bg-warning text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {busy === `accept:${selected.mealType}` ? "Accepting…" : `Accept all (${selected.placed.length})`}
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {/* Cook */}
-              <div className="flex flex-col rounded-[12px] border border-border bg-background px-4 py-3.5">
-                <ColumnHead
-                  icon={<CookingPot className="h-[13px] w-[13px]" strokeWidth={2.5} />}
-                  label="Cook"
-                  tone="var(--pop)"
-                  right={selected.accepted.length > 0 ? (
-                    <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{selected.accepted.length}</span>
-                  ) : undefined}
-                />
-                {selected.accepted.length === 0 ? (
-                  <ColumnEmpty
-                    text={selected.preparing.length > 0 || selected.dispatched.length > 0
-                      ? "The stove is already going."
-                      : "Accept orders to start cooking."}
-                  />
-                ) : (
-                  <>
-                    <div className="flex-1">
-                      {selected.accepted.map((o) => (
-                        <OrderRow
-                          key={o.id}
-                          o={o}
-                          onOpen={setSheetOrder}
-                          action={canKitchen ? {
-                            label: busy === `cook:one:${o.id}` ? "…" : "Cook",
-                            onClick: () => cookOne(o),
-                            disabled: !!busy,
-                            className: "bg-pop",
-                          } : undefined}
-                        />
-                      ))}
-                    </div>
-                    {canKitchen && (
-                      <button
-                        type="button"
-                        onClick={() => startCooking(selected)}
-                        disabled={!!busy}
-                        className="mt-3 h-10 w-full rounded-[9px] bg-pop text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {busy === `cook:${selected.mealType}` ? "Starting…" : `Start cooking (${selected.accepted.length})`}
                       </button>
                     )}
                   </>
@@ -926,7 +804,7 @@ export default function FoodKitchenHome() {
               </div>
 
               {dispatchable.length === 0 && dispatchedForMeal.length === 0 ? (
-                <ColumnEmpty text="Cooking orders appear here when they're ready to go." />
+                <ColumnEmpty text="Accepted orders appear here, ready to send out." />
               ) : (
                 <>
                   {canDispatch && dispatchable.length > 0 && (
@@ -1036,7 +914,7 @@ export default function FoodKitchenHome() {
                 <SheetDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="font-mono text-xs tabular-nums">{sheetOrder.orderNumber}</span>
                   <span>· {MEAL_LABEL[sheetOrder.mealType]}</span>
-                  <span>· {sheetOrder.residentsCount ?? 0} people</span>
+                  <span>· {orderPeople(sheetOrder)} people</span>
                 </SheetDescription>
               </SheetHeader>
 

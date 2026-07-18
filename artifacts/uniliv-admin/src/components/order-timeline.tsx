@@ -1,12 +1,12 @@
 import * as React from "react";
 import { format } from "date-fns";
-import { FileText, Check, ChefHat, Truck, PackageCheck, Ban, XCircle, type LucideIcon } from "lucide-react";
+import { FileText, Check, Truck, PackageCheck, Ban, XCircle, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { OrderStatus, FoodOrderEvent } from "@/lib/food-api";
 
 /**
  * Horizontal order-journey stepper. Unlike a raw event log, this always renders
- * the full canonical path (Placed → Accepted → Preparing → Dispatched → Delivered)
+ * the full canonical path (Placed → Accepted → Dispatched → Received)
  * so an order shows where it IS and what's still ahead. Terminal states
  * (Cancelled / Rejected) replace the remaining path with a red end node.
  */
@@ -15,9 +15,8 @@ type Stage = { key: OrderStatus; label: string; icon: LucideIcon };
 const HAPPY_PATH: Stage[] = [
   { key: "PLACED", label: "Placed", icon: FileText },
   { key: "ACCEPTED", label: "Accepted", icon: Check },
-  { key: "PREPARING", label: "Preparing", icon: ChefHat },
   { key: "DISPATCHED", label: "Dispatched", icon: Truck },
-  { key: "DELIVERED", label: "Delivered", icon: PackageCheck },
+  { key: "DELIVERED", label: "Received", icon: PackageCheck },
 ];
 
 const TERMINAL: Record<"CANCELLED" | "REJECTED", Stage> = {

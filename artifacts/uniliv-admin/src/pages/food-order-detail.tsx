@@ -67,6 +67,7 @@ import {
   MEAL_LABEL,
   fmtQty,
   groupLabel,
+  orderPeople,
   type OrderStatus,
   type FoodOrderEvent,
 } from "@/lib/food-api";
@@ -82,6 +83,8 @@ const fmtDateTime = (s?: string | null) =>
 function OrderStatusBadge({ status }: { status: OrderStatus }) {
   if (status === "ACCEPTED")
     return <Badge variant="success">Accepted</Badge>;
+  if (status === "DELIVERED")
+    return <Badge variant="success">Received</Badge>;
   if (status === "REJECTED")
     return <Badge variant="destructive">Rejected</Badge>;
   return <StatusBadge status={status} />;
@@ -152,6 +155,7 @@ export default function FoodOrderDetail() {
   // B3-6: the people count is the ONLY editable quantity input; item quantities
   // are recomputed server-side from it.
   const [editResidents, setEditResidents] = React.useState(1);
+  const [editStaff, setEditStaff] = React.useState(0);
   const [editNotes, setEditNotes] = React.useState("");
 
   const {
@@ -207,15 +211,17 @@ export default function FoodOrderDetail() {
   const openEdit = () => {
     if (!order) return;
     setEditResidents(order.residentsCount > 0 ? order.residentsCount : 1);
+    setEditStaff(order.staffCount ?? 0);
     setEditNotes(order.notes ?? "");
     setEditOpen(true);
   };
 
   const editMut = useMutation({
-    // B3-6: only the people count (and optionally notes) is sent; the server
-    // recomputes all item quantities + totalQuantity from the people count.
+    // B3-6: residents + staff (and optionally notes) are sent; the server
+    // recomputes all item quantities + totalQuantity from the TOTAL (residents +
+    // staff). Staff eat the same food.
     mutationFn: () =>
-      foodApi.editOrderPeople(id, editResidents, editNotes.trim() || null),
+      foodApi.editOrderPeople(id, editResidents, editStaff, editNotes.trim() || null),
     onSuccess: () => {
       invalidate();
       toast({ title: "Order updated" });
@@ -298,16 +304,15 @@ export default function FoodOrderDetail() {
     can("FOOD_KITCHEN_SUMMARY", "edit") && order.status === "PLACED";
   const isPreDispatch =
     order.status === "PLACED" ||
-    order.status === "ACCEPTED" ||
-    order.status === "PREPARING";
+    order.status === "ACCEPTED";
   const canCancel =
     isPreDispatch &&
     (can("FOOD_PLACE_ORDER", "edit") || can("FOOD_KITCHEN_SUMMARY", "edit"));
-  // Backend permits editing the people count while PLACED, PREPARING or DISPATCHED
+  // Backend permits editing the people count while PLACED, ACCEPTED or DISPATCHED
   // (mirrors the PUT handler). Items are recomputed server-side.
   const canEdit =
     (order.status === "PLACED" ||
-      order.status === "PREPARING" ||
+      order.status === "ACCEPTED" ||
       order.status === "DISPATCHED") &&
     can("FOOD_PLACE_ORDER", "edit");
 
@@ -389,8 +394,8 @@ export default function FoodOrderDetail() {
         <InfoTile icon={Package} label="Meal">
           {MEAL_LABEL[order.mealType]}
         </InfoTile>
-        <InfoTile icon={Users} label="Residents">
-          <span className="tabular-nums">{order.residentsCount}</span>
+        <InfoTile icon={Users} label="People">
+          <span className="tabular-nums">{orderPeople(order)}</span>
         </InfoTile>
         <InfoTile icon={Scale} label="Quantity">
           <span className="tabular-nums">{fmtQty(order.totalQuantity)}</span>
@@ -719,18 +724,39 @@ export default function FoodOrderDetail() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="edit-residents" className="flex items-center gap-1.5">
-                <Users className="w-3.5 h-3.5 text-muted-foreground" />
-                Number of People (being prepared for)
-              </Label>
-              <NumberStepper
-                value={editResidents}
-                onChange={setEditResidents}
-                min={1}
-                step={1}
-                aria-label="Number of people"
-              />
+            <div className="flex flex-wrap gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-residents" className="flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-muted-foreground" />
+                  Residents
+                </Label>
+                <NumberStepper
+                  value={editResidents}
+                  onChange={setEditResidents}
+                  min={1}
+                  step={1}
+                  aria-label="Number of residents"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-staff" className="flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-muted-foreground" />
+                  Staff
+                </Label>
+                <NumberStepper
+                  value={editStaff}
+                  onChange={setEditStaff}
+                  min={0}
+                  step={1}
+                  aria-label="Number of staff"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-muted-foreground">Total (being prepared for)</Label>
+                <div className="flex h-10 items-center px-1 font-mono text-lg font-semibold tabular-nums">
+                  {editResidents + editStaff}
+                </div>
+              </div>
             </div>
 
             <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
@@ -777,7 +803,7 @@ export default function FoodOrderDetail() {
             </Button>
             <Button
               onClick={() => editMut.mutate()}
-              disabled={editMut.isPending || !(editResidents > 0)}
+              disabled={editMut.isPending || !(editResidents + editStaff > 0)}
             >
               {editMut.isPending ? "Saving…" : "Save changes"}
             </Button>

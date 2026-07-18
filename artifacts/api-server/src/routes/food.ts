@@ -176,7 +176,7 @@ foodRouter.get("/dashboard", authenticate, authorize("FOOD_DASHBOARD", "view"), 
     const aggFor = async (lo: Date, hi: Date) => {
       const [row] = await db.select({
         total: sql<number>`count(*) filter (where ${foodOrdersTable.status} <> 'CANCELLED')::int`,
-        // "Active" = PLACED only (not PREPARING/DISPATCHED/etc.).
+        // "Active" = PLACED only (not ACCEPTED/DISPATCHED/etc.).
         active: sql<number>`count(*) filter (where ${foodOrdersTable.status} = 'PLACED')::int`,
         // "Awaiting Confirmation" = DISPATCHED (display-only top stat).
         awaitingConfirmation: sql<number>`count(*) filter (where ${foodOrdersTable.status} = 'DISPATCHED')::int`,
@@ -258,7 +258,7 @@ foodRouter.get("/dashboard", authenticate, authorize("FOOD_DASHBOARD", "view"), 
     const pendWhere = pendConds.length ? and(...pendConds) : undefined;
 
     const [pendRow] = await db.select({
-      awaitingDispatch: sql<number>`count(*) filter (where ${foodOrdersTable.status} = 'PREPARING')::int`,
+      awaitingDispatch: sql<number>`count(*) filter (where ${foodOrdersTable.status} = 'ACCEPTED')::int`,
     }).from(foodOrdersTable).where(pendWhere);
 
     // Waste pending: DELIVERED, window has OPENED (cool-down elapsed), with
@@ -358,10 +358,10 @@ foodRouter.get("/waste-pending", authenticate, authorize("FOOD_DASHBOARD", "view
 //     the broad-fallback set, so an UNSCOPED F&B user still sees all properties —
 //     scope only narrows once they have scope rows / a home property); and
 //   • status — callers WITHOUT FOOD_ALL_ORDERS are clamped to the live pipeline
-//     (PLACED/ACCEPTED/PREPARING/DISPATCHED) and never see terminal history
+//     (PLACED/ACCEPTED/DISPATCHED) and never see terminal history
 //     (DELIVERED/CANCELLED/REJECTED), which stays FOOD_ALL_ORDERS-only. That
 //     mirrors the sibling /orders/:id and /orders/track restrictions.
-const OPERATIONAL_ORDER_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "DISPATCHED"];
+const OPERATIONAL_ORDER_STATUSES = ["PLACED", "ACCEPTED", "DISPATCHED"];
 foodRouter.get("/orders", authenticate, authorizeAny(["FOOD_ALL_ORDERS", "FOOD_DISPATCH", "FOOD_KITCHEN_SUMMARY"], "view"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
@@ -681,7 +681,7 @@ foodRouter.post("/orders/dispatch/bulk", authenticate, authorize("FOOD_DISPATCH"
       if (!o) { results.push({ orderId: oid, status: "NOT_FOUND" }); continue; }
       if (!isAccessible(o.propertyId, ids)) { results.push({ orderId: oid, status: "FORBIDDEN" }); continue; }
       if (!canTransition(o.status, "DISPATCHED")) {
-        results.push({ orderId: oid, status: "SKIPPED", reason: `Order is ${o.status} (must be PREPARING)` });
+        results.push({ orderId: oid, status: "SKIPPED", reason: `Order is ${o.status} (must be ACCEPTED)` });
         continue;
       }
       // C8: route through the shared helper so every dispatched order gets a
@@ -849,10 +849,14 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
 // basis that drives every item's quantity. Item quantities / totalQuantity supplied
 // by the client are IGNORED; we recompute them SERVER-SIDE via computeOrderItems,
 // exactly like place-order, so the order stays internally consistent. `notes` is
-// also editable. Allowed while PLACED / PREPARING / DISPATCHED (never once
-// CANCELLED / DELIVERED / REJECTED / ACCEPTED-terminal).
+// also editable. Allowed while PLACED / ACCEPTED / DISPATCHED (never once
+// CANCELLED / DELIVERED / REJECTED).
 const updateOrderSchema = z.object({
   residentsCount: z.coerce.number().nullish(),
+  // Staff eating the same meal. Items are recomputed on the TOTAL (residents +
+  // staff); both counts persist separately (Approach A). Omitting either leaves
+  // the order's current value for that count untouched.
+  staffCount: z.coerce.number().nullish(),
   notes: zText.nullish(),
 }).passthrough();
 
@@ -865,29 +869,42 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
 
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(order.propertyId, ids)) { res.status(403).json({ success: false, error: "Order not accessible" }); return; }
-    if (order.status !== "PLACED" && order.status !== "PREPARING" && order.status !== "DISPATCHED") {
-      res.status(422).json({ success: false, error: "Order can only be edited while PLACED, PREPARING or DISPATCHED" });
+    if (order.status !== "PLACED" && order.status !== "ACCEPTED" && order.status !== "DISPATCHED") {
+      res.status(422).json({ success: false, error: "Order can only be edited while PLACED, ACCEPTED or DISPATCHED" });
       return;
     }
 
     const b = req.body || {};
     const update: Record<string, unknown> = { updatedAt: new Date() };
 
-    // People count drives item quantities. Default to the current basis (residentsCount,
-    // else totalQuantity) when the client omits it — place-order uses `quantity` as the
-    // per-person basis, so we feed the new people count in as that quantity to scale
-    // items identically.
-    const prevPeople = order.residentsCount != null ? Number(order.residentsCount) : Number(order.totalQuantity);
-    let people = prevPeople;
+    // People count drives item quantities. Staff eat the same food, so the basis
+    // that scales every item is the TOTAL (residents + staff); the residents/staff
+    // split is persisted separately (Approach A). Each count defaults to the order's
+    // current value when the client omits it, so a residents-only (or staff-only)
+    // edit leaves the other untouched. Items recompute only when the TOTAL changes.
+    const prevResidents = order.residentsCount != null ? Number(order.residentsCount) : Number(order.totalQuantity);
+    const prevStaff = order.staffCount != null ? Number(order.staffCount) : 0;
+    const prevPeople = prevResidents + prevStaff;
+    let residents = prevResidents;
+    let staff = prevStaff;
     let recompute = false;
     if (b.residentsCount != null) {
-      people = Number(b.residentsCount);
-      if (!Number.isFinite(people) || people <= 0) { res.status(400).json({ success: false, error: "residentsCount must be a positive number" }); return; }
-      if (people !== prevPeople) {
-        update["residentsCount"] = people;
+      residents = Number(b.residentsCount);
+      if (!Number.isFinite(residents) || residents < 0) { res.status(400).json({ success: false, error: "residentsCount must be a non-negative number" }); return; }
+    }
+    if (b.staffCount != null) {
+      staff = Number(b.staffCount);
+      if (!Number.isFinite(staff) || staff < 0) { res.status(400).json({ success: false, error: "staffCount must be a non-negative number" }); return; }
+    }
+    const people = residents + staff;
+    if (b.residentsCount != null || b.staffCount != null) {
+      if (!Number.isFinite(people) || people <= 0) { res.status(400).json({ success: false, error: "residents + staff must be a positive number" }); return; }
+      if (residents !== prevResidents || staff !== prevStaff) {
+        update["residentsCount"] = residents;
+        update["staffCount"] = staff;
         update["totalQuantity"] = String(people);
-        recompute = true;
       }
+      if (people !== prevPeople) recompute = true;
     }
     if (b.notes !== undefined) update["notes"] = b.notes ?? null;
 
@@ -954,7 +971,7 @@ foodRouter.post("/orders/:id/cancel", authenticate, async (req, res) => {
     if (!order) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(order.propertyId, ids)) { res.status(403).json({ success: false, error: "Order not accessible" }); return; }
-    // Cancel allowed only while pre-dispatch (PLACED, ACCEPTED, PREPARING).
+    // Cancel allowed only while pre-dispatch (PLACED, ACCEPTED).
     if (order.status === "DISPATCHED" || order.status === "DELIVERED" || order.status === "CANCELLED" || order.status === "REJECTED") {
       res.status(422).json({ success: false, error: "Only orders that are not yet dispatched can be cancelled" });
       return;
@@ -975,33 +992,12 @@ foodRouter.post("/orders/:id/cancel", authenticate, async (req, res) => {
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.post("/orders/:id/prepare", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit"), async (req, res) => {
-  try {
-    const id = req.params["id"]!;
-    const [order] = await db.select().from(foodOrdersTable).where(eq(foodOrdersTable.id, id));
-    if (!order) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    const ids = await resolveAccessiblePropertyIds(req.user!);
-    if (!isAccessible(order.propertyId, ids)) { res.status(403).json({ success: false, error: "Order not accessible" }); return; }
-    if (!canTransition(order.status, "PREPARING")) { res.status(422).json({ success: false, error: `Cannot mark preparing — order is ${order.status}. It must be ACCEPTED first.` }); return; }
-
-    const now = new Date();
-    const [updated] = await db.update(foodOrdersTable).set({ status: "PREPARING", preparingAt: now, updatedAt: now }).where(eq(foodOrdersTable.id, id)).returning();
-    await db.update(foodOrderItemsTable)
-      .set({ preparedQty: sql`${foodOrderItemsTable.orderedQty}`, updatedAt: now })
-      .where(and(eq(foodOrderItemsTable.orderId, id), isNull(foodOrderItemsTable.preparedQty)));
-    await db.insert(foodOrderEventsTable).values({
-      id: newId(), orderId: id, status: "PREPARING", note: "Marked preparing", actorId: req.user!.id,
-    });
-    res.json({ success: true, data: updated });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
-});
-
 /* ────────────────────────────────────────────────────────────────────────────
  * Kitchen items — the per-dish quantities the kitchen actually sends.
  *
  * GET returns each item's ordered vs prepared figures for the pre-dispatch
  * review (Kitchen Home); PATCH lets the kitchen adjust prepared amounts while
- * the order is PREPARING (i.e. after "start cooking", before the van leaves).
+ * the order is ACCEPTED (i.e. after accept, before the van leaves).
  * preparedQty is the figure the unit lead's receive step compares against.
  * Deliberately gated on FOOD_KITCHEN_SUMMARY (not FOOD_ALL_ORDERS): it exposes
  * only kitchen-relevant fields, no order history or tracking.
@@ -1047,8 +1043,8 @@ foodRouter.patch("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITC
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(order.propertyId, ids)) { res.status(403).json({ success: false, error: "Order not accessible" }); return; }
     // Send amounts are only adjustable while the food is still in the kitchen.
-    if (order.status !== "PREPARING") {
-      res.status(422).json({ success: false, error: `Send quantities can only be adjusted while the order is Preparing (it is ${order.status}).` });
+    if (order.status !== "ACCEPTED") {
+      res.status(422).json({ success: false, error: `Send quantities can only be adjusted while the order is Accepted (it is ${order.status}).` });
       return;
     }
     const items = (req.body as { items: { id: string; preparedQty: number }[] }).items;
@@ -1088,8 +1084,8 @@ foodRouter.post("/orders/:id/dispatch", authenticate, authorize("FOOD_DISPATCH",
 
     const now = new Date();
     if (action === "start") {
-      if (order.status !== "PREPARING") {
-        res.status(422).json({ success: false, error: `Cannot start dispatch — order is ${order.status}. It must be PREPARING.` });
+      if (order.status !== "ACCEPTED") {
+        res.status(422).json({ success: false, error: `Cannot start dispatch — order is ${order.status}. It must be ACCEPTED.` });
         return;
       }
       const [updated] = await db.update(foodOrdersTable).set({
@@ -1106,7 +1102,7 @@ foodRouter.post("/orders/:id/dispatch", authenticate, authorize("FOOD_DISPATCH",
 
     if (!b.deliveryPartnerId) { res.status(400).json({ success: false, error: "deliveryPartnerId required" }); return; }
     if (!canTransition(order.status, "DISPATCHED")) {
-      res.status(422).json({ success: false, error: `Cannot dispatch — order is ${order.status}. It must be PREPARING.` });
+      res.status(422).json({ success: false, error: `Cannot dispatch — order is ${order.status}. It must be ACCEPTED.` });
       return;
     }
     // C8: route through the shared helper so the order reliably carries a
@@ -1333,9 +1329,8 @@ foodRouter.get("/kitchen-summary", authenticate, authorize("FOOD_KITCHEN_SUMMARY
     const propertyId = req.query["propertyId"] as string | undefined;
 
     // The cook plan covers every order the kitchen still has to cook: freshly
-    // placed, accepted, and already on the stove. Excluding ACCEPTED made the
-    // plan vanish the moment orders were accepted (until prep started).
-    const conds = [inArray(foodOrdersTable.status, ["PLACED", "ACCEPTED", "PREPARING"])];
+    // placed and accepted (pre-dispatch). Once dispatched it leaves the plan.
+    const conds = [inArray(foodOrdersTable.status, ["PLACED", "ACCEPTED"])];
     if (scope) conds.push(scope);
     if (brand) conds.push(eq(foodOrdersTable.brand, brand as never));
     if (mealType) conds.push(eq(foodOrdersTable.mealType, mealType as never));
@@ -1448,7 +1443,10 @@ foodRouter.get("/reports", authenticate, authorize("FOOD_REPORTS", "view"), asyn
     const mealTypeDistribution = await db.select({ mealType: foodOrdersTable.mealType, count: sql<number>`count(*)::int` })
       .from(foodOrdersTable).where(where).groupBy(foodOrdersTable.mealType);
 
-    const residentTrend = await db.select({ date: day, residents: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount}), 0)::int` })
+    // People ordered for = residents + staff (staff eat the same food). Summing
+    // the total keeps this trend consistent with the operational headcount and
+    // avoids a silent drop the day staff capture ships.
+    const residentTrend = await db.select({ date: day, residents: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount} + ${foodOrdersTable.staffCount}), 0)::int` })
       .from(foodOrdersTable).where(where).groupBy(day).orderBy(day);
 
     const statusBreakdown = await db.select({ status: foodOrdersTable.status, count: sql<number>`count(*)::int` })
@@ -1466,7 +1464,7 @@ foodRouter.get("/reports", authenticate, authorize("FOOD_REPORTS", "view"), asyn
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-const REPORT_ORDER_HEADERS = ["Order ID", "Property", "Unit Lead", "Brand", "Meal", "Residents", "Quantity", "Status", "Service Date", "Delivered At"];
+const REPORT_ORDER_HEADERS = ["Order ID", "Property", "Unit Lead", "Brand", "Meal", "Residents", "Staff", "Total", "Quantity", "Status", "Service Date", "Delivered At"];
 
 /**
  * Resolves filtered order rows for the reports export + metadata (property name,
@@ -1505,7 +1503,8 @@ async function fetchReportOrdersForExport(req: any): Promise<{
 
   const mapped = rows.map((r) => [
     r.o.orderNumber, r.propertyName ?? "", r.unitLeadName ?? "", r.o.brand, r.o.mealType,
-    r.o.residentsCount, r.o.totalQuantity != null ? Number(r.o.totalQuantity) : "", r.o.status,
+    r.o.residentsCount, r.o.staffCount ?? 0, (r.o.residentsCount ?? 0) + (r.o.staffCount ?? 0),
+    r.o.totalQuantity != null ? Number(r.o.totalQuantity) : "", r.o.status,
     fmtDate(r.o.serviceDate), fmtDateTime(r.o.deliveredAt),
   ]);
   return { rows: mapped, propertyName, dateRange };

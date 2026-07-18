@@ -872,9 +872,9 @@ async function main() {
   const MEALS = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER"] as const;
   // service time of day per meal (for deliveredAt / expectedDeliveryAt).
   const MEAL_HOUR = { BREAKFAST: 8, LUNCH: 12, SNACKS: 17, DINNER: 20 } as const;
-  type OrderStatus = "PLACED" | "ACCEPTED" | "REJECTED" | "PREPARING" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
+  type OrderStatus = "PLACED" | "ACCEPTED" | "REJECTED" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
   const ORDER_STATUS_WEIGHTS: readonly [OrderStatus, number][] = [
-    ["DELIVERED", 80], ["DISPATCHED", 8], ["PLACED", 5], ["PREPARING", 2], ["ACCEPTED", 1], ["CANCELLED", 2], ["REJECTED", 2],
+    ["DELIVERED", 80], ["DISPATCHED", 8], ["PLACED", 5], ["ACCEPTED", 3], ["CANCELLED", 2], ["REJECTED", 2],
   ];
 
   type FOrderRow = typeof foodOrdersTable.$inferInsert;
@@ -903,7 +903,8 @@ async function main() {
         const status = wpick<OrderStatus>(ORDER_STATUS_WEIGHTS);
         const isDelivered = status === "DELIVERED";
         const isDispatched = status === "DISPATCHED" || isDelivered;
-        const isPreparing = status === "PREPARING" || isDispatched;
+        // Every post-PLACED, non-terminal-reject order has been accepted.
+        const isAccepted = status === "ACCEPTED" || isDispatched;
         const isCancelled = status === "CANCELLED";
         const isRejected = status === "REJECTED";
 
@@ -926,7 +927,7 @@ async function main() {
           const dish = chosen[k]!;
           const orderedQty = Math.round(residentsCount * (0.1 + rng() * 0.1) * 1000) / 1000;
           totalQty += orderedQty;
-          const preparedQty = isDispatched ? orderedQty : null;
+          const preparedQty = isAccepted ? orderedQty : null;
           // received ≈ ordered, occasionally less; wasted non-zero on ~30% of items
           const shortfall = isDelivered && rng() < 0.2 ? Math.round(orderedQty * (rng() * 0.1) * 1000) / 1000 : 0;
           const receivedQty = isDelivered ? Math.round((orderedQty - shortfall) * 1000) / 1000 : null;
@@ -967,13 +968,12 @@ async function main() {
           deliveredAt,
           deliveryRemarks: isDelivered ? "Delivered, verified by unit lead." : null,
           wasteEditableUntil: deliveredAt ? new Date(deliveredAt.getTime() + 3_600_000) : null,
-          preparingAt: isPreparing ? new Date(serviceMoment.getTime() - 4 * 3_600_000) : null,
           cancelledAt: isCancelled ? createdAt : null,
           cancelReason: isCancelled ? "Resident count dropped." : null,
           rejectedAt: isRejected ? createdAt : null,
           rejectionReason: isRejected ? "Kitchen capacity exceeded." : null,
-          acceptedById: status === "ACCEPTED" || isPreparing ? (fnbSup ?? unitLeadId) : null,
-          acceptedAt: status === "ACCEPTED" || isPreparing ? new Date(serviceMoment.getTime() - 6 * 3_600_000) : null,
+          acceptedById: isAccepted ? (fnbSup ?? unitLeadId) : null,
+          acceptedAt: isAccepted ? new Date(serviceMoment.getTime() - 6 * 3_600_000) : null,
           kitchenId,
           expectedDeliveryAt,
           createdById: unitLeadId,

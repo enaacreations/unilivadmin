@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  foodApi, foodKeys, MEAL_TYPES, BRANDS, ORDER_STATUSES, MEAL_LABEL, ORDER_STATUS_PILL,
+  foodApi, foodKeys, orderPeople, MEAL_TYPES, BRANDS, ORDER_STATUSES, MEAL_LABEL, ORDER_STATUS_PILL, orderStatusPill,
   fmtQty, serviceDayKey, groupLabel,
   type FoodOrder,
 } from "@/lib/food-api";
@@ -35,14 +35,13 @@ function orderNote(o: FoodOrder, propertyLabel: string | null): string {
   let note: string;
   switch (o.status) {
     case "DELIVERED":
-      note = o.deliveredAt ? `Delivered ${time(o.deliveredAt)}` : "Delivered";
+      note = o.deliveredAt ? `Received ${time(o.deliveredAt)}` : "Received";
       break;
     case "DISPATCHED":
       note = o.expectedDeliveryAt ? `ETA ${time(o.expectedDeliveryAt)}` : "On the way to your gate";
       break;
-    case "PREPARING":
     case "ACCEPTED":
-      note = "Cooking at the kitchen";
+      note = "In the kitchen";
       break;
     case "PLACED":
       note = "Waiting for the kitchen to accept";
@@ -235,6 +234,8 @@ export default function FoodOrders() {
       { accessorKey: "unitLeadName", header: "Unit Lead", text: (o) => o.unitLeadName || "—" },
       { accessorKey: "mealType", header: "Meal", text: (o) => MEAL_LABEL[o.mealType] ?? o.mealType },
       { accessorKey: "residentsCount", header: "Residents", text: (o) => String(o.residentsCount) },
+      { accessorKey: "staffCount", header: "Staff", text: (o) => String(o.staffCount ?? 0) },
+      { accessorKey: "people", header: "Total", text: (o) => String(orderPeople(o)) },
       { accessorKey: "totalQuantity", header: "Quantity", text: (o) => fmtQty(o.totalQuantity) },
       {
         accessorKey: "serviceDate",
@@ -384,7 +385,7 @@ export default function FoodOrders() {
           <SelectContent>
             <SelectItem value={ALL}>All Statuses</SelectItem>
             {ORDER_STATUSES.map((s) => (
-              <SelectItem key={s} value={s}>{s.charAt(0) + s.slice(1).toLowerCase()}</SelectItem>
+              <SelectItem key={s} value={s}>{ORDER_STATUS_PILL[s].label.replace(/\s*✓$/, "")}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -495,7 +496,7 @@ export default function FoodOrders() {
                       <span className="text-right">Status</span>
                     </div>
                     {day.orders.map((o) => {
-                      const pill = ORDER_STATUS_PILL[o.status];
+                      const pill = orderStatusPill(o.status);
                       const propertyLabel = showProperty
                         ? (o.propertyName ?? properties.find((p) => p.id === o.propertyId)?.name ?? null)
                         : null;
@@ -530,7 +531,7 @@ export default function FoodOrders() {
                             )}
                           </span>
                           <span className="font-mono text-[12.5px] tabular-nums sm:text-right">
-                            {o.residentsCount}
+                            {orderPeople(o)}
                           </span>
                           <span className="order-last w-full truncate text-[12.5px] text-muted-foreground sm:order-none sm:w-auto">
                             {orderNote(o, propertyLabel)}

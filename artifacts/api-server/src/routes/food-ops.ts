@@ -749,6 +749,12 @@ foodOpsRouter.post("/orders/:id/accept", authenticate, authorize("FOOD_KITCHEN_S
     if (order.status !== "PLACED") { res.status(422).json({ success: false, error: "Only PLACED orders can be accepted" }); return; }
     const now = new Date();
     const [updated] = await db.update(foodOrdersTable).set({ status: "ACCEPTED", acceptedAt: now, acceptedById: req.user!.id, updatedAt: now }).where(eq(foodOrdersTable.id, order.id)).returning();
+    // Backfill prepared quantities at accept time (moved here from the removed
+    // /prepare step) so the dispatch board's editable send-quantities have a
+    // starting value. Only fills rows not already set.
+    await db.update(foodOrderItemsTable)
+      .set({ preparedQty: sql`${foodOrderItemsTable.orderedQty}`, updatedAt: now })
+      .where(and(eq(foodOrderItemsTable.orderId, order.id), isNull(foodOrderItemsTable.preparedQty)));
     await db.insert(foodOrderEventsTable).values({ id: newId(), orderId: order.id, status: "ACCEPTED", note: "Order accepted by kitchen", actorId: req.user!.id });
     await notifyForOrder(order, "ACCEPTED");
     res.json({ success: true, data: updated });
@@ -830,12 +836,12 @@ export async function createDispatchForOrders(
 ): Promise<typeof foodDispatchesTable.$inferSelect> {
   const now = new Date();
   // Defense-in-depth: callers already guard, but this helper is the single point
-  // that flips orders to DISPATCHED — refuse anything that isn't PREPARING so no
-  // future caller can bypass PLACED→ACCEPTED→PREPARING→DISPATCHED.
+  // that flips orders to DISPATCHED — refuse anything that isn't ACCEPTED so no
+  // future caller can bypass PLACED→ACCEPTED→DISPATCHED.
   const statusRows = await tx.select({ id: foodOrdersTable.id, status: foodOrdersTable.status })
     .from(foodOrdersTable).where(inArray(foodOrdersTable.id, opts.orderIds));
   if (statusRows.some((r) => !canTransition(r.status, "DISPATCHED"))) {
-    throw new Error("Cannot dispatch — every order must be PREPARING");
+    throw new Error("Cannot dispatch — every order must be ACCEPTED");
   }
   const etaMinutes = opts.etaMinutes != null ? Number(opts.etaMinutes) : null;
   const estimatedArrivalAt = etaMinutes ? new Date(now.getTime() + etaMinutes * 60000) : null;
@@ -983,11 +989,11 @@ foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit
 
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const orders = await db.select().from(foodOrdersTable).where(inArray(foodOrdersTable.id, orderIds));
-    // Only PREPARING orders can be dispatched (PREPARING → DISPATCHED) — same
-    // guard as every other dispatch path, so a never-prepared order can't jump
+    // Only ACCEPTED orders can be dispatched (ACCEPTED → DISPATCHED) — same
+    // guard as every other dispatch path, so a never-accepted order can't jump
     // the queue via trip creation.
     const dispatchable = orders.filter((o) => isAccessible(o.propertyId, ids) && canTransition(o.status, "DISPATCHED"));
-    if (!dispatchable.length) { res.status(422).json({ success: false, error: "No dispatchable orders in selection — orders must be PREPARING." }); return; }
+    if (!dispatchable.length) { res.status(422).json({ success: false, error: "No dispatchable orders in selection — orders must be ACCEPTED." }); return; }
 
     // C5: kitchen integrity, DERIVED from the orders (never trusted from the
     // client's kitchenId, which used to gate this whole block — an omitted
@@ -1175,7 +1181,7 @@ foodOpsRouter.patch("/dispatches/:id/orders/:orderId", authenticate, authorize("
 });
 
 /* ──────────────────────────────────────────────────────────────────────────
- * C7 — Cancel a dispatch. Reverts its linked orders DISPATCHED → PREPARING
+ * C7 — Cancel a dispatch. Reverts its linked orders DISPATCHED → ACCEPTED
  * (clearing dispatchId/dispatchedAt), sets the trip CANCELLED, writes audit
  * events, and best-effort notifies the unit leads.
  * ────────────────────────────────────────────────────────────────────────── */
@@ -1201,10 +1207,10 @@ foodOpsRouter.post("/dispatches/:id/cancel", authenticate, authorize("FOOD_DISPA
       const toRevert = linked.filter((o) => o.status === "DISPATCHED");
       for (const o of toRevert) {
         await tx.update(foodOrdersTable).set({
-          status: "PREPARING", dispatchId: null, dispatchedAt: null, dispatchStartedAt: null,
+          status: "ACCEPTED", dispatchId: null, dispatchedAt: null, dispatchStartedAt: null,
           deliveryPartnerId: null, vehicleId: null, updatedAt: now,
         }).where(eq(foodOrdersTable.id, o.id));
-        await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId: o.id, status: "PREPARING", note: reason ? `Dispatch ${trip.dispatchNumber} cancelled: ${reason}` : `Dispatch ${trip.dispatchNumber} cancelled`, actorId: req.user!.id });
+        await tx.insert(foodOrderEventsTable).values({ id: newId(), orderId: o.id, status: "ACCEPTED", note: reason ? `Dispatch ${trip.dispatchNumber} cancelled: ${reason}` : `Dispatch ${trip.dispatchNumber} cancelled`, actorId: req.user!.id });
       }
       await tx.update(foodDispatchesTable).set({ status: "CANCELLED", updatedAt: now }).where(eq(foodDispatchesTable.id, id));
       await writeDispatchEvent(tx, id, "CANCELLED", reason ? `Cancelled: ${reason}` : "Dispatch cancelled", req.user!.id);
@@ -1212,13 +1218,13 @@ foodOpsRouter.post("/dispatches/:id/cancel", authenticate, authorize("FOOD_DISPA
     });
 
     // Best-effort notify (outside the txn; failures must not roll back the cancel).
-    // PREPARING has no order-lifecycle template, so notify the unit lead directly.
+    // The revert-to-ACCEPTED has no order-lifecycle template, so notify directly.
     for (const o of reverted) {
       try {
         await notify({
           userId: o.unitLeadId,
           title: "Dispatch cancelled",
-          body: `Order ${o.orderNumber} is back in preparation${reason ? `: ${reason}` : ""}.`,
+          body: `Order ${o.orderNumber} is back to accepted (awaiting dispatch)${reason ? `: ${reason}` : ""}.`,
           type: "FOOD_ORDER",
           entityType: "FOOD_ORDER",
           entityId: o.id,
@@ -1265,6 +1271,12 @@ const zBatchMealItem = z.object({
 const zBatchMeal = z.object({
   mealType: z.string().max(32),
   quantity: z.coerce.number().nullish(),
+  // Per-meal headcount — attendance differs across meals, so each meal order
+  // carries its own residentsCount. Falls back to the batch-level `persons`.
+  residentsCount: z.coerce.number().nullish(),
+  // Per-meal staff eating the SAME food. Total cooked-for = residents + staff.
+  // Falls back to the batch-level `staffCount` (0 when unspecified).
+  staffCount: z.coerce.number().nullish(),
   items: z.array(zBatchMealItem).optional(),
 }).passthrough();
 const orderBatchSchema = z.object({
@@ -1273,6 +1285,8 @@ const orderBatchSchema = z.object({
   meals: z.array(zBatchMeal).optional(),
   persons: z.coerce.number().nullish(),
   residentsCount: z.coerce.number().nullish(),
+  // Batch-level staff fallback for meals that omit their own staffCount.
+  staffCount: z.coerce.number().nullish(),
   notes: zText.nullish(),
 }).passthrough();
 
@@ -1282,7 +1296,9 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
     const b = req.body || {};
     const { propertyId, serviceDate } = b;
     const persons = b.persons != null ? Number(b.persons) : (b.residentsCount != null ? Number(b.residentsCount) : 0);
-    type MealIn = { mealType: string; quantity?: number; items?: Array<{ dishId: string; personsCount?: number; orderedQty: number; unit?: string }> };
+    // Batch-level staff fallback (0 when unspecified) for meals that omit staffCount.
+    const staffScalar = b.staffCount != null ? Number(b.staffCount) : 0;
+    type MealIn = { mealType: string; quantity?: number; residentsCount?: number; staffCount?: number; items?: Array<{ dishId: string; personsCount?: number; orderedQty: number; unit?: string }> };
     const meals: MealIn[] = Array.isArray(b.meals) ? b.meals : [];
     if (!propertyId || !serviceDate || !meals.length) {
       res.status(400).json({ success: false, error: "propertyId, serviceDate and at least one meal required" }); return;
@@ -1330,7 +1346,7 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
     const batchNumber = await nextSeq(`BATCH-${now.getFullYear()}-`, foodOrderBatchesTable.batchNumber, foodOrderBatchesTable);
     const [batch] = await db.insert(foodOrderBatchesTable).values({
       id: newId(), batchNumber, propertyId, unitLeadId: req.user!.id, brand,
-      serviceDate: sd, residentsCount: persons, notes: b.notes ?? null,
+      serviceDate: sd, residentsCount: persons, staffCount: staffScalar, notes: b.notes ?? null,
     }).returning();
 
     const [prop] = await db.select({ name: propertiesTable.name }).from(propertiesTable).where(eq(propertiesTable.id, propertyId));
@@ -1340,6 +1356,12 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       if (!(MEAL_TYPES as readonly string[]).includes(meal.mealType)) continue; // skip invalid meal types
       const menu = await resolveMenu(kitchenId, brand, meal.mealType, sd);
       const allowed = new Set(menu.map((m) => m.dishId));
+      // This meal's headcount (per-meal), falling back to the batch scalar. Staff
+      // eat the same food, so the per-dish personsCount + quantities are driven by
+      // the TOTAL (residents + staff); the split is persisted on the order row.
+      const mealResidents = meal.residentsCount != null ? Number(meal.residentsCount) : persons;
+      const mealStaff = meal.staffCount != null ? Number(meal.staffCount) : staffScalar;
+      const mealPersons = mealResidents + mealStaff;
 
       // Per-item editing path, else legacy quantity path.
       let itemRows: Array<{ dishId: string; personsCount: number; orderedQty: number; unit: string }> = [];
@@ -1350,14 +1372,14 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
           const md = menu.find((m) => m.dishId === it.dishId)!;
           itemRows.push({
             dishId: it.dishId,
-            personsCount: it.personsCount != null ? Number(it.personsCount) : persons,
+            personsCount: it.personsCount != null ? Number(it.personsCount) : mealPersons,
             orderedQty: Math.round(oq * 1000) / 1000,
             unit: it.unit || md.unit,
           });
         }
       } else if (meal.quantity != null) {
         const computed = await computeOrderItems(kitchenId, brand, meal.mealType, sd, Number(meal.quantity));
-        itemRows = computed.map((c) => ({ dishId: c.dishId, personsCount: persons, orderedQty: c.orderedQty, unit: c.unit }));
+        itemRows = computed.map((c) => ({ dishId: c.dishId, personsCount: mealPersons, orderedQty: c.orderedQty, unit: c.unit }));
       }
       if (!itemRows.length) continue;
 
@@ -1366,7 +1388,12 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       const orderNumber = await nextOrderNumber();
       const [order] = await db.insert(foodOrdersTable).values({
         id: newId(), orderNumber, propertyId, brand, kitchenId, mealType: meal.mealType as never,
-        unitLeadId: req.user!.id, residentsCount: persons || itemRows[0]!.personsCount,
+        unitLeadId: req.user!.id,
+        // residentsCount = residents ONLY (Approach A). Preserve the legacy
+        // zero-guard (no headcount → first item's basis) but ONLY when the TOTAL
+        // is 0 — never fold staff into residentsCount, which would double-count.
+        residentsCount: mealPersons > 0 ? mealResidents : itemRows[0]!.personsCount,
+        staffCount: mealStaff,
         totalQuantity: String(totalQty), status: "PLACED", serviceDate: sd, batchId: batch!.id,
         expectedDeliveryAt: expDelivery, notes: b.notes ?? null, createdById: req.user!.id, updatedAt: now,
       }).returning();
@@ -2089,29 +2116,29 @@ foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "vi
     const day = sql<string>`to_char(${foodOrdersTable.serviceDate}, 'YYYY-MM-DD')`;
 
     // ── People ordered for — bucketed by day (sum of residentsCount) ──────────
-    const peopleRows = await db.select({ date: day, people: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount}), 0)::int` })
+    const peopleRows = await db.select({ date: day, people: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount} + ${foodOrdersTable.staffCount}), 0)::int` })
       .from(foodOrdersTable).where(where).groupBy(day).orderBy(day);
     const peopleOrderedTrend = peopleRows.map((r) => ({ date: r.date, people: Number(r.people) }));
 
     // ── People ordered for — grouped across properties ────────────────────────
     const peopleByPropRows = await db.select({
       propertyId: foodOrdersTable.propertyId, propertyName: propertiesTable.name,
-      people: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount}), 0)::int`,
+      people: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount} + ${foodOrdersTable.staffCount}), 0)::int`,
     }).from(foodOrdersTable)
       .leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
       .where(where).groupBy(foodOrdersTable.propertyId, propertiesTable.name)
-      .orderBy(desc(sql`sum(${foodOrdersTable.residentsCount})`));
+      .orderBy(desc(sql`sum(${foodOrdersTable.residentsCount} + ${foodOrdersTable.staffCount})`));
     const peopleByProperty = peopleByPropRows.map((r) => ({
       propertyId: r.propertyId, propertyName: r.propertyName ?? "—", people: Number(r.people),
     }));
 
     // ── People ordered for — current vs prior comparable window ───────────────
-    const [curPeople] = await db.select({ total: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount}), 0)::int` })
+    const [curPeople] = await db.select({ total: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount} + ${foodOrdersTable.staffCount}), 0)::int` })
       .from(foodOrdersTable).where(where);
     const prevScope = [gte(foodOrdersTable.serviceDate, prevFrom), lte(foodOrdersTable.serviceDate, prevTo)] as any[];
     if (ids !== null) prevScope.push(ids.length ? inArray(foodOrdersTable.propertyId, ids) : sql`false`);
     if (propertyId) prevScope.push(eq(foodOrdersTable.propertyId, propertyId));
-    const [prevPeople] = await db.select({ total: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount}), 0)::int` })
+    const [prevPeople] = await db.select({ total: sql<number>`coalesce(sum(${foodOrdersTable.residentsCount} + ${foodOrdersTable.staffCount}), 0)::int` })
       .from(foodOrdersTable).where(and(...prevScope));
     const peopleComparison = {
       current: Number(curPeople?.total ?? 0),
@@ -2550,12 +2577,13 @@ async function fetchOrdersForExport(req: any): Promise<{
 
   const mapped = rows.map((r) => [
     r.o.orderNumber, r.propertyName ?? "", r.unitLeadName ?? "", r.o.brand, r.o.mealType,
-    r.o.residentsCount, r.o.totalQuantity != null ? Number(r.o.totalQuantity) : "", r.o.status,
+    r.o.residentsCount, r.o.staffCount ?? 0, (r.o.residentsCount ?? 0) + (r.o.staffCount ?? 0),
+    r.o.totalQuantity != null ? Number(r.o.totalQuantity) : "", r.o.status,
     fmtDate(r.o.serviceDate), fmtDateTime(r.o.deliveredAt),
   ]);
   return { rows: mapped, propertyName, dateRange };
 }
-const ORDER_HEADERS = ["Order ID", "Property", "Unit Lead", "Brand", "Meal", "Residents", "Quantity", "Status", "Service Date", "Delivered At"];
+const ORDER_HEADERS = ["Order ID", "Property", "Unit Lead", "Brand", "Meal", "Residents", "Staff", "Total", "Quantity", "Status", "Service Date", "Delivered At"];
 
 /** Build "food-orders-{property?}-{date}.{ext}" filename. */
 function ordersFilename(propertyName: string | null, ext: string): string {

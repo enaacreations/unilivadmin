@@ -158,7 +158,7 @@ export default function FoodMyProperties() {
                   />
                   <Stat
                     icon={CheckCircle2}
-                    label="Delivered"
+                    label="Received"
                     value={p.deliveredCount}
                     onClick={() => goDelivered(p.id)}
                   />

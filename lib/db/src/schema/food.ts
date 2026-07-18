@@ -577,6 +577,9 @@ export const foodOrderBatchesTable = pgTable("food_order_batches", {
   brand: text("brand").notNull(),
   serviceDate: timestamp("service_date").notNull(),
   residentsCount: integer("residents_count").notNull(),
+  /** Staff eating the same meals — captured for reports/analytics. Total people
+   *  fed = residentsCount + staffCount. */
+  staffCount: integer("staff_count").notNull().default(0),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -633,6 +636,9 @@ export const foodOrdersTable = pgTable("food_orders", {
     .notNull()
     .references(() => usersTable.id),
   residentsCount: integer("residents_count").notNull(),
+  /** Staff eating the same meals — captured for reports/analytics. Total people
+   *  fed = residentsCount + staffCount. */
+  staffCount: integer("staff_count").notNull().default(0),
   /** Convenience total quantity (sum of item ordered quantities). */
   totalQuantity: numeric("total_quantity", { precision: 12, scale: 3 }),
   status: foodOrderStatusEnum("status").default("PLACED").notNull(),

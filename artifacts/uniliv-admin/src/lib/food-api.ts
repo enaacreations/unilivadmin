@@ -14,7 +14,7 @@ import { apiFetch } from "@/lib/api-fetch";
 // dev fallback only.
 export type FoodBrand = string;
 export type MealType = "BREAKFAST" | "LUNCH" | "SNACKS" | "DINNER";
-export type OrderStatus = "PLACED" | "ACCEPTED" | "REJECTED" | "PREPARING" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
+export type OrderStatus = "PLACED" | "ACCEPTED" | "REJECTED" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
 export type DispatchStatus = "LOADING" | "IN_TRANSIT" | "DELIVERED" | "PARTIAL" | "CANCELLED";
 
 export const MEAL_TYPES: MealType[] = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER"];
@@ -22,7 +22,7 @@ export const PREPARATIONS = ["VEG", "NON_VEG", "JAIN"] as const;
 export type Preparation = (typeof PREPARATIONS)[number];
 export const PREPARATION_LABEL: Record<string, string> = { VEG: "Veg", NON_VEG: "Non-veg", JAIN: "Jain" };
 export const BRANDS: FoodBrand[] = ["UNILIV", "HUDDLE"];
-export const ORDER_STATUSES: OrderStatus[] = ["PLACED", "ACCEPTED", "REJECTED", "PREPARING", "DISPATCHED", "DELIVERED", "CANCELLED"];
+export const ORDER_STATUSES: OrderStatus[] = ["PLACED", "ACCEPTED", "REJECTED", "DISPATCHED", "DELIVERED", "CANCELLED"];
 
 export interface FoodOrder {
   id: string;
@@ -34,6 +34,10 @@ export interface FoodOrder {
   unitLeadId: string;
   unitLeadName?: string;
   residentsCount: number;
+  /** Per-meal STAFF headcount. Staff eat the same food; people fed =
+   *  residentsCount + staffCount. 0 on legacy orders (so total === residentsCount
+   *  for them). Kept separate from residentsCount so analytics never double-count. */
+  staffCount: number;
   totalQuantity: string | null;
   status: OrderStatus;
   serviceDate: string;
@@ -61,6 +65,14 @@ export interface FoodOrder {
   createdAt: string;
   updatedAt: string;
 }
+
+/** People the kitchen actually cooks for on an order = residents + staff.
+ *  staffCount is 0 on legacy orders, so this equals residentsCount for them.
+ *  Use this for EVERY operational "N people / N ppl" display and every sum of
+ *  order headcounts. Do NOT use it for analytics that must split the two. */
+export const orderPeople = (
+  o: { residentsCount?: number | null; staffCount?: number | null },
+): number => (o.residentsCount ?? 0) + (o.staffCount ?? 0);
 
 /** A multi-meal order batch (one Place Order action → one batch → up to 4 meal orders). */
 export interface OrderBatch {
@@ -481,7 +493,7 @@ export const foodApi = {
 
   // Orders
   // Optional filters: serviceDate (exact "yyyy-MM-dd"), status (single e.g. "PLACED"
-  // or CSV e.g. "PLACED,PREPARING"), plus propertyId/brand/mealType/from/to/search/page/limit.
+  // or CSV e.g. "PLACED,ACCEPTED"), plus propertyId/brand/mealType/from/to/search/page/limit.
   listOrders: (p: Record<string, unknown> = {}) =>
     apiFetch<Envelope<FoodOrder[]>>(`/food/orders${qs(p)}`),
   getOrder: (id: string) =>
@@ -503,18 +515,20 @@ export const foodApi = {
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}`, { method: "PUT", body: JSON.stringify(body) }).then((r) => r.data),
   // B3-6 — edit an order's people count (the only editable quantity input). Item
   // quantities + totalQuantity are recomputed server-side from this; never sent by
-  // the client. `notes` is optionally editable. Allowed while PLACED/PREPARING/DISPATCHED.
-  editOrderPeople: (id: string, residentsCount: number, notes?: string | null) =>
+  // the client. `notes` is optionally editable. Allowed while PLACED/ACCEPTED/DISPATCHED.
+  editOrderPeople: (id: string, residentsCount: number, staffCount: number, notes?: string | null) =>
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}`, {
       method: "PUT",
-      body: JSON.stringify(notes !== undefined ? { residentsCount, notes } : { residentsCount }),
+      body: JSON.stringify(
+        notes !== undefined
+          ? { residentsCount, staffCount, notes }
+          : { residentsCount, staffCount },
+      ),
     }).then((r) => r.data),
   cancelOrder: (id: string, reason?: string) =>
     apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
-  prepareOrder: (id: string) =>
-    apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/prepare`, { method: "POST", body: "{}" }).then((r) => r.data),
   // Kitchen items: ordered vs prepared per dish — the pre-dispatch review on
-  // Kitchen Home. PATCH adjusts what the kitchen actually sends (PREPARING only).
+  // Kitchen Home. PATCH adjusts what the kitchen actually sends (ACCEPTED only).
   kitchenItems: (orderId: string) =>
     apiFetch<Envelope<KitchenItem[]>>(`/food/orders/${orderId}/kitchen-items`).then((r) => r.data),
   updateKitchenItems: (orderId: string, items: { id: string; preparedQty: number }[]) =>
@@ -678,7 +692,7 @@ export const foodApi = {
       method: "PATCH",
       body: JSON.stringify(note !== undefined ? { status: "IN_TRANSIT", note } : { status: "IN_TRANSIT" }),
     }).then((r) => r.data),
-  // Cancel a dispatch, reverting its DISPATCHED orders back to PREPARING.
+  // Cancel a dispatch, reverting its DISPATCHED orders back to ACCEPTED.
   cancelDispatch: (id: string, reason?: string) =>
     apiFetch<Envelope<Dispatch & { revertedCount: number }>>(`/food/dispatches/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
   // Mark a single order on a dispatch delivered (or undo). markTripDelivered rolls the
@@ -759,14 +773,21 @@ export const MEAL_LABEL: Record<MealType, string> = {
 /** Canonical order-status pill (label + soft-token tone) — one source of truth
  *  for every status badge across the food pages. */
 export const ORDER_STATUS_PILL: Record<OrderStatus, { label: string; cls: string }> = {
-  PLACED:    { label: "Placed",      cls: "bg-info-soft text-info" },
-  ACCEPTED:  { label: "Accepted",    cls: "bg-info-soft text-info" },
-  PREPARING: { label: "In kitchen",  cls: "bg-warning-soft text-warning" },
-  DISPATCHED:{ label: "Dispatched",  cls: "bg-warning-soft text-warning" },
-  DELIVERED: { label: "Delivered ✓", cls: "bg-success-soft text-success" },
-  CANCELLED: { label: "Cancelled",   cls: "bg-muted text-muted-foreground" },
-  REJECTED:  { label: "Rejected",    cls: "bg-danger-soft text-destructive" },
+  PLACED:    { label: "Placed",     cls: "bg-info-soft text-info" },
+  ACCEPTED:  { label: "Accepted",   cls: "bg-info-soft text-info" },
+  DISPATCHED:{ label: "Dispatched", cls: "bg-warning-soft text-warning" },
+  DELIVERED: { label: "Received ✓", cls: "bg-success-soft text-success" },
+  CANCELLED: { label: "Cancelled",  cls: "bg-muted text-muted-foreground" },
+  REJECTED:  { label: "Rejected",   cls: "bg-danger-soft text-destructive" },
 };
+/** Safe pill lookup — never throws on an unknown/legacy status (e.g. a retired
+ *  enum value like PREPARING lingering on an old row); falls back to a neutral
+ *  pill showing the raw status text. */
+export const orderStatusPill = (status: string): { label: string; cls: string } =>
+  ORDER_STATUS_PILL[status as OrderStatus] ?? {
+    label: status ? status.charAt(0) + status.slice(1).toLowerCase() : "—",
+    cls: "bg-muted text-muted-foreground",
+  };
 /** Normalise a serviceDate ISO timestamp to its LOCAL calendar-day key ("yyyy-MM-dd"). */
 export const serviceDayKey = (iso: string) => format(parseISO(iso), "yyyy-MM-dd");
 /** Short display name — "High Tea / Evening Snacks" → "High Tea". */

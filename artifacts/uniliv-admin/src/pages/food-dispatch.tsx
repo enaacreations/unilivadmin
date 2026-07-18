@@ -8,7 +8,6 @@ import {
   Check, ChevronsUpDown, History, Ban, AlertCircle, Boxes, Plus,
 } from "lucide-react";
 import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
-import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DatePicker } from "@/components/ui/date-picker";
@@ -44,7 +43,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { useAppStore } from "@/lib/store";
 import {
-  foodApi, foodKeys, MEAL_TYPES, BRANDS, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal,
+  foodApi, foodKeys, orderPeople, MEAL_TYPES, BRANDS, MEAL_LABEL, ORDER_STATUS_PILL, orderStatusPill, shortMeal,
   type FoodOrder, type FoodBrand, type MealType,
   type Dispatch, type DispatchStatus, type DispatchDetailOrder,
 } from "@/lib/food-api";
@@ -183,22 +182,22 @@ export default function FoodDispatch() {
     serviceDate: date || undefined,
   };
 
-  const preparingParams = { ...filterParams, status: "PREPARING", limit: 100 };
+  const acceptedParams = { ...filterParams, status: "ACCEPTED", limit: 100 };
   const dispatchedParams = { ...filterParams, status: "DISPATCHED", limit: 100 };
 
-  const { data: preparingRes, isLoading: loadingPreparing } = useQuery({
-    queryKey: foodKeys.orders(preparingParams),
-    queryFn: () => foodApi.listOrders(preparingParams),
+  const { data: acceptedRes, isLoading: loadingAccepted } = useQuery({
+    queryKey: foodKeys.orders(acceptedParams),
+    queryFn: () => foodApi.listOrders(acceptedParams),
   });
 
-  // Dispatchable board = PREPARING only. An order must be prepared before it can
-  // be dispatched — the server enforces PREPARING → DISPATCHED, so ACCEPTED
-  // orders (not yet cooked) don't belong on the queue.
+  // Dispatchable board = ACCEPTED only. Once the kitchen accepts an order it's
+  // ready to load — the server enforces ACCEPTED → DISPATCHED, so PLACED orders
+  // (not yet accepted) don't belong on the queue.
   const dispatchable = React.useMemo<QueueOrder[]>(
-    () => preparingRes?.data ?? [],
-    [preparingRes],
+    () => acceptedRes?.data ?? [],
+    [acceptedRes],
   );
-  const loadingQueue = loadingPreparing;
+  const loadingQueue = loadingAccepted;
 
   const { data: dispatchedRes, isLoading: loadingDispatched } = useQuery({
     queryKey: foodKeys.orders(dispatchedParams),
@@ -328,7 +327,7 @@ export default function FoodDispatch() {
     () => dispatchable.filter((o) => selected.has(o.id)),
     [dispatchable, selected],
   );
-  const vanMeals = loaded.reduce((n, o) => n + (o.residentsCount || 0), 0);
+  const vanMeals = loaded.reduce((n, o) => n + orderPeople(o), 0);
   // Progress of loading the ready queue (share of ready orders in the van) —
   // an honest "how much of the queue have I loaded" bar, NOT a physical-capacity
   // gauge (there's no van-capacity model), so it's labelled by count, not "% full".
@@ -364,7 +363,7 @@ export default function FoodDispatch() {
   // ── Stats ─────────────────────────────────────────────────────────────────
   const awaiting = dispatchable.length;
   const inTransit = dispatched.length;
-  const residentsWaiting = dispatchable.reduce((s, o) => s + (o.residentsCount || 0), 0);
+  const residentsWaiting = dispatchable.reduce((s, o) => s + orderPeople(o), 0);
   const activeTrips = trips.filter((t) => t.status === "LOADING" || t.status === "IN_TRANSIT").length;
 
   const segTabs = [
@@ -373,9 +372,8 @@ export default function FoodDispatch() {
     { k: "transit" as const, label: `In transit (${inTransit})` },
   ];
 
-  // "ready HH:mm" line for a queue card (mono time in the sub-line).
+  // "accepted HH:mm" line for a queue card (mono time in the sub-line).
   const readyLine = (o: QueueOrder): { prefix: string; time: string } | null => {
-    if (o.preparingAt) return { prefix: "ready", time: format(new Date(o.preparingAt), "HH:mm") };
     if (o.acceptedAt) return { prefix: "accepted", time: format(new Date(o.acceptedAt), "HH:mm") };
     return null;
   };
@@ -406,7 +404,7 @@ export default function FoodDispatch() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatTile label="Awaiting dispatch" value={awaiting} />
         <StatTile label="In transit" value={inTransit} />
-        <StatTile label="Residents waiting" value={residentsWaiting} />
+        <StatTile label="People waiting" value={residentsWaiting} />
         <StatTile label="Active trips" value={activeTrips} />
       </div>
 
@@ -462,7 +460,7 @@ export default function FoodDispatch() {
         ))}
       </div>
 
-      {/* ── QUEUE: dispatchable orders (PREPARING) ────────────────────────── */}
+      {/* ── QUEUE: dispatchable orders (ACCEPTED) ─────────────────────────── */}
       {tab === "queue" && (
         loadingQueue ? (
           <RowsSkeleton />
@@ -470,7 +468,7 @@ export default function FoodDispatch() {
           <LocalEmpty
             icon={CheckCircle2}
             title="Nothing waiting to dispatch"
-            hint="Orders being prepared appear here once they're ready for a trip. Accepted orders must be marked Preparing on the Kitchen board first. Adjust the filters above to widen the view."
+            hint="Accepted orders appear here once the kitchen takes them, ready for a trip. Adjust the filters above to widen the view."
           />
         ) : (
           <>
@@ -629,7 +627,7 @@ export default function FoodDispatch() {
                         </span>
                         <span className="mt-0.5 block truncate text-[13px] text-muted-foreground">
                           <span className="font-mono tabular-nums">{o.orderNumber}</span>
-                          {" · "}{MEAL_LABEL[o.mealType]}{" · "}{o.residentsCount} people
+                          {" · "}{MEAL_LABEL[o.mealType]}{" · "}{orderPeople(o)} people
                           {ready && (
                             <>{" · "}{ready.prefix}{" "}<span className="font-mono tabular-nums">{ready.time}</span></>
                           )}
@@ -698,7 +696,7 @@ export default function FoodDispatch() {
                     <p className="mt-0.5 truncate text-[13px] text-muted-foreground">
                       <span className="font-mono tabular-nums">{o.orderNumber}</span>
                       {" · "}{MEAL_LABEL[o.mealType]}
-                      {" · "}{o.residentsCount} people
+                      {" · "}{orderPeople(o)} people
                       {" · "}{o.deliveryPartnerName || partnerName(o.deliveryPartnerId)}
                     </p>
                   </div>
@@ -1148,7 +1146,7 @@ function TripDetailSheet({
                             <TableHead>Order</TableHead>
                             <TableHead>Address</TableHead>
                             <TableHead>Unit-lead</TableHead>
-                            <TableHead className="text-right">Residents</TableHead>
+                            <TableHead className="text-right">People</TableHead>
                             <TableHead className="text-right">Status</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -1283,8 +1281,17 @@ function OrderRow({
           </a>
         )}
       </TableCell>
-      <TableCell className="text-right text-sm align-top">{o.residentsCount ?? "—"}</TableCell>
-      <TableCell className="text-right align-top"><StatusBadge status={o.status} /></TableCell>
+      <TableCell className="text-right text-sm align-top">{orderPeople(o)}</TableCell>
+      <TableCell className="text-right align-top">
+        {(() => {
+          const pill = orderStatusPill(o.status);
+          return (
+            <span className={cn("rounded-full px-[9px] py-[3px] text-[11px] font-bold", pill.cls)}>
+              {pill.label}
+            </span>
+          );
+        })()}
+      </TableCell>
     </TableRow>
   );
 }
