@@ -25,8 +25,10 @@ docker compose up -d api web
 
 echo "▶ Verifying"
 sleep 3
-code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/food/orders || true)
-echo "  api gate: ${code} (expect 401)"
+PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+PORT=${PORT:-8080}
+code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/api/food/orders" || true)
+echo "  api gate (:${PORT}): ${code} (expect 401)"
 docker compose ps
 
 echo "✅ Deploy complete ($(git rev-parse --short HEAD))"

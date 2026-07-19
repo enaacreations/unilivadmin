@@ -11,7 +11,9 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       target: api
-    image: unilivadmin-api:latest
+    # ENV_TAG (from the per-checkout .env dotenv) scopes the image per environment
+    # so dev/uat/prod on the same host don't overwrite each other's images.
+    image: unilivadmin-api:${ENV_TAG:-latest}
     restart: unless-stopped
     init: true
     env_file:
@@ -38,7 +40,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       target: web
-    image: unilivadmin-web:latest
+    image: unilivadmin-web:${ENV_TAG:-latest}
     restart: unless-stopped
     depends_on:
       api:
@@ -58,7 +60,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       target: base
-    image: unilivadmin-tools:latest
+    image: unilivadmin-tools:${ENV_TAG:-latest}
     env_file:
       - .env.docker
     working_dir: /repo
