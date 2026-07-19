@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO } from "date-fns";
 import {
-  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, PartyPopper, Truck, Trash2,
+  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, MoreVertical, PartyPopper, Truck, Trash2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { MealIcon, DishIcon } from "@/components/meal-icon";
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
@@ -671,6 +672,8 @@ export default function FoodDashboard() {
   /* ── inline cancel dialog state ── */
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [cancelReason, setCancelReason] = React.useState("");
+  // Kebab actions popover on the meal-status row (View order / Cancel).
+  const [actionsOpen, setActionsOpen] = React.useState(false);
   React.useEffect(() => {
     // Reset the receive + cancel forms whenever the focused order changes.
     setAck(false);
@@ -839,8 +842,9 @@ export default function FoodDashboard() {
         </section>
       )}
       {/* Placed-day status — hidden next to a missed-day incident so the
-          incident stays the dominant message. */}
-      {nextPlaced && !missedTomorrow && (
+          incident stays the dominant message, and hidden when the journey is
+          already showing that same day (the banner would just repeat it). */}
+      {nextPlaced && !missedTomorrow && journeyDay !== nextOffset && (
         <section className="flex items-center gap-3.5 rounded-[14px] bg-success-soft px-[22px] py-4">
           <span className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-success">
             <Check className="h-4 w-4 text-white" strokeWidth={3} />
@@ -1015,21 +1019,41 @@ export default function FoodDashboard() {
                         ? "Received & confirmed · waste recorded ✓"
                         : selected.statusLine}
                 </span>
-                {!orderMode && selected.order != null && canReadOrders && (
-                  <Link href={`/food/orders/${selected.order.id}`}>
-                    <span className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-                      <Eye className="h-3.5 w-3.5" /> View order
-                    </span>
-                  </Link>
-                )}
-                {canCancelThis && (
-                  <button
-                    type="button"
-                    onClick={() => setCancelOpen(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-danger-soft px-2.5 py-1 text-xs font-semibold text-destructive transition-colors hover:bg-destructive hover:text-white"
-                  >
-                    <Ban className="h-3.5 w-3.5" /> Cancel
-                  </button>
+                {/* Order actions collapse into a kebab menu — same on desktop and
+                    mobile — so the status row stays compact. */}
+                {((!orderMode && selected.order != null && canReadOrders) || canCancelThis) && (
+                  <Popover open={actionsOpen} onOpenChange={setActionsOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Order actions"
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:border-accent hover:text-foreground data-[state=open]:border-accent data-[state=open]:text-foreground"
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-44 p-1.5">
+                      {!orderMode && selected.order != null && canReadOrders && (
+                        <Link href={`/food/orders/${selected.order.id}`}>
+                          <span
+                            onClick={() => setActionsOpen(false)}
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                          >
+                            <Eye className="h-4 w-4 text-muted-foreground" /> View order
+                          </span>
+                        </Link>
+                      )}
+                      {canCancelThis && (
+                        <button
+                          type="button"
+                          onClick={() => { setActionsOpen(false); setCancelOpen(true); }}
+                          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm font-medium text-destructive transition-colors hover:bg-danger-soft"
+                        >
+                          <Ban className="h-4 w-4" /> Cancel order
+                        </button>
+                      )}
+                    </PopoverContent>
+                  </Popover>
                 )}
               </div>
 
