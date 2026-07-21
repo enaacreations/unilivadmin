@@ -99,6 +99,9 @@ export default function FoodSettings() {
     id ? (properties.find((p) => p.id === id)?.name ?? "—") : "—";
   const { role } = usePermissions();
   const isSuperAdmin = isSuperAdminRole(role);
+  // Food Defaults are org-wide (default cut-off + waste edit window). F&B Manager
+  // leads food ops org-wide, so they get the tab too (backend PUT mirrors this).
+  const canFoodDefaults = isSuperAdmin || role === "FNB_MANAGER";
 
   return (
     <div className="space-y-6">
@@ -121,7 +124,7 @@ export default function FoodSettings() {
             <TabsTrigger value="cutoffs" className="shrink-0 whitespace-nowrap"><Clock className="h-4 w-4 mr-2" /> Cut-offs & Service</TabsTrigger>
             <TabsTrigger value="hierarchy" className="shrink-0 whitespace-nowrap"><Network className="h-4 w-4 mr-2" /> Hierarchy</TabsTrigger>
             <TabsTrigger value="users" className="shrink-0 whitespace-nowrap"><ShieldCheck className="h-4 w-4 mr-2" /> Users & Scopes</TabsTrigger>
-            {isSuperAdmin && (
+            {canFoodDefaults && (
               <TabsTrigger value="food-defaults" className="shrink-0 whitespace-nowrap"><Globe className="h-4 w-4 mr-2" /> Food Defaults</TabsTrigger>
             )}
           </TabsList>
@@ -138,7 +141,7 @@ export default function FoodSettings() {
         <TabsContent value="cutoffs"><CutoffWindowsTab properties={properties} propName={propName} /></TabsContent>
         <TabsContent value="hierarchy"><HierarchyTab properties={properties} /></TabsContent>
         <TabsContent value="users"><UsersTab properties={properties} propName={propName} /></TabsContent>
-        {isSuperAdmin && (
+        {canFoodDefaults && (
           <TabsContent value="food-defaults"><FoodDefaultsTab /></TabsContent>
         )}
       </Tabs>
