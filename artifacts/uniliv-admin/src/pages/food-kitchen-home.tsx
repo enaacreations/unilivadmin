@@ -4,8 +4,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, addDays, parseISO } from "date-fns";
 import {
   ChevronLeft, ChevronRight, Check, AlertCircle, Truck, Soup, Inbox,
-  History,
+  History, Download,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -59,6 +60,36 @@ type Slot = {
 };
 
 /** Column micro-heading (same primitive as Food Overview's ColumnHead). */
+/** Kitchen summary downloads (generated client-side as real .xlsx via SheetJS
+ *  from the same cook-plan data on screen — no server round-trip). */
+function xlsxName(kind: string, meal: MealType, day: string) {
+  return `${kind}-${meal.toLowerCase()}-${day.replace(/[^\w]+/g, "-").toLowerCase()}.xlsx`;
+}
+/** Full summary = item-wise "what dish, how much to cook" for the whole meal. */
+function downloadFullSummary(dishes: KitchenSummaryDish[], meal: MealType, day: string) {
+  const aoa: (string | number)[][] = [
+    ["Dish", "Quantity", "Unit"],
+    ...dishes.map((d) => [d.dishName, d.displayQty, d.displayUnit]),
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Cook plan");
+  XLSX.writeFile(wb, xlsxName("cook-plan", meal, day));
+}
+/** Chef summary = property × dish matrix: rows are properties, columns are the
+ *  meal's dishes with their per-property quantities. */
+function downloadChefSummary(dishes: KitchenSummaryDish[], meal: MealType, day: string) {
+  const props = new Map<string, string>(); // propertyId -> name (first appearance order)
+  dishes.forEach((d) => d.byProperty.forEach((bp) => { if (!props.has(bp.propertyId)) props.set(bp.propertyId, bp.propertyName); }));
+  const header = ["Property", ...dishes.map((d) => (d.displayUnit ? `${d.dishName} (${d.displayUnit})` : d.dishName))];
+  const rows: (string | number)[][] = [...props.entries()].map(([pid, pname]) => [
+    pname,
+    ...dishes.map((d) => d.byProperty.find((bp) => bp.propertyId === pid)?.qty ?? 0),
+  ]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...rows]), "Chef summary");
+  XLSX.writeFile(wb, xlsxName("chef-summary", meal, day));
+}
+
 function ColumnHead({ icon, label, tone, right }: {
   icon: React.ReactNode; label: string; tone: string; right?: React.ReactNode;
 }) {
@@ -724,11 +755,35 @@ export default function FoodKitchenHome() {
                 icon={<Soup className="h-[13px] w-[13px]" strokeWidth={2.5} />}
                 label="Cook plan"
                 tone="var(--accent-strong)"
-                right={selected.people > 0 ? (
-                  <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                    {selected.people} people
-                  </span>
-                ) : undefined}
+                right={
+                  <div className="flex items-center gap-2">
+                    {selected.people > 0 && (
+                      <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                        {selected.people} people
+                      </span>
+                    )}
+                    {/* Downloads (real .xlsx, generated from this cook plan). Both
+                        live here so they're available before AND after accepting. */}
+                    {selected.dishes.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => downloadFullSummary(selected.dishes, selected.mealType, dayLabel)}
+                          className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+                        >
+                          <Download className="h-3 w-3" /> Full summary
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => downloadChefSummary(selected.dishes, selected.mealType, dayLabel)}
+                          className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+                        >
+                          <Download className="h-3 w-3" /> Chef summary
+                        </button>
+                      </>
+                    )}
+                  </div>
+                }
               />
               {selected.dishes.length === 0 ? (
                 <div className="rounded-[9px] border border-dashed border-border px-3 py-5 text-center text-[13px] text-muted-foreground">
