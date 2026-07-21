@@ -17,9 +17,9 @@ FROM node:22-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 ENV CI=1
-# Pin the exact pnpm that generated pnpm-lock.yaml (v9.0). Newer pnpm versions
-# ignore the package.json `pnpm.overrides` field and would fail --frozen-lockfile.
-RUN corepack enable && corepack prepare pnpm@10.30.3 --activate
+# Pin the pnpm that generated pnpm-lock.yaml (pnpm 11 — overrides now live in
+# pnpm-workspace.yaml). Keep in sync with package.json "packageManager".
+RUN corepack enable && corepack prepare pnpm@11.15.1 --activate
 WORKDIR /repo
 
 # Warm the pnpm store from the lockfile only — this layer is reused until the
