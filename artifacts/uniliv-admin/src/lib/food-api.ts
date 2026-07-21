@@ -531,9 +531,9 @@ export const foodApi = {
   // Kitchen Home. PATCH adjusts what the kitchen actually sends (ACCEPTED only).
   kitchenItems: (orderId: string) =>
     apiFetch<Envelope<KitchenItem[]>>(`/food/orders/${orderId}/kitchen-items`).then((r) => r.data),
-  updateKitchenItems: (orderId: string, items: { id: string; preparedQty: number }[]) =>
+  updateKitchenItems: (orderId: string, items: { id: string; preparedQty: number }[], reason: string) =>
     apiFetch<Envelope<{ updated: number }>>(`/food/orders/${orderId}/kitchen-items`, {
-      method: "PATCH", body: JSON.stringify({ items }),
+      method: "PATCH", body: JSON.stringify({ items, reason }),
     }).then((r) => r.data),
   dispatchOrder: (id: string, body: { deliveryPartnerId?: string; action?: "start" | "dispatch" }) =>
     apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/dispatch`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.data),

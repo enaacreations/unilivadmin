@@ -1059,6 +1059,9 @@ const kitchenItemsSchema = z.object({
     id: zId,
     preparedQty: z.coerce.number().min(0).finite(),
   })).min(1),
+  // A reason is mandatory for any dispatch-time quantity change — logged to the
+  // order event trail so every adjustment is accountable.
+  reason: z.string().trim().min(1, "A reason is required for a quantity change"),
 }).passthrough();
 
 foodRouter.patch("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit"), async (req, res) => {
@@ -1089,6 +1092,13 @@ foodRouter.patch("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITC
         .where(eq(foodOrderItemsTable.id, it.id));
     }
     await db.update(foodOrdersTable).set({ updatedAt: now }).where(eq(foodOrdersTable.id, id));
+    // Log the mandatory reason on the order event trail (order stays ACCEPTED).
+    const reason = (req.body as { reason: string }).reason.trim();
+    await db.insert(foodOrderEventsTable).values({
+      id: newId(), orderId: id, status: order.status,
+      note: `Send quantities adjusted (${items.length} item${items.length === 1 ? "" : "s"}) — ${reason}`,
+      actorId: req.user!.id,
+    });
     res.json({ success: true, data: { updated: items.length } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

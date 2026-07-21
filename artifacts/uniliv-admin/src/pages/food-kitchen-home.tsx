@@ -134,8 +134,12 @@ function DispatchRow({
     staleTime: 60_000,
   });
   const [draft, setDraft] = React.useState<Record<string, string>>({});
+  const [reason, setReason] = React.useState("");
   React.useEffect(() => {
-    if (items) setDraft(Object.fromEntries(items.map((it) => [it.id, String(it.preparedQty ?? it.orderedQty ?? 0)])));
+    if (items) {
+      setDraft(Object.fromEntries(items.map((it) => [it.id, String(it.preparedQty ?? it.orderedQty ?? 0)])));
+      setReason("");
+    }
   }, [items]);
   const [saving, setSaving] = React.useState(false);
   const noPartner = !done && partners.length === 0;
@@ -150,10 +154,12 @@ function DispatchRow({
       .filter((it) => draft[it.id] != null && Number(draft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0))
       .map((it) => ({ id: it.id, preparedQty: Number(draft[it.id]) }));
     if (!changed.length) return;
+    if (!reason.trim()) { toast({ title: "Add a reason for the quantity change", variant: "destructive" }); return; }
     setSaving(true);
     try {
-      await foodApi.updateKitchenItems(o.id, changed);
+      await foodApi.updateKitchenItems(o.id, changed, reason.trim());
       toast({ title: "Quantities updated", variant: "success" });
+      setReason("");
       await onSaved();
     } catch (e: any) {
       toast({ title: e?.message || "Could not save quantities", variant: "destructive" });
@@ -272,15 +278,26 @@ function DispatchRow({
                 );
               })}
               {!done && canDispatch && (
-                <div className="mt-2 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={save}
-                    disabled={saving || !dirty || !!busy}
-                    className="h-8 rounded-full bg-accent px-4 text-[12px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {saving ? "Saving…" : "Save quantities"}
-                  </button>
+                <div className="mt-2 space-y-2">
+                  {/* Any send-quantity change needs a mandatory reason (logged). */}
+                  {dirty && (
+                    <Input
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                      placeholder="Reason for the quantity change (required)"
+                      className="h-8 w-full text-[12.5px]"
+                    />
+                  )}
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={save}
+                      disabled={saving || !dirty || !reason.trim() || !!busy}
+                      className="h-8 rounded-full bg-accent px-4 text-[12px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : "Save quantities"}
+                    </button>
+                  </div>
                 </div>
               )}
             </>
@@ -747,46 +764,43 @@ export default function FoodKitchenHome() {
               )}
             </div>
 
-            {/* New orders to accept — dispatch board gets the full row below */}
-            <div className="grid items-stretch gap-3">
-              {/* Accept */}
+            {/* New orders (left) + dispatch board (right): shown side-by-side
+                50/50 when there are orders to accept; when nothing's waiting the
+                New orders card is hidden and the dispatch board takes the full
+                width. Stacks vertically on smaller screens. */}
+            <div className={cn("grid items-stretch gap-3", selected.placed.length > 0 && "lg:grid-cols-2")}>
+              {/* Accept — only rendered when orders are actually waiting */}
+              {selected.placed.length > 0 && (
+                <div className="flex flex-col rounded-[12px] border border-border bg-background px-4 py-3.5">
+                  <ColumnHead
+                    icon={<Inbox className="h-[13px] w-[13px]" strokeWidth={2.5} />}
+                    label="New orders"
+                    tone="var(--warning)"
+                    right={
+                      <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{selected.placed.length}</span>
+                    }
+                  />
+                  <div className="flex-1">
+                    {selected.placed.map((o) => (
+                      <OrderRow key={o.id} o={o} onOpen={setSheetOrder} />
+                    ))}
+                  </div>
+                  {canKitchen && (
+                    <button
+                      type="button"
+                      onClick={() => acceptMeal(selected)}
+                      disabled={!!busy}
+                      className="mt-3 h-10 w-full rounded-[9px] bg-warning text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {busy === `accept:${selected.mealType}` ? "Accepting…" : `Accept all (${selected.placed.length})`}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Dispatch board — pick a partner per property, then dispatch one,
+                  a few, or all together. */}
               <div className="flex flex-col rounded-[12px] border border-border bg-background px-4 py-3.5">
-                <ColumnHead
-                  icon={<Inbox className="h-[13px] w-[13px]" strokeWidth={2.5} />}
-                  label="New orders"
-                  tone="var(--warning)"
-                  right={selected.placed.length > 0 ? (
-                    <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{selected.placed.length}</span>
-                  ) : undefined}
-                />
-                {selected.placed.length === 0 ? (
-                  <ColumnEmpty text="Nothing waiting — all caught up." />
-                ) : (
-                  <>
-                    <div className="flex-1">
-                      {selected.placed.map((o) => (
-                        <OrderRow key={o.id} o={o} onOpen={setSheetOrder} />
-                      ))}
-                    </div>
-                    {canKitchen && (
-                      <button
-                        type="button"
-                        onClick={() => acceptMeal(selected)}
-                        disabled={!!busy}
-                        className="mt-3 h-10 w-full rounded-[9px] bg-warning text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {busy === `accept:${selected.mealType}` ? "Accepting…" : `Accept all (${selected.placed.length})`}
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-
-            </div>
-
-            {/* Dispatch board — pick a partner per property, then dispatch one,
-                a few, or all together. */}
-            <div className="mt-3 rounded-[12px] border border-border bg-background px-4 py-3.5">
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                 <div className="flex items-baseline gap-2">
                   <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-success">Dispatch board</span>
@@ -876,6 +890,7 @@ export default function FoodKitchenHome() {
                   )}
                 </>
               )}
+              </div>
             </div>
           </div>
         ) : null}
