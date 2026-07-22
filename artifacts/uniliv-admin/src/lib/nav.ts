@@ -108,8 +108,8 @@ export const navGroups: NavGroup[] = [
     { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS" },
   ]},
   { title: "Audits", items: [
-    { title: "Audit Dashboard", href: "/audits/dashboard", icon: Gauge, module: "AUDIT_DASHBOARD" },
     { title: "My Audits", href: "/audits/my", icon: ClipboardCheck, module: "AUDIT_EXECUTION" },
+    { title: "Audit Dashboard", href: "/audits/dashboard", icon: Gauge, module: "AUDIT_DASHBOARD" },
     { title: "My Findings", href: "/audits/findings", icon: AlertTriangle, module: "AUDIT_FINDINGS" },
     { title: "Audit Register", href: "/audits/register", icon: ListChecks, module: "AUDIT_REGISTER" },
     { title: "NC Board", href: "/audits/ncs", icon: Kanban, module: "AUDIT_NCS" },

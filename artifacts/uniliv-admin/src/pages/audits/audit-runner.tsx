@@ -204,7 +204,7 @@ function AnswerInput({
         NA: "bg-muted-foreground text-white border-transparent",
       };
       return (
-        <div className="flex flex-wrap gap-2">
+        <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${values.length}, minmax(0, 1fr))` }}>
           {values.map((v) => {
             const selected = current === v;
             return (
@@ -217,7 +217,7 @@ function AnswerInput({
                 // the auto-NC dialog.
                 onClick={() => { if (current !== v) onAnswer({ value: v }); }}
                 className={cn(
-                  "inline-flex h-11 min-w-[76px] items-center justify-center rounded-[10px] border px-5 text-sm font-semibold transition-colors disabled:opacity-60",
+                  "inline-flex h-11 w-full items-center justify-center rounded-[10px] border px-3 text-sm font-semibold transition-colors disabled:opacity-60",
                   selected ? tone[v] : "border-border bg-background text-foreground hover:bg-muted",
                 )}
               >
@@ -236,8 +236,11 @@ function AnswerInput({
       if (options.length === 0) {
         return <p className="text-sm text-muted-foreground">No rating scale snapshot on this version.</p>;
       }
+      // Short/numeric scales fit one even row; text labels tile into 2 columns
+      // that fill the width (no more ragged, half-empty rows).
+      const compact = options.every((o) => (o.label ?? "").length <= 4);
       return (
-        <div className="flex flex-wrap gap-2">
+        <div className={compact ? "flex gap-2" : "grid grid-cols-2 gap-2"}>
           {options.map((o) => {
             const selected = current === o.id;
             return (
@@ -246,13 +249,16 @@ function AnswerInput({
                 type="button"
                 disabled={!editable}
                 onClick={() => onAnswer({ optionId: o.id })}
-                className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 text-sm transition-colors disabled:opacity-60 ${
+                className={cn(
+                  "inline-flex min-h-11 items-center justify-center gap-2 rounded-[10px] border px-3 text-sm font-medium transition-colors disabled:opacity-60",
+                  compact ? "flex-1" : "w-full",
+                  !compact && o.isExcludedNa && "col-span-2",
                   selected
                     ? "border-primary bg-primary text-primary-foreground"
                     : o.isExcludedNa
                       ? "border-dashed bg-transparent text-muted-foreground hover:bg-muted"
-                      : "bg-card hover:bg-muted"
-                }`}
+                      : "bg-card hover:bg-muted",
+                )}
               >
                 {o.color && (
                   <span
@@ -1253,71 +1259,116 @@ export default function AuditRunner() {
 
   const responsePolicy = run.policies.response;
   const bulkActive = bulkSectionId != null;
+  // Conduct redesign: gate the questions behind a dedicated Start screen so the
+  // auditor does one thing at a time (matches "Audit App Prototype.dc.html").
+  const notStarted = isAssignee && (audit.state === "SCHEDULED" || audit.state === "REJECTED");
+  const passLine = run.version.passThresholdPct != null ? Math.round(Number(run.version.passThresholdPct)) : null;
+  // Per-category weight% = share of total scorable question weight (sections carry no weight of their own).
+  const totalWeight = sections.reduce(
+    (sum, s) => sum + s.questions.reduce((a, q) => a + (NON_SCORED_TYPES.has(q.type) ? 0 : Math.max(0, q.weight || 0)), 0),
+    0,
+  );
 
   return (
     <div className="mx-auto max-w-3xl pb-40">
       {confetti}
-      {/* Top bar */}
-      <div className="sticky top-0 z-20 -mx-4 -mt-4 mb-4 border-b bg-surface/95 px-4 py-2.5 backdrop-blur sm:-mx-6 sm:-mt-6 sm:px-6">
-        <div className="mx-auto flex max-w-3xl items-center gap-2">
-          <Link
-            href={`/audits/${id}`}
-            className="inline-flex min-h-11 items-center gap-1 text-sm text-muted-foreground hover:text-primary"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <span className="truncate font-mono text-sm font-semibold">{audit.ticketNo}</span>
-          <Badge variant={AUDIT_STATE_BADGE[audit.state] ?? "outline"}>{titleCase(audit.state)}</Badge>
-          <span className="flex-1" />
-          <span className="text-right leading-none" title="Provisional score (answered questions only)">
-            <span className={cn("block font-mono text-xl font-semibold tabular-nums", scoreColorClass(provisionalPct))}>
-              {provisionalPct != null ? `${provisionalPct.toFixed(0)}%` : "—"}
-            </span>
-            <span className="text-[9px] uppercase tracking-[0.08em] text-muted-foreground">live score</span>
-          </span>
+      {/* Compact sticky header — title inline, ticket shown once, progress inside */}
+      <div className="sticky top-0 z-30 -mx-4 mb-4 border-b bg-background px-4 py-3 shadow-[0_4px_10px_-6px_rgba(36,26,21,0.25)] sm:-mx-6 sm:px-6">
+        <div className="mx-auto max-w-3xl">
+          <div className="flex items-center gap-2">
+            <Link
+              href={`/audits/${id}`}
+              className="inline-flex min-h-9 items-center text-muted-foreground hover:text-primary"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-display text-[15px] font-bold leading-tight tracking-[-0.012em]">
+                {audit.title}
+              </div>
+              <div className="truncate font-mono text-[11px] leading-tight text-muted-foreground">
+                {audit.ticketNo}{audit.propertyName ? ` · ${audit.propertyName}` : ""}
+              </div>
+            </div>
+            <Badge variant={AUDIT_STATE_BADGE[audit.state] ?? "outline"} className="shrink-0">{titleCase(audit.state)}</Badge>
+            {!notStarted && audit.startGeoLat != null && (
+              <span className="hidden shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-[10px] font-bold text-success sm:inline">📍 GPS ✓</span>
+            )}
+            {audit.startedAt && (
+              <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] font-bold text-muted-foreground">
+                {new Date(audit.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+          </div>
+          {progress.total > 0 && !notStarted && (
+            <div className="mt-2">
+              <div className="h-1 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-brand-gradient transition-[width] duration-300"
+                  style={{ width: `${Math.round((progress.answered / progress.total) * 100)}%` }}
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {progress.answered} of {progress.total} answered
+                {progress.mandatoryLeft > 0 ? ` · ${progress.mandatoryLeft} required left` : " · all required done"}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Title + progress (prototype) */}
-      <h1 className="mb-1 font-display text-xl font-bold tracking-[-0.012em]">{audit.title}</h1>
-      <p className="mb-3 text-[13px] text-muted-foreground">
-        <span className="font-mono">{audit.ticketNo}</span>
-        {audit.propertyName ? ` · ${audit.propertyName}` : ""}
-      </p>
-      {progress.total > 0 && (
-        <>
-          <div className="mb-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full rounded-full bg-brand-gradient transition-[width] duration-300"
-              style={{ width: `${Math.round((progress.answered / progress.total) * 100)}%` }}
-            />
-          </div>
-          <p className="mb-4 text-[13px] text-muted-foreground">
-            {progress.answered} of {progress.total} answered
-            {progress.mandatoryLeft > 0
-              ? ` · ${progress.mandatoryLeft} required left`
-              : " · all required done"}
-          </p>
-        </>
-      )}
-
       {/* State gates */}
-      {isAssignee && (audit.state === "SCHEDULED" || audit.state === "REJECTED") && (
-        <Card className="mb-4">
-          <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
-            <Play className="h-8 w-8 text-primary" />
-            <p className="font-medium">
-              {audit.state === "REJECTED" ? "This audit was rejected — start the rework." : "Ready to begin?"}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              Your location is captured at start (when permitted) and stamped on the record.
-            </p>
-            <Button className="min-h-11 px-8" disabled={transitionBusy} onClick={() => startOrResume("start")}>
-              {transitionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-              {audit.state === "REJECTED" ? "Start rework" : "Start audit"}
-            </Button>
-          </CardContent>
-        </Card>
+      {notStarted && (
+        <div className="mx-auto flex max-w-md animate-fade-up flex-col gap-3.5">
+          {/* Target card */}
+          <div className="rounded-[14px] bg-brand-gradient p-[2px]">
+            <div className="rounded-[12px] bg-card p-[18px] text-center">
+              <div className="font-display text-2xl font-extrabold tracking-[-0.012em]">
+                {audit.roomNumber ? `Room ${audit.roomNumber}` : audit.propertyName ?? audit.title}
+              </div>
+              <div className="mt-1 text-[12.5px] text-muted-foreground">
+                {[audit.propertyName, audit.roomNumber ? `Room ${audit.roomNumber}` : null].filter(Boolean).join(" · ") || audit.ticketNo}
+              </div>
+              <span className="mt-2.5 inline-block rounded-full bg-muted px-3 py-[5px] text-[11.5px] font-bold text-muted-foreground">
+                {progress.total} question{progress.total === 1 ? "" : "s"} · ~{Math.max(5, Math.round(progress.total * 0.7))} min
+              </span>
+            </div>
+          </div>
+          {/* Auto-captured */}
+          <div className="rounded-[14px] border border-border bg-card p-4">
+            <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+              Auto-captured before you begin
+            </div>
+            <div className="flex items-center gap-3 border-b border-dashed border-border py-2.5">
+              <span className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[11px] bg-success text-[17px] text-white">📍</span>
+              <div className="flex-1">
+                <div className="text-[13.5px] font-bold">Location (GPS)</div>
+                {/* TODO(backend): GPS-matches-property verification not surfaced by the run payload yet. */}
+                <div className="font-mono text-[11.5px] text-muted-foreground">Captured & stamped the moment you start</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 py-2.5">
+              <span className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[11px] bg-success text-[17px] text-white">🕐</span>
+              <div className="flex-1">
+                <div className="text-[13.5px] font-bold">Start time</div>
+                <div className="font-mono text-[11.5px] text-muted-foreground">Recorded when you tap Start</div>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-[12px] bg-info-soft px-3.5 py-[11px] text-[12px] font-semibold text-info">
+            🔒 {audit.state === "REJECTED"
+              ? "This audit was rejected — start the rework. Location and start time are re-stamped."
+              : "Location and start time are attached to this audit and can't be edited later."}
+          </div>
+          <Button
+            className="h-[50px] w-full rounded-[12px] text-[15px] font-bold"
+            disabled={transitionBusy}
+            onClick={() => startOrResume("start")}
+          >
+            {transitionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {audit.state === "REJECTED" ? "Start rework →" : "Start audit →"}
+          </Button>
+        </div>
       )}
       {isAssignee && audit.state === "PAUSED" && (
         <Card className="mb-4">
@@ -1341,6 +1392,7 @@ export default function AuditRunner() {
       )}
 
       {/* Sections */}
+      {!notStarted && (
       <Accordion
         type="single"
         collapsible
@@ -1352,21 +1404,29 @@ export default function AuditRunner() {
           const applicable = section.questions.filter((q) => q.type !== "INSTRUCTION");
           const answeredCount = applicable.filter((q) => hasAnswer(answers[q.id])).length;
           const sectionPct = scoreOf(section.questions);
+          const secWeight = section.questions.reduce(
+            (a, q) => a + (NON_SCORED_TYPES.has(q.type) ? 0 : Math.max(0, q.weight || 0)),
+            0,
+          );
+          const secWeightPct = totalWeight > 0 ? Math.round((secWeight / totalWeight) * 100) : 0;
           const isOpen = openSection === section.id;
           const inBulk = bulkSectionId === section.id;
           return (
             <AccordionItem
               key={section.id}
               value={section.id}
-              className="rounded-lg border bg-card px-4 last:border-b"
+              className="scroll-mt-24 border-none"
             >
-              <AccordionTrigger className="hover:no-underline">
+              <AccordionTrigger className="py-3 hover:no-underline">
                 <span className="flex min-w-0 flex-1 items-center gap-2 pr-2">
-                  <span className="truncate font-medium">{section.title}</span>
+                  <span className="truncate text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">{section.title}</span>
                   {section.audience && (
                     <Badge variant="outline" className="hidden sm:inline-flex">{section.audience}</Badge>
                   )}
                   <span className="flex-1" />
+                  {secWeightPct > 0 && (
+                    <span className="hidden font-mono text-[10.5px] text-muted-foreground sm:inline">weight {secWeightPct}%</span>
+                  )}
                   <span className="text-xs tabular-nums text-muted-foreground">
                     {answeredCount}/{applicable.length}
                   </span>
@@ -1382,29 +1442,26 @@ export default function AuditRunner() {
                 {isOpen && (
                   <div className="space-y-3">
                     {editable && (
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          type="button"
-                          variant={inBulk ? "secondary" : "ghost"}
-                          size="sm"
-                          className="min-h-11 sm:min-h-9"
-                          onClick={() => (inBulk ? exitBulk() : (setBulkSectionId(section.id), setBulkSelected(new Set())))}
-                        >
-                          {inBulk ? "Done selecting" : "Select"}
-                        </Button>
+                      <div className="-mt-1 -mb-1 flex items-center justify-end gap-4">
                         {inBulk && (
-                          <Button
+                          <button
                             type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="min-h-11 sm:min-h-9"
-                            onClick={() =>
-                              setBulkSelected(new Set(applicable.map((q) => q.id)))
-                            }
+                            onClick={() => setBulkSelected(new Set(applicable.map((q) => q.id)))}
+                            className="text-xs font-semibold text-muted-foreground hover:text-accent-strong"
                           >
                             Select all
-                          </Button>
+                          </button>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => (inBulk ? exitBulk() : (setBulkSectionId(section.id), setBulkSelected(new Set())))}
+                          className={cn(
+                            "text-xs font-semibold hover:text-accent-strong",
+                            inBulk ? "text-accent-strong" : "text-muted-foreground",
+                          )}
+                        >
+                          {inBulk ? "Done" : "Select multiple"}
+                        </button>
                       </div>
                     )}
                     {section.questions.map((q) => {
@@ -1460,6 +1517,7 @@ export default function AuditRunner() {
           );
         })}
       </Accordion>
+      )}
 
       {/* Bulk answer bar */}
       {bulkActive && bulkSection && (
@@ -1535,17 +1593,29 @@ export default function AuditRunner() {
         </div>
       )}
 
-      {/* Bottom progress / submit dock */}
+      {/* Bottom live-score / submit dock */}
+      {!notStarted && (
       <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)] md:left-64">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-3 sm:px-6">
+          <div className="shrink-0">
+            <div className="text-[10px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Live score</div>
+            <div className="flex items-baseline gap-1.5">
+              <span className={cn("font-display text-2xl font-extrabold tabular-nums", scoreColorClass(provisionalPct))}>
+                {provisionalPct != null ? provisionalPct.toFixed(0) : "—"}
+              </span>
+              <span className="font-mono text-[11px] text-muted-foreground">
+                /100{passLine != null ? ` · pass ${passLine}` : ""}
+              </span>
+            </div>
+          </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-xs text-muted-foreground">
+            <p className="truncate text-right text-xs text-muted-foreground">
               <span className="font-medium text-foreground tabular-nums">
                 {progress.answered}/{progress.total}
               </span>{" "}
               answered
               {progress.mandatoryLeft > 0 && (
-                <span className="text-amber-600"> · {progress.mandatoryLeft} mandatory left</span>
+                <span className="text-warning"> · {progress.mandatoryLeft} mandatory left</span>
               )}
             </p>
             <Progress
@@ -1562,6 +1632,7 @@ export default function AuditRunner() {
           </Button>
         </div>
       </div>
+      )}
 
       {/* Submit sheet */}
       <Drawer
@@ -1592,6 +1663,12 @@ export default function AuditRunner() {
                   {submitResult.band && <Badge variant="outline">{submitResult.band}</Badge>}
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground">
+                {audit.reviewRequired
+                  ? "Sent to Ops Excellence for review — you'll be alerted when it's decided."
+                  : "Auto-approved — no review required."}
+                {/* TODO(backend): on-time streak + WhatsApp alert (prototype) not returned yet. */}
+              </p>
               <Button
                 className="min-h-11 w-full"
                 onClick={() => {

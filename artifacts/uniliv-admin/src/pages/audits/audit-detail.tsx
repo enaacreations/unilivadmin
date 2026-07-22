@@ -28,9 +28,10 @@ import {
   AUDIT_STATE_BADGE, COMPLETED_AUDIT_STATES, RUNNABLE_STATES,
   fmtDateTime, fmtDuration, scoreColorClass, titleCase,
   type ApiError, type ApiList, type ApiOne, type AuditCommentRow,
-  type AuditDetailRow, type AuditEventRow, type AuditState,
+  type AuditDetailRow, type AuditEventRow, type AuditState, type RunPayload,
 } from "./lib";
 import { TypeBadge } from "./shared";
+import { cn } from "@/lib/utils";
 
 const EVENT_ICONS: Record<string, LucideIcon> = {
   STATE_CHANGE: ArrowRight,
@@ -107,6 +108,46 @@ export default function AuditDetail() {
       apiFetch<ApiList<{ id: string; name: string; role: string }>>("/users?limit=100"),
     enabled: reassignOpen,
   });
+
+  // Completed audits: pull the run payload to build the prototype scorecard
+  // (per-category scores + flagged findings) — server pre-computes per-response
+  // earned/max, so we just aggregate.
+  const scored = !!audit && COMPLETED_AUDIT_STATES.includes(audit.state);
+  const runQuery = useQuery({
+    queryKey: ["/audits", id, "run"],
+    queryFn: () => apiFetch<ApiOne<RunPayload>>(`/audits/${id}/run`),
+    enabled: scored,
+  });
+  const scorecard = React.useMemo(() => {
+    const run = runQuery.data?.data;
+    if (!run) return null;
+    const secOfQ = new Map<string, string>();
+    for (const s of run.sections) for (const q of s.questions) secOfQ.set(q.id, s.id);
+    const agg = new Map<string, { earned: number; max: number }>();
+    for (const r of run.responses) {
+      const sid = secOfQ.get(r.questionId);
+      if (!sid) continue;
+      const e = agg.get(sid) ?? { earned: 0, max: 0 };
+      e.earned += Number(r.earnedScore ?? 0);
+      e.max += Number(r.maxScore ?? 0);
+      agg.set(sid, e);
+    }
+    const cats = run.sections
+      .map((s) => {
+        const a = agg.get(s.id);
+        return { id: s.id, name: s.title, pct: a && a.max > 0 ? Math.round((a.earned / a.max) * 100) : null };
+      })
+      .filter((c): c is { id: string; name: string; pct: number } => c.pct != null);
+    const qPrompt = new Map<string, string>();
+    for (const s of run.sections) for (const q of s.questions) qPrompt.set(q.id, q.prompt);
+    const flagged = run.ncs.map((n) => ({
+      id: n.id, ncNo: n.ncNo, severity: n.severity, desc: n.description,
+      prompt: n.questionId ? qPrompt.get(n.questionId) ?? null : null,
+    }));
+    const proof = run.evidence.find((e) => e.kind === "SUBMISSION_PROOF") ?? null;
+    const passLine = run.version.passThresholdPct != null ? Number(run.version.passThresholdPct) : 75;
+    return { cats, flagged, proof, passLine };
+  }, [runQuery.data]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["/audits", id] });
@@ -353,6 +394,118 @@ export default function AuditDetail() {
         </div>
         <p className="text-muted-foreground">{audit.title}</p>
       </div>
+
+      {/* Scorecard — prototype clean score view for completed audits */}
+      {completed && audit.state !== "CANCELLED" && scorecard && (
+        <div className="space-y-4">
+          {/* Score hero */}
+          <Card>
+            <CardContent className="flex flex-wrap items-center gap-5 p-5">
+              <div className="relative h-24 w-24 shrink-0">
+                <svg width="96" height="96" viewBox="0 0 96 96">
+                  <circle cx="48" cy="48" r="40" fill="none" strokeWidth="9" stroke="currentColor" className="text-muted-foreground/20" />
+                  <circle
+                    cx="48" cy="48" r="40" fill="none" strokeWidth="9" strokeLinecap="round" stroke="currentColor"
+                    className={audit.result === "FAIL" ? "text-destructive" : audit.result === "PASS" ? "text-success" : "text-accent"}
+                    strokeDasharray={`${((pct ?? 0) / 100) * 251.3} 251.3`}
+                    transform="rotate(-90 48 48)"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className={cn("font-display text-2xl font-extrabold", scoreColorClass(pct))}>{pct != null ? Math.round(pct) : "—"}</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">/100</span>
+                </div>
+              </div>
+              <div className="min-w-[200px] flex-1 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {audit.result && <Badge variant={audit.result === "PASS" ? "success" : "destructive"}>{audit.result}</Badge>}
+                  {audit.scoreBand && <Badge variant="outline">{audit.scoreBand}</Badge>}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {audit.submittedAt ? `Submitted ${fmtDateTime(audit.submittedAt)}` : "Completed"}
+                  {audit.approvedAt ? ` · approved ${fmtDateTime(audit.approvedAt)}` : ""}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/audits/${id}/run`)}
+                  className="text-sm font-semibold text-accent-strong hover:underline"
+                >
+                  View all answers →
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Category breakdown */}
+          {scorecard.cats.length > 0 && (
+            <Card>
+              <CardContent className="p-5">
+                <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">Category breakdown</div>
+                <div className="space-y-3">
+                  {scorecard.cats.map((c) => (
+                    <div key={c.id}>
+                      <div className="mb-1 flex items-baseline gap-2">
+                        <span className="flex-1 text-sm font-medium">{c.name}</span>
+                        <span className={cn("font-mono text-xs font-bold tabular-nums", scoreColorClass(c.pct))}>{c.pct}%</span>
+                      </div>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                        <div className={cn("h-full rounded-full", c.pct >= scorecard.passLine ? "bg-success" : "bg-destructive")} style={{ width: `${c.pct}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Verification + Flagged */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Card>
+              <CardContent className="space-y-2 p-5 text-sm">
+                <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-success">Verification</div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-success">✓</span>
+                  <span className="flex-1">GPS captured at submit</span>
+                  {gps(audit.submitGeoLat, audit.submitGeoLng) && (
+                    <span className="font-mono text-xs text-muted-foreground">{gps(audit.submitGeoLat, audit.submitGeoLng)}</span>
+                  )}
+                </div>
+                {scorecard.proof && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-success">✓</span>
+                    <span className="flex-1">Live photo at submit</span>
+                    {scorecard.proof.isLiveCapture && <span className="text-xs text-muted-foreground">taken live</span>}
+                  </div>
+                )}
+                {audit.durationSeconds != null && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-success">✓</span>
+                    <span className="flex-1">Completed in {fmtDuration(audit.durationSeconds)}</span>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            {scorecard.flagged.length > 0 && (
+              <Card>
+                <CardContent className="p-5">
+                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-warning">Flagged · {scorecard.flagged.length}</div>
+                  <div className="space-y-2">
+                    {scorecard.flagged.map((f) => (
+                      <div key={f.id} className="flex gap-2 border-b border-dashed border-border pb-2 last:border-0 last:pb-0">
+                        <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", f.severity === "CRITICAL" ? "bg-destructive" : f.severity === "MAJOR" ? "bg-warning" : "bg-muted-foreground")} />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium">{f.prompt ?? f.ncNo}</div>
+                          <div className="text-xs text-muted-foreground">{f.ncNo} · {titleCase(f.severity)}{f.desc ? ` — ${f.desc}` : ""}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Meta grid */}
       <Card>
