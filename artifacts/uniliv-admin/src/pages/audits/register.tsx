@@ -174,9 +174,9 @@ export default function AuditRegister() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Audit Register"
+        title="All Audits"
         subtitle="Every audit in your scope — search, segments and filters."
-        breadcrumbs={[{ label: "Audits" }, { label: "Register" }]}
+        breadcrumbs={[{ label: "Audits" }, { label: "All Audits" }]}
         action={
           <div className="flex items-center gap-2">
             <Button
