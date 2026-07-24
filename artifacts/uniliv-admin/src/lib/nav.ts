@@ -124,7 +124,7 @@ export const navGroups: NavGroup[] = [
     { title: "My Findings", href: "/audits/findings", icon: AlertTriangle, module: "AUDIT_FINDINGS", hideFor: ["OPS_EXCELLENCE"] },
     { title: "Audit Register", href: "/audits/register", icon: ListChecks, module: "AUDIT_REGISTER", hideFor: ["UNIT_LEAD", "CLUSTER_MANAGER", "CUSTOMER_EXPERIENCE"] },
     { title: "NC Board", href: "/audits/ncs", icon: Kanban, module: "AUDIT_NCS", hideFor: ["CITY_HEAD", "ZONAL_HEAD", "SENIOR_VICE_PRESIDENT"] },
-    { title: "Review", href: "/audits/review", icon: BadgeCheck, module: "AUDIT_REVIEW" },
+    { title: "Review", href: "/audits/review", icon: BadgeCheck, module: "AUDIT_REVIEW", hideFor: ["OPS_EXCELLENCE"] },
     { title: "Reports", href: "/audits/reports", icon: FileBarChart, module: "AUDIT_REPORTS", hideFor: ["UNIT_LEAD", "CLUSTER_MANAGER", "CUSTOMER_EXPERIENCE"] },
     { title: "Schedules", href: "/audits/schedules", icon: CalendarClock, module: "AUDIT_SCHEDULES" },
     { title: "Templates", href: "/audits/templates", icon: FileStack, module: "AUDIT_TEMPLATES" },

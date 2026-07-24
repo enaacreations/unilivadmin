@@ -10,11 +10,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiFetch } from "@/lib/api-fetch";
+import { usePermissions } from "@/lib/use-permissions";
 import {
   AUDIT_TYPE_LABELS, scoreColorClass,
-  type ApiList, type ApiOne, type AuditRow, type AuditType, type DashboardSummary,
+  type ApiList, type ApiOne, type ApiPage, type AuditRow, type AuditType, type DashboardSummary,
 } from "./lib";
 import { cn } from "@/lib/utils";
+import { ReviewQueuePanel } from "./review-queue";
 
 /* Oversight dashboard (redesign — prototype "Audit oversight"). Serves the
  * oversight tier (City Head / Zonal Head / SVP): KPI tiles, per-property /
@@ -75,9 +77,30 @@ function League({ title, accent, data }: { title: string; accent: string; data: 
 }
 
 export default function AuditDashboard() {
+  const { role, can } = usePermissions();
+  const canReview = can("AUDIT_REVIEW", "view");
+  const [view, setView] = React.useState<"overview" | "review">("overview");
+  // Ops Excellence lands on the review queue (their primary action); everyone
+  // else opens on the oversight overview. Applied once, when the role resolves.
+  const viewInit = React.useRef(false);
+  React.useEffect(() => {
+    if (!viewInit.current && role) {
+      viewInit.current = true;
+      if (role === "OPS_EXCELLENCE") setView("review");
+    }
+  }, [role]);
+
   const [typeTab, setTypeTab] = React.useState<"ALL" | AuditType>("ALL");
   const [from, setFrom] = React.useState("");
   const [to, setTo] = React.useState("");
+
+  // Shares the queue cache with ReviewQueuePanel (same key) — for the tab count.
+  const pendingQuery = useQuery({
+    queryKey: ["/audit/reviews/queue"],
+    queryFn: () => apiFetch<ApiPage<AuditRow>>("/audit/reviews/queue?page=1&limit=50"),
+    enabled: canReview,
+  });
+  const pendingCount = pendingQuery.data?.data?.length ?? 0;
 
   const typesQuery = useQuery({
     queryKey: ["/audits/visible-types"],
@@ -141,13 +164,32 @@ export default function AuditDashboard() {
     [d],
   );
 
+  const showReview = canReview && view === "review";
+
   return (
     <div className="animate-fade-up space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[220px] flex-1">
           <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Audit oversight</h1>
-          <p className="text-sm text-muted-foreground">Program health across your permitted audit types.</p>
+          <p className="text-sm text-muted-foreground">
+            {showReview ? "Approve or send back submitted audits." : "Program health across your permitted audit types."}
+          </p>
         </div>
+        {canReview && (
+          <Tabs value={view} onValueChange={(v) => setView(v as "overview" | "review")}>
+            <TabsList>
+              <TabsTrigger value="review">Review{pendingCount ? ` · ${pendingCount}` : ""}</TabsTrigger>
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        )}
+      </div>
+
+      {showReview ? (
+        <ReviewQueuePanel embedded />
+      ) : (
+      <>
+      <div className="flex flex-wrap items-end gap-3">
         <Tabs value={typeTab} onValueChange={(v) => setTypeTab(v as "ALL" | AuditType)}>
           <TabsList>
             <TabsTrigger value="ALL">All</TabsTrigger>
@@ -221,6 +263,8 @@ export default function AuditDashboard() {
             </Card>
           </div>
         </>
+      )}
+      </>
       )}
     </div>
   );
