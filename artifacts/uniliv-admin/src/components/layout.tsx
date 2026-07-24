@@ -390,12 +390,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // won't match above and would collapse the sidebar to just Home. Fall back to
   // the route's module (via PATH_TO_MODULE) and show that module's group, so the
   // sidebar stays put on every detail screen across all modules.
+  //
+  // The owning group is resolved from the UNfiltered nav: a persona may have the
+  // route's own item folded away by hideFor (e.g. Reports lives inside the
+  // Dashboard hub for OPS_EXCELLENCE, so /audits/reports/:id has no visible
+  // AUDIT_REPORTS item) — the sidebar must still show their audit hub items.
   const activeGroup = React.useMemo(() => {
     if (active) return active.group
     const mod = moduleForPath(location)
     if (!mod) return null
-    const group = filteredGroups.find((g) => g.items.some((i) => i.module === mod))
-    return group?.title ?? null
+    const owner = navGroups.find((g) => g.items.some((i) => i.module === mod))
+    if (!owner) return null
+    return filteredGroups.find((g) => g.title === owner.title)?.title ?? null
   }, [active, location, filteredGroups])
 
   // The launcher (/apps) is a full-width page: no sidebar, logo in the header.
