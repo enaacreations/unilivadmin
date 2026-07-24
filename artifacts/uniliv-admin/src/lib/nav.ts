@@ -107,14 +107,25 @@ export const navGroups: NavGroup[] = [
     { title: "Waste Analytics", href: "/food/waste-analytics", icon: Recycle, module: "FOOD_REPORTS", hideFor: ["UNIT_LEAD", "FNB_MANAGER"] },
     { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS" },
   ]},
+  /* Audit nav is trimmed per persona (like Food) so each role sees only its
+   * essential tabs, even where the module grant is broader:
+   *  - Conductors (UNIT_LEAD / CLUSTER_MANAGER / CUSTOMER_EXPERIENCE): their own
+   *    work only — My Audits + their findings surface (My Findings for UL/CM,
+   *    NC Board for CX which lacks AUDIT_FINDINGS); oversight/admin tabs hidden.
+   *  - Oversight (CITY_HEAD / ZONAL_HEAD / SENIOR_VICE_PRESIDENT): Dashboard +
+   *    Register + Reports; the operational NC Board is hidden.
+   *  - OPS_EXCELLENCE runs the programme but doesn't conduct → hide the two
+   *    personal tabs (My Audits, My Findings), keep the management set.
+   *  - SUPER_ADMIN / AUDIT_READONLY keep full visibility (no hideFor).
+   * hideFor only hides the nav link; routes + data access are unchanged. */
   { title: "Audits", items: [
-    { title: "My Audits", href: "/audits/my", icon: ClipboardCheck, module: "AUDIT_EXECUTION" },
-    { title: "Audit Dashboard", href: "/audits/dashboard", icon: Gauge, module: "AUDIT_DASHBOARD" },
-    { title: "My Findings", href: "/audits/findings", icon: AlertTriangle, module: "AUDIT_FINDINGS" },
-    { title: "Audit Register", href: "/audits/register", icon: ListChecks, module: "AUDIT_REGISTER" },
-    { title: "NC Board", href: "/audits/ncs", icon: Kanban, module: "AUDIT_NCS" },
+    { title: "My Audits", href: "/audits/my", icon: ClipboardCheck, module: "AUDIT_EXECUTION", hideFor: ["OPS_EXCELLENCE"] },
+    { title: "Audit Dashboard", href: "/audits/dashboard", icon: Gauge, module: "AUDIT_DASHBOARD", hideFor: ["UNIT_LEAD", "CLUSTER_MANAGER", "CUSTOMER_EXPERIENCE"] },
+    { title: "My Findings", href: "/audits/findings", icon: AlertTriangle, module: "AUDIT_FINDINGS", hideFor: ["OPS_EXCELLENCE"] },
+    { title: "Audit Register", href: "/audits/register", icon: ListChecks, module: "AUDIT_REGISTER", hideFor: ["UNIT_LEAD", "CLUSTER_MANAGER", "CUSTOMER_EXPERIENCE"] },
+    { title: "NC Board", href: "/audits/ncs", icon: Kanban, module: "AUDIT_NCS", hideFor: ["CITY_HEAD", "ZONAL_HEAD", "SENIOR_VICE_PRESIDENT"] },
     { title: "Review", href: "/audits/review", icon: BadgeCheck, module: "AUDIT_REVIEW" },
-    { title: "Reports", href: "/audits/reports", icon: FileBarChart, module: "AUDIT_REPORTS" },
+    { title: "Reports", href: "/audits/reports", icon: FileBarChart, module: "AUDIT_REPORTS", hideFor: ["UNIT_LEAD", "CLUSTER_MANAGER", "CUSTOMER_EXPERIENCE"] },
     { title: "Schedules", href: "/audits/schedules", icon: CalendarClock, module: "AUDIT_SCHEDULES" },
     { title: "Templates", href: "/audits/templates", icon: FileStack, module: "AUDIT_TEMPLATES" },
     { title: "Question Bank", href: "/audits/question-bank", icon: Library, module: "AUDIT_TEMPLATES" },
