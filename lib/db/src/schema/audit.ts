@@ -146,6 +146,9 @@ export const auditQuestionBankItemsTable = pgTable("audit_question_bank_items", 
     .default("NONE")
     .notNull(),
   defaultAutoNcJson: json("default_auto_nc_json"),
+  /** Single/multi choice: [{id, label, multiplierPct}] — copied to the
+   *  question's optionsJson on insert (copy-on-insert, FRD-QBK-03). */
+  defaultOptionsJson: json("default_options_json"),
   tags: json("tags").$type<string[]>().default([]).notNull(),
   numericUnit: text("numeric_unit"),
   numericMin: numeric("numeric_min"),

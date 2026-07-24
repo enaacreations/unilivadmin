@@ -1169,6 +1169,9 @@ const bankItemSchema = z.object({
   defaultWeight: z.number().int().min(0).default(0),
   defaultEvidenceRule: z.enum(EVIDENCE_RULES).default("NONE"),
   defaultAutoNcJson: z.unknown().nullish(),
+  defaultOptionsJson: z
+    .array(z.object({ id: z.string(), label: z.string(), multiplierPct: z.number() }))
+    .nullish(),
   tags: z.array(z.string().max(60)).default([]),
   numericUnit: z.string().max(20).nullish(),
   numericMin: z.number().nullish(),
@@ -1295,6 +1298,7 @@ bankRouter.post(
         defaultWeight: parsed.data.defaultWeight,
         defaultEvidenceRule: parsed.data.defaultEvidenceRule,
         defaultAutoNcJson: parsed.data.defaultAutoNcJson ?? null,
+        defaultOptionsJson: parsed.data.defaultOptionsJson ?? null,
         tags: parsed.data.tags,
         numericUnit: parsed.data.numericUnit ?? null,
         numericMin: parsed.data.numericMin != null ? String(parsed.data.numericMin) : null,
@@ -1318,7 +1322,7 @@ bankRouter.patch(
     if (!existing) throw httpError(404, "Bank item not found");
     const body = pick(req.body, [
       "prompt", "helpText", "type", "defaultWeight", "defaultEvidenceRule",
-      "defaultAutoNcJson", "tags", "numericUnit", "numericMin", "numericMax",
+      "defaultAutoNcJson", "defaultOptionsJson", "tags", "numericUnit", "numericMin", "numericMax",
     ]);
     if (body.numericMin != null) body.numericMin = String(body.numericMin);
     if (body.numericMax != null) body.numericMax = String(body.numericMax);
@@ -1482,7 +1486,7 @@ builderRouter.post(
         numericUnit: item.numericUnit,
         numericMin: item.numericMin != null ? Number(item.numericMin) : null,
         numericMax: item.numericMax != null ? Number(item.numericMax) : null,
-        optionsJson: null,
+        optionsJson: (item.defaultOptionsJson as z.infer<typeof questionBodySchema>["optionsJson"]) ?? null,
         bankItemId: item.id,
         ratingScaleId: null,
       };

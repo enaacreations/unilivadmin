@@ -33,7 +33,7 @@ import {
   type BuilderQuestion, type BuilderSection, type NcSeverity, type QuestionType,
   type RatingScale, type TemplateDetail, type VersionDetail,
 } from "./lib";
-import { DuplicateWarning, LifecycleBadge, PublishDialog, useDuplicatePrompts } from "./shared";
+import { ChoiceOptionsEditor, DuplicateWarning, LifecycleBadge, PublishDialog, useDuplicatePrompts } from "./shared";
 
 /* Template builder (redesign — prototype "Template builder"). Category cards
  * with inline question rows (reorder, mandatory, weight) and a score-model /
@@ -295,6 +295,18 @@ function Inspector({
               onChange={(e) => setQ({ numericMax: e.target.value === "" ? null : e.target.value })}
             />
           </div>
+        </div>
+      )}
+
+      {(q.type === "SINGLE_CHOICE" || q.type === "MULTI_CHOICE") && (
+        <div className="space-y-2">
+          <Label>Answer options</Label>
+          <ChoiceOptionsEditor
+            value={q.optionsJson ?? []}
+            multi={q.type === "MULTI_CHOICE"}
+            disabled={readOnly}
+            onChange={(opts) => setQ({ optionsJson: opts })}
+          />
         </div>
       )}
 

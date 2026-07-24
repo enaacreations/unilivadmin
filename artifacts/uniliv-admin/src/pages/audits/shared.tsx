@@ -1,7 +1,9 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,7 +14,7 @@ import { apiFetch } from "@/lib/api-fetch";
 import {
   AUDIT_TYPE_BADGE, LIFECYCLE_BADGE, NC_SEVERITY_BADGE, NC_STATE_BADGE,
   NC_TERMINAL_STATES, fmtDateTime, fmtTimeLeft, titleCase,
-  type ApiError, type ApiOne, type AuditType, type DuplicateCheck,
+  type ApiError, type ApiOne, type AuditType, type ChoiceOption, type DuplicateCheck,
   type DuplicateMatch, type Lifecycle, type NcSeverity, type NcState, type SlaState,
 } from "./lib";
 
@@ -343,6 +345,93 @@ export function DuplicateWarning({ matches }: { matches: DuplicateMatch[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/* ── Choice answer-options editor (question bank + builder) ──────────────── */
+
+function newOptionId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `opt_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Add/label/score the answer options a SINGLE_CHOICE / MULTI_CHOICE question
+ * offers. Each option's `multiplierPct` (0–100) is how much of the question's
+ * weight that choice earns (single = the picked option's %, multi = the average
+ * of picked options). Fully controlled — the parent owns persistence.
+ */
+export function ChoiceOptionsEditor({
+  value, onChange, disabled = false, multi = false,
+}: {
+  value: ChoiceOption[];
+  onChange: (options: ChoiceOption[]) => void;
+  disabled?: boolean;
+  multi?: boolean;
+}) {
+  const add = () => onChange([...value, { id: newOptionId(), label: "", multiplierPct: 100 }]);
+  const patch = (id: string, p: Partial<ChoiceOption>) =>
+    onChange(value.map((o) => (o.id === id ? { ...o, ...p } : o)));
+  const remove = (id: string) => onChange(value.filter((o) => o.id !== id));
+
+  return (
+    <div className="rounded-[10px] border border-border bg-background p-3">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Answer options</span>
+        <span className="text-[10.5px] text-muted-foreground">
+          {multi ? "auditor may pick several" : "auditor picks one"} · score % = points earned
+        </span>
+      </div>
+      {value.length === 0 ? (
+        <p className="py-2 text-center text-[12px] text-muted-foreground">
+          No options yet — add the choices the auditor picks from.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {value.map((o, i) => (
+            <div key={o.id} className="flex items-center gap-2">
+              <span className="w-4 shrink-0 font-mono text-[10.5px] text-muted-foreground/70">{i + 1}</span>
+              <Input
+                value={o.label}
+                disabled={disabled}
+                onChange={(e) => patch(o.id, { label: e.target.value })}
+                placeholder="Option label…"
+                className="h-8 flex-1 text-[13px]"
+              />
+              <div className="flex shrink-0 items-center gap-1">
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={o.multiplierPct}
+                  disabled={disabled}
+                  onChange={(e) =>
+                    patch(o.id, { multiplierPct: Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))) })
+                  }
+                  className="h-8 w-16 text-[13px]"
+                />
+                <span className="text-[11px] text-muted-foreground">%</span>
+              </div>
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={() => remove(o.id)}
+                  className="shrink-0 text-muted-foreground/60 hover:text-destructive"
+                  aria-label="Remove option"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!disabled && (
+        <Button type="button" variant="outline" size="sm" className="mt-2 h-8" onClick={add}>
+          <Plus className="mr-1 h-3.5 w-3.5" /> Add option
+        </Button>
+      )}
     </div>
   );
 }

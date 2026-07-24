@@ -197,8 +197,13 @@ export interface BankItem {
   defaultWeight: number;
   defaultEvidenceRule: EvidenceRule;
   defaultAutoNcJson: unknown;
+  /** Single/multi choice options seeded onto the question on insert. */
+  defaultOptionsJson: ChoiceOption[] | null;
   tags: string[];
   numericUnit: string | null;
+  /** numeric columns → string in JSON. */
+  numericMin: string | null;
+  numericMax: string | null;
   archivedAt: string | null;
   usageCount: number;
   updatedAt: string;
