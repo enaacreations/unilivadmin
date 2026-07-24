@@ -29,7 +29,8 @@ import {
   type ApiList, type ApiOne, type NcSeverity, type ReviewWorkspaceData,
   type RunQuestion, type RunResponse, type WorkspaceEvidence,
 } from "./lib";
-import { NcStateBadge, ReasonDialog, SeverityBadge, TypeBadge } from "./shared";
+import { NcStateBadge, SeverityBadge, TypeBadge } from "./shared";
+import { cn } from "@/lib/utils";
 
 function gps(lat: number | null, lng: number | null): string | null {
   if (lat == null || lng == null) return null;
@@ -111,6 +112,16 @@ function ResponseRow({
   );
 }
 
+function TimelineRow({ dot, label, when }: { dot: string; label: string; when: string | null }) {
+  return (
+    <div className="flex items-start gap-2 py-0.5">
+      <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", dot)} />
+      <span className="flex-1 text-[12px] font-semibold text-foreground/80">{label}</span>
+      <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">{when ? fmtDateTime(when) : "—"}</span>
+    </div>
+  );
+}
+
 /** Review workspace (FRD-REV-01/02/03/06) — read-only evidence pack + verdict dock. */
 export default function ReviewWorkspace() {
   const params = useParams<{ id: string }>();
@@ -126,10 +137,7 @@ export default function ReviewWorkspace() {
   });
   const ws = wsQuery.data?.data;
 
-  const [approveOpen, setApproveOpen] = React.useState(false);
-  const [approveComment, setApproveComment] = React.useState("");
-  const [rejectOpen, setRejectOpen] = React.useState(false);
-  const [reopenOpen, setReopenOpen] = React.useState(false);
+  const [decisionRemark, setDecisionRemark] = React.useState("");
   const [findingOpen, setFindingOpen] = React.useState(false);
   const [findingSeverity, setFindingSeverity] = React.useState<NcSeverity>("MINOR");
   const [findingDescription, setFindingDescription] = React.useState("");
@@ -163,27 +171,21 @@ export default function ReviewWorkspace() {
     mutationFn: () =>
       apiFetch(`/audit/reviews/${id}/approve`, {
         method: "POST",
-        body: JSON.stringify(approveComment.trim() ? { comments: approveComment.trim() } : {}),
+        body: JSON.stringify(decisionRemark.trim() ? { comments: decisionRemark.trim() } : {}),
       }),
-    onSuccess: () => { setApproveOpen(false); leaveWithToast(`Audit ${ws?.audit.ticketNo ?? ""} approved`); },
+    onSuccess: () => leaveWithToast(`Audit ${ws?.audit.ticketNo ?? ""} approved`),
     onError: (e: Error) => toast({ title: e.message || "Approve failed", variant: "destructive" }),
   });
   const rejectMut = useMutation({
     mutationFn: (comment: string) =>
       apiFetch(`/audit/reviews/${id}/reject`, { method: "POST", body: JSON.stringify({ comment }) }),
-    onSuccess: () => {
-      setRejectOpen(false);
-      leaveWithToast(`Audit ${ws?.audit.ticketNo ?? ""} rejected — returned for rework`);
-    },
+    onSuccess: () => leaveWithToast(`Audit ${ws?.audit.ticketNo ?? ""} rejected — returned for rework`),
     onError: (e: Error) => toast({ title: e.message || "Reject failed", variant: "destructive" }),
   });
   const reopenMut = useMutation({
     mutationFn: (reason: string) =>
       apiFetch(`/audit/reviews/${id}/reopen`, { method: "POST", body: JSON.stringify({ reason }) }),
-    onSuccess: () => {
-      setReopenOpen(false);
-      leaveWithToast(`Audit ${ws?.audit.ticketNo ?? ""} reopened`);
-    },
+    onSuccess: () => leaveWithToast(`Audit ${ws?.audit.ticketNo ?? ""} reopened`),
     onError: (e: Error) => toast({ title: e.message || "Reopen failed", variant: "destructive" }),
   });
   const findingMut = useMutation({
@@ -250,99 +252,58 @@ export default function ReviewWorkspace() {
   const proof = ws.submissionProof;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 pb-24">
-      {/* (a) Header */}
-      <div className="space-y-2">
-        <Link
-          href="/audits/review"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-primary"
-        >
-          <ArrowLeft className="h-4 w-4" /> Review queue
+    <div className="mx-auto max-w-5xl animate-fade-up space-y-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Link href="/audits/review" className="inline-flex h-9 w-9 items-center justify-center rounded-[9px] border border-border text-muted-foreground hover:text-primary">
+          <ArrowLeft className="h-4 w-4" />
         </Link>
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="font-mono text-xl font-bold tracking-tight text-primary">{audit.ticketNo}</h1>
-          <Badge variant={AUDIT_STATE_BADGE[audit.state] ?? "outline"}>{titleCase(audit.state)}</Badge>
-          <TypeBadge type={audit.auditType} />
+        <TypeBadge type={audit.auditType} />
+        <div className="min-w-[220px] flex-1">
+          <h1 className="font-display text-xl font-bold tracking-[-0.012em]">{audit.title}</h1>
+          <p className="truncate font-mono text-xs text-muted-foreground">
+            {audit.ticketNo} · {ws.target.propertyName ?? "—"}{ws.target.roomNumber ? ` · Room ${ws.target.roomNumber}` : ""}
+            {ws.template ? ` · ${ws.template.name}${ws.version ? ` v${ws.version.versionNo}` : ""}` : ""}
+          </p>
         </div>
-        <p className="text-muted-foreground">{audit.title}</p>
-        <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            <MapPin className="h-3.5 w-3.5" />
-            {ws.target.propertyName ?? "—"}
-            {ws.target.roomNumber ? ` · Room ${ws.target.roomNumber}` : ""}
-          </span>
-          <span>
-            Auditor: <span className="font-medium text-foreground">{ws.assignee?.name ?? "—"}</span>
-            {ws.assignee?.role && ` (${titleCase(ws.assignee.role)})`}
-          </span>
-          {ws.template && (
-            <span>
-              {ws.template.name}{" "}
-              {ws.version && <span className="font-mono text-xs">v{ws.version.versionNo}</span>}
-            </span>
-          )}
-        </p>
+        <Badge variant="warning">{titleCase(audit.state)} · locked for review</Badge>
       </div>
 
-      {/* Score + auto-captured timeline + proof */}
+      <div className="grid gap-4 lg:grid-cols-[1fr_300px] lg:items-start">
+        {/* Left — score + answers */}
+        <div className="min-w-0 space-y-3">
+
+      {/* Score summary — ring + band + category breakdown */}
       <Card>
-        <CardContent className="grid gap-4 p-4 sm:grid-cols-[auto_1fr_auto]">
-          <div className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Score</p>
-            <p className={`text-3xl font-bold tabular-nums ${scoreColorClass(pct)}`}>
-              {pct != null ? `${pct.toFixed(1)}%` : "—"}
-            </p>
-            <div className="flex items-center gap-1.5">
-              {audit.result && (
-                <Badge variant={audit.result === "PASS" ? "success" : "destructive"}>{audit.result}</Badge>
-              )}
-              {audit.scoreBand && <Badge variant="outline">{audit.scoreBand}</Badge>}
+        <CardContent className="flex flex-wrap items-center gap-5 p-5">
+          <div className="relative h-[84px] w-[84px] shrink-0">
+            <svg width="84" height="84" viewBox="0 0 84 84">
+              <circle cx="42" cy="42" r="35" fill="none" strokeWidth="8" stroke="currentColor" className="text-muted-foreground/20" />
+              <circle cx="42" cy="42" r="35" fill="none" strokeWidth="8" strokeLinecap="round" stroke="currentColor"
+                className={audit.result === "FAIL" ? "text-destructive" : audit.result === "PASS" ? "text-success" : "text-accent"}
+                strokeDasharray={`${((pct ?? 0) / 100) * 2 * Math.PI * 35} ${2 * Math.PI * 35}`}
+                transform="rotate(-90 42 42)" />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className={cn("font-display text-2xl font-extrabold", scoreColorClass(pct))}>{pct != null ? Math.round(pct) : "—"}</span>
+              <span className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">/100</span>
             </div>
-            {threshold != null && (
-              <p className="text-xs text-muted-foreground">
-                Pass threshold {threshold.toFixed(0)}%
-                {ws.version?.criticalFailGate && " · critical-fail gate on"}
-              </p>
-            )}
           </div>
-          <div className="space-y-1.5 text-sm">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Auto-captured timeline</p>
-            <p>
-              Started {fmtDateTime(audit.startedAt)}
-              {gps(audit.startGeoLat, audit.startGeoLng) && (
-                <span className="ml-1 font-mono text-xs text-muted-foreground">
-                  @ {gps(audit.startGeoLat, audit.startGeoLng)}
-                </span>
-              )}
-            </p>
-            <p>
-              Submitted {fmtDateTime(audit.submittedAt)}
-              {gps(audit.submitGeoLat, audit.submitGeoLng) && (
-                <span className="ml-1 font-mono text-xs text-muted-foreground">
-                  @ {gps(audit.submitGeoLat, audit.submitGeoLng)}
-                </span>
-              )}
-            </p>
-            <p className="text-muted-foreground">
-              Duration {fmtDuration(audit.durationSeconds)}
-              {audit.reopenCount > 0 && ` · reopened ×${audit.reopenCount}`}
-            </p>
-          </div>
-          <div className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
-              <Camera className="mr-1 inline h-3.5 w-3.5" /> Submission proof
-            </p>
-            {proof && (proof.thumbUrl || proof.url) ? (
-              <button type="button" onClick={() => openImage(proof.id)}>
-                <img
-                  src={proof.thumbUrl ?? proof.url ?? undefined}
-                  alt="Submission proof"
-                  className="h-20 w-20 rounded-md border object-cover hover:opacity-90"
-                />
-              </button>
-            ) : (
-              <p className="text-sm text-muted-foreground">Not captured</p>
-            )}
+          <div className="min-w-[220px] flex-1 space-y-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              {audit.result && <Badge variant={audit.result === "PASS" ? "success" : "destructive"}>{audit.result}</Badge>}
+              {audit.scoreBand && <Badge variant="outline">{audit.scoreBand}</Badge>}
+              {threshold != null && <span className="text-xs text-muted-foreground">pass {threshold.toFixed(0)}%{ws.version?.criticalFailGate ? " · critical-fail gate" : ""}</span>}
+            </div>
+            {ws.sectionScores.filter((s) => s.pct != null).map((s) => (
+              <div key={s.sectionId} className="flex items-center gap-2.5">
+                <span className="w-[150px] truncate text-xs font-medium text-foreground/80">{s.title}</span>
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div className={cn("h-full rounded-full", (s.pct ?? 0) >= (threshold ?? 75) ? "bg-success" : "bg-destructive")} style={{ width: `${s.pct}%` }} />
+                </div>
+                <span className={cn("w-8 text-right font-mono text-[11px] font-bold", scoreColorClass(s.pct))}>{Math.round(s.pct ?? 0)}</span>
+              </div>
+            ))}
           </div>
         </CardContent>
       </Card>
@@ -435,115 +396,96 @@ export default function ReviewWorkspace() {
         </CardContent>
       </Card>
 
-      {/* Prior verdicts */}
-      {ws.reviews.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Review history</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {ws.reviews.map((r) => (
-              <div key={r.id} className="rounded-md border p-2.5 text-sm">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={r.verdict === "APPROVED" ? "success" : "destructive"}>
-                    {titleCase(r.verdict)}
-                  </Badge>
-                  <span className="font-medium">{r.reviewerName ?? "—"}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {formatDistanceToNow(new Date(r.createdAt), { addSuffix: true })}
-                  </span>
+        </div>
+
+        {/* Right — verification, auditor, timeline, decision */}
+        <div className="space-y-4">
+          <Card>
+            <CardContent className="space-y-2 p-4 text-sm">
+              <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-success">Verification</div>
+              {proof && (proof.thumbUrl || proof.url) ? (
+                <button type="button" onClick={() => openImage(proof.id)} className="block w-full">
+                  <img src={proof.thumbUrl ?? proof.url ?? undefined} alt="Live photo at submit" className="h-24 w-full rounded-[10px] border object-cover hover:opacity-90" />
+                </button>
+              ) : (
+                <div className="flex h-24 flex-col items-center justify-center gap-1 rounded-[10px] bg-muted text-muted-foreground">
+                  <Camera className="h-5 w-5" /><span className="text-[10px] font-bold uppercase tracking-wide">No live photo</span>
                 </div>
-                {r.comments && <p className="mt-1 text-muted-foreground">{r.comments}</p>}
+              )}
+              <div className="flex items-center gap-2"><span className="font-bold text-success">✓</span><span className="flex-1">GPS captured at submit</span></div>
+              {gps(audit.submitGeoLat, audit.submitGeoLng) && <div className="pl-5 font-mono text-[10.5px] text-muted-foreground">{gps(audit.submitGeoLat, audit.submitGeoLng)}</div>}
+              {audit.durationSeconds != null && <div className="flex items-center gap-2"><span className="font-bold text-success">✓</span><span className="flex-1">Completed in {fmtDuration(audit.durationSeconds)}{audit.reopenCount > 0 ? ` · reopened ×${audit.reopenCount}` : ""}</span></div>}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Auditor</div>
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted font-display text-xs font-bold">{(ws.assignee?.name ?? "—").split(" ").map((w) => w[0]).slice(0, 2).join("")}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-bold">{ws.assignee?.name ?? "—"}</div>
+                  <div className="text-[11.5px] text-muted-foreground">{ws.assignee?.role ? titleCase(ws.assignee.role) : ""}</div>
+                </div>
               </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
+            </CardContent>
+          </Card>
 
-      {/* (c) Verdict dock */}
-      {(canReview && ["SUBMITTED", "UNDER_REVIEW"].includes(audit.state)) || canReopen ? (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)] md:left-64">
-          <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-end gap-2 px-4 py-3 sm:px-6">
-            {canReview && audit.state === "SUBMITTED" && (
-              <Button
-                className="min-h-11"
-                disabled={claimMut.isPending}
-                onClick={() => claimMut.mutate()}
-              >
-                {claimMut.isPending
-                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  : <BadgeCheck className="mr-2 h-4 w-4" />}
-                Start review
-              </Button>
-            )}
-            {canReview && audit.state === "UNDER_REVIEW" && (
-              <>
-                <Button className="min-h-11" onClick={() => { setApproveComment(""); setApproveOpen(true); }}>
-                  <ThumbsUp className="mr-2 h-4 w-4" /> Approve
-                </Button>
-                <Button variant="outline" className="min-h-11" onClick={() => setRejectOpen(true)}>
-                  <ThumbsDown className="mr-2 h-4 w-4" /> Reject
-                </Button>
-              </>
-            )}
-            {canReopen && (
-              <Button variant="outline" className="min-h-11" onClick={() => setReopenOpen(true)}>
-                <Undo2 className="mr-2 h-4 w-4" /> Reopen audit
-              </Button>
-            )}
-          </div>
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Timeline</div>
+              <div className="space-y-1">
+                <TimelineRow dot="bg-muted-foreground" label="Started" when={audit.startedAt} />
+                <TimelineRow dot="bg-info" label="Submitted" when={audit.submittedAt} />
+                {ws.reviews.map((r) => (
+                  <TimelineRow key={r.id} dot={r.verdict === "APPROVED" ? "bg-success" : "bg-destructive"} label={`${titleCase(r.verdict)} · ${r.reviewerName ?? "—"}`} when={r.createdAt} />
+                ))}
+              </div>
+              {ws.reviews.some((r) => r.comments) && (
+                <div className="mt-2 space-y-1 border-t border-dashed border-border pt-2">
+                  {ws.reviews.filter((r) => r.comments).map((r) => (
+                    <p key={r.id} className="text-[11.5px] text-muted-foreground">&ldquo;{r.comments}&rdquo;</p>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {((canReview && ["SUBMITTED", "UNDER_REVIEW"].includes(audit.state)) || canReopen) && (
+            <Card className="border-foreground/40">
+              <CardContent className="p-4">
+                <div className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.1em] text-foreground">Your decision</div>
+                {canReview && audit.state === "SUBMITTED" ? (
+                  <Button className="w-full" disabled={claimMut.isPending} onClick={() => claimMut.mutate()}>
+                    {claimMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BadgeCheck className="mr-2 h-4 w-4" />}Start review
+                  </Button>
+                ) : (
+                  <>
+                    <Textarea value={decisionRemark} onChange={(e) => setDecisionRemark(e.target.value)} placeholder="Remarks — required to reject or reopen…" rows={3} className="text-sm" />
+                    {canReview && audit.state === "UNDER_REVIEW" && (
+                      <>
+                        <Button className="mt-2.5 w-full bg-success text-white hover:bg-success/90" disabled={approveMut.isPending} onClick={() => approveMut.mutate()}>
+                          {approveMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ThumbsUp className="mr-2 h-4 w-4" />}Approve
+                        </Button>
+                        <Button variant="outline" className="mt-2 w-full border-destructive text-destructive hover:text-destructive" disabled={rejectMut.isPending || !decisionRemark.trim()} onClick={() => rejectMut.mutate(decisionRemark.trim())}>
+                          <ThumbsDown className="mr-2 h-4 w-4" /> Reject with remarks
+                        </Button>
+                      </>
+                    )}
+                    {canReopen && (
+                      <Button variant="ghost" className="mt-2 w-full text-muted-foreground" disabled={reopenMut.isPending || !decisionRemark.trim()} onClick={() => reopenMut.mutate(decisionRemark.trim())}>
+                        <Undo2 className="mr-2 h-4 w-4" /> Reopen for corrections
+                      </Button>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
-      ) : null}
+      </div>
 
-      {/* Dialogs */}
-      <FormModal
-        open={approveOpen}
-        onOpenChange={setApproveOpen}
-        title={`Approve ${audit.ticketNo}`}
-        onSave={() => approveMut.mutate()}
-        isSaving={approveMut.isPending}
-        saveLabel="Approve"
-      >
-        <div className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            Approving locks the verdict; the audit auto-closes once every
-            finding is terminal (FRD-REV-04).
-          </p>
-          <Label>Comment (optional)</Label>
-          <Textarea
-            value={approveComment}
-            onChange={(e) => setApproveComment(e.target.value)}
-            placeholder="Anything for the record?"
-            rows={3}
-            className="text-base"
-          />
-        </div>
-      </FormModal>
-
-      <ReasonDialog
-        open={rejectOpen}
-        onOpenChange={setRejectOpen}
-        title={`Reject ${audit.ticketNo}`}
-        description="The audit returns to the auditor In Progress with answers preserved. A comment is required (FRD-REV-02)."
-        label="Comment"
-        placeholder="What must be fixed before resubmission?"
-        saveLabel="Reject"
-        isSaving={rejectMut.isPending}
-        onSave={(comment) => rejectMut.mutate(comment)}
-      />
-
-      <ReasonDialog
-        open={reopenOpen}
-        onOpenChange={setReopenOpen}
-        title={`Reopen ${audit.ticketNo}`}
-        description="Operations Excellence only. The prior report revision is preserved; resubmission produces revision+1 (FRD-REV-06)."
-        label="Reason"
-        placeholder="Why is this closed audit being reopened?"
-        saveLabel="Reopen"
-        isSaving={reopenMut.isPending}
-        onSave={(reason) => reopenMut.mutate(reason)}
-      />
-
+      {/* Finding dialog */}
       <FormModal
         open={findingOpen}
         onOpenChange={setFindingOpen}
