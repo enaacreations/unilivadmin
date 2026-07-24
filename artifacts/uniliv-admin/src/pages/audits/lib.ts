@@ -614,14 +614,18 @@ export function resolveMultiplierClient(
     }
     case "SINGLE_CHOICE": {
       const optionId = a["optionId"] != null ? String(a["optionId"]) : null;
-      const option = (question.optionsJson ?? []).find((o) => o.id === optionId);
-      return option ? { multiplierPct: Number(option.multiplierPct), isNa: false } : { multiplierPct: null, isNa: false };
+      const opts = Array.isArray(question.optionsJson) ? question.optionsJson : [];
+      const option = opts.find((o) => o.id === optionId);
+      if (!option) return { multiplierPct: null, isNa: false };
+      const pct = Number(option.multiplierPct);
+      return { multiplierPct: Number.isFinite(pct) ? pct : null, isNa: false };
     }
     case "MULTI_CHOICE": {
       const ids = Array.isArray(a["optionIds"]) ? (a["optionIds"] as unknown[]).map(String) : [];
-      const options = (question.optionsJson ?? []).filter((o) => ids.includes(o.id));
-      if (options.length === 0) return { multiplierPct: null, isNa: false };
-      const avg = options.reduce((s, o) => s + Number(o.multiplierPct), 0) / options.length;
+      const opts = Array.isArray(question.optionsJson) ? question.optionsJson : [];
+      const nums = opts.filter((o) => ids.includes(o.id)).map((o) => Number(o.multiplierPct)).filter((n) => Number.isFinite(n));
+      if (nums.length === 0) return { multiplierPct: null, isNa: false };
+      const avg = nums.reduce((s, n) => s + n, 0) / nums.length;
       return { multiplierPct: avg, isNa: false };
     }
     case "NUMERIC": {

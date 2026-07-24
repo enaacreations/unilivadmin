@@ -731,6 +731,21 @@ router.post(
         questions: weightless.map((q) => ({ id: q.id, prompt: q.prompt.slice(0, 80) })),
       });
     }
+    // Choice questions must offer ≥2 labelled options, else they render as
+    // empty/unanswerable controls and silently drop from scoring at conduct.
+    const badChoice = content.questions.filter((q) => {
+      if (q.type !== "SINGLE_CHOICE" && q.type !== "MULTI_CHOICE") return false;
+      const opts = Array.isArray(q.optionsJson) ? q.optionsJson : [];
+      const labelled = opts.filter(
+        (o) => o && typeof o === "object" && String((o as { label?: unknown }).label ?? "").trim(),
+      );
+      return labelled.length < 2;
+    });
+    if (badChoice.length > 0) {
+      throw httpError(422, "Choice questions need at least 2 labelled answer options", {
+        questions: badChoice.map((q) => ({ id: q.id, prompt: q.prompt.slice(0, 80) })),
+      });
+    }
 
     const snapshot = await buildScaleSnapshot(content.questions);
     const contentHash = computeContentHash(content, snapshot, {
@@ -950,6 +965,15 @@ router.get(
 
 /* ── Import / export / sandbox preview (FR-TM-07/08) ───────────────────────── */
 
+/** A choice answer option. multiplierPct is bounded 0–100 server-side — the
+ *  server is the scoring authority; the UI clamp alone is not enough (an
+ *  out-of-range value inflates or corrupts the audit score). */
+const choiceOptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().max(200),
+  multiplierPct: z.number().min(0).max(100),
+});
+
 const importQuestionSchema = z.object({
   prompt: z.string().min(1).max(500),
   helpText: z.string().max(1000).nullish(),
@@ -960,7 +984,7 @@ const importQuestionSchema = z.object({
   numericUnit: z.string().max(20).nullish(),
   numericMin: z.number().nullish(),
   numericMax: z.number().nullish(),
-  optionsJson: z.array(z.object({ id: z.string(), label: z.string(), multiplierPct: z.number() })).nullish(),
+  optionsJson: z.array(choiceOptionSchema).nullish(),
   autoNcJson: z.unknown().nullish(),
   bankItemId: z.string().nullish(),
 });
@@ -1169,9 +1193,7 @@ const bankItemSchema = z.object({
   defaultWeight: z.number().int().min(0).default(0),
   defaultEvidenceRule: z.enum(EVIDENCE_RULES).default("NONE"),
   defaultAutoNcJson: z.unknown().nullish(),
-  defaultOptionsJson: z
-    .array(z.object({ id: z.string(), label: z.string(), multiplierPct: z.number() }))
-    .nullish(),
+  defaultOptionsJson: z.array(choiceOptionSchema).nullish(),
   tags: z.array(z.string().max(60)).default([]),
   numericUnit: z.string().max(20).nullish(),
   numericMin: z.number().nullish(),
@@ -1326,6 +1348,11 @@ bankRouter.patch(
     ]);
     if (body.numericMin != null) body.numericMin = String(body.numericMin);
     if (body.numericMax != null) body.numericMax = String(body.numericMax);
+    if (body.defaultOptionsJson != null) {
+      const opts = z.array(choiceOptionSchema).safeParse(body.defaultOptionsJson);
+      if (!opts.success) throw httpError(400, "Invalid answer options", opts.error.flatten());
+      body.defaultOptionsJson = opts.data;
+    }
     // Copy-on-insert (FRD-QBK-03): editing the bank NEVER mutates templates —
     // template questions are independent copies with only provenance FKs.
     const [row] = await db
@@ -1546,6 +1573,11 @@ builderRouter.patch(
     if (Object.keys(body).length === 0) throw httpError(400, "Nothing to update");
     if (body.weight != null && (!Number.isInteger(body.weight) || body.weight < 0)) {
       throw httpError(422, "weight must be an integer ≥ 0");
+    }
+    if (body.optionsJson != null) {
+      const opts = z.array(choiceOptionSchema).safeParse(body.optionsJson);
+      if (!opts.success) throw httpError(400, "Invalid answer options", opts.error.flatten());
+      body.optionsJson = opts.data;
     }
     if (body.numericMin != null) body.numericMin = String(body.numericMin);
     if (body.numericMax != null) body.numericMax = String(body.numericMax);

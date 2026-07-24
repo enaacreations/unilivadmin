@@ -351,7 +351,7 @@ export function DuplicateWarning({ matches }: { matches: DuplicateMatch[] }) {
 
 /* ── Choice answer-options editor (question bank + builder) ──────────────── */
 
-function newOptionId(): string {
+export function newOptionId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `opt_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -380,7 +380,7 @@ export function ChoiceOptionsEditor({
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Answer options</span>
         <span className="text-[10.5px] text-muted-foreground">
-          {multi ? "auditor may pick several" : "auditor picks one"} · score % = points earned
+          {multi ? "auditor may pick several · score = average of picked" : "auditor picks one · score % = points earned"}
         </span>
       </div>
       {value.length === 0 ? (
@@ -406,6 +406,7 @@ export function ChoiceOptionsEditor({
                   max={100}
                   value={o.multiplierPct}
                   disabled={disabled}
+                  onFocus={(e) => e.currentTarget.select()}
                   onChange={(e) =>
                     patch(o.id, { multiplierPct: Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))) })
                   }

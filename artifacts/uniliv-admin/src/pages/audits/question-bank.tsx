@@ -12,7 +12,7 @@ import {
   EVIDENCE_RULES, NON_SCORED_TYPES, QUESTION_TYPES, apiFetchAll,
   type ApiOne, type BankItem, type ChoiceOption, type EvidenceRule, type QuestionType,
 } from "./lib";
-import { ChoiceOptionsEditor, DuplicateWarning, useDuplicatePrompts } from "./shared";
+import { ChoiceOptionsEditor, DuplicateWarning, newOptionId, useDuplicatePrompts } from "./shared";
 import { cn } from "@/lib/utils";
 
 /* Question bank (redesign — prototype "Question bank"). Write once, reuse
@@ -110,8 +110,12 @@ function TagPicker({
   const add = (t: string) => {
     const v = t.trim();
     setQuery("");
-    if (!v || value.includes(v)) return;
-    onChange([...value, v]);
+    if (!v) return;
+    // Canonicalise to an existing tag's casing and dedupe case-insensitively —
+    // the Enter path must not create "Cleanliness" + "cleanliness" duplicates.
+    const canonical = [...value, ...suggestions].find((x) => x.toLowerCase() === v.toLowerCase()) ?? v;
+    if (value.some((x) => x.toLowerCase() === canonical.toLowerCase())) return;
+    onChange([...value, canonical]);
   };
   return (
     <div>
@@ -276,8 +280,8 @@ export default function QuestionBank() {
       optionsJson:
         (t === "SINGLE_CHOICE" || t === "MULTI_CHOICE") && f.optionsJson.length === 0
           ? [
-              { id: crypto.randomUUID(), label: "", multiplierPct: 100 },
-              { id: crypto.randomUUID(), label: "", multiplierPct: 0 },
+              { id: newOptionId(), label: "", multiplierPct: 100 },
+              { id: newOptionId(), label: "", multiplierPct: 0 },
             ]
           : f.optionsJson,
     }));
