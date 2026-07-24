@@ -17,6 +17,7 @@ import {
 } from "./lib";
 import { cn } from "@/lib/utils";
 import { ReviewQueuePanel } from "./review-queue";
+import { ReportsPanel } from "./reports";
 
 /* Oversight dashboard (redesign — prototype "Audit oversight"). Serves the
  * oversight tier (City Head / Zonal Head / SVP): KPI tiles, per-property /
@@ -79,7 +80,8 @@ function League({ title, accent, data }: { title: string; accent: string; data: 
 export default function AuditDashboard() {
   const { role, can } = usePermissions();
   const canReview = can("AUDIT_REVIEW", "view");
-  const [view, setView] = React.useState<"overview" | "review">("overview");
+  const canReports = can("AUDIT_REPORTS", "view");
+  const [view, setView] = React.useState<"overview" | "review" | "reports">("overview");
   // Ops Excellence lands on the review queue (their primary action); everyone
   // else opens on the oversight overview. Applied once, when the role resolves.
   const viewInit = React.useRef(false);
@@ -165,6 +167,7 @@ export default function AuditDashboard() {
   );
 
   const showReview = canReview && view === "review";
+  const showReports = canReports && view === "reports";
 
   return (
     <div className="animate-fade-up space-y-4">
@@ -172,14 +175,19 @@ export default function AuditDashboard() {
         <div className="min-w-[220px] flex-1">
           <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Audit oversight</h1>
           <p className="text-sm text-muted-foreground">
-            {showReview ? "Approve or send back submitted audits." : "Program health across your permitted audit types."}
+            {showReview
+              ? "Approve or send back submitted audits."
+              : showReports
+                ? "Per-audit PDF registry plus the named operational reports."
+                : "Program health across your permitted audit types."}
           </p>
         </div>
-        {canReview && (
-          <Tabs value={view} onValueChange={(v) => setView(v as "overview" | "review")}>
+        {(canReview || canReports) && (
+          <Tabs value={view} onValueChange={(v) => setView(v as "overview" | "review" | "reports")}>
             <TabsList>
-              <TabsTrigger value="review">Review{pendingCount ? ` · ${pendingCount}` : ""}</TabsTrigger>
+              {canReview && <TabsTrigger value="review">Review{pendingCount ? ` · ${pendingCount}` : ""}</TabsTrigger>}
               <TabsTrigger value="overview">Overview</TabsTrigger>
+              {canReports && <TabsTrigger value="reports">Reports</TabsTrigger>}
             </TabsList>
           </Tabs>
         )}
@@ -187,6 +195,8 @@ export default function AuditDashboard() {
 
       {showReview ? (
         <ReviewQueuePanel embedded />
+      ) : showReports ? (
+        <ReportsPanel embedded />
       ) : (
       <>
       <div className="flex flex-wrap items-end gap-3">

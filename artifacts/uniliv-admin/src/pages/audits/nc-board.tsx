@@ -141,8 +141,10 @@ function NcCard({
   );
 }
 
-/** NC Board (FRD-NCM-03) — kanban + register of findings with SLA countdowns. */
-export default function NcBoard() {
+/** NC Board (FRD-NCM-03) — kanban + register of findings with SLA countdowns.
+ *  Also embedded as the "Findings" tab of the All Audits / My Audits hubs
+ *  (`embedded` swaps the page header for a slim toolbar). */
+export function NcBoardPanel({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -289,31 +291,40 @@ export default function NcBoard() {
 
   const boardError = view === "board" && boardQuery.isError;
 
+  const viewToggle = (
+    <div className="flex gap-2">
+      <Button
+        variant={view === "board" ? "default" : "outline"}
+        size="sm"
+        onClick={() => setView("board")}
+      >
+        <LayoutGrid className="mr-2 h-4 w-4" /> Board
+      </Button>
+      <Button
+        variant={view === "list" ? "default" : "outline"}
+        size="sm"
+        onClick={() => setView("list")}
+      >
+        <ListIcon className="mr-2 h-4 w-4" /> List
+      </Button>
+    </div>
+  );
+
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="NC Board"
-        subtitle="Findings by state with severity and SLA countdowns — drag to move."
-        breadcrumbs={[{ label: "Audits" }, { label: "NC Board" }]}
-        action={
-          <div className="flex gap-2">
-            <Button
-              variant={view === "board" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setView("board")}
-            >
-              <LayoutGrid className="mr-2 h-4 w-4" /> Board
-            </Button>
-            <Button
-              variant={view === "list" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setView("list")}
-            >
-              <ListIcon className="mr-2 h-4 w-4" /> List
-            </Button>
-          </div>
-        }
-      />
+    <div className={embedded ? "space-y-4" : "space-y-6"}>
+      {embedded ? (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">Findings by state with severity and SLA countdowns — drag to move.</p>
+          {viewToggle}
+        </div>
+      ) : (
+        <PageHeader
+          title="NC Board"
+          subtitle="Findings by state with severity and SLA countdowns — drag to move."
+          breadcrumbs={[{ label: "Audits" }, { label: "NC Board" }]}
+          action={viewToggle}
+        />
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3">
@@ -630,4 +641,8 @@ export default function NcBoard() {
       />
     </div>
   );
+}
+
+export default function NcBoard() {
+  return <NcBoardPanel />;
 }

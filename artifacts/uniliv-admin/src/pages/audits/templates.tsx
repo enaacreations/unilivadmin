@@ -14,11 +14,14 @@ import {
 import { FormModal } from "@/components/ui/form-modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
+import { usePermissions } from "@/lib/use-permissions";
 import {
   AUDIT_TYPES, AUDIT_TYPE_LABELS, fmtDate, titleCase,
   type ApiOne, type ApiList, type AuditType, type Lifecycle, type TargetType, type TemplateRow,
 } from "./lib";
 import { cn } from "@/lib/utils";
+import { QuestionBankPanel } from "./question-bank";
+import { SchedulesPanel } from "./schedules";
 
 /* Template library (redesign — prototype "Audit templates"). A card grid of
  * every checklist with its latest version, lifecycle and usage — the card
@@ -39,7 +42,7 @@ const LIFECYCLE_TAG: Record<Lifecycle, { label: string; cls: string }> = {
   ARCHIVED: { label: "Archived", cls: "bg-muted text-muted-foreground" },
 };
 
-export default function AuditTemplates() {
+function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -94,8 +97,12 @@ export default function AuditTemplates() {
     <div className="animate-fade-up space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[220px] flex-1">
-          <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Audit templates</h1>
-          <p className="text-sm text-muted-foreground">What each audit asks, in what order, and how it scores.</p>
+          {!embedded && (
+            <>
+              <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Audit templates</h1>
+              <p className="text-sm text-muted-foreground">What each audit asks, in what order, and how it scores.</p>
+            </>
+          )}
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="mr-1 h-4 w-4" /> New template
@@ -236,6 +243,45 @@ export default function AuditTemplates() {
           </p>
         </div>
       </FormModal>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Templates hub — the checklist library plus the question bank and the
+ * schedule wizard as tabs (one sidebar destination for "what audits ask &
+ * when they run"). Schedules shows only with AUDIT_SCHEDULES view.
+ * ──────────────────────────────────────────────────────────────────────────── */
+export default function AuditTemplates() {
+  const { can } = usePermissions();
+  const showSchedules = can("AUDIT_SCHEDULES", "view");
+  const [tab, setTab] = React.useState<"templates" | "bank" | "schedules">("templates");
+
+  const subtitle =
+    tab === "templates"
+      ? "What each audit asks, in what order, and how it scores."
+      : tab === "bank"
+        ? "Write once, reuse across every template."
+        : "Pick a template, scope it, set the cadence — assignment is automatic.";
+
+  return (
+    <div className="animate-fade-up space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-[220px] flex-1">
+          <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Templates</h1>
+          <p className="text-sm text-muted-foreground">{subtitle}</p>
+        </div>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as "templates" | "bank" | "schedules")}>
+          <TabsList>
+            <TabsTrigger value="templates">Templates</TabsTrigger>
+            <TabsTrigger value="bank">Question bank</TabsTrigger>
+            {showSchedules && <TabsTrigger value="schedules">Schedules</TabsTrigger>}
+          </TabsList>
+        </Tabs>
+      </div>
+      {tab === "templates" && <TemplatesPanel embedded />}
+      {tab === "bank" && <QuestionBankPanel embedded />}
+      {tab === "schedules" && showSchedules && <SchedulesPanel embedded />}
     </div>
   );
 }

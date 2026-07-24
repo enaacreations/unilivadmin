@@ -18,6 +18,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FormModal } from "@/components/ui/form-modal";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -37,13 +38,14 @@ import {
   type ApiError, type ApiList, type ApiOne, type ApiPage, type AuditRow, type AuditState, type AuditType,
 } from "./lib";
 import { TypeBadge } from "./shared";
+import { NcBoardPanel } from "./nc-board";
 
 const ALL = "__all__";
 const PAGE_SIZES = [20, 50, 100];
 type Segment = "all" | "active" | "completed";
 
 /** Audit Register (FRD-REG-01/02/03) — server-paginated, scoped list of every audit. */
-export default function AuditRegister() {
+function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -171,38 +173,47 @@ export default function AuditRegister() {
 
   const canDelete = can("AUDIT_EXECUTION", "delete");
 
+  const actions = (
+    <div className="flex items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => listQuery.refetch()}
+        disabled={listQuery.isFetching}
+      >
+        <RefreshCw className={`mr-2 h-4 w-4 ${listQuery.isFetching ? "animate-spin" : ""}`} />
+        Refresh
+      </Button>
+      {canBulkReassign && (
+        <Button variant="outline" size="sm" onClick={() => setReassignOpen(true)}>
+          <UserCog className="mr-2 h-4 w-4" /> Bulk reassign
+        </Button>
+      )}
+      {can("AUDIT_EXECUTION", "create") && (
+        <Button asChild size="sm">
+          <Link href="/audits/new">
+            <Plus className="mr-2 h-4 w-4" /> New Audit
+          </Link>
+        </Button>
+      )}
+    </div>
+  );
+
   return (
-    <div className="space-y-6">
+    <div className={embedded ? "space-y-4" : "space-y-6"}>
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">Every audit in your scope — search, segments and filters.</p>
+          {actions}
+        </div>
+      ) : (
       <PageHeader
         title="All Audits"
         subtitle="Every audit in your scope — search, segments and filters."
         breadcrumbs={[{ label: "Audits" }, { label: "All Audits" }]}
-        action={
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => listQuery.refetch()}
-              disabled={listQuery.isFetching}
-            >
-              <RefreshCw className={`mr-2 h-4 w-4 ${listQuery.isFetching ? "animate-spin" : ""}`} />
-              Refresh
-            </Button>
-            {canBulkReassign && (
-              <Button variant="outline" size="sm" onClick={() => setReassignOpen(true)}>
-                <UserCog className="mr-2 h-4 w-4" /> Bulk reassign
-              </Button>
-            )}
-            {can("AUDIT_EXECUTION", "create") && (
-              <Button asChild size="sm">
-                <Link href="/audits/new">
-                  <Plus className="mr-2 h-4 w-4" /> New Audit
-                </Link>
-              </Button>
-            )}
-          </div>
-        }
+        action={actions}
       />
+      )}
 
       {/* Segments */}
       <ToggleGroup
@@ -577,6 +588,40 @@ export default function AuditRegister() {
           </div>
         </div>
       </FormModal>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * All Audits hub — the register plus the findings board as tabs. "Findings"
+ * (the NC kanban) shows for anyone with AUDIT_NCS view; personas without it
+ * get the plain register, no tab chrome.
+ * ──────────────────────────────────────────────────────────────────────────── */
+export default function AuditRegister() {
+  const { can } = usePermissions();
+  const showFindings = can("AUDIT_NCS", "view");
+  const [tab, setTab] = React.useState<"audits" | "findings">("audits");
+
+  if (!showFindings) return <RegisterPanel />;
+  return (
+    <div className="animate-fade-up space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-[220px] flex-1">
+          <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">All Audits</h1>
+          <p className="text-sm text-muted-foreground">
+            {tab === "audits"
+              ? "Every audit in your scope — search, segments and filters."
+              : "Findings raised by audits — track fixes through to closure."}
+          </p>
+        </div>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as "audits" | "findings")}>
+          <TabsList>
+            <TabsTrigger value="audits">Audits</TabsTrigger>
+            <TabsTrigger value="findings">Findings</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      {tab === "audits" ? <RegisterPanel embedded /> : <NcBoardPanel embedded />}
     </div>
   );
 }

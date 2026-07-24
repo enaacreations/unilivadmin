@@ -159,7 +159,9 @@ function TagPicker({
   );
 }
 
-export default function QuestionBank() {
+/** Also embedded as the "Question bank" tab of the Templates hub (`embedded`
+ *  swaps the page heading for a slim toolbar keeping the New-question CTA). */
+export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [tagFilter, setTagFilter] = React.useState("ALL");
@@ -293,9 +295,13 @@ export default function QuestionBank() {
     <div className="animate-fade-up space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[220px] flex-1">
-          <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Question bank</h1>
+          {!embedded && <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Question bank</h1>}
           <p className="text-sm text-muted-foreground">
-            Write once, reuse across every template — <span className="tabular-nums">{totalCount}</span> questions.
+            {embedded ? (
+              <><span className="tabular-nums">{totalCount}</span> questions in the bank.</>
+            ) : (
+              <>Write once, reuse across every template — <span className="tabular-nums">{totalCount}</span> questions.</>
+            )}
           </p>
         </div>
         <Button onClick={openCreate}>
@@ -522,4 +528,8 @@ export default function QuestionBank() {
       )}
     </div>
   );
+}
+
+export default function QuestionBank() {
+  return <QuestionBankPanel />;
 }

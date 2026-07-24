@@ -36,7 +36,7 @@ const KIND_BADGE: Record<string, "default" | "secondary" | "destructive" | "outl
 
 const PAGE_SIZE = 50;
 
-export default function TrailExplorer() {
+export function TrailExplorerPanel({ embedded = false }: { embedded?: boolean }) {
   const [entityType, setEntityType] = React.useState("ALL");
   const [kind, setKind] = React.useState("ALL");
   const [entityId, setEntityId] = React.useState("");
@@ -83,13 +83,20 @@ export default function TrailExplorer() {
   const cv = chain.data?.data;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Trail Explorer"
-        subtitle="The append-only, hash-chained record of every state and configuration change."
-        breadcrumbs={[{ label: "Audits" }, { label: "Trail Explorer" }]}
-        action={<Button variant="outline" size="sm" onClick={download}><Download className="mr-1 h-4 w-4" /> Export CSV</Button>}
-      />
+    <div className={embedded ? "space-y-4" : "space-y-6"}>
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">The append-only, hash-chained record of every state and configuration change.</p>
+          <Button variant="outline" size="sm" onClick={download}><Download className="mr-1 h-4 w-4" /> Export CSV</Button>
+        </div>
+      ) : (
+        <PageHeader
+          title="Trail Explorer"
+          subtitle="The append-only, hash-chained record of every state and configuration change."
+          breadcrumbs={[{ label: "Audits" }, { label: "Trail Explorer" }]}
+          action={<Button variant="outline" size="sm" onClick={download}><Download className="mr-1 h-4 w-4" /> Export CSV</Button>}
+        />
+      )}
 
       {/* Chain-verify banner (FR-AD-09). */}
       {chain.isLoading ? (
@@ -245,4 +252,8 @@ export default function TrailExplorer() {
       </Dialog>
     </div>
   );
+}
+
+export default function TrailExplorer() {
+  return <TrailExplorerPanel />;
 }

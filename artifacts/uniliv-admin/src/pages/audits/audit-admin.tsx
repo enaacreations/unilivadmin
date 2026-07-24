@@ -25,11 +25,13 @@ import {
 import { FormModal } from "@/components/ui/form-modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
+import { usePermissions } from "@/lib/use-permissions";
 import {
   fmtDateTime,
   type ApiOne, type FeatureToggles, type MasterData, type PerformanceBand,
   type RatingScale, type WeightMode,
 } from "./lib";
+import { TrailExplorerPanel } from "./trail-explorer";
 
 /**
  * Audit & Inspection — admin console hub (FA-16). P1 ships the tabs every
@@ -1510,6 +1512,8 @@ function MasterDataTab() {
 /* ── Page ──────────────────────────────────────────────────────────────────── */
 
 export default function AuditAdmin() {
+  const { can } = usePermissions();
+  const showTrail = can("AUDIT_TRAIL", "view");
   return (
     <div className="space-y-6">
       <PageHeader
@@ -1531,6 +1535,7 @@ export default function AuditAdmin() {
             <TabsTrigger value="master-data">Master Data</TabsTrigger>
             <TabsTrigger value="numbering">Numbering</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
+            {showTrail && <TabsTrigger value="trail">Trail</TabsTrigger>}
           </TabsList>
         </div>
         <TabsContent value="grants" className="mt-4">
@@ -1566,6 +1571,11 @@ export default function AuditAdmin() {
         <TabsContent value="settings" className="mt-4">
           <SettingsTab />
         </TabsContent>
+        {showTrail && (
+          <TabsContent value="trail" className="mt-4">
+            <TrailExplorerPanel embedded />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

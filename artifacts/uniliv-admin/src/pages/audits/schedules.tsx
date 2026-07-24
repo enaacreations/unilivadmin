@@ -29,7 +29,7 @@ const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 
 type TargetProp = { id: string; name: string; city: string | null };
 
-export default function Schedules() {
+export function SchedulesPanel({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -112,10 +112,12 @@ export default function Schedules() {
 
   return (
     <div className="animate-fade-up space-y-5">
-      <div>
-        <h1 className="font-display text-2xl font-bold tracking-[-0.012em]">Schedule audits</h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">One pass: pick a template, scope it, set the cadence — assignment is automatic.</p>
-      </div>
+      {!embedded && (
+        <div>
+          <h1 className="font-display text-2xl font-bold tracking-[-0.012em]">Schedule audits</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">One pass: pick a template, scope it, set the cadence — assignment is automatic.</p>
+        </div>
+      )}
 
       <Card>
         <CardContent className="space-y-4 p-5">
@@ -245,4 +247,8 @@ export default function Schedules() {
       </Card>
     </div>
   );
+}
+
+export default function Schedules() {
+  return <SchedulesPanel />;
 }

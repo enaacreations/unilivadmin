@@ -61,8 +61,10 @@ function FindingCard({ nc, nowMs, onOpen }: { nc: NcRow; nowMs: number; onOpen: 
   );
 }
 
-/** My Findings (FRD-NCM-02) — the owner's CAPA queue, grouped by SLA urgency. */
-export default function MyFindings() {
+/** My Findings (FRD-NCM-02) — the owner's CAPA queue, grouped by SLA urgency.
+ *  Also embedded as the "My findings" tab of the My Audits hub (`embedded`
+ *  drops the page heading; the hub provides its own). */
+export function MyFindingsPanel({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
   const nowMs = useNowTick();
   const [terminalOpen, setTerminalOpen] = React.useState(false);
@@ -86,13 +88,15 @@ export default function MyFindings() {
   const openNc = (id: string) => navigate(`/audits/ncs/${id}`);
 
   return (
-    <div className="mx-auto flex max-w-[640px] animate-fade-up flex-col gap-5">
-      <div>
-        <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">Things to fix</h1>
-        <p className="text-sm text-muted-foreground">
-          Problems found in audits at your property. Fix them before the deadline.
-        </p>
-      </div>
+    <div className={cn("flex animate-fade-up flex-col gap-5", !embedded && "mx-auto max-w-[640px]")}>
+      {!embedded && (
+        <div>
+          <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">Things to fix</h1>
+          <p className="text-sm text-muted-foreground">
+            Problems found in audits at your property. Fix them before the deadline.
+          </p>
+        </div>
+      )}
 
       {myQuery.isLoading ? (
         <div className="flex flex-col gap-2.5">
@@ -164,4 +168,8 @@ export default function MyFindings() {
       )}
     </div>
   );
+}
+
+export default function MyFindings() {
+  return <MyFindingsPanel />;
 }
