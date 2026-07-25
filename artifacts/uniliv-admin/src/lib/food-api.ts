@@ -109,11 +109,20 @@ export interface FoodOrderEvent {
   createdAt: string;
 }
 
+export interface AdditionalFoodItem { dishId: string; dishName: string | null; qty: number; unit: string }
+export interface AdditionalFoodRequest {
+  requestId: string;
+  sourcePropertyId: string;
+  sourcePropertyName: string | null;
+  createdAt: string;
+  items: AdditionalFoodItem[];
+}
 export interface OrderDetail extends FoodOrder {
   items: FoodOrderItem[];
   events: FoodOrderEvent[];
   kitchen?: Kitchen | null;
   dispatch?: Dispatch | null;
+  additionalFood?: AdditionalFoodRequest[];
 }
 
 export interface Kpi { value: number; changePct: number | null }
@@ -531,9 +540,9 @@ export const foodApi = {
   // Kitchen Home. PATCH adjusts what the kitchen actually sends (ACCEPTED only).
   kitchenItems: (orderId: string) =>
     apiFetch<Envelope<KitchenItem[]>>(`/food/orders/${orderId}/kitchen-items`).then((r) => r.data),
-  updateKitchenItems: (orderId: string, items: { id: string; preparedQty: number }[]) =>
+  updateKitchenItems: (orderId: string, items: { id: string; preparedQty: number }[], reason: string) =>
     apiFetch<Envelope<{ updated: number }>>(`/food/orders/${orderId}/kitchen-items`, {
-      method: "PATCH", body: JSON.stringify({ items }),
+      method: "PATCH", body: JSON.stringify({ items, reason }),
     }).then((r) => r.data),
   dispatchOrder: (id: string, body: { deliveryPartnerId?: string; action?: "start" | "dispatch" }) =>
     apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/dispatch`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.data),
@@ -543,6 +552,11 @@ export const foodApi = {
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}/confirm-delivery`, { method: "POST", body: JSON.stringify({ items, remarks }) }).then((r) => r.data),
   recordWaste: (id: string, items: { itemId: string; wastedQty: number }[]) =>
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}/waste`, { method: "POST", body: JSON.stringify({ items }) }).then((r) => r.data),
+  // Additional Food — log top-up sourced from another property after receipt.
+  addAdditionalFood: (orderId: string, body: { sourcePropertyId: string; items: { dishId: string; qty: number }[] }) =>
+    apiFetch<Envelope<{ requestId: string }>>(`/food/orders/${orderId}/additional-food`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.data),
+  propertyOptions: () =>
+    apiFetch<Envelope<{ id: string; name: string; city: string | null }[]>>(`/food/property-options`).then((r) => r.data),
 
   // Resolve the kitchen that serves a pincode (read-only kitchen on the property form)
   kitchenByPincode: (pincode: string) =>

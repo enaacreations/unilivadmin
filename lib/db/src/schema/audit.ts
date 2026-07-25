@@ -13,13 +13,13 @@ import {
   bigserial,
 } from "drizzle-orm/pg-core";
 import { usersTable, propertiesTable, roomsTable } from "./core";
-import { auditNcSeverityEnum, auditRatingScalesTable } from "./audit-config";
+import { auditRatingScalesTable } from "./audit-config";
 
 /* ────────────────────────────────────────────────────────────────────────────
- * Audit & Inspection — domain tables (spec §3/§10, FRD v1.2.2).
+ * Audit & Inspection — domain tables (PRD v1.0).
  * Value chain: question bank → versioned templates → schedules → audits →
- * responses/evidence → scoring → NCs → CAPAs → review → closure → reports,
- * with a hash-chained audit_events trail (FRD-TRL-01).
+ * responses/evidence → scoring → review → closure → reports,
+ * with a hash-chained audit_events trail (immutable-logs NFR).
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /** UL = Unit Lead (room), CM = Cluster Manager, CX = Customer Experience (D-10). */
@@ -61,7 +61,11 @@ export const auditTemplateLifecycleEnum = pgEnum("audit_template_lifecycle", [
   "ARCHIVED",
 ]);
 
-/** Audit lifecycle (spec §4.1). Overdue is a derived flag, never a state. */
+/**
+ * Audit lifecycle (spec §4.1). Overdue is a derived flag, never a state.
+ * PAUSED / UNDER_REVIEW / CANCELLED are orphaned values kept for historical
+ * rows — the runtime no longer enters them (PRD v1.0 six-status model).
+ */
 export const auditStateEnum = pgEnum("audit_state", [
   "DRAFT",
   "SCHEDULED",
@@ -73,18 +77,6 @@ export const auditStateEnum = pgEnum("audit_state", [
   "APPROVED",
   "CLOSED",
   "CANCELLED",
-]);
-
-/** Non-conformance lifecycle (spec §4.2). */
-export const auditNcStateEnum = pgEnum("audit_nc_state", [
-  "OPEN",
-  "IN_PROGRESS",
-  "EXTENSION_REQUESTED",
-  "RESOLVED",
-  "VERIFIED",
-  "REOPENED",
-  "WAIVED",
-  "CLOSED",
 ]);
 
 export const auditResultEnum = pgEnum("audit_result", ["PASS", "FAIL"]);
@@ -100,6 +92,7 @@ export const auditScheduleFrequencyEnum = pgEnum("audit_schedule_frequency", [
   "CRON",
 ]);
 
+/** NC / CAPA are orphaned values (pg enum — never shrunk); no longer written. */
 export const auditEvidenceKindEnum = pgEnum("audit_evidence_kind", [
   "AUDIT",
   "RESPONSE",
@@ -145,7 +138,9 @@ export const auditQuestionBankItemsTable = pgTable("audit_question_bank_items", 
   defaultEvidenceRule: auditEvidenceRuleEnum("default_evidence_rule")
     .default("NONE")
     .notNull(),
-  defaultAutoNcJson: json("default_auto_nc_json"),
+  /** Single/multi choice: [{id, label, multiplierPct}] — copied to the
+   *  question's optionsJson on insert (copy-on-insert, FRD-QBK-03). */
+  defaultOptionsJson: json("default_options_json"),
   tags: json("tags").$type<string[]>().default([]).notNull(),
   numericUnit: text("numeric_unit"),
   numericMin: numeric("numeric_min"),
@@ -166,16 +161,6 @@ export const auditTemplatesTable = pgTable("audit_templates", {
   targetType: auditTargetTypeEnum("target_type").notNull(),
   category: text("category"),
   description: text("description"),
-  /**
-   * Per-template access scoping (FR-TM-09 / TLB-09): restrict which org nodes
-   * and platform roles may see/schedule this template. Null/empty = unrestricted.
-   * {clusterIds?, cityIds?, roles?} — enforced in the library list + pickers.
-   */
-  accessScopeJson: json("access_scope_json").$type<{
-    clusterIds?: string[];
-    cityIds?: string[];
-    roles?: string[];
-  } | null>(),
   createdBy: text("created_by"),
   archivedAt: timestamp("archived_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -183,10 +168,9 @@ export const auditTemplatesTable = pgTable("audit_templates", {
 });
 
 /**
- * Immutable published snapshot of a template (FRD-TLB-03). Content mutations
- * are rejected unless lifecycle = DRAFT (service guard); contentHash (sha256
- * over canonicalized sections + questions + scale snapshot) is stamped at
- * publish for the hash-verifiable AC.
+ * Immutable published snapshot of a template (PRD §8.3: changes never alter
+ * historical audits). Content mutations are rejected unless lifecycle = DRAFT
+ * (service guard).
  */
 export const auditTemplateVersionsTable = pgTable(
   "audit_template_versions",
@@ -204,7 +188,6 @@ export const auditTemplateVersionsTable = pgTable(
     reviewRequired: boolean("review_required").default(true).notNull(),
     /** Rating scale frozen at publish; execution & scoring read only this. */
     ratingScaleSnapshot: json("rating_scale_snapshot"),
-    contentHash: text("content_hash"),
     submittedBy: text("submitted_by"),
     submittedAt: timestamp("submitted_at"),
     approvedBy: text("approved_by"),
@@ -270,8 +253,6 @@ export const auditQuestionsTable = pgTable(
     numericUnit: text("numeric_unit"),
     numericMin: numeric("numeric_min"),
     numericMax: numeric("numeric_max"),
-    /** {onAnswers: string[], belowMultiplierPct?, severity, ownerRule: "AUDITEE_OF_TARGET"} */
-    autoNcJson: json("auto_nc_json"),
     /** Copy-on-insert provenance (FRD-QBK-03). */
     bankItemId: text("bank_item_id").references(
       () => auditQuestionBankItemsTable.id,
@@ -284,21 +265,6 @@ export const auditQuestionsTable = pgTable(
     index("audit_questions_audit_id_idx").on(table.auditId),
   ],
 );
-
-/** Ad-hoc items queued as bank candidates for Admin accept/reject (D-4). */
-export const auditBankCandidatesTable = pgTable("audit_bank_candidates", {
-  id: text("id").primaryKey(),
-  questionId: text("question_id")
-    .notNull()
-    .references(() => auditQuestionsTable.id, { onDelete: "cascade" }),
-  auditId: text("audit_id").notNull(),
-  proposedBy: text("proposed_by"),
-  status: text("status").default("PENDING").notNull(),
-  decidedBy: text("decided_by"),
-  decidedAt: timestamp("decided_at"),
-  resultingBankItemId: text("resulting_bank_item_id"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
 
 /* ── Scheduling ────────────────────────────────────────────────────────────── */
 
@@ -463,8 +429,6 @@ export const auditEvidenceTable = pgTable(
       .references(() => auditsTable.id, { onDelete: "cascade" }),
     kind: auditEvidenceKindEnum("kind").notNull(),
     responseId: text("response_id").references(() => auditResponsesTable.id),
-    ncId: text("nc_id"),
-    correctiveActionId: text("corrective_action_id"),
     /** S3 object key (see @workspace/storage); served via signed URLs (NFR-06). */
     storageKey: text("storage_key").notNull(),
     /** Client-generated downscaled thumbnail for PDF embedding (X-9). */
@@ -484,82 +448,7 @@ export const auditEvidenceTable = pgTable(
   },
   (table) => [
     index("audit_evidence_audit_id_idx").on(table.auditId),
-    index("audit_evidence_nc_id_idx").on(table.ncId),
   ],
-);
-
-/* ── Non-conformances & CAPA ───────────────────────────────────────────────── */
-
-export const auditNonConformancesTable = pgTable(
-  "audit_non_conformances",
-  {
-    id: text("id").primaryKey(),
-    ncNo: text("nc_no").notNull().unique(),
-    auditId: text("audit_id")
-      .notNull()
-      .references(() => auditsTable.id, { onDelete: "cascade" }),
-    responseId: text("response_id").references(() => auditResponsesTable.id),
-    questionId: text("question_id"),
-    severity: auditNcSeverityEnum("severity").notNull(),
-    category: text("category"),
-    description: text("description").notNull(),
-    /** Responsible auditee; defaults to auditee-of-target (property's Unit Lead). */
-    ownerId: text("owner_id")
-      .notNull()
-      .references(() => usersTable.id),
-    /** Stamped from severity SLA at creation; re-stamped + evented on severity change (FRD-NCM-04). */
-    dueAt: timestamp("due_at").notNull(),
-    state: auditNcStateEnum("state").default("OPEN").notNull(),
-    isOverdue: boolean("is_overdue").default(false).notNull(),
-    source: text("source").default("AUTO").notNull(),
-    waiverReason: text("waiver_reason"),
-    waivedBy: text("waived_by"),
-    verifiedBy: text("verified_by"),
-    verifiedAt: timestamp("verified_at"),
-    reopenCount: integer("reopen_count").default(0).notNull(),
-    dueSoonNotifiedAt: timestamp("due_soon_notified_at"),
-    breachNotifiedAt: timestamp("breach_notified_at"),
-    /** Escalation-chain steps already sent (job dedupe). */
-    escalationLevelSent: integer("escalation_level_sent").default(0).notNull(),
-    createdBy: text("created_by"),
-    closedAt: timestamp("closed_at"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
-  },
-  (table) => [
-    index("audit_ncs_owner_state_idx").on(table.ownerId, table.state),
-    index("audit_ncs_audit_id_idx").on(table.auditId),
-    index("audit_ncs_state_due_idx").on(table.state, table.dueAt),
-  ],
-);
-
-export const auditCorrectiveActionsTable = pgTable("audit_corrective_actions", {
-  id: text("id").primaryKey(),
-  ncId: text("nc_id")
-    .notNull()
-    .references(() => auditNonConformancesTable.id, { onDelete: "cascade" }),
-  description: text("description").notNull(),
-  completedAt: timestamp("completed_at"),
-  submittedBy: text("submitted_by"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
-
-export const auditNcExtensionRequestsTable = pgTable(
-  "audit_nc_extension_requests",
-  {
-    id: text("id").primaryKey(),
-    ncId: text("nc_id")
-      .notNull()
-      .references(() => auditNonConformancesTable.id, { onDelete: "cascade" }),
-    requestedBy: text("requested_by"),
-    requestedDueAt: timestamp("requested_due_at").notNull(),
-    justification: text("justification").notNull(),
-    status: text("status").default("PENDING").notNull(),
-    decidedBy: text("decided_by"),
-    decidedAt: timestamp("decided_at"),
-    decisionComment: text("decision_comment"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-  },
 );
 
 /* ── Review, trail, comments, reports ──────────────────────────────────────── */

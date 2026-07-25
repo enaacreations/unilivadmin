@@ -65,6 +65,10 @@ const FALLBACK_TINT: [string, string, string, string] = ["#FF9A3D", "#F2603C", "
 // module's first accessible page). Food opens its dashboard, not /home.
 const MODULE_HOME: Record<string, string> = {
   Food: "/food/dashboard",
+  // Conducting personas (UL/CM/CX/OE) land on their My Audits home; oversight
+  // roles lack AUDIT_EXECUTION so /audits/my isn't in their filtered items and
+  // this falls back to their first page (the Audit Dashboard).
+  Audits: "/audits/my",
 };
 
 type ModuleCard = { title: string; items: NavItem[] };

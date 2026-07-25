@@ -15,6 +15,7 @@ import {
   foodOrdersTable,
   foodOrderItemsTable,
   foodOrderEventsTable,
+  foodAdditionalOrderItemsTable,
   dishesTable,
   ingredientsTable,
   dishIngredientsTable,
@@ -830,6 +831,37 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
       .where(eq(foodOrderEventsTable.orderId, id))
       .orderBy(asc(foodOrderEventsTable.createdAt));
 
+    // Additional Food — top-up sourced from other properties after receipt,
+    // grouped into "additional orders" by requestId (one source property each).
+    const addlRows = await db.select({
+      a: foodAdditionalOrderItemsTable,
+      dishName: dishesTable.name,
+      sourcePropertyName: propertiesTable.name,
+    }).from(foodAdditionalOrderItemsTable)
+      .leftJoin(dishesTable, eq(foodAdditionalOrderItemsTable.dishId, dishesTable.id))
+      .leftJoin(propertiesTable, eq(foodAdditionalOrderItemsTable.sourcePropertyId, propertiesTable.id))
+      .where(eq(foodAdditionalOrderItemsTable.orderId, id))
+      .orderBy(asc(foodAdditionalOrderItemsTable.createdAt));
+    const additionalFood: Array<{
+      requestId: string; sourcePropertyId: string; sourcePropertyName: string | null; createdAt: Date;
+      items: Array<{ dishId: string; dishName: string | null; qty: number; unit: string }>;
+    }> = [];
+    const addlByReq = new Map<string, number>();
+    for (const r of addlRows) {
+      let idx = addlByReq.get(r.a.requestId);
+      if (idx == null) {
+        idx = additionalFood.length;
+        addlByReq.set(r.a.requestId, idx);
+        additionalFood.push({
+          requestId: r.a.requestId, sourcePropertyId: r.a.sourcePropertyId,
+          sourcePropertyName: r.sourcePropertyName, createdAt: r.a.createdAt, items: [],
+        });
+      }
+      additionalFood[idx]!.items.push({
+        dishId: r.a.dishId, dishName: r.dishName, qty: Number(r.a.qty), unit: r.a.unit,
+      });
+    }
+
     res.json({
       success: true,
       data: {
@@ -851,8 +883,67 @@ foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view")
           wastedQty: r.it.wastedQty != null ? Number(r.it.wastedQty) : null,
         })),
         events,
+        additionalFood,
       },
     });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+// Additional Food — a LOG of top-up food sourced from ANOTHER property AFTER an
+// order is received (the real coordination is offline). It is NOT an order: no
+// lifecycle, no cap, no approval, no notification. Each submission is one
+// "additional order" (a shared requestId) with one source property and one row
+// per dish (qty > 0). The received view sums received + these per dish.
+const additionalFoodSchema = z.object({
+  sourcePropertyId: zId,
+  items: z.array(z.object({
+    dishId: zId,
+    qty: z.coerce.number().positive().finite(),
+  })).min(1),
+}).passthrough();
+
+foodRouter.post("/orders/:id/additional-food", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "edit"), async (req, res) => {
+  try {
+    if (!validateBody(additionalFoodSchema, req, res)) return;
+    const id = req.params["id"]!;
+    const [order] = await db.select().from(foodOrdersTable).where(eq(foodOrdersTable.id, id));
+    if (!order) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    const ids = await resolveAccessiblePropertyIds(req.user!);
+    if (!isAccessible(order.propertyId, ids)) { res.status(403).json({ success: false, error: "Order not accessible" }); return; }
+    if (order.status !== "DELIVERED") {
+      res.status(422).json({ success: false, error: "Additional food can only be logged after the order is received." });
+      return;
+    }
+    const b = req.body as { sourcePropertyId: string; items: { dishId: string; qty: number }[] };
+    const [src] = await db.select({ id: propertiesTable.id }).from(propertiesTable).where(eq(propertiesTable.id, b.sourcePropertyId));
+    if (!src) { res.status(400).json({ success: false, error: "Unknown source property" }); return; }
+    // Canonical unit comes from the dish (never trust the client for it).
+    const dishRows = await db.select({ id: dishesTable.id, unit: dishesTable.unit })
+      .from(dishesTable).where(inArray(dishesTable.id, b.items.map((it) => it.dishId)));
+    const unitOf = new Map(dishRows.map((d) => [d.id, d.unit]));
+    if (b.items.some((it) => !unitOf.has(it.dishId))) {
+      res.status(400).json({ success: false, error: "Unknown dish" }); return;
+    }
+    const requestId = newId();
+    const now = new Date();
+    await db.insert(foodAdditionalOrderItemsTable).values(
+      b.items.filter((it) => it.qty > 0).map((it) => ({
+        id: newId(), orderId: id, requestId, sourcePropertyId: b.sourcePropertyId,
+        dishId: it.dishId, unit: unitOf.get(it.dishId)!, qty: String(it.qty),
+        createdById: req.user!.id, createdAt: now,
+      })),
+    );
+    res.json({ success: true, data: { requestId } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+// Flat property list (id / name / city) for the Additional Food source picker.
+// Any food user who can receive an order may read it — names only, not sensitive.
+foodRouter.get("/property-options", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "view"), async (req, res) => {
+  try {
+    const rows = await db.select({ id: propertiesTable.id, name: propertiesTable.name, city: propertiesTable.city })
+      .from(propertiesTable).orderBy(propertiesTable.city, propertiesTable.name);
+    res.json({ success: true, data: rows });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -1059,6 +1150,9 @@ const kitchenItemsSchema = z.object({
     id: zId,
     preparedQty: z.coerce.number().min(0).finite(),
   })).min(1),
+  // A reason is mandatory for any dispatch-time quantity change — logged to the
+  // order event trail so every adjustment is accountable.
+  reason: z.string().trim().min(1, "A reason is required for a quantity change"),
 }).passthrough();
 
 foodRouter.patch("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit"), async (req, res) => {
@@ -1089,6 +1183,13 @@ foodRouter.patch("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITC
         .where(eq(foodOrderItemsTable.id, it.id));
     }
     await db.update(foodOrdersTable).set({ updatedAt: now }).where(eq(foodOrdersTable.id, id));
+    // Log the mandatory reason on the order event trail (order stays ACCEPTED).
+    const reason = (req.body as { reason: string }).reason.trim();
+    await db.insert(foodOrderEventsTable).values({
+      id: newId(), orderId: id, status: order.status,
+      note: `Send quantities adjusted (${items.length} item${items.length === 1 ? "" : "s"}) — ${reason}`,
+      actorId: req.user!.id,
+    });
     res.json({ success: true, data: { updated: items.length } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

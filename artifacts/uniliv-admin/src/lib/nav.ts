@@ -105,21 +105,32 @@ export const navGroups: NavGroup[] = [
     // they still gate those inline actions on Food Overview.
     { title: "Reports", href: "/food/reports", icon: BarChart3, module: "FOOD_REPORTS" },
     { title: "Waste Analytics", href: "/food/waste-analytics", icon: Recycle, module: "FOOD_REPORTS", hideFor: ["UNIT_LEAD", "FNB_MANAGER"] },
-    { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS", hideFor: ["FNB_MANAGER"] },
+    { title: "Settings", href: "/food/settings", icon: SlidersHorizontal, module: "FOOD_SETTINGS" },
   ]},
+  /* Audit nav (PRD v1.0 trim, 2026-07-24): the NC/findings subsystem and the
+   * trail-explorer UI were removed product-wide, so the module is small enough
+   * to need only light per-persona folding:
+   *  - Staff (UNIT_LEAD / CLUSTER_MANAGER / CUSTOMER_EXPERIENCE): My Audits +
+   *    Reports.
+   *  - Oversight (CITY_HEAD / ZONAL_HEAD / SENIOR_VICE_PRESIDENT): All Audits +
+   *    Reports.
+   *  - OPS_EXCELLENCE: Review Queue, All Audits, Reports, Templates
+   *    (Templates · Question bank · Schedules), Audit Admin.
+   * Reports is standalone for EVERY audit persona (PRD: each role sees its
+   * permitted audit types' reports — the backend scopes the data). The old
+   * oversight dashboard is retired; /audits/dashboard redirects to the Review
+   * Queue. hideFor only hides nav links; routes + data access are unchanged. */
+  /* Order fixed by product (2026-07-24): Review Queue · Audit Templates ·
+   * All Audits · Reports · Settings (staff additionally see My Audits first;
+   * Schedules/Question Bank remain admin-only standalone items). */
   { title: "Audits", items: [
-    { title: "Audit Dashboard", href: "/audits/dashboard", icon: Gauge, module: "AUDIT_DASHBOARD" },
-    { title: "My Audits", href: "/audits/my", icon: ClipboardCheck, module: "AUDIT_EXECUTION" },
-    { title: "My Findings", href: "/audits/findings", icon: AlertTriangle, module: "AUDIT_FINDINGS" },
-    { title: "Audit Register", href: "/audits/register", icon: ListChecks, module: "AUDIT_REGISTER" },
-    { title: "NC Board", href: "/audits/ncs", icon: Kanban, module: "AUDIT_NCS" },
-    { title: "Review", href: "/audits/review", icon: BadgeCheck, module: "AUDIT_REVIEW" },
+    { title: "My Audits", href: "/audits/my", icon: ClipboardCheck, module: "AUDIT_EXECUTION", hideFor: ["OPS_EXCELLENCE"] },
+    { title: "Review Queue", href: "/audits/review", icon: BadgeCheck, module: "AUDIT_REVIEW" },
+    { title: "Audit Templates", href: "/audits/templates", icon: FileStack, module: "AUDIT_TEMPLATES" },
     { title: "Reports", href: "/audits/reports", icon: FileBarChart, module: "AUDIT_REPORTS" },
-    { title: "Schedules", href: "/audits/schedules", icon: CalendarClock, module: "AUDIT_SCHEDULES" },
-    { title: "Templates", href: "/audits/templates", icon: FileStack, module: "AUDIT_TEMPLATES" },
-    { title: "Question Bank", href: "/audits/question-bank", icon: Library, module: "AUDIT_TEMPLATES" },
-    { title: "Audit Admin", href: "/audits/admin", icon: SlidersHorizontal, module: "AUDIT_ADMIN" },
-    { title: "Trail Explorer", href: "/audits/trail", icon: ScrollText, module: "AUDIT_TRAIL" },
+    { title: "Schedules", href: "/audits/schedules", icon: CalendarClock, module: "AUDIT_SCHEDULES", hideFor: ["OPS_EXCELLENCE"] },
+    { title: "Question Bank", href: "/audits/question-bank", icon: Library, module: "AUDIT_TEMPLATES", hideFor: ["OPS_EXCELLENCE"] },
+    { title: "Settings", href: "/audits/admin", icon: SlidersHorizontal, module: "AUDIT_ADMIN" },
   ]},
   /* Hidden for now (user decision 13-Jul-2026) — see the note above.
   { title: "Growth", items: [

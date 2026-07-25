@@ -4,22 +4,18 @@
  *
  * Seeds, idempotently:
  *  1. Module configuration — rating scale (Excellent 100 / Good 94 / Average 79
- *     / Poor 0 / N/A excluded), performance bands, severity SLAs (spec §6.2),
- *     numbering schemes (UNI-AUD-{seq} from 4500), notification rules (22 event
- *     keys; WhatsApp present but inactive — D-5 deferral), attachment policies
- *     (audit 2/25MB, response 5/25MB, nc+capa 5/25MB, submission 1/10MB) and
- *     app settings defaults.
+ *     / Poor 0 / N/A excluded), performance bands, numbering schemes
+ *     (UNI-AUD-{seq} from 4500) and app settings defaults.
  *  2. The 456-item question bank + 3 templates published as v1 (Appendix B,
  *     cleansed): Property Audit (CM), Unit Lead Room check list (UL/ROOM),
  *     CX Audit (CX). Copy-on-insert provenance links every template question
- *     to its bank item. reviewRequired: UL=false, CM/CX=true (plan X-8).
+ *     to its bank item. reviewRequired: always true (PRD §8.5).
  *  3. Role grants derived from existing users (FRD §2.2 deployment model).
  *  4. Demo schedules (Property Audit monthly, UL rooms weekly) — the
  *     materializer generates tickets on next run. Never a CX schedule (C-3).
  */
-import { createHash } from "crypto";
 import bcrypt from "bcryptjs";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   db,
   pool,
@@ -32,10 +28,7 @@ import {
   auditRatingScalesTable,
   auditRatingOptionsTable,
   auditPerformanceBandsTable,
-  auditSeveritySlasTable,
   auditNumberingSchemesTable,
-  auditNotificationRulesTable,
-  auditAttachmentPoliciesTable,
   auditAppSettingsTable,
   auditRoleGrantsTable,
   auditQuestionBankItemsTable,
@@ -50,21 +43,6 @@ import { randomUUID } from "crypto";
 import { SEED_TEMPLATES, type SeedQuestion } from "./data/audit-question-bank";
 
 const id = () => randomUUID();
-
-/* ── canonical hash (mirrors api-server audit-events canonicalJson) ────────── */
-function sortValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortValue);
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      out[key] = sortValue((value as Record<string, unknown>)[key]);
-    }
-    return out;
-  }
-  return value ?? null;
-}
-const canonicalJson = (v: unknown) => JSON.stringify(sortValue(JSON.parse(JSON.stringify(v ?? null))));
-const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 /* ── 1. Configuration ──────────────────────────────────────────────────────── */
 
@@ -84,79 +62,15 @@ const BANDS = [
   { label: "Poor", minPct: "0", maxPct: "59.99", color: "#C73B33", orderIndex: 3 },
 ];
 
-/** Spec §6.2 — seed data for the FR-AD-03 editor, not constants. */
-const SEVERITY_SLAS = [
-  {
-    severity: "CRITICAL" as const,
-    capaDueHours: 48,
-    reminderLeadHours: 12,
-    escalationChainJson: [
-      { trigger: "ON_RAISE", audience: "REVIEWERS" },
-      { trigger: "PCT_ELAPSED", pct: 50, audience: "REGION_HEAD" },
-      { trigger: "ON_BREACH", audience: "REVIEWERS" },
-    ],
-  },
-  {
-    severity: "MAJOR" as const,
-    capaDueHours: 7 * 24,
-    reminderLeadHours: 24,
-    escalationChainJson: [{ trigger: "ON_BREACH", audience: "REVIEWERS" }],
-  },
-  {
-    severity: "MINOR" as const,
-    capaDueHours: 30 * 24,
-    reminderLeadHours: 48,
-    escalationChainJson: [{ trigger: "ON_BREACH", audience: "OWNER_MANAGER" }],
-  },
-];
-
 const NUMBERING = [
   { objectType: "AUDIT", prefix: "UNI-AUD", nextSeq: 4500 },
-  { objectType: "NC", prefix: "UNI-NC", nextSeq: 1 },
   { objectType: "REPORT", prefix: "UNI-RPT", nextSeq: 1 },
-];
-
-/** FRD-NTF-01 event catalogue. In-app always; email/push on the heavy events. */
-const NOTIFICATION_RULES: { eventKey: string; channels: string[]; audience: string[] }[] = [
-  { eventKey: "AUDIT_ASSIGNED", channels: ["IN_APP", "EMAIL", "PUSH"], audience: ["ASSIGNEE"] },
-  { eventKey: "AUDIT_REASSIGNED", channels: ["IN_APP", "EMAIL"], audience: ["ASSIGNEE"] },
-  { eventKey: "OCCURRENCE_CREATED", channels: ["IN_APP"], audience: ["ASSIGNEE"] },
-  { eventKey: "AUDIT_STARTED", channels: ["IN_APP"], audience: ["REVIEWERS"] },
-  { eventKey: "AUDIT_REMINDER", channels: ["IN_APP", "PUSH"], audience: ["ASSIGNEE"] },
-  { eventKey: "AUDIT_OVERDUE", channels: ["IN_APP", "EMAIL", "PUSH"], audience: ["ASSIGNEE", "SCHEDULER"] },
-  { eventKey: "AUDIT_SUBMITTED", channels: ["IN_APP", "EMAIL"], audience: ["REVIEWERS"] },
-  { eventKey: "AUDIT_REJECTED", channels: ["IN_APP", "EMAIL", "PUSH"], audience: ["ASSIGNEE"] },
-  { eventKey: "AUDIT_APPROVED", channels: ["IN_APP"], audience: ["ASSIGNEE"] },
-  { eventKey: "AUDIT_CLOSED", channels: ["IN_APP"], audience: ["ASSIGNEE", "AUDITEE"] },
-  { eventKey: "AUTO_CLOSED", channels: ["IN_APP"], audience: ["REVIEWERS"] },
-  { eventKey: "NC_RAISED", channels: ["IN_APP", "EMAIL", "PUSH"], audience: ["AUDITEE"] },
-  { eventKey: "NC_RESOLVED", channels: ["IN_APP"], audience: ["REVIEWERS"] },
-  { eventKey: "NC_VERIFIED", channels: ["IN_APP"], audience: ["AUDITEE"] },
-  { eventKey: "NC_REOPENED", channels: ["IN_APP", "EMAIL", "PUSH"], audience: ["AUDITEE"] },
-  { eventKey: "NC_DUE_SOON", channels: ["IN_APP", "PUSH"], audience: ["AUDITEE"] },
-  { eventKey: "NC_SLA_BREACH", channels: ["IN_APP", "EMAIL", "PUSH"], audience: ["AUDITEE", "REVIEWERS"] },
-  { eventKey: "NC_ESCALATION", channels: ["IN_APP", "EMAIL"], audience: ["REVIEWERS"] },
-  { eventKey: "EXTENSION_REQUESTED", channels: ["IN_APP", "EMAIL"], audience: ["REVIEWERS"] },
-  { eventKey: "EXTENSION_DECIDED", channels: ["IN_APP", "EMAIL"], audience: ["AUDITEE"] },
-  { eventKey: "REPORT_READY", channels: ["IN_APP"], audience: ["ASSIGNEE", "REVIEWERS"] },
-  { eventKey: "MANUAL_NUDGE", channels: ["IN_APP", "PUSH"], audience: ["ASSIGNEE"] },
-];
-
-const ATTACHMENT_POLICIES = [
-  { level: "AUDIT", maxFiles: 2, maxSizeMb: 25, allowedMimeJson: ["image/jpeg", "image/png", "image/webp", "application/pdf"] },
-  { level: "RESPONSE", maxFiles: 5, maxSizeMb: 25, allowedMimeJson: ["image/jpeg", "image/png", "image/webp"] },
-  { level: "NC", maxFiles: 5, maxSizeMb: 25, allowedMimeJson: ["image/jpeg", "image/png", "image/webp", "application/pdf"] },
-  { level: "CAPA", maxFiles: 5, maxSizeMb: 25, allowedMimeJson: ["image/jpeg", "image/png", "image/webp", "application/pdf"] },
-  { level: "SUBMISSION", maxFiles: 1, maxSizeMb: 10, allowedMimeJson: ["image/jpeg", "image/png"] },
 ];
 
 const APP_SETTINGS: Record<string, unknown> = {
   na_counts_against: false,
-  publish_co_approval_required: false,
   lookahead_days: 7,
   auto_close_days: 0,
-  adhoc_default_weight: 3,
-  manual_nudge_per_hour: 1,
   report_share_ttl_hours: 72,
   org_timezone: "Asia/Kolkata",
 };
@@ -173,12 +87,6 @@ async function seedConfig() {
   // Performance bands (replace).
   await db.delete(auditPerformanceBandsTable);
   await db.insert(auditPerformanceBandsTable).values(BANDS.map((b) => ({ id: id(), ...b })));
-
-  // Severity SLAs — global rows only (org/template overrides via admin).
-  await db.delete(auditSeveritySlasTable).where(isNull(auditSeveritySlasTable.scopeLevel));
-  await db.insert(auditSeveritySlasTable).values(
-    SEVERITY_SLAS.map((s) => ({ id: id(), ...s, scopeLevel: null, templateId: null })),
-  );
 
   // Numbering — create only if missing (never rewind live sequences).
   for (const n of NUMBERING) {
@@ -197,41 +105,6 @@ async function seedConfig() {
     }
   }
 
-  // Notification rules (upsert by eventKey).
-  for (const rule of NOTIFICATION_RULES) {
-    const [existing] = await db
-      .select()
-      .from(auditNotificationRulesTable)
-      .where(eq(auditNotificationRulesTable.eventKey, rule.eventKey));
-    if (!existing) {
-      await db.insert(auditNotificationRulesTable).values({
-        id: id(),
-        eventKey: rule.eventKey,
-        channelsJson: rule.channels,
-        audienceJson: rule.audience,
-        subjectTemplate: null,
-        bodyTemplate: null,
-        active: true,
-      });
-    }
-  }
-
-  // Attachment policies (upsert by level).
-  for (const p of ATTACHMENT_POLICIES) {
-    const [existing] = await db
-      .select()
-      .from(auditAttachmentPoliciesTable)
-      .where(eq(auditAttachmentPoliciesTable.level, p.level));
-    if (existing) {
-      await db
-        .update(auditAttachmentPoliciesTable)
-        .set({ maxFiles: p.maxFiles, maxSizeMb: p.maxSizeMb, allowedMimeJson: p.allowedMimeJson, updatedAt: new Date() })
-        .where(eq(auditAttachmentPoliciesTable.level, p.level));
-    } else {
-      await db.insert(auditAttachmentPoliciesTable).values({ id: id(), ...p });
-    }
-  }
-
   // App settings (insert-if-missing so admin edits survive reseeds).
   for (const [key, value] of Object.entries(APP_SETTINGS)) {
     const [existing] = await db.select().from(auditAppSettingsTable).where(eq(auditAppSettingsTable.key, key));
@@ -239,7 +112,7 @@ async function seedConfig() {
       await db.insert(auditAppSettingsTable).values({ key, valueJson: value });
     }
   }
-  console.log("✓ config: scale, bands, SLAs, numbering, notification rules, policies, settings");
+  console.log("✓ config: scale, bands, numbering, settings");
 }
 
 /* ── 2. Question bank + templates ──────────────────────────────────────────── */
@@ -259,10 +132,6 @@ function questionRow(q: SeedQuestion, sectionId: string, orderIndex: number, ban
     numericUnit: q.numericUnit ?? null,
     numericMin: null,
     numericMax: null,
-    autoNcJson:
-      q.type === "RATING"
-        ? { onAnswers: ["audit-opt-poor"], severity: "MAJOR", ownerRule: "AUDITEE_OF_TARGET" }
-        : null,
     bankItemId,
     orderIndex,
   };
@@ -274,9 +143,8 @@ async function seedBankAndTemplates() {
   await pool.query(`
     TRUNCATE TABLE
       audit_report_shares, audit_reports, audit_comments,
-      audit_nc_extension_requests, audit_corrective_actions,
-      audit_non_conformances, audit_evidence, audit_responses,
-      audit_bank_candidates, audit_reviews, audits,
+      audit_evidence, audit_responses,
+      audit_reviews, audits,
       audit_schedule_targets, audit_schedules,
       audit_questions, audit_sections, audit_template_versions,
       audit_templates, audit_question_bank_items
@@ -303,10 +171,6 @@ async function seedBankAndTemplates() {
           type: q.type,
           defaultWeight: q.weight,
           defaultEvidenceRule: "OPTIONAL",
-          defaultAutoNcJson:
-            q.type === "RATING"
-              ? { onAnswers: ["audit-opt-poor"], severity: "MAJOR", ownerRule: "AUDITEE_OF_TARGET" }
-              : null,
           tags: q.tags,
           numericUnit: q.numericUnit ?? null,
         });
@@ -333,7 +197,6 @@ async function seedBankAndTemplates() {
   for (const template of SEED_TEMPLATES) {
     const templateId = id();
     const versionId = id();
-    const reviewRequired = template.auditType !== "UL"; // X-8: UL self-audits skip review
     await db.insert(auditTemplatesTable).values({
       id: templateId,
       name: template.name,
@@ -342,7 +205,7 @@ async function seedBankAndTemplates() {
       category: template.category,
       description: template.description,
     });
-    // Version row must exist before sections (FK); hash is stamped after content.
+    // Version row must exist before sections (FK).
     await db.insert(auditTemplateVersionsTable).values({
       id: versionId,
       templateId,
@@ -351,18 +214,15 @@ async function seedBankAndTemplates() {
       changelogNote: "Initial import from reference deployment (captured 04-Jul-2026, cleansed per FRD data-quality notes)",
       passThresholdPct: "80",
       criticalFailGate: false,
-      reviewRequired,
+      reviewRequired: true, // PRD §8.5: every submitted audit is reviewed
       ratingScaleSnapshot: snapshot,
       publishedAt: new Date(),
     });
 
-    const hashSections: unknown[] = [];
     let questionCount = 0;
-    const sectionRows: { id: string }[] = [];
     for (let si = 0; si < template.sections.length; si++) {
       const section = template.sections[si]!;
       const sectionId = id();
-      sectionRows.push({ id: sectionId });
       await db.insert(auditSectionsTable).values({
         id: sectionId,
         templateVersionId: versionId,
@@ -376,40 +236,9 @@ async function seedBankAndTemplates() {
       );
       if (rows.length) await db.insert(auditQuestionsTable).values(rows);
       questionCount += rows.length;
-      hashSections.push({
-        title: section.title,
-        description: null,
-        audience: section.audience ?? null,
-        orderIndex: si,
-        questions: rows.map((r) => ({
-          prompt: r.prompt,
-          helpText: r.helpText,
-          type: r.type,
-          weight: r.weight,
-          mandatory: r.mandatory,
-          evidenceRule: r.evidenceRule,
-          optionsJson: r.optionsJson,
-          numericUnit: r.numericUnit,
-          numericMin: r.numericMin,
-          numericMax: r.numericMax,
-          autoNcJson: r.autoNcJson,
-          orderIndex: r.orderIndex,
-        })),
-      });
     }
 
-    const contentHash = sha256(
-      canonicalJson({
-        settings: { passThresholdPct: "80", criticalFailGate: false, reviewRequired },
-        ratingScaleSnapshot: snapshot,
-        sections: hashSections,
-      }),
-    );
-    await db
-      .update(auditTemplateVersionsTable)
-      .set({ contentHash })
-      .where(eq(auditTemplateVersionsTable.id, versionId));
-    summaries.push(`${template.name}: ${template.sections.length} sections / ${questionCount} questions (v1 published, review=${reviewRequired})`);
+    summaries.push(`${template.name}: ${template.sections.length} sections / ${questionCount} questions (v1 published)`);
   }
 
   console.log(`✓ bank: ${bankCount} items`);

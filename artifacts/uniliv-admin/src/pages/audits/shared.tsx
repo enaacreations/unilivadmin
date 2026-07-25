@@ -1,19 +1,19 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { DatePicker } from "@/components/ui/date-picker";
 import { FormModal } from "@/components/ui/form-modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
+import { cn } from "@/lib/utils";
 import {
-  AUDIT_TYPE_BADGE, LIFECYCLE_BADGE, NC_SEVERITY_BADGE, NC_STATE_BADGE,
-  NC_TERMINAL_STATES, fmtDateTime, fmtTimeLeft, titleCase,
-  type ApiError, type ApiOne, type AuditType, type DuplicateCheck,
-  type DuplicateMatch, type Lifecycle, type NcSeverity, type NcState, type SlaState,
+  AUDIT_TYPE_BADGE, LIFECYCLE_BADGE, titleCase,
+  type ApiError, type ApiOne, type AuditType, type ChoiceOption, type DuplicateCheck,
+  type DuplicateMatch, type Lifecycle,
 } from "./lib";
 
 /* ── Badges ──────────────────────────────────────────────────────────────── */
@@ -30,60 +30,7 @@ export function LifecycleBadge({ lifecycle }: { lifecycle: Lifecycle }) {
   );
 }
 
-export function SeverityBadge({ severity }: { severity: NcSeverity }) {
-  return <Badge variant={NC_SEVERITY_BADGE[severity] ?? "outline"}>{titleCase(severity)}</Badge>;
-}
-
-export function NcStateBadge({ state }: { state: NcState }) {
-  return <Badge variant={NC_STATE_BADGE[state] ?? "outline"}>{titleCase(state)}</Badge>;
-}
-
-/* ── Live SLA countdown ──────────────────────────────────────────────────── */
-
-/** Shared wall clock, re-rendering consumers every `intervalMs` (default 60s). */
-export function useNowTick(intervalMs = 60_000): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(t);
-  }, [intervalMs]);
-  return now;
-}
-
-/**
- * "due in 3h" (amber when DUE_SOON) / "overdue 2d" (red) / "awaiting
- * verification". Hidden for terminal states. `nowMs` comes from useNowTick so
- * a whole board shares one ticking clock.
- */
-export function SlaCountdown({
-  state, dueAt, slaState, nowMs, className = "",
-}: {
-  state: NcState;
-  dueAt: string;
-  slaState?: SlaState;
-  nowMs: number;
-  className?: string;
-}) {
-  if (NC_TERMINAL_STATES.includes(state)) return null;
-  if (state === "RESOLVED" || slaState === "AWAITING_VERIFICATION") {
-    return (
-      <span className={`text-xs text-muted-foreground ${className}`}>awaiting verification</span>
-    );
-  }
-  const { overdue, text } = fmtTimeLeft(dueAt, nowMs);
-  const cls = overdue
-    ? "text-red-600 font-medium"
-    : slaState === "DUE_SOON"
-      ? "text-amber-600 font-medium"
-      : "text-muted-foreground";
-  return (
-    <span className={`text-xs tabular-nums ${cls} ${className}`} title={fmtDateTime(dueAt)}>
-      {overdue ? `overdue ${text}` : `due in ${text}`}
-    </span>
-  );
-}
-
-/* ── Reason dialog (reject / waive / reopen / deny…) ─────────────────────── */
+/* ── Reason dialog (reject / reopen / deny…) ─────────────────────────────── */
 
 /**
  * One-textarea modal for every "verdict + mandatory text" flow. The parent
@@ -134,114 +81,12 @@ export function ReasonDialog({
   );
 }
 
-/* ── Corrective-action dialog (FRD-CAP-01/02) ────────────────────────────── */
-
-/**
- * "Add corrective action" — description + completed date + Mark-resolved
- * switch. Used from the NC detail page and the board's In Progress → Resolved
- * drag (with `resolveDefault`). A 422 RESOLUTION_EVIDENCE_REQUIRED renders
- * inline, prompting the owner to attach evidence first.
- */
-export function NcActionDialog({
-  ncId, open, onOpenChange, resolveDefault = false, onSaved,
-}: {
-  ncId: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  resolveDefault?: boolean;
-  onSaved?: () => void;
-}) {
-  const { toast } = useToast();
-  const qc = useQueryClient();
-  const [description, setDescription] = React.useState("");
-  const [completedAt, setCompletedAt] = React.useState("");
-  const [resolve, setResolve] = React.useState(resolveDefault);
-  const [evidenceError, setEvidenceError] = React.useState(false);
-
-  React.useEffect(() => {
-    if (open) {
-      setDescription("");
-      setCompletedAt("");
-      setResolve(resolveDefault);
-      setEvidenceError(false);
-    }
-  }, [open, resolveDefault]);
-
-  const mut = useMutation({
-    mutationFn: () =>
-      apiFetch(`/audit/ncs/${ncId}/actions`, {
-        method: "POST",
-        body: JSON.stringify({
-          description: description.trim(),
-          ...(completedAt ? { completedAt } : {}),
-          resolve,
-        }),
-      }),
-    onSuccess: () => {
-      toast({ title: resolve ? "Finding resolved — awaiting verification" : "Corrective action added" });
-      onOpenChange(false);
-      qc.invalidateQueries({ queryKey: ["/audit/ncs"] });
-      onSaved?.();
-    },
-    onError: (e: ApiError) => {
-      if (e.status === 422 && e.message === "RESOLUTION_EVIDENCE_REQUIRED") {
-        setEvidenceError(true);
-        return;
-      }
-      toast({ title: e.message || "Could not save the action", variant: "destructive" });
-    },
-  });
-
-  return (
-    <FormModal
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Add corrective action"
-      onSave={() => { if (description.trim()) mut.mutate(); }}
-      isSaving={mut.isPending}
-      saveLabel={resolve ? "Save & resolve" : "Save action"}
-    >
-      <div className="space-y-4">
-        <div className="space-y-2">
-          <Label>What was done? *</Label>
-          <Textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Describe the corrective / preventive action…"
-            rows={3}
-            className="text-base"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label>Completed on (optional)</Label>
-          <DatePicker value={completedAt} onChange={setCompletedAt} clearable className="w-[200px]" />
-        </div>
-        <div className="flex items-center justify-between rounded-md border p-3">
-          <div>
-            <p className="text-sm font-medium">Mark resolved</p>
-            <p className="text-xs text-muted-foreground">
-              Sends the finding for reviewer verification.
-            </p>
-          </div>
-          <Switch checked={resolve} onCheckedChange={(c) => { setResolve(c); setEvidenceError(false); }} />
-        </div>
-        {evidenceError && (
-          <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-            Evidence required to resolve this finding (CAP-02) — attach at least
-            one photo/document on the finding first, then resolve.
-          </p>
-        )}
-      </div>
-    </FormModal>
-  );
-}
-
 /* ── Structured 422 details renderer ─────────────────────────────────────── */
 
 /**
  * Renders the `details` payload of a 422 in a readable list. Known shapes:
  * `{sections: string[]}`, `{questions: [{id, prompt}]}` (publish validation)
- * and `[{path, error}]` rows (import validation). Falls back to JSON.
+ * and `[{path, error}]` rows. Falls back to JSON.
  */
 export function ErrorDetails({ details }: { details: unknown }) {
   if (details == null) return null;
@@ -343,6 +188,116 @@ export function DuplicateWarning({ matches }: { matches: DuplicateMatch[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/* ── Choice answer-options editor (question bank + builder) ──────────────── */
+
+export function newOptionId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `opt_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Traffic-light classes for an option's earn-% — full marks read green, a
+ *  zero-credit "wrong" answer reads red, partial credit amber. */
+function pctTone(v: number): { edge: string; text: string } {
+  if (v >= 75) return { edge: "border-l-success", text: "text-success" };
+  if (v >= 50) return { edge: "border-l-amber-500", text: "text-amber-600" };
+  return { edge: "border-l-destructive", text: "text-destructive" };
+}
+
+/**
+ * Add/label/score the answer options a SINGLE_CHOICE / MULTI_CHOICE question
+ * offers. Each option's `multiplierPct` (0–100) is how much of the question's
+ * weight that choice earns (single = the picked option's %, multi = the average
+ * of picked options). Fully controlled — the parent owns persistence.
+ */
+export function ChoiceOptionsEditor({
+  value, onChange, disabled = false, multi = false,
+}: {
+  value: ChoiceOption[];
+  onChange: (options: ChoiceOption[]) => void;
+  disabled?: boolean;
+  multi?: boolean;
+}) {
+  const add = () => onChange([...value, { id: newOptionId(), label: "", multiplierPct: 100 }]);
+  const patch = (id: string, p: Partial<ChoiceOption>) =>
+    onChange(value.map((o) => (o.id === id ? { ...o, ...p } : o)));
+  const remove = (id: string) => onChange(value.filter((o) => o.id !== id));
+
+  return (
+    <div className="rounded-[10px] border border-border bg-muted/20 p-3">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Answer options</span>
+        <span className="text-[10.5px] text-muted-foreground">
+          {multi ? "auditor may pick several · score = average of picked" : "auditor picks one · score % = points earned"}
+        </span>
+      </div>
+      {value.length === 0 ? (
+        <p className="py-2 text-center text-[12px] text-muted-foreground">
+          No options yet — add the choices the auditor picks from.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {value.map((o, i) => {
+            const tone = pctTone(o.multiplierPct);
+            return (
+              <div
+                key={o.id}
+                className={cn(
+                  "flex items-center gap-2 rounded-[8px] border border-border border-l-[3px] bg-card py-1 pl-2.5 pr-1",
+                  tone.edge,
+                )}
+              >
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-bold text-muted-foreground">
+                  {i + 1}
+                </span>
+                <Input
+                  value={o.label}
+                  disabled={disabled}
+                  onChange={(e) => patch(o.id, { label: e.target.value })}
+                  placeholder="Option label…"
+                  className="h-8 flex-1 border-0 bg-transparent px-1 text-[13px] shadow-none focus-visible:ring-0"
+                />
+                <div className="flex shrink-0 items-center gap-0.5">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={o.multiplierPct}
+                    disabled={disabled}
+                    onFocus={(e) => e.currentTarget.select()}
+                    onChange={(e) =>
+                      patch(o.id, { multiplierPct: Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))) })
+                    }
+                    className={cn(
+                      "h-8 w-16 text-right text-[13px] font-bold tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                      tone.text,
+                    )}
+                  />
+                  <span className={cn("text-[11px] font-semibold", tone.text)}>%</span>
+                </div>
+                {!disabled && (
+                  <button
+                    type="button"
+                    onClick={() => remove(o.id)}
+                    className="shrink-0 rounded-md p-1 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+                    aria-label="Remove option"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!disabled && (
+        <Button type="button" variant="outline" size="sm" className="mt-2 h-8" onClick={add}>
+          <Plus className="mr-1 h-3.5 w-3.5" /> Add option
+        </Button>
+      )}
     </div>
   );
 }

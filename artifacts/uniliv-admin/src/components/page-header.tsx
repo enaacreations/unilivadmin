@@ -1,6 +1,7 @@
 import * as React from "react"
 import { ChevronRight } from "lucide-react"
 import { Link } from "wouter"
+import { useSuppressLayoutBreadcrumb } from "@/components/auto-breadcrumb"
 
 export interface PageHeaderProps extends React.HTMLAttributes<HTMLDivElement> {
   title: string
@@ -10,6 +11,8 @@ export interface PageHeaderProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 export function PageHeader({ title, subtitle, breadcrumbs, action, className, ...props }: PageHeaderProps) {
+  // When this header carries its own breadcrumb, hide the layout's generic one.
+  useSuppressLayoutBreadcrumb(!!breadcrumbs && breadcrumbs.length > 0)
   return (
     <div className={`flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 ${className}`} {...props}>
       <div>

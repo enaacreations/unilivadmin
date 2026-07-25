@@ -12,6 +12,7 @@ import {
 import {
   Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
+import { AutoBreadcrumbProvider } from "@/components/auto-breadcrumb"
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -390,12 +391,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // won't match above and would collapse the sidebar to just Home. Fall back to
   // the route's module (via PATH_TO_MODULE) and show that module's group, so the
   // sidebar stays put on every detail screen across all modules.
+  //
+  // The owning group is resolved from the UNfiltered nav: a persona may have the
+  // route's own item folded away by hideFor (e.g. Reports lives inside the
+  // Dashboard hub for OPS_EXCELLENCE, so /audits/reports/:id has no visible
+  // AUDIT_REPORTS item) — the sidebar must still show their audit hub items.
   const activeGroup = React.useMemo(() => {
     if (active) return active.group
     const mod = moduleForPath(location)
     if (!mod) return null
-    const group = filteredGroups.find((g) => g.items.some((i) => i.module === mod))
-    return group?.title ?? null
+    const owner = navGroups.find((g) => g.items.some((i) => i.module === mod))
+    if (!owner) return null
+    return filteredGroups.find((g) => g.title === owner.title)?.title ?? null
   }, [active, location, filteredGroups])
 
   // The launcher (/apps) is a full-width page: no sidebar, logo in the header.
@@ -414,6 +421,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const pageTitle = active?.item.title ?? activeGroup ?? "Home"
   // A detail route is a deeper path than the matched nav item (e.g. /residents/:id, /food/orders/:id).
   const isDetail = !!active && location !== active.item.href && location.startsWith(active.item.href)
+  // A page that renders its own breadcrumb (PageHeader) flips this so the
+  // generic "{Section} › Details" crumb below doesn't stack on top of it.
+  const [suppressBreadcrumb, setSuppressBreadcrumb] = React.useState(false)
 
   React.useEffect(() => { document.title = `${pageTitle} | Uniliv` }, [pageTitle])
 
@@ -491,24 +501,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-surface">
-          <div className="max-w-7xl mx-auto space-y-6">
-            {isDetail && active ? (
-              <Breadcrumb>
-                <BreadcrumbList>
-                  <BreadcrumbItem className="hidden sm:inline-flex">
-                    <BreadcrumbLink asChild>
-                      <Link href={active.item.href}>{active.item.title}</Link>
-                    </BreadcrumbLink>
-                  </BreadcrumbItem>
-                  <BreadcrumbSeparator className="hidden sm:inline-flex" />
-                  <BreadcrumbItem>
-                    <BreadcrumbPage>Details</BreadcrumbPage>
-                  </BreadcrumbItem>
-                </BreadcrumbList>
-              </Breadcrumb>
-            ) : null}
-            {children}
-          </div>
+          <AutoBreadcrumbProvider setSuppressed={setSuppressBreadcrumb}>
+            <div className="max-w-7xl mx-auto space-y-6">
+              {isDetail && active && !suppressBreadcrumb ? (
+                <Breadcrumb>
+                  <BreadcrumbList>
+                    <BreadcrumbItem className="hidden sm:inline-flex">
+                      <BreadcrumbLink asChild>
+                        <Link href={active.item.href}>{active.item.title}</Link>
+                      </BreadcrumbLink>
+                    </BreadcrumbItem>
+                    <BreadcrumbSeparator className="hidden sm:inline-flex" />
+                    <BreadcrumbItem>
+                      <BreadcrumbPage>Details</BreadcrumbPage>
+                    </BreadcrumbItem>
+                  </BreadcrumbList>
+                </Breadcrumb>
+              ) : null}
+              {children}
+            </div>
+          </AutoBreadcrumbProvider>
         </main>
       </div>
 

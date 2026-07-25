@@ -1,26 +1,49 @@
 import * as React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { type ColumnDef } from "@tanstack/react-table";
-import { Archive, ArchiveRestore, Plus } from "lucide-react";
-import { PageHeader } from "@/components/page-header";
-import { DataTable } from "@/components/data-table";
+import { Plus, Search, Archive, ArchiveRestore, Camera, X } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
-import { FormModal } from "@/components/ui/form-modal";
+import { MultiCombobox } from "@/components/ui/multi-combobox";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 import {
-  EVIDENCE_RULES, NON_SCORED_TYPES, QUESTION_TYPES, apiFetchAll, fmtDate, titleCase,
-  type ApiList, type BankItem, type ApiOne, type EvidenceRule, type QuestionType,
+  EVIDENCE_RULES, NON_SCORED_TYPES, QUESTION_TYPES, apiFetchAll,
+  type ApiOne, type BankItem, type ChoiceOption, type EvidenceRule, type QuestionType,
 } from "./lib";
-import { DuplicateWarning, useDuplicatePrompts } from "./shared";
+import { ChoiceOptionsEditor, DuplicateWarning, newOptionId, useDuplicatePrompts } from "./shared";
+import { cn } from "@/lib/utils";
+
+/* Question bank (redesign — prototype "Question bank"). Write once, reuse
+ * across every template; inserting into a template copies the item so drafts
+ * stay independent (copy-on-insert). Bank items hold the prompt, response type,
+ * tags, default weight, evidence rule, numeric bounds and — for choice types —
+ * the answer options that seed the template question. Rating uses your
+ * configured rating scale (managed in Audit Admin). */
+
+const QTYPE_LABEL: Record<QuestionType, string> = {
+  YES_NO_NA: "Yes / No / N/A",
+  PASS_FAIL: "Pass / Fail",
+  RATING: "Rating",
+  SINGLE_CHOICE: "Single choice",
+  MULTI_CHOICE: "Multi choice",
+  NUMERIC: "Numeric",
+  TEXT: "Text",
+  PHOTO: "Photo",
+  SIGNATURE: "Signature",
+  DATE: "Date",
+  INSTRUCTION: "Instruction",
+};
+
+const EVIDENCE_LABEL: Record<EvidenceRule, string> = {
+  NONE: "Not required",
+  OPTIONAL: "Optional",
+  REQUIRED_ON_FAIL: "Required on issue",
+  ALWAYS_REQUIRED: "Always required",
+};
 
 interface BankForm {
   prompt: string;
@@ -28,8 +51,11 @@ interface BankForm {
   type: QuestionType;
   defaultWeight: number;
   defaultEvidenceRule: EvidenceRule;
-  tags: string;
+  tags: string[];
   numericUnit: string;
+  numericMin: string;
+  numericMax: string;
+  optionsJson: ChoiceOption[];
 }
 
 const EMPTY_FORM: BankForm = {
@@ -38,19 +64,120 @@ const EMPTY_FORM: BankForm = {
   type: "RATING",
   defaultWeight: 5,
   defaultEvidenceRule: "NONE",
-  tags: "",
+  tags: [],
   numericUnit: "",
+  numericMin: "",
+  numericMax: "",
+  optionsJson: [],
 };
 
-/** Question bank (FA-02): curated reusable questions with copy-on-insert.
- *  The whole bank (≈456 rows) fits in one fetch — filtering is client-side. */
-export default function QuestionBank() {
+function Pill({ active, muted = false, onClick, children }: { active: boolean; muted?: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-3 py-[6px] text-[12px] font-semibold transition-colors",
+        active
+          ? "border-accent bg-accent text-accent-foreground"
+          : muted
+            ? "border-transparent bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
+            : "border-border bg-card text-foreground hover:border-accent",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Response types split by whether they contribute points — the "info only"
+ *  group is styled muted so it reads as secondary at a glance. */
+const SCORED_TYPES = QUESTION_TYPES.filter((t) => !NON_SCORED_TYPES.has(t));
+const INFO_TYPES = QUESTION_TYPES.filter((t) => NON_SCORED_TYPES.has(t));
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <div className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">{children}</div>;
+}
+
+/** Compact tag picker: selected chips + a typeahead that suggests existing tags
+ *  and lets you create a new one — replaces the wall-of-every-tag pill grid. */
+function TagPicker({
+  value, suggestions, onChange, disabled = false,
+}: {
+  value: string[];
+  suggestions: string[];
+  onChange: (tags: string[]) => void;
+  disabled?: boolean;
+}) {
+  const [query, setQuery] = React.useState("");
+  const q = query.trim().toLowerCase();
+  const matches = React.useMemo(
+    () => suggestions.filter((t) => !value.includes(t) && t.toLowerCase().includes(q)).slice(0, 8),
+    [suggestions, value, q],
+  );
+  const canCreate = q.length > 0 && !suggestions.some((t) => t.toLowerCase() === q) && !value.some((t) => t.toLowerCase() === q);
+  const add = (t: string) => {
+    const v = t.trim();
+    setQuery("");
+    if (!v) return;
+    // Canonicalise to an existing tag's casing and dedupe case-insensitively —
+    // the Enter path must not create "Cleanliness" + "cleanliness" duplicates.
+    const canonical = [...value, ...suggestions].find((x) => x.toLowerCase() === v.toLowerCase()) ?? v;
+    if (value.some((x) => x.toLowerCase() === canonical.toLowerCase())) return;
+    onChange([...value, canonical]);
+  };
+  return (
+    <div>
+      {value.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {value.map((t) => (
+            <span key={t} className="inline-flex items-center gap-1 rounded-full bg-accent/10 py-1 pl-2.5 pr-1.5 text-[11.5px] font-semibold text-accent-strong">
+              {t}
+              {!disabled && (
+                <button type="button" onClick={() => onChange(value.filter((x) => x !== t))} aria-label={`Remove ${t}`} className="text-accent-strong/70 hover:text-accent-strong">
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      <Input
+        value={query}
+        disabled={disabled}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(query); } }}
+        placeholder="Search tags, or type a new one and press Enter"
+        className="h-9"
+      />
+      {q && (matches.length > 0 || canCreate) && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {matches.map((t) => (
+            <button key={t} type="button" onClick={() => add(t)} className="rounded-full border border-border bg-card px-2.5 py-1 text-[11.5px] text-foreground hover:border-accent">
+              {t}
+            </button>
+          ))}
+          {canCreate && (
+            <button type="button" onClick={() => add(query)} className="rounded-full border border-dashed border-accent/60 bg-accent/5 px-2.5 py-1 text-[11.5px] font-semibold text-accent-strong">
+              + Add “{query.trim()}”
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Also embedded as the "Question bank" tab of the Templates hub (`embedded`
+ *  swaps the page heading for a slim toolbar keeping the New-question CTA). */
+export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const [typeFilter, setTypeFilter] = React.useState("ALL");
   const [tagFilter, setTagFilter] = React.useState("ALL");
+  const [search, setSearch] = React.useState("");
   const [showArchived, setShowArchived] = React.useState(false);
-  const [modalOpen, setModalOpen] = React.useState(false);
+  const [tagsExpanded, setTagsExpanded] = React.useState(false);
+  const [editorOpen, setEditorOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<BankItem | null>(null);
   const [form, setForm] = React.useState<BankForm>(EMPTY_FORM);
 
@@ -62,20 +189,34 @@ export default function QuestionBank() {
     queryKey: ["/audit/bank/tags"],
     queryFn: () => apiFetch<ApiOne<string[]>>("/audit/bank/tags"),
   });
+  const knownTags = tagsQuery.data?.data ?? [];
 
   const rows = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
     return (bankQuery.data ?? []).filter(
-      (i: BankItem) =>
+      (i) =>
         (showArchived || !i.archivedAt) &&
-        (typeFilter === "ALL" || i.type === typeFilter) &&
-        (tagFilter === "ALL" || i.tags.includes(tagFilter)),
+        (tagFilter === "ALL" || i.tags.includes(tagFilter)) &&
+        (!q || i.prompt.toLowerCase().includes(q)),
     );
-  }, [bankQuery.data, typeFilter, tagFilter, showArchived]);
+  }, [bankQuery.data, tagFilter, search, showArchived]);
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["/audit/bank"] });
+  const totalCount = React.useMemo(
+    () => (bankQuery.data ?? []).filter((i) => !i.archivedAt).length,
+    [bankQuery.data],
+  );
 
-  // Near-duplicate detection on the prompt field (only while the modal is open).
-  const duplicateMatches = useDuplicatePrompts(modalOpen ? form.prompt : "", editing?.id);
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["/audit/bank"] });
+    qc.invalidateQueries({ queryKey: ["/audit/bank/tags"] });
+  };
+
+  const duplicateMatches = useDuplicatePrompts(editorOpen ? form.prompt : "", editing?.id);
+
+  const isChoice = form.type === "SINGLE_CHOICE" || form.type === "MULTI_CHOICE";
+  const isNumeric = form.type === "NUMERIC";
+  const isRating = form.type === "RATING";
+  const scored = !NON_SCORED_TYPES.has(form.type);
 
   const saveMut = useMutation({
     mutationFn: () => {
@@ -83,18 +224,23 @@ export default function QuestionBank() {
         prompt: form.prompt.trim(),
         helpText: form.helpText.trim() || null,
         type: form.type,
-        defaultWeight: Math.max(0, Math.trunc(form.defaultWeight || 0)),
+        defaultWeight: scored ? Math.max(0, Math.trunc(form.defaultWeight || 0)) : 0,
         defaultEvidenceRule: form.defaultEvidenceRule,
-        tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
-        numericUnit: form.type === "NUMERIC" ? form.numericUnit.trim() || null : null,
+        tags: form.tags.map((t) => t.trim()).filter(Boolean),
+        numericUnit: isNumeric ? form.numericUnit.trim() || null : null,
+        numericMin: isNumeric && form.numericMin !== "" ? Number(form.numericMin) : null,
+        numericMax: isNumeric && form.numericMax !== "" ? Number(form.numericMax) : null,
+        defaultOptionsJson: isChoice
+          ? form.optionsJson.filter((o) => o.label.trim()).map((o) => ({ ...o, label: o.label.trim() }))
+          : null,
       };
       return editing
         ? apiFetch(`/audit/bank/${editing.id}`, { method: "PATCH", body: JSON.stringify(body) })
         : apiFetch("/audit/bank", { method: "POST", body: JSON.stringify(body) });
     },
     onSuccess: () => {
-      toast({ title: editing ? "Bank item updated" : "Bank item created" });
-      setModalOpen(false);
+      toast({ title: editing ? "Question updated" : "Question added to the bank" });
+      setEditorOpen(false);
       invalidate();
     },
     onError: (e: Error) => toast({ title: e.message || "Save failed", variant: "destructive" }),
@@ -107,8 +253,8 @@ export default function QuestionBank() {
         body: JSON.stringify(restore ? { restore: true } : {}),
       }),
     onSuccess: (_r, vars) => {
-      toast({ title: vars.restore ? "Item restored" : "Item archived" });
-      setModalOpen(false);
+      toast({ title: vars.restore ? "Question restored" : "Question archived" });
+      setEditorOpen(false);
       invalidate();
     },
     onError: (e: Error) => toast({ title: e.message || "Action failed", variant: "destructive" }),
@@ -117,7 +263,7 @@ export default function QuestionBank() {
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY_FORM);
-    setModalOpen(true);
+    setEditorOpen(true);
   };
 
   const openEdit = (item: BankItem) => {
@@ -128,241 +274,302 @@ export default function QuestionBank() {
       type: item.type,
       defaultWeight: item.defaultWeight,
       defaultEvidenceRule: item.defaultEvidenceRule,
-      tags: item.tags.join(", "),
+      tags: [...item.tags],
       numericUnit: item.numericUnit ?? "",
+      numericMin: item.numericMin ?? "",
+      numericMax: item.numericMax ?? "",
+      optionsJson: item.defaultOptionsJson ? item.defaultOptionsJson.map((o) => ({ ...o })) : [],
     });
-    setModalOpen(true);
+    setEditorOpen(true);
   };
 
-  const columns: ColumnDef<BankItem>[] = [
-    {
-      accessorKey: "prompt",
-      header: "Prompt",
-      cell: ({ row }) => (
-        <div className="max-w-[380px]">
-          <div className="flex items-center gap-2">
-            <span className="truncate font-medium">{row.original.prompt}</span>
-            {row.original.archivedAt && <Badge variant="outline">Archived</Badge>}
-          </div>
-          {row.original.helpText && (
-            <p className="truncate text-xs text-muted-foreground">{row.original.helpText}</p>
-          )}
-        </div>
-      ),
-    },
-    {
-      accessorKey: "type",
-      header: "Type",
-      cell: ({ row }) => <Badge variant="outline">{titleCase(row.original.type)}</Badge>,
-    },
-    {
-      accessorKey: "defaultWeight",
-      header: "Default weight",
-      cell: ({ row }) =>
-        NON_SCORED_TYPES.has(row.original.type) ? (
-          <span className="text-xs text-muted-foreground">—</span>
-        ) : (
-          <span className="tabular-nums">{row.original.defaultWeight}</span>
-        ),
-    },
-    {
-      accessorKey: "tags",
-      header: "Tags",
-      cell: ({ row }) => {
-        const tags = row.original.tags;
-        return (
-          <div className="flex max-w-[220px] flex-wrap gap-1">
-            {tags.slice(0, 3).map((t) => (
-              <Badge key={t} variant="secondary">{t}</Badge>
-            ))}
-            {tags.length > 3 && (
-              <Badge variant="outline" className="tabular-nums">+{tags.length - 3}</Badge>
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      accessorKey: "usageCount",
-      header: "Used in",
-      cell: ({ row }) => <span className="tabular-nums">{row.original.usageCount}</span>,
-    },
-    {
-      accessorKey: "updatedAt",
-      header: "Updated",
-      cell: ({ row }) => (
-        <span className="text-sm text-muted-foreground">{fmtDate(row.original.updatedAt)}</span>
-      ),
-    },
-  ];
+  const setType = (t: QuestionType) =>
+    setForm((f) => ({
+      ...f,
+      type: t,
+      // Seed two starter options when switching into a choice type with none yet.
+      optionsJson:
+        (t === "SINGLE_CHOICE" || t === "MULTI_CHOICE") && f.optionsJson.length === 0
+          ? [
+              { id: newOptionId(), label: "", multiplierPct: 100 },
+              { id: newOptionId(), label: "", multiplierPct: 0 },
+            ]
+          : f.optionsJson,
+    }));
+
+  const choiceInvalid = isChoice && form.optionsJson.filter((o) => o.label.trim()).length < 2;
+  const canSave = form.prompt.trim() && !choiceInvalid && !saveMut.isPending;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Question Bank"
-        subtitle="Curated reusable questions — inserting into a template copies the item, so drafts stay independent."
-        breadcrumbs={[{ label: "Audits" }, { label: "Question Bank" }]}
-      />
+    <div className="animate-fade-up space-y-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-[220px] flex-1">
+          {!embedded && <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Question bank</h1>}
+          <p className="text-sm text-muted-foreground">
+            {embedded ? (
+              <><span className="tabular-nums">{totalCount}</span> questions in the bank.</>
+            ) : (
+              <>Write once, reuse across every template — <span className="tabular-nums">{totalCount}</span> questions.</>
+            )}
+          </p>
+        </div>
+        <Button onClick={openCreate}>
+          <Plus className="mr-1 h-4 w-4" /> New question
+        </Button>
+      </div>
 
-      <DataTable
-        columns={columns}
-        data={rows}
-        searchKey="prompt"
-        searchPlaceholder="Search prompts..."
-        isLoading={bankQuery.isLoading}
-        onRowClick={openEdit}
-        exportFilename="audit-question-bank"
-        columnsStorageKey="audit-question-bank"
-        toolbarActions={
-          <>
-            <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All types</SelectItem>
-                {QUESTION_TYPES.map((t) => (
-                  <SelectItem key={t} value={t}>{titleCase(t)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={tagFilter} onValueChange={setTagFilter}>
-              <SelectTrigger className="w-[150px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All tags</SelectItem>
-                {(tagsQuery.data?.data ?? []).map((t) => (
-                  <SelectItem key={t} value={t}>{t}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
-              <Switch checked={showArchived} onCheckedChange={setShowArchived} />
-              Archived
-            </label>
-            <Button size="sm" onClick={openCreate}>
-              <Plus className="mr-1 h-4 w-4" /> New question
-            </Button>
-          </>
-        }
-      />
-
-      <FormModal
-        open={modalOpen}
-        onOpenChange={setModalOpen}
-        title={editing ? "Edit bank question" : "New bank question"}
-        onSave={() => {
-          if (!form.prompt.trim()) {
-            toast({ title: "Prompt is required", variant: "destructive" });
-            return;
-          }
-          saveMut.mutate();
-        }}
-        isSaving={saveMut.isPending}
-      >
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label>Prompt</Label>
-            <Textarea
-              value={form.prompt}
-              onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
-              rows={3}
-            />
-            <DuplicateWarning matches={duplicateMatches} />
+      <div className="space-y-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[200px] flex-1 sm:max-w-[320px]">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search questions…" className="pl-9" />
           </div>
-          <div className="space-y-2">
-            <Label>Help text</Label>
-            <Input
-              value={form.helpText}
-              onChange={(e) => setForm((f) => ({ ...f, helpText: e.target.value }))}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>Type</Label>
-              <Select
-                value={form.type}
-                onValueChange={(v) => setForm((f) => ({ ...f, type: v as QuestionType }))}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {QUESTION_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>{titleCase(t)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Default weight</Label>
-              <Input
-                type="number"
-                min={0}
-                value={form.defaultWeight}
-                onChange={(e) => setForm((f) => ({ ...f, defaultWeight: Number(e.target.value) }))}
-                disabled={NON_SCORED_TYPES.has(form.type)}
-              />
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label>Default evidence rule</Label>
-            <Select
-              value={form.defaultEvidenceRule}
-              onValueChange={(v) => setForm((f) => ({ ...f, defaultEvidenceRule: v as EvidenceRule }))}
-            >
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {EVIDENCE_RULES.map((r) => (
-                  <SelectItem key={r} value={r}>{titleCase(r)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {form.type === "NUMERIC" && (
-            <div className="space-y-2">
-              <Label>Numeric unit</Label>
-              <Input
-                value={form.numericUnit}
-                onChange={(e) => setForm((f) => ({ ...f, numericUnit: e.target.value }))}
-                placeholder="e.g. °C"
-              />
-            </div>
+          <span className="flex-1" />
+          {tagFilter !== "ALL" && (
+            <button onClick={() => setTagFilter("ALL")} className="text-[12px] font-semibold text-accent-strong hover:underline">
+              Clear tag: {tagFilter}
+            </button>
           )}
-          <div className="space-y-2">
-            <Label>Tags</Label>
-            <Input
-              value={form.tags}
-              onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))}
-              placeholder="hygiene, kitchen, safety"
-            />
-            <p className="text-xs text-muted-foreground">Comma-separated.</p>
-          </div>
-
-          {editing && (
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium">
-                  {editing.archivedAt ? "Archived item" : "Archive this item"}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Archived items are hidden from the builder's bank picker.
-                  Copies already inserted into templates are unaffected.
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={archiveMut.isPending}
-                onClick={() =>
-                  archiveMut.mutate({ id: editing.id, restore: Boolean(editing.archivedAt) })
-                }
-              >
-                {editing.archivedAt ? (
-                  <><ArchiveRestore className="mr-1 h-4 w-4" /> Restore</>
-                ) : (
-                  <><Archive className="mr-1 h-4 w-4" /> Archive</>
-                )}
-              </Button>
-            </div>
+          <label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+            <Switch checked={showArchived} onCheckedChange={setShowArchived} />
+            Archived
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Pill active={tagFilter === "ALL"} onClick={() => setTagFilter("ALL")}>All</Pill>
+          {(tagsExpanded ? knownTags : knownTags.slice(0, 16)).map((t) => (
+            <Pill key={t} active={tagFilter === t} onClick={() => setTagFilter(t)}>{t}</Pill>
+          ))}
+          {knownTags.length > 16 && (
+            <button
+              onClick={() => setTagsExpanded((v) => !v)}
+              className="rounded-full border border-dashed border-border px-3 py-[6px] text-[12px] font-semibold text-muted-foreground hover:border-accent hover:text-accent-strong"
+            >
+              {tagsExpanded ? "Show fewer" : `+${knownTags.length - 16} more`}
+            </button>
           )}
         </div>
-      </FormModal>
+      </div>
+
+      <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
+        <DialogContent aria-describedby={undefined} className="flex max-h-[88vh] max-w-[620px] flex-col gap-0 overflow-hidden p-0">
+          {/* Header bar — action + scoring/usage badges */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-accent/[0.06] px-5 py-2.5 pr-12">
+            <DialogTitle asChild>
+              <span className="flex-1 text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">
+                {editing ? "Edit question" : "New question"}
+              </span>
+            </DialogTitle>
+            <span className={cn(
+              "rounded-full px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.05em]",
+              scored ? "bg-success-soft text-success" : "bg-muted text-muted-foreground",
+            )}>
+              {scored ? "Scored" : "Info only"}
+            </span>
+            {editing && editing.usageCount > 0 && (
+              <span className="rounded-full bg-info-soft px-2 py-[3px] text-[11px] font-semibold text-info">
+                used in {editing.usageCount}
+              </span>
+            )}
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto p-5">
+            <div>
+              <FieldLabel>Question</FieldLabel>
+              <Input
+                value={form.prompt}
+                onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
+                placeholder="e.g. Bed linen fresh and changed?"
+                className="text-[14px] font-semibold"
+              />
+              <DuplicateWarning matches={duplicateMatches} />
+            </div>
+
+            <div>
+              <FieldLabel>Help text <span className="font-medium normal-case tracking-normal text-muted-foreground/60">— optional</span></FieldLabel>
+              <Input
+                value={form.helpText}
+                onChange={(e) => setForm((f) => ({ ...f, helpText: e.target.value }))}
+                placeholder="A hint shown to the auditor under the question"
+                className="h-9"
+              />
+            </div>
+
+            {/* Response type — full width */}
+            <div>
+              <FieldLabel>Response type</FieldLabel>
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap gap-1.5">
+                  {SCORED_TYPES.map((t) => (
+                    <Pill key={t} active={form.type === t} onClick={() => setType(t)}>{QTYPE_LABEL[t]}</Pill>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-0.5 text-[9.5px] font-bold uppercase tracking-[0.08em] text-muted-foreground/60">Info only</span>
+                  {INFO_TYPES.map((t) => (
+                    <Pill key={t} active={form.type === t} muted onClick={() => setType(t)}>{QTYPE_LABEL[t]}</Pill>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Tags — full width multi-select */}
+            <div>
+              <FieldLabel>Tags</FieldLabel>
+              <MultiCombobox
+                options={knownTags}
+                value={form.tags}
+                onChange={(tags) => setForm((f) => ({ ...f, tags }))}
+                creatable
+                placeholder="Add tags…"
+                searchPlaceholder="Search or add a tag…"
+                emptyText="No matching tags."
+              />
+            </div>
+
+            {/* Type-specific configuration (full width) */}
+            {isChoice && (
+              <ChoiceOptionsEditor
+                value={form.optionsJson}
+                multi={form.type === "MULTI_CHOICE"}
+                onChange={(optionsJson) => setForm((f) => ({ ...f, optionsJson }))}
+              />
+            )}
+            {isRating && (
+              <div className="flex items-start gap-2 rounded-[10px] border border-info/20 bg-info-soft px-3 py-2.5 text-[12px] text-foreground/80">
+                <span className="mt-[3px] h-2 w-2 shrink-0 rounded-full bg-info" />
+                <span>Scored on your configured <span className="font-semibold text-foreground">rating scale</span> — manage scale options in Audit Admin. Each rating's score is applied at conduct time.</span>
+              </div>
+            )}
+            {isNumeric && (
+              <div className="grid gap-3 rounded-[10px] border border-border bg-muted/20 p-3 sm:grid-cols-3">
+                <div>
+                  <FieldLabel>Unit</FieldLabel>
+                  <Input value={form.numericUnit} onChange={(e) => setForm((f) => ({ ...f, numericUnit: e.target.value }))} placeholder="ppm, °C, count" className="h-9" />
+                </div>
+                <div>
+                  <FieldLabel><span className="text-success">Pass</span> min</FieldLabel>
+                  <Input type="number" value={form.numericMin} onChange={(e) => setForm((f) => ({ ...f, numericMin: e.target.value }))} placeholder="—" className="h-9" />
+                </div>
+                <div>
+                  <FieldLabel><span className="text-success">Pass</span> max</FieldLabel>
+                  <Input type="number" value={form.numericMax} onChange={(e) => setForm((f) => ({ ...f, numericMax: e.target.value }))} placeholder="—" className="h-9" />
+                </div>
+                <p className="text-[11px] text-muted-foreground sm:col-span-3">
+                  A reading inside the pass range scores full marks; outside scores zero. Leave both blank to always pass.
+                </p>
+              </div>
+            )}
+
+            {/* Weight + evidence side by side */}
+            <div className={cn("grid gap-4", scored ? "sm:grid-cols-2" : "grid-cols-1")}>
+              {scored && (
+                <div className="flex items-center gap-3 rounded-[10px] border border-border bg-muted/20 px-3 py-2">
+                  <div className="flex-1">
+                    <div className="text-[12px] font-bold text-foreground">Default weight</div>
+                    <p className="text-[11px] leading-tight text-muted-foreground">Share of the section score.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, defaultWeight: Math.max(0, f.defaultWeight - 1) }))}
+                    className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-border bg-card text-foreground hover:border-accent"
+                  >−</button>
+                  <span className="w-8 text-center font-mono text-[16px] font-extrabold tabular-nums text-accent-strong">{form.defaultWeight}</span>
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, defaultWeight: f.defaultWeight + 1 }))}
+                    className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-border bg-card text-foreground hover:border-accent"
+                  >+</button>
+                </div>
+              )}
+              <div className="rounded-[10px] border border-border bg-muted/20 px-3 py-2">
+                <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">
+                  <Camera className="h-3 w-3" /> Photo evidence
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {EVIDENCE_RULES.map((r) => (
+                    <Pill key={r} active={form.defaultEvidenceRule === r} onClick={() => setForm((f) => ({ ...f, defaultEvidenceRule: r }))}>
+                      {EVIDENCE_LABEL[r]}
+                    </Pill>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <div className="flex items-center gap-2.5 border-t border-border bg-card px-5 py-3">
+              {editing && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive"
+                  disabled={archiveMut.isPending}
+                  onClick={() => archiveMut.mutate({ id: editing.id, restore: Boolean(editing.archivedAt) })}
+                >
+                  {editing.archivedAt ? (
+                    <><ArchiveRestore className="mr-1 h-4 w-4" /> Restore</>
+                  ) : (
+                    <><Archive className="mr-1 h-4 w-4" /> Archive</>
+                  )}
+                </Button>
+              )}
+              <span className="flex-1" />
+              {choiceInvalid && (
+                <span className="text-[11.5px] font-medium text-amber-600">Add at least 2 labelled options</span>
+              )}
+              <Button type="button" variant="outline" onClick={() => setEditorOpen(false)}>Cancel</Button>
+              <Button type="button" disabled={!canSave} onClick={() => saveMut.mutate()}>
+                {saveMut.isPending ? "Saving…" : "Save question"}
+              </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {bankQuery.isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-[52px] rounded-[10px]" />)}
+        </div>
+      ) : rows.length === 0 ? (
+        <Card>
+          <CardContent className="py-14 text-center">
+            <p className="text-sm text-muted-foreground">
+              {search || tagFilter !== "ALL" ? "No questions match your filters." : "The bank is empty — add your first question."}
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="px-4 py-1.5">
+            {rows.map((b) => (
+              <div
+                key={b.id}
+                className={cn(
+                  "flex items-center gap-3 border-b border-dashed border-border py-[11px] last:border-0",
+                  b.archivedAt && "opacity-60",
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-[13.5px] font-semibold">{b.prompt}</span>
+                    {b.archivedAt && <span className="shrink-0 rounded-full bg-muted px-2 py-[1px] text-[10px] font-bold text-muted-foreground">Archived</span>}
+                  </div>
+                  <div className="truncate text-[11px] text-muted-foreground">{b.tags.length ? b.tags.join(" · ") : "Untagged"}</div>
+                </div>
+                <span className="hidden shrink-0 rounded-full border border-border bg-background px-2.5 py-[3px] text-[10.5px] font-bold text-foreground sm:inline">
+                  {QTYPE_LABEL[b.type]}
+                </span>
+                <span className="hidden w-24 shrink-0 text-right font-mono text-[11px] text-muted-foreground md:inline">used in {b.usageCount}</span>
+                <Button variant="outline" size="sm" onClick={() => openEdit(b)}>Edit</Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
+}
+
+export default function QuestionBank() {
+  return <QuestionBankPanel />;
 }

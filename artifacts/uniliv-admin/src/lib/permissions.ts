@@ -26,9 +26,9 @@ export type Module =
   // Audit & Inspection module (FRD v1.2.2). Coarse page gates; fine-grained
   // audit-type/org-node truth is server-side (audit_role_grants).
   // AUDIT_LOG above is the unrelated host audit log.
-  | "AUDIT_DASHBOARD" | "AUDIT_REGISTER" | "AUDIT_EXECUTION" | "AUDIT_FINDINGS"
-  | "AUDIT_NCS" | "AUDIT_REVIEW" | "AUDIT_REPORTS" | "AUDIT_SCHEDULES"
-  | "AUDIT_TEMPLATES" | "AUDIT_ADMIN" | "AUDIT_TRAIL";
+  | "AUDIT_DASHBOARD" | "AUDIT_REGISTER" | "AUDIT_EXECUTION"
+  | "AUDIT_REVIEW" | "AUDIT_REPORTS" | "AUDIT_SCHEDULES"
+  | "AUDIT_TEMPLATES" | "AUDIT_ADMIN";
 
 export type Permission = "view" | "create" | "edit" | "delete";
 
@@ -43,9 +43,9 @@ const FOOD_MODULES: Module[] = [
 
 /** All Audit & Inspection modules, for the everything-granted roles. */
 const AUDIT_MODULES: Module[] = [
-  "AUDIT_DASHBOARD","AUDIT_REGISTER","AUDIT_EXECUTION","AUDIT_FINDINGS",
-  "AUDIT_NCS","AUDIT_REVIEW","AUDIT_REPORTS","AUDIT_SCHEDULES",
-  "AUDIT_TEMPLATES","AUDIT_ADMIN","AUDIT_TRAIL",
+  "AUDIT_DASHBOARD","AUDIT_REGISTER","AUDIT_EXECUTION",
+  "AUDIT_REVIEW","AUDIT_REPORTS","AUDIT_SCHEDULES",
+  "AUDIT_TEMPLATES","AUDIT_ADMIN",
 ];
 
 const ALL_MODULES: Module[] = [
@@ -82,11 +82,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
     FOOD_RECEIVE_UPDATE: FULL, FOOD_DELIVERY_TRACKING: FULL, FOOD_DASHBOARD: VIEW,
     FOOD_ALL_ORDERS: VIEW, FOOD_PLACE_ORDER: FULL,
     FOOD_CONFIRM_DELIVERY: FULL, FOOD_WASTE_TRACKING: FULL, FOOD_REPORTS: VIEW,
-    // Audit & Inspection: conducts UL room audits for own property; auditee for
-    // NCs on it (CAPA via AUDIT_FINDINGS). No ad-hoc creation at launch.
+    // Audit & Inspection: conducts UL room audits for own property.
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
     AUDIT_EXECUTION: { view: true, create: false, edit: true, delete: false },
-    AUDIT_FINDINGS: { view: true, create: true, edit: true, delete: false },
   },
   CLUSTER_MANAGER: {
     FOOD_RECEIVE_UPDATE: FULL, FOOD_DELIVERY_TRACKING: FULL, FOOD_DASHBOARD: VIEW,
@@ -96,21 +94,20 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
     // read-only (C-1). Fine scoping is server-side via audit_role_grants.
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
     AUDIT_EXECUTION: { view: true, create: false, edit: true, delete: false },
-    AUDIT_FINDINGS: VIEW, AUDIT_NCS: VIEW,
   },
   CITY_HEAD: {
     FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
     FOOD_ALL_ORDERS: FULL, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
     FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
     // Audit & Inspection: oversight viewer — UL + CM for their city, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW, AUDIT_NCS: VIEW,
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
   },
   ZONAL_HEAD: {
     FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
     FOOD_ALL_ORDERS: FULL, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
     FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
     // Audit & Inspection: oversight viewer — UL + CM across the zone, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW, AUDIT_NCS: VIEW,
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
   },
   // B3-24: OPS_EXCELLENCE = full super-admin parity across every module.
   OPS_EXCELLENCE: Object.fromEntries(ALL_MODULES.map(m => [m, FULL])) as any,
@@ -119,7 +116,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
     FOOD_KITCHEN_SUMMARY: VIEW, FOOD_DISPATCH: VIEW, FOOD_CONFIRM_DELIVERY: VIEW,
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
     // Audit & Inspection: executive oversight viewer — UL + CM global, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW, AUDIT_NCS: VIEW,
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
   },
   FNB_SUPERVISOR: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
@@ -149,7 +146,6 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
   CUSTOMER_EXPERIENCE: {
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
     AUDIT_EXECUTION: { view: true, create: true, edit: true, delete: false },
-    AUDIT_NCS: VIEW,
   },
 };
 
@@ -245,15 +241,12 @@ export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
   [/^\/audits\/dashboard/, "AUDIT_DASHBOARD"],
   [/^\/audits\/register/, "AUDIT_REGISTER"],
   [/^\/audits\/my/, "AUDIT_EXECUTION"],
-  [/^\/audits\/findings/, "AUDIT_FINDINGS"],
-  [/^\/audits\/ncs/, "AUDIT_NCS"],
   [/^\/audits\/review/, "AUDIT_REVIEW"],
   [/^\/audits\/reports/, "AUDIT_REPORTS"],
   [/^\/audits\/schedules/, "AUDIT_SCHEDULES"],
   [/^\/audits\/templates/, "AUDIT_TEMPLATES"],
   [/^\/audits\/question-bank/, "AUDIT_TEMPLATES"],
   [/^\/audits\/admin/, "AUDIT_ADMIN"],
-  [/^\/audits\/trail/, "AUDIT_TRAIL"],
   [/^\/audits\/[^/]+\/run/, "AUDIT_EXECUTION"],
   // Audit detail: gated on register view; rows are server-scoped.
   [/^\/audits/, "AUDIT_REGISTER"],

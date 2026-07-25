@@ -1,6 +1,6 @@
 /**
  * Audit & Inspection — shared types, constants and helpers for the P2 pages
- * (templates, builder, preview, question bank, schedules, calendar).
+ * (templates, builder, question bank, schedules, calendar).
  * Pure TS only; shared components live in ./shared.tsx.
  */
 
@@ -79,15 +79,6 @@ export const NON_SCORED_TYPES: ReadonlySet<QuestionType> = new Set([
 export const EVIDENCE_RULES = ["NONE", "OPTIONAL", "REQUIRED_ON_FAIL", "ALWAYS_REQUIRED"] as const;
 export type EvidenceRule = (typeof EVIDENCE_RULES)[number];
 
-export const NC_SEVERITIES = ["CRITICAL", "MAJOR", "MINOR"] as const;
-export type NcSeverity = (typeof NC_SEVERITIES)[number];
-
-export interface AutoNcRule {
-  onAnswers: string[];
-  severity: NcSeverity;
-  ownerRule: "AUDITEE_OF_TARGET";
-}
-
 export interface ChoiceOption {
   id: string;
   label: string;
@@ -112,6 +103,23 @@ export interface TemplateRow {
   updatedAt: string;
 }
 
+/** A rating-scale option — the per-template scale rating questions score on
+ *  (isExcludedNa drops the option out of both score sums). */
+export interface ScaleOption {
+  id: string;
+  label: string;
+  multiplierPct: number;
+  isExcludedNa: boolean;
+  color?: string | null;
+  orderIndex: number;
+}
+
+export interface RatingScaleSnapshot {
+  scaleId?: string;
+  name: string;
+  options: ScaleOption[];
+}
+
 export interface VersionSummary {
   id: string;
   templateId: string;
@@ -123,6 +131,8 @@ export interface VersionSummary {
   criticalFailGate: boolean;
   reviewRequired: boolean;
   contentHash: string | null;
+  /** Per-template rating scale, edited in the builder, frozen at publish. */
+  ratingScaleSnapshot: RatingScaleSnapshot | null;
   publishedAt: string | null;
   createdAt: string;
 }
@@ -135,8 +145,6 @@ export interface TemplateDetail {
   category: string | null;
   description: string | null;
   archivedAt: string | null;
-  /** Visibility scoping; null/empty = unrestricted (PATCH /audit/templates/:id). */
-  accessScopeJson?: AccessScope | null;
   versions: VersionSummary[];
 }
 
@@ -153,7 +161,6 @@ export interface BuilderQuestion {
   numericUnit: string | null;
   numericMin: string | null;
   numericMax: string | null;
-  autoNcJson: AutoNcRule | null;
   bankItemId: string | null;
   orderIndex: number;
 }
@@ -177,16 +184,6 @@ export interface WhereUsed {
   totalAudits: number;
 }
 
-export interface VersionDiff {
-  from: { versionNo: number; lifecycle?: Lifecycle };
-  to: { versionNo: number; lifecycle?: Lifecycle };
-  sectionsAdded: string[];
-  sectionsRemoved: string[];
-  questionsAdded: string[];
-  questionsRemoved: string[];
-  questionsChanged: { question: string; changes: Record<string, { from: unknown; to: unknown }> }[];
-}
-
 /* ── Question bank ───────────────────────────────────────────────────────── */
 
 export interface BankItem {
@@ -196,9 +193,13 @@ export interface BankItem {
   type: QuestionType;
   defaultWeight: number;
   defaultEvidenceRule: EvidenceRule;
-  defaultAutoNcJson: unknown;
+  /** Single/multi choice options seeded onto the question on insert. */
+  defaultOptionsJson: ChoiceOption[] | null;
   tags: string[];
   numericUnit: string | null;
+  /** numeric columns → string in JSON. */
+  numericMin: string | null;
+  numericMax: string | null;
   archivedAt: string | null;
   usageCount: number;
   updatedAt: string;
@@ -380,7 +381,6 @@ export interface AuditRow {
   assigneeId: string | null;
   scheduledFor: string | null;
   dueAt: string | null;
-  subsetJson: unknown;
   reviewRequired: boolean;
   /** numeric columns → strings in JSON; Number() before math */
   maxScore: string | null;
@@ -438,18 +438,6 @@ export interface AuditEventRow {
   createdAt: string;
 }
 
-export interface AuditCommentRow {
-  id: string;
-  auditId: string;
-  authorId: string | null;
-  body: string;
-  createdAt: string;
-  authorName: string | null;
-  authorRole: string | null;
-  /** Image/PDF attachments (≤5), present when the comment carries evidence. */
-  attachments?: CommentAttachment[];
-}
-
 /* ── Runner payload (GET /audits/:id/run) ────────────────────────────────── */
 
 export interface ScaleSnapshotOption {
@@ -482,7 +470,6 @@ export interface RunQuestion {
   numericUnit: string | null;
   numericMin: string | null;
   numericMax: string | null;
-  autoNcJson: { onAnswers?: string[]; belowMultiplierPct?: number; severity: NcSeverity } | null;
   orderIndex: number;
 }
 
@@ -525,16 +512,6 @@ export interface RunEvidence {
   createdAt: string;
 }
 
-export interface RunNc {
-  id: string;
-  ncNo: string;
-  responseId: string | null;
-  questionId: string | null;
-  severity: NcSeverity;
-  state: string;
-  description: string;
-}
-
 export interface AttachmentPolicy {
   maxFiles: number;
   maxSizeMb: number;
@@ -554,7 +531,6 @@ export interface RunPayload {
   sections: RunSection[];
   responses: RunResponse[];
   evidence: RunEvidence[];
-  ncs: RunNc[];
   policies: {
     response: AttachmentPolicy;
     audit: AttachmentPolicy;
@@ -609,14 +585,18 @@ export function resolveMultiplierClient(
     }
     case "SINGLE_CHOICE": {
       const optionId = a["optionId"] != null ? String(a["optionId"]) : null;
-      const option = (question.optionsJson ?? []).find((o) => o.id === optionId);
-      return option ? { multiplierPct: Number(option.multiplierPct), isNa: false } : { multiplierPct: null, isNa: false };
+      const opts = Array.isArray(question.optionsJson) ? question.optionsJson : [];
+      const option = opts.find((o) => o.id === optionId);
+      if (!option) return { multiplierPct: null, isNa: false };
+      const pct = Number(option.multiplierPct);
+      return { multiplierPct: Number.isFinite(pct) ? pct : null, isNa: false };
     }
     case "MULTI_CHOICE": {
       const ids = Array.isArray(a["optionIds"]) ? (a["optionIds"] as unknown[]).map(String) : [];
-      const options = (question.optionsJson ?? []).filter((o) => ids.includes(o.id));
-      if (options.length === 0) return { multiplierPct: null, isNa: false };
-      const avg = options.reduce((s, o) => s + Number(o.multiplierPct), 0) / options.length;
+      const opts = Array.isArray(question.optionsJson) ? question.optionsJson : [];
+      const nums = opts.filter((o) => ids.includes(o.id)).map((o) => Number(o.multiplierPct)).filter((n) => Number.isFinite(n));
+      if (nums.length === 0) return { multiplierPct: null, isNa: false };
+      const avg = nums.reduce((s, n) => s + n, 0) / nums.length;
       return { multiplierPct: avg, isNa: false };
     }
     case "NUMERIC": {
@@ -680,194 +660,6 @@ export interface PerformanceBand {
   maxPct: string | number;
   color: string | null;
   orderIndex: number;
-}
-
-/* ── Preview scoring ─────────────────────────────────────────────────────── */
-
-export interface PreviewScore {
-  lines: {
-    questionId: string;
-    sectionId: string;
-    earned: number | null;
-    max: number | null;
-    multiplierPct: number | null;
-    isNa: boolean;
-  }[];
-  sections: { sectionId: string; earnedRaw: number; maxRaw: number; pct: number | null }[];
-  overall: { earnedRaw: number; maxRaw: number; pct: number | null };
-  result: "PASS" | "FAIL" | null;
-  band: string | null;
-  scaleSnapshot: {
-    scaleId: string;
-    name: string;
-    options: {
-      id: string;
-      label: string;
-      multiplierPct: number;
-      isExcludedNa: boolean;
-      color?: string | null;
-      orderIndex?: number;
-    }[];
-  } | null;
-}
-
-/* ── Non-conformances & CAPA (P4) ────────────────────────────────────────── */
-
-export const NC_STATES = [
-  "OPEN", "IN_PROGRESS", "EXTENSION_REQUESTED", "RESOLVED",
-  "VERIFIED", "REOPENED", "WAIVED", "CLOSED",
-] as const;
-export type NcState = (typeof NC_STATES)[number];
-
-/** Terminal NC states — SLA countdowns hide, evidence/severity freeze. */
-export const NC_TERMINAL_STATES: readonly NcState[] = ["VERIFIED", "CLOSED", "WAIVED"];
-
-/** Legal transitions (mirror of the server's NC state machine). */
-export const NC_LEGAL_TRANSITIONS: Record<NcState, NcState[]> = {
-  OPEN: ["IN_PROGRESS", "WAIVED"],
-  IN_PROGRESS: ["RESOLVED", "EXTENSION_REQUESTED", "WAIVED"],
-  EXTENSION_REQUESTED: ["IN_PROGRESS"],
-  RESOLVED: ["VERIFIED", "REOPENED"],
-  VERIFIED: ["CLOSED"],
-  REOPENED: ["IN_PROGRESS"],
-  WAIVED: [],
-  CLOSED: [],
-};
-
-export const NC_SEVERITY_BADGE: Record<NcSeverity, BadgeVariant> = {
-  CRITICAL: "destructive",
-  MAJOR: "warning",
-  MINOR: "secondary",
-};
-
-export const NC_STATE_BADGE: Record<NcState, BadgeVariant> = {
-  OPEN: "info",
-  IN_PROGRESS: "warning",
-  EXTENSION_REQUESTED: "outline",
-  RESOLVED: "default",
-  VERIFIED: "success",
-  REOPENED: "destructive",
-  WAIVED: "secondary",
-  CLOSED: "outline",
-};
-
-export type SlaState = "DUE_SOON" | "OVERDUE" | "ON_TRACK" | "AWAITING_VERIFICATION" | null;
-
-/** Register row — audit_non_conformances + enrich (GET /audit/ncs). */
-export interface NcRow {
-  id: string;
-  ncNo: string;
-  auditId: string;
-  responseId: string | null;
-  questionId: string | null;
-  severity: NcSeverity;
-  category: string | null;
-  description: string;
-  ownerId: string;
-  dueAt: string;
-  state: NcState;
-  isOverdue: boolean;
-  source: string;
-  waiverReason: string | null;
-  waivedBy: string | null;
-  verifiedBy: string | null;
-  verifiedAt: string | null;
-  reopenCount: number;
-  createdBy: string | null;
-  closedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  // enrich()
-  ticketNo: string;
-  auditTitle: string;
-  propertyId: string;
-  propertyName: string | null;
-  ownerName: string | null;
-  slaState: SlaState;
-}
-
-export interface NcAction {
-  id: string;
-  ncId: string;
-  description: string;
-  completedAt: string | null;
-  submittedBy: string | null;
-  createdAt: string;
-  submittedByName: string | null;
-}
-
-export interface NcExtensionRequest {
-  id: string;
-  ncId: string;
-  requestedBy: string | null;
-  requestedDueAt: string;
-  justification: string;
-  status: "PENDING" | "APPROVED" | "DENIED";
-  decidedBy: string | null;
-  decidedAt: string | null;
-  decisionComment: string | null;
-  createdAt: string;
-  requestedByName: string | null;
-}
-
-export interface NcEvidence {
-  id: string;
-  kind: "NC" | "CAPA";
-  url: string | null;
-  thumbUrl: string | null;
-  correctiveActionId: string | null;
-  mime: string;
-  originalName: string | null;
-  capturedAt: string | null;
-  isLiveCapture: boolean;
-  createdAt: string;
-}
-
-/** GET /audit/ncs/:id — nc columns + names + origin audit + timeline. */
-export interface NcDetailData {
-  id: string;
-  ncNo: string;
-  auditId: string;
-  responseId: string | null;
-  questionId: string | null;
-  severity: NcSeverity;
-  category: string | null;
-  description: string;
-  ownerId: string;
-  dueAt: string;
-  state: NcState;
-  isOverdue: boolean;
-  source: string;
-  waiverReason: string | null;
-  reopenCount: number;
-  closedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  ownerName: string | null;
-  createdByName: string | null;
-  audit: {
-    id: string;
-    ticketNo: string;
-    title: string;
-    propertyId: string;
-    propertyName: string | null;
-  };
-  questionPrompt: string | null;
-  questionType: QuestionType | null;
-  actions: NcAction[];
-  extensionRequests: NcExtensionRequest[];
-  evidence: NcEvidence[];
-}
-
-/** "3h" / "2d" / "45m" until (or since) `dueAt`. */
-export function fmtTimeLeft(dueAt: string, nowMs: number): { overdue: boolean; text: string } {
-  const diff = new Date(dueAt).getTime() - nowMs;
-  const mins = Math.max(1, Math.round(Math.abs(diff) / 60_000));
-  const text =
-    mins < 60 ? `${mins}m`
-    : mins < 48 * 60 ? `${Math.round(mins / 60)}h`
-    : `${Math.round(mins / (60 * 24))}d`;
-  return { overdue: diff < 0, text };
 }
 
 /* ── Reports (P5) ────────────────────────────────────────────────────────── */
@@ -957,34 +749,13 @@ export interface DashboardSummary {
     activeAuditors: number;
     totalAudits: number;
   };
-  ncAnalytics: {
-    bySeverity: { severity: NcSeverity; state: NcState; count: number }[];
-    total: number;
-    capaClosureRate: number;
-    topFailingQuestions: { prompt: string; count: number }[];
-  };
   scoreTrend: { month: string; avgScore: number; count: number }[];
   volumeByTemplate?: { templateId: string; templateName: string; auditType: AuditType; count: number }[];
 }
 
 /* ── Review workspace (P5) ───────────────────────────────────────────────── */
 
-export interface WorkspaceEvidence extends RunEvidence {
-  ncId?: string | null;
-}
-
-export interface WorkspaceNc {
-  id: string;
-  ncNo: string;
-  questionId: string | null;
-  severity: NcSeverity;
-  state: NcState;
-  description: string;
-  ownerId: string;
-  dueAt: string;
-  source: string;
-  createdAt: string;
-}
+export type WorkspaceEvidence = RunEvidence;
 
 export interface WorkspaceReview {
   id: string;
@@ -1011,7 +782,6 @@ export interface ReviewWorkspaceData {
   responses: RunResponse[];
   evidence: WorkspaceEvidence[];
   submissionProof: WorkspaceEvidence | null;
-  ncs: WorkspaceNc[];
   sectionScores: { sectionId: string; title: string; earned: number; possible: number; pct: number | null }[];
   reviews: WorkspaceReview[];
 }
@@ -1064,56 +834,6 @@ export function answerLabel(
   }
 }
 
-/* ── Trail explorer (P5) ─────────────────────────────────────────────────── */
-
-export interface TrailEvent {
-  id: string;
-  seq: number;
-  entityType: string;
-  entityId: string;
-  auditId: string | null;
-  actorId: string | null;
-  actorName: string | null;
-  actorRole: string | null;
-  kind: string;
-  fromState: string | null;
-  toState: string | null;
-  reason: string | null;
-  beforeJson: unknown;
-  afterJson: unknown;
-  prevHash: string;
-  hash: string;
-  createdAt: string;
-}
-
-export interface ChainVerification {
-  valid: boolean;
-  checked: number;
-  firstBrokenSeq?: number;
-  verifiedAt: string;
-}
-
-/* ── New-audit creation & subset picker (ad-hoc / CX) ────────────────────── */
-
-/** Section/question tree returned by GET /audit/templates/versions/:vid. */
-export interface VersionSubsetSection {
-  id: string;
-  title: string;
-  questions: { id: string; prompt: string; type: QuestionType; weight: number }[];
-}
-
-export interface VersionSubset {
-  sections: VersionSubsetSection[];
-}
-
-/** A comment attachment (image/pdf) round-tripped by the comments endpoints. */
-export interface CommentAttachment {
-  mime: string;
-  originalName: string | null;
-  url: string;
-  thumbUrl: string | null;
-}
-
 /* ── Admin feature toggles (GET/PUT /audit/admin/feature-toggles) ────────── */
 
 export type WeightMode = "numeric" | "percentage";
@@ -1160,14 +880,6 @@ export interface DuplicateMatch {
 
 export interface DuplicateCheck {
   duplicates: DuplicateMatch[];
-}
-
-/* ── Per-template access scoping (PATCH /audit/templates/:id) ─────────────── */
-
-export interface AccessScope {
-  clusterIds?: string[];
-  cityIds?: string[];
-  roles?: string[];
 }
 
 /* ── Formatting helpers ──────────────────────────────────────────────────── */

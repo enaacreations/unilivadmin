@@ -792,6 +792,30 @@ export type AgencyKitchen = typeof agencyKitchensTable.$inferSelect;
 export type FoodOrder = typeof foodOrdersTable.$inferSelect;
 export type FoodOrderItem = typeof foodOrderItemsTable.$inferSelect;
 export type FoodOrderEvent = typeof foodOrderEventsTable.$inferSelect;
+
+/**
+ * Additional Food — a LOG of top-up food requested from another property AFTER
+ * an order is received (the real coordination happens offline). NOT part of the
+ * order lifecycle. Each "+ Additional Food" submission shares one requestId,
+ * records the source property it came from, and has one row per dish. The
+ * received view sums received + these per dish; reports distinguish original
+ * from additional and show the source property.
+ */
+export const foodAdditionalOrderItemsTable = pgTable("food_additional_order_items", {
+  id: text("id").primaryKey(),
+  orderId: text("order_id").notNull().references(() => foodOrdersTable.id, { onDelete: "cascade" }),
+  // Groups the dishes of one "+ Additional Food" submission ("additional order N").
+  requestId: text("request_id").notNull(),
+  // Property the extra food was sourced from (offline coordination).
+  sourcePropertyId: text("source_property_id").notNull().references(() => propertiesTable.id),
+  dishId: text("dish_id").notNull().references(() => dishesTable.id),
+  unit: measurementUnitEnum("unit").notNull(),
+  qty: numeric("qty", { precision: 12, scale: 3 }).notNull(),
+  createdById: text("created_by_id").references(() => usersTable.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type FoodAdditionalOrderItem = typeof foodAdditionalOrderItemsTable.$inferSelect;
+
 export type FoodDispatchEvent = typeof foodDispatchEventsTable.$inferSelect;
 export type Kitchen = typeof kitchensTable.$inferSelect;
 export type FoodDispatch = typeof foodDispatchesTable.$inferSelect;

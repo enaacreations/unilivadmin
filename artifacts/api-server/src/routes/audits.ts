@@ -8,16 +8,13 @@
  * everywhere including counts (FRD-ACC-05 AC).
  */
 import express, { Router, type IRouter } from "express";
-import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
   auditsTable,
-  auditBankCandidatesTable,
-  auditCommentsTable,
   auditEventsTable,
   auditEvidenceTable,
-  auditNonConformancesTable,
   auditQuestionsTable,
   auditReportsTable,
   auditResponsesTable,
@@ -29,7 +26,7 @@ import {
   usersTable,
 } from "@workspace/db";
 import { authenticate } from "../middlewares/auth.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 import { httpError } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -52,12 +49,9 @@ import {
   getAuditSetting,
   getAttachmentPolicy,
   computeSubmitBlockers,
-  createNonConformance,
-  evaluateAutoNc,
   evidenceUrl,
   loadExecutionQuestions,
   parseDataUrl,
-  resolveAuditeeOfTarget,
   storeEvidence,
   AUDIT_SETTING_DEFAULTS,
 } from "../lib/audit-service.js";
@@ -204,15 +198,27 @@ router.post(
     if (!parsed.success) throw httpError(400, "Invalid audit", parsed.error.flatten());
     const data = parsed.data;
 
-    // Resolve the pinned published version + its template (audit type, target type).
-    const [version] = await db
+    // Resolve the requested version, then upgrade to the template's LATEST
+    // published version (product decision 2026-07-24: an audit carries a
+    // snapshot of the latest template content at creation, whether the caller
+    // pinned an older version id or not).
+    const [picked] = await db
       .select()
       .from(auditTemplateVersionsTable)
       .where(eq(auditTemplateVersionsTable.id, data.templateVersionId));
-    if (!version) throw httpError(404, "Template version not found");
-    if (version.lifecycle !== "PUBLISHED") {
-      throw httpError(422, "Audits can only run a PUBLISHED template version");
-    }
+    if (!picked) throw httpError(404, "Template version not found");
+    const [version] = await db
+      .select()
+      .from(auditTemplateVersionsTable)
+      .where(
+        and(
+          eq(auditTemplateVersionsTable.templateId, picked.templateId),
+          eq(auditTemplateVersionsTable.lifecycle, "PUBLISHED"),
+        ),
+      )
+      .orderBy(desc(auditTemplateVersionsTable.versionNo))
+      .limit(1);
+    if (!version) throw httpError(422, "Audits can only run a PUBLISHED template version");
     const [template] = await db
       .select()
       .from(auditTemplatesTable)
@@ -295,7 +301,7 @@ router.post(
           dueAt: data.dueAt ?? scheduledFor,
           reminderOffsetMinutes: data.reminderOffsetMinutes ?? null,
           subsetJson: data.subsetJson ?? null,
-          reviewRequired: version.reviewRequired,
+          reviewRequired: true, // PRD §8.5: every submitted audit is reviewed
           createdBy: actor.id,
         })
         .returning();
@@ -638,47 +644,7 @@ router.post(
   },
 );
 
-router.post(
-  "/:id/pause",
-  authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    assertAssignee(audit, req.user!.id);
-    await transitionOrLogDenial(audit, "PAUSED", auditActor(req), (req.body?.reason as string) ?? null);
-    res.json({ success: true, data: await loadAudit(audit.id) });
-  },
-);
-
-router.post(
-  "/:id/resume",
-  authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    assertAssignee(audit, req.user!.id);
-    if (audit.state !== "PAUSED") throw httpError(409, "Only paused audits can resume");
-    await transitionOrLogDenial(audit, "IN_PROGRESS", auditActor(req), "Resumed");
-    res.json({ success: true, data: await loadAudit(audit.id) });
-  },
-);
-
-/** Void before completion. Register delete rule: Pending-only (FRD-REG-04). */
-router.post(
-  "/:id/cancel",
-  authenticate,
-  authorize("AUDIT_EXECUTION", "delete"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    if (!["DRAFT", "SCHEDULED"].includes(audit.state)) {
-      throw httpError(409, "Only Pending audits can be deleted; started audits are immutable history");
-    }
-    await transitionOrLogDenial(audit, "CANCELLED", auditActor(req), (req.body?.reason as string) ?? "Cancelled from register");
-    res.json({ success: true, data: await loadAudit(audit.id) });
-  },
-);
-
-/** Title/assignee edits while Pending only (FRD-ASG-03); reassignment (ASG-04). */
+/** Title edits while Pending only (FRD-ASG-03). */
 router.patch(
   "/:id",
   authenticate,
@@ -700,183 +666,17 @@ router.patch(
   },
 );
 
-router.post(
-  "/:id/reassign",
-  authenticate,
-  authorize("AUDIT_SCHEDULES", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    if (["SUBMITTED", "UNDER_REVIEW", "APPROVED", "CLOSED", "CANCELLED"].includes(audit.state)) {
-      throw httpError(409, "Reassignment is allowed until submission (FRD-ASG-04)");
-    }
-    const newAssigneeId = String(req.body?.assigneeId ?? "");
-    const [newAssignee] = await db
-      .select({ id: usersTable.id, name: usersTable.name })
-      .from(usersTable)
-      .where(eq(usersTable.id, newAssigneeId));
-    if (!newAssignee) throw httpError(404, "Assignee not found");
-
-    const actor = auditActor(req);
-    const oldAssigneeId = audit.assigneeId;
-    await db.transaction(async (tx) => {
-      await tx
-        .update(auditsTable)
-        .set({ assigneeId: newAssignee.id, updatedAt: new Date() })
-        .where(eq(auditsTable.id, audit.id));
-      await appendAuditEvent(tx, {
-        entityType: "AUDIT",
-        entityId: audit.id,
-        auditId: audit.id,
-        actorId: actor.id,
-        actorRole: actor.role,
-        kind: "ASSIGNMENT",
-        beforeJson: { assigneeId: oldAssigneeId },
-        afterJson: { assigneeId: newAssignee.id },
-        reason: (req.body?.reason as string) ?? null,
-      });
-    });
-    // Both auditors are notified (FRD-ASG-04).
-    for (const userId of [oldAssigneeId, newAssignee.id]) {
-      if (!userId) continue;
-      await notify({
-        userId,
-        title: `Audit ${audit.ticketNo} reassigned`,
-        body: `${audit.title} is now assigned to ${newAssignee.name}.`,
-        type: "AUDIT",
-        link: `/audits/${audit.id}`,
-        entityType: "AUDIT",
-        entityId: audit.id,
-      });
-    }
-    res.json({ success: true, data: await loadAudit(audit.id) });
-  },
-);
-
-/**
- * Bulk reassignment (FRD-ASG-05): move all of an auditor's open audits to
- * another auditor in one action (leaver scenario). Only pre-submission audits
- * are moved; each move is evented and both parties notified.
- */
-router.post(
-  "/bulk-reassign",
-  authenticate,
-  authorize("AUDIT_SCHEDULES", "edit"),
-  async (req, res) => {
-    const fromAssigneeId = String(req.body?.fromAssigneeId ?? "");
-    const toAssigneeId = String(req.body?.toAssigneeId ?? "");
-    if (!fromAssigneeId || !toAssigneeId) throw httpError(400, "fromAssigneeId and toAssigneeId required");
-    if (fromAssigneeId === toAssigneeId) throw httpError(422, "Source and target auditors are the same");
-
-    const [toUser] = await db
-      .select({ id: usersTable.id, name: usersTable.name })
-      .from(usersTable)
-      .where(eq(usersTable.id, toAssigneeId));
-    if (!toUser) throw httpError(404, "Target auditor not found");
-
-    const OPEN = ["DRAFT", "SCHEDULED", "IN_PROGRESS", "PAUSED", "REJECTED"] as const;
-    const open = await db
-      .select()
-      .from(auditsTable)
-      .where(and(eq(auditsTable.assigneeId, fromAssigneeId), inArray(auditsTable.state, [...OPEN])));
-    if (open.length === 0) {
-      res.json({ success: true, data: { reassigned: 0 } });
-      return;
-    }
-
-    const actor = auditActor(req);
-    const now = new Date();
-    await db.transaction(async (tx) => {
-      for (const audit of open) {
-        await tx.update(auditsTable).set({ assigneeId: toUser.id, updatedAt: now }).where(eq(auditsTable.id, audit.id));
-        await appendAuditEvent(tx, {
-          entityType: "AUDIT",
-          entityId: audit.id,
-          auditId: audit.id,
-          actorId: actor.id,
-          actorRole: actor.role,
-          kind: "ASSIGNMENT",
-          beforeJson: { assigneeId: fromAssigneeId },
-          afterJson: { assigneeId: toUser.id },
-          reason: (req.body?.reason as string) ?? "Bulk reassignment",
-        });
-      }
-    });
-    // Notify the new owner once with a summary; the leaver is not spammed.
-    await notify({
-      userId: toUser.id,
-      title: `${open.length} audits reassigned to you`,
-      body: `You are now the assignee for ${open.length} open audit${open.length === 1 ? "" : "s"}.`,
-      type: "AUDIT",
-      link: `/audits/my`,
-      entityType: "USER",
-      entityId: toUser.id,
-    });
-    res.json({ success: true, data: { reassigned: open.length } });
-  },
-);
-
-/* ── Manual nudge (FRD-NTF-04) ─────────────────────────────────────────────── */
-
-router.post(
-  "/:id/nudge",
-  authenticate,
-  authorize("AUDIT_REGISTER", "view"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    if (["SUBMITTED", "UNDER_REVIEW", "APPROVED", "CLOSED", "CANCELLED"].includes(audit.state)) {
-      throw httpError(409, "Nudge is disabled once the audit is completed", { state: audit.state });
-    }
-    if (!audit.assigneeId) throw httpError(422, "Audit has no assignee to nudge");
-
-    // Rate limit per audit per hour (FRD-NTF-04): the NOTIFY trail is the counter.
-    const perHour = Number(
-      await getAuditSetting("manual_nudge_per_hour", AUDIT_SETTING_DEFAULTS.manual_nudge_per_hour),
-    );
-    const [countRow] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(auditEventsTable)
-      .where(
-        and(
-          eq(auditEventsTable.entityType, "AUDIT"),
-          eq(auditEventsTable.entityId, audit.id),
-          eq(auditEventsTable.kind, "NOTIFY"),
-          gt(auditEventsTable.createdAt, new Date(Date.now() - 3_600_000)),
-          sql`${auditEventsTable.reason} LIKE 'Manual nudge%'`,
-        ),
-      );
-    if ((countRow?.count ?? 0) >= perHour) {
-      throw httpError(429, `Nudge limit reached (${perHour}/hour for this audit)`);
-    }
-
-    const actor = auditActor(req);
-    await recordAuditEvent({
-      entityType: "AUDIT",
-      entityId: audit.id,
-      auditId: audit.id,
-      actorId: actor.id,
-      actorRole: actor.role,
-      kind: "NOTIFY",
-      reason: "Manual nudge sent",
-    });
-    await notify({
-      userId: audit.assigneeId,
-      title: `Nudge: ${audit.ticketNo} needs attention`,
-      body: `${audit.title} is awaiting action${audit.dueAt ? ` — due ${audit.dueAt.toLocaleString("en-IN")}` : ""}.`,
-      type: "AUDIT",
-      link: `/audits/${audit.id}`,
-      entityType: "AUDIT",
-      entityId: audit.id,
-    });
-    res.json({ success: true, data: { nudged: true } });
-  },
-);
-
 /* ── Execution grid (FRD-EXE-04) ───────────────────────────────────────────── */
 
 router.get(
   "/:id/run",
   authenticate,
-  authorize("AUDIT_EXECUTION", "view"),
+  // Read of the execution grid — powers the runner (conductors) AND the
+  // read-only scorecard/answers on the audit-detail + review pages. Coarse gate
+  // mirrors the detail route (AUDIT_REGISTER) so oversight roles that can view
+  // an audit can also see its answers; the canView() check below does the real
+  // per-audit-type/property scoping. Conducting mutations stay AUDIT_EXECUTION.
+  authorizeAny(["AUDIT_REGISTER", "AUDIT_EXECUTION", "AUDIT_REPORTS", "AUDIT_DASHBOARD"], "view"),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     const access = await resolveAuditAccess(req.user!);
@@ -902,18 +702,6 @@ router.get(
       .select()
       .from(auditEvidenceTable)
       .where(eq(auditEvidenceTable.auditId, audit.id));
-    const ncs = await db
-      .select({
-        id: auditNonConformancesTable.id,
-        ncNo: auditNonConformancesTable.ncNo,
-        responseId: auditNonConformancesTable.responseId,
-        questionId: auditNonConformancesTable.questionId,
-        severity: auditNonConformancesTable.severity,
-        state: auditNonConformancesTable.state,
-        description: auditNonConformancesTable.description,
-      })
-      .from(auditNonConformancesTable)
-      .where(eq(auditNonConformancesTable.auditId, audit.id));
 
     const policies = {
       response: await getAttachmentPolicy("RESPONSE"),
@@ -937,8 +725,7 @@ router.get(
           id: version.id,
           versionNo: version.versionNo,
           passThresholdPct: version.passThresholdPct,
-          criticalFailGate: version.criticalFailGate,
-          reviewRequired: audit.reviewRequired,
+          reviewRequired: true, // PRD §8.5: every submitted audit is reviewed
         },
         scaleSnapshot: scaleSnapshotOf(version),
         sections: sections.map((s) => ({
@@ -947,7 +734,6 @@ router.get(
         })),
         responses,
         evidence: evidenceWithUrls,
-        ncs,
         policies,
       },
     });
@@ -1040,169 +826,12 @@ router.put(
       })
       .returning();
 
-    // Auto-NC prompt (FRD-EXE-07): tell the client to open the inline dialog,
-    // pre-filled; the NC itself is raised when the auditor confirms.
-    const autoNc = evaluateAutoNc(question, parsed.data.answerJson, snapshot);
-    const [existingNc] = autoNc.triggered
-      ? await db
-          .select({ id: auditNonConformancesTable.id })
-          .from(auditNonConformancesTable)
-          .where(
-            and(
-              eq(auditNonConformancesTable.auditId, audit.id),
-              eq(auditNonConformancesTable.responseId, row!.id),
-            ),
-          )
-      : [];
-
-    res.json({
-      success: true,
-      data: {
-        ...row,
-        ncSuggested: autoNc.triggered && !existingNc,
-        ncRule: autoNc.triggered ? autoNc.rule : null,
-      },
-    });
+    res.json({ success: true, data: row });
   },
 );
 
-/** Bulk answer (FRD-EXE-09): one answer and/or notes to many rows — never weights/scores (D-3/D-6). */
-router.post(
-  "/:id/responses/bulk",
-  authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    await assertAnswerable(audit, req.user!.id);
-    const questionIds = Array.isArray(req.body?.questionIds) ? (req.body.questionIds as string[]) : [];
-    if (questionIds.length === 0) throw httpError(400, "questionIds required");
-    const parsed = answerSchema.safeParse(req.body);
-    if (!parsed.success) throw httpError(400, "Invalid answer", parsed.error.flatten());
-
-    const questions = await db
-      .select()
-      .from(auditQuestionsTable)
-      .where(inArray(auditQuestionsTable.id, questionIds));
-    const [version] = await db
-      .select({ ratingScaleSnapshot: auditTemplateVersionsTable.ratingScaleSnapshot })
-      .from(auditTemplateVersionsTable)
-      .where(eq(auditTemplateVersionsTable.id, audit.templateVersionId));
-    const snapshot = scaleSnapshotOf(version ?? { ratingScaleSnapshot: null });
-
-    const now = new Date();
-    const results: { questionId: string; ncSuggested: boolean }[] = [];
-    await db.transaction(async (tx) => {
-      for (const question of questions) {
-        const resolved = resolveMultiplier(
-          {
-            id: question.id,
-            sectionId: question.sectionId,
-            type: question.type,
-            weight: question.weight,
-            mandatory: question.mandatory,
-            optionsJson: question.optionsJson as never,
-            numericMin: question.numericMin != null ? Number(question.numericMin) : null,
-            numericMax: question.numericMax != null ? Number(question.numericMax) : null,
-          },
-          parsed.data.answerJson,
-          snapshot,
-        );
-        await tx
-          .insert(auditResponsesTable)
-          .values({
-            id: newId(),
-            auditId: audit.id,
-            questionId: question.id,
-            answerJson: parsed.data.answerJson ?? null,
-            isNa: parsed.data.isNa ?? resolved.isNa,
-            multiplierPct: resolved.multiplierPct != null ? String(resolved.multiplierPct) : null,
-            notes: parsed.data.notes ?? null,
-            answeredBy: req.user!.id,
-            answeredAt: now,
-            updatedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: [auditResponsesTable.auditId, auditResponsesTable.questionId],
-            set: {
-              answerJson: parsed.data.answerJson ?? null,
-              isNa: parsed.data.isNa ?? resolved.isNa,
-              multiplierPct: resolved.multiplierPct != null ? String(resolved.multiplierPct) : null,
-              ...(parsed.data.notes !== undefined ? { notes: parsed.data.notes } : {}),
-              answeredBy: req.user!.id,
-              answeredAt: now,
-              updatedAt: now,
-            },
-          });
-        const autoNc = evaluateAutoNc(question, parsed.data.answerJson, snapshot);
-        results.push({ questionId: question.id, ncSuggested: autoNc.triggered });
-      }
-    });
-    res.json({ success: true, data: results });
-  },
-);
-
-/** Ad-hoc items (FRD-EXE-08, D-4): appended mid-execution, fixed default weight. */
-router.post(
-  "/:id/adhoc-questions",
-  authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    await assertAnswerable(audit, req.user!.id);
-    const sectionId = String(req.body?.sectionId ?? "");
-    const prompt = String(req.body?.prompt ?? "").trim();
-    if (!sectionId || !prompt) throw httpError(400, "sectionId and prompt required");
-    if (prompt.length > 500) throw httpError(422, "prompt too long (≤500)");
-    const ADHOC_TYPES = ["RATING", "YES_NO_NA", "PASS_FAIL", "TEXT"] as const;
-    type AdhocType = (typeof ADHOC_TYPES)[number];
-    const requested = String(req.body?.type ?? "RATING");
-    const type: AdhocType = (ADHOC_TYPES as readonly string[]).includes(requested)
-      ? (requested as AdhocType)
-      : "RATING";
-
-    // Weight is fixed from settings — never auditor-editable (X-7, D-6).
-    const weight = Number(
-      await getAuditSetting("adhoc_default_weight", AUDIT_SETTING_DEFAULTS.adhoc_default_weight),
-    );
-
-    const [maxRow] = await db
-      .select({ max: sql<number>`coalesce(max(${auditQuestionsTable.orderIndex}), -1)` })
-      .from(auditQuestionsTable)
-      .where(eq(auditQuestionsTable.sectionId, sectionId));
-
-    const question = await db.transaction(async (tx) => {
-      const [q] = await tx
-        .insert(auditQuestionsTable)
-        .values({
-          id: newId(),
-          sectionId,
-          auditId: audit.id,
-          adHoc: true,
-          prompt,
-          type,
-          weight: type === "TEXT" ? 0 : weight,
-          mandatory: false,
-          evidenceRule: "OPTIONAL",
-          orderIndex: (maxRow?.max ?? -1) + 1,
-        })
-        .returning();
-      // Bank-candidate queue for Admin accept/reject (D-4).
-      await tx.insert(auditBankCandidatesTable).values({
-        id: newId(),
-        questionId: q!.id,
-        auditId: audit.id,
-        proposedBy: req.user!.id,
-        status: "PENDING",
-      });
-      return q!;
-    });
-    res.status(201).json({ success: true, data: question });
-  },
-);
-
-/* ── Evidence (FRD-EXE-06/13, FR-AD-05) ────────────────────────────────────── */
+/* ── Evidence (FRD-EXE-06/13) ──────────────────────────────────────────────── */
 // parseDataUrl / storeEvidence / evidenceUrl live in ../lib/audit-service.js
-// (shared with the NC & CAPA routes since P4).
 
 const evidenceJson = express.json({ limit: "40mb" });
 
@@ -1323,142 +952,6 @@ router.delete(
   },
 );
 
-/* ── NC raise from execution (FRD-EXE-07 confirm / FRD-NCM-01 manual) ─────── */
-
-router.post(
-  "/:id/ncs",
-  authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    const access = await resolveAuditAccess(req.user!);
-    const isAssignee = audit.assigneeId === req.user!.id;
-    if (!isAssignee && !canConduct(access, audit.auditType as AuditType, audit.propertyId)) {
-      throw httpError(403, "Only the auditor may raise findings here");
-    }
-    const severity = String(req.body?.severity ?? "").toUpperCase();
-    if (!["CRITICAL", "MAJOR", "MINOR"].includes(severity)) {
-      throw httpError(400, "severity must be CRITICAL | MAJOR | MINOR");
-    }
-    const description = String(req.body?.description ?? "").trim();
-    if (!description) throw httpError(422, "description required");
-
-    const [version] = await db
-      .select({ templateId: auditTemplateVersionsTable.templateId })
-      .from(auditTemplateVersionsTable)
-      .where(eq(auditTemplateVersionsTable.id, audit.templateVersionId));
-
-    const nc = await db.transaction(async (tx) =>
-      createNonConformance(tx, {
-        auditId: audit.id,
-        propertyId: audit.propertyId,
-        templateId: version?.templateId ?? null,
-        responseId: req.body?.responseId ? String(req.body.responseId) : null,
-        questionId: req.body?.questionId ? String(req.body.questionId) : null,
-        severity: severity as "CRITICAL",
-        category: (req.body?.category as string) ?? null,
-        description,
-        ownerId: req.body?.ownerId ? String(req.body.ownerId) : null,
-        source: req.body?.responseId ? "AUTO" : "MANUAL",
-        actor: auditActor(req),
-      }),
-    );
-    await notify({
-      userId: nc.ownerId,
-      title: `Finding ${nc.ncNo} (${nc.severity})`,
-      body: `${description.slice(0, 140)} — due ${nc.dueAt.toLocaleString("en-IN")}`,
-      type: "AUDIT_NC",
-      link: `/audits/ncs/${nc.id}`,
-      entityType: "NC",
-      entityId: nc.id,
-    });
-    res.status(201).json({ success: true, data: nc });
-  },
-);
-
-/* ── Comments (FRD-EXE-10) ─────────────────────────────────────────────────── */
-
-router.get(
-  "/:id/comments",
-  authenticate,
-  authorize("AUDIT_REGISTER", "view"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    const access = await resolveAuditAccess(req.user!);
-    if (audit.assigneeId !== req.user!.id && !canView(access, audit.auditType as AuditType, audit.propertyId)) {
-      throw httpError(403, "Outside your audit access scope");
-    }
-    const comments = await db
-      .select({ comment: auditCommentsTable, authorName: usersTable.name, authorRole: usersTable.role })
-      .from(auditCommentsTable)
-      .leftJoin(usersTable, eq(usersTable.id, auditCommentsTable.authorId))
-      .where(eq(auditCommentsTable.auditId, audit.id))
-      .orderBy(asc(auditCommentsTable.createdAt));
-    res.json({
-      success: true,
-      data: await Promise.all(
-        comments.map(async (c) => ({
-          ...c.comment,
-          authorName: c.authorName,
-          authorRole: c.authorRole,
-          attachments: await Promise.all(
-            (c.comment.attachmentsJson ?? []).map(async (a) => ({
-              mime: a.mime,
-              originalName: a.originalName ?? null,
-              url: await evidenceUrl(a.storageKey),
-              thumbUrl: a.thumbStorageKey ? await evidenceUrl(a.thumbStorageKey) : null,
-            })),
-          ),
-        })),
-      ),
-    });
-  },
-);
-
-router.post(
-  "/:id/comments",
-  authenticate,
-  authorize("AUDIT_REGISTER", "view"),
-  express.json({ limit: "40mb" }),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    const body = String(req.body?.body ?? "").trim();
-    const rawAttachments = Array.isArray(req.body?.attachments) ? (req.body.attachments as { dataUrl: string; originalName?: string }[]) : [];
-    if (!body && rawAttachments.length === 0) throw httpError(400, "A comment body or attachment is required");
-    if (body.length > 4000) throw httpError(422, "Comment too long");
-    if (rawAttachments.length > 5) throw httpError(422, "At most 5 attachments per comment");
-
-    // Store attachments via the shared evidence storage (S3 or dev inline).
-    const commentId = newId();
-    const stored: { storageKey: string; mime: string; thumbStorageKey?: string; originalName?: string }[] = [];
-    for (const att of rawAttachments) {
-      const parsed = parseDataUrl(att.dataUrl);
-      if (!parsed) throw httpError(422, "Each attachment must be a base64 image/pdf data URL");
-      const key = `audit-comments/${audit.id}/${commentId}-${stored.length}.${parsed.ext}`;
-      const storageKey = await storeEvidence(key, parsed.buffer, parsed.contentType);
-      stored.push({ storageKey, mime: parsed.contentType, originalName: att.originalName });
-    }
-
-    const [row] = await db
-      .insert(auditCommentsTable)
-      .values({ id: commentId, auditId: audit.id, authorId: req.user!.id, body, attachmentsJson: stored })
-      .returning();
-    // Participants notified (assignee at minimum).
-    if (audit.assigneeId && audit.assigneeId !== req.user!.id) {
-      await notify({
-        userId: audit.assigneeId,
-        title: `Comment on ${audit.ticketNo}`,
-        body: body.slice(0, 140),
-        type: "AUDIT",
-        link: `/audits/${audit.id}`,
-        entityType: "AUDIT",
-        entityId: audit.id,
-      });
-    }
-    res.status(201).json({ success: true, data: row });
-  },
-);
-
 /* ── Submission gate & atomic submit (FRD-EXE-11/12/13/14) ─────────────────── */
 
 router.get(
@@ -1504,12 +997,6 @@ router.post(
       .select()
       .from(auditResponsesTable)
       .where(eq(auditResponsesTable.auditId, audit.id));
-    const [criticalNc] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(auditNonConformancesTable)
-      .where(
-        and(eq(auditNonConformancesTable.auditId, audit.id), eq(auditNonConformancesTable.severity, "CRITICAL")),
-      );
     const naCountsAgainst = await getAuditSetting("na_counts_against", AUDIT_SETTING_DEFAULTS.na_counts_against);
     const bands = await db.select().from(auditPerformanceBandsTable).orderBy(asc(auditPerformanceBandsTable.orderIndex));
 
@@ -1529,7 +1016,7 @@ router.post(
       naCountsAgainst: Boolean(naCountsAgainst),
       passThresholdPct: version.passThresholdPct != null ? Number(version.passThresholdPct) : null,
       criticalFailGate: version.criticalFailGate,
-      hasCriticalNc: (criticalNc?.count ?? 0) > 0,
+      hasCriticalNc: false,
       bands: bands.map((b) => ({ label: b.label, minPct: Number(b.minPct), maxPct: Number(b.maxPct) })),
     });
 
@@ -1538,7 +1025,8 @@ router.post(
       req.body?.geo && typeof req.body.geo.lat === "number" && typeof req.body.geo.lng === "number"
         ? { lat: req.body.geo.lat as number, lng: req.body.geo.lng as number }
         : null;
-    const targetState: AuditState = audit.reviewRequired ? "SUBMITTED" : "APPROVED";
+    // PRD §8.5/§10: every submit routes to review — no auto-approve path.
+    const targetState: AuditState = "SUBMITTED";
     const actor = auditActor(req);
 
     // Latest valid submission proof, stamped onto the audit (FRD-EXE-13).
@@ -1589,7 +1077,6 @@ router.post(
           result: result.result,
           scoreBand: result.band,
           isOverdue: false,
-          ...(targetState === "APPROVED" ? { approvedAt: now } : {}),
           updatedAt: now,
         })
         .where(eq(auditsTable.id, audit.id))
@@ -1620,7 +1107,7 @@ router.post(
         kind: "STATE_CHANGE",
         fromState: "IN_PROGRESS",
         toState: targetState,
-        reason: audit.reviewRequired ? "Submitted for review" : "Submitted — review not required for this template (D-2)",
+        reason: "Submitted for review",
       });
 
       // Queue the report row. Every submission (first, post-reject rework,
@@ -1642,23 +1129,21 @@ router.post(
       return row!;
     });
 
-    // Notify after commit: reviewers (OE, D-11) when review is required.
-    if (audit.reviewRequired) {
-      const reviewers = await db
-        .select({ id: usersTable.id })
-        .from(usersTable)
-        .where(and(inArray(usersTable.role, ["OPS_EXCELLENCE"]), eq(usersTable.isActive, true)));
-      for (const reviewer of reviewers) {
-        await notify({
-          userId: reviewer.id,
-          title: `Audit ${audit.ticketNo} submitted for review`,
-          body: `${audit.title} — score ${result.overall.pct != null ? Math.round(result.overall.pct * 100) / 100 + "%" : "n/a"}`,
-          type: "AUDIT",
-          link: `/audits/review/${audit.id}`,
-          entityType: "AUDIT",
-          entityId: audit.id,
-        });
-      }
+    // Notify after commit: reviewers (OE, D-11) — every submit goes to review.
+    const reviewers = await db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(and(inArray(usersTable.role, ["OPS_EXCELLENCE"]), eq(usersTable.isActive, true)));
+    for (const reviewer of reviewers) {
+      await notify({
+        userId: reviewer.id,
+        title: `Audit ${audit.ticketNo} submitted for review`,
+        body: `${audit.title} — score ${result.overall.pct != null ? Math.round(result.overall.pct * 100) / 100 + "%" : "n/a"}`,
+        type: "AUDIT",
+        link: `/audits/review/${audit.id}`,
+        entityType: "AUDIT",
+        entityId: audit.id,
+      });
     }
 
     res.json({ success: true, data: { audit: updated, score: result.overall, result: result.result, band: result.band } });

@@ -1,17 +1,13 @@
 import * as React from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Info } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -19,8 +15,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
 import {
-  AUDIT_TYPE_LABELS, NON_SCORED_TYPES, REMINDER_OPTIONS, titleCase,
-  type ApiList, type ApiOne, type AuditType, type VersionSubset,
+  AUDIT_TYPE_LABELS, REMINDER_OPTIONS,
+  type ApiList, type ApiOne, type AuditType,
 } from "./lib";
 import { TypeBadge } from "./shared";
 
@@ -35,8 +31,6 @@ interface ConductableTemplate {
   latestVersionNo: number;
 }
 
-type AssigneeKind = "ME" | "ROLE_AT_TARGET" | "USER";
-
 interface FormState {
   auditType: AuditType | "";
   templateId: string;
@@ -44,9 +38,6 @@ interface FormState {
   description: string;
   propertyId: string;
   roomId: string;
-  assigneeKind: AssigneeKind;
-  assigneeRole: "UNIT_LEAD" | "CLUSTER_MANAGER";
-  assigneeUserId: string;
   scheduledFor: string;
   dueAt: string;
   reminder: string; // "none" | minutes as string
@@ -59,9 +50,6 @@ const EMPTY: FormState = {
   description: "",
   propertyId: "",
   roomId: "",
-  assigneeKind: "ME",
-  assigneeRole: "UNIT_LEAD",
-  assigneeUserId: "",
   scheduledFor: "",
   dueAt: "",
   reminder: "none",
@@ -69,21 +57,19 @@ const EMPTY: FormState = {
 
 /**
  * One-off / ad-hoc audit creation (FRD one-off; unblocks the CX audit
- * workflow). A full-page form: type → published template → target → assignee,
- * with optional schedule and an optional section/question subset picker.
- * POST /audits → navigate to the created audit's detail.
+ * workflow). A full-page form: type → published template → target, assigned to
+ * yourself, with an optional schedule. POST /audits → navigate to the created
+ * audit's detail.
  */
-export default function NewAudit() {
+export default function NewAudit(
+  { inDialog = false, onDone }: { inDialog?: boolean; onDone?: (id?: string) => void } = {},
+) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
   const { me } = usePermissions();
 
   const [form, setForm] = React.useState<FormState>(EMPTY);
-  // Subset picker: set of selected question ids (empty = whole template).
-  const [selectedQuestionIds, setSelectedQuestionIds] = React.useState<Set<string>>(new Set());
-  const [expandedSections, setExpandedSections] = React.useState<Set<string>>(new Set());
-  const [subsetOpen, setSubsetOpen] = React.useState(false);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -137,76 +123,6 @@ export default function NewAudit() {
       ),
     enabled: targetType === "ROOM" && Boolean(form.propertyId),
   });
-  // /users may 403 for non-admins — degrade gracefully (radio option hidden).
-  const usersQuery = useQuery({
-    queryKey: ["/users", "new-audit"],
-    queryFn: () =>
-      apiFetch<ApiList<{ id: string; name: string; role: string }>>("/users?limit=100"),
-    retry: false,
-  });
-  const usersAvailable = !usersQuery.isError && (usersQuery.data?.data.length ?? 0) > 0;
-
-  // Subset tree for the picked template's latest version (conduct-scoped read).
-  const versionId = selectedTemplate?.latestVersionId ?? null;
-  const versionQuery = useQuery({
-    queryKey: ["/audits/template-version", versionId],
-    queryFn: () => apiFetch<ApiOne<VersionSubset>>(`/audits/template-version/${versionId}`),
-    enabled: subsetOpen && Boolean(versionId),
-  });
-  const sections = versionQuery.data?.data.sections ?? [];
-
-  // Reset subset selection whenever the template changes.
-  React.useEffect(() => {
-    setSelectedQuestionIds(new Set());
-    setExpandedSections(new Set());
-    setSubsetOpen(false);
-  }, [form.templateId]);
-
-  /* ── Subset helpers ────────────────────────────────────────────────────── */
-
-  const sectionQuestionIds = (sectionId: string): string[] =>
-    sections.find((s) => s.id === sectionId)?.questions.map((q) => q.id) ?? [];
-
-  const sectionState = (sectionId: string): "all" | "some" | "none" => {
-    const ids = sectionQuestionIds(sectionId);
-    if (ids.length === 0) return "none";
-    const picked = ids.filter((id) => selectedQuestionIds.has(id)).length;
-    return picked === 0 ? "none" : picked === ids.length ? "all" : "some";
-  };
-
-  const toggleSection = (sectionId: string, checked: boolean) => {
-    const ids = sectionQuestionIds(sectionId);
-    setSelectedQuestionIds((prev) => {
-      const next = new Set(prev);
-      for (const id of ids) checked ? next.add(id) : next.delete(id);
-      return next;
-    });
-  };
-
-  const toggleQuestion = (questionId: string, checked: boolean) => {
-    setSelectedQuestionIds((prev) => {
-      const next = new Set(prev);
-      checked ? next.add(questionId) : next.delete(questionId);
-      return next;
-    });
-  };
-
-  const toggleExpanded = (sectionId: string) =>
-    setExpandedSections((prev) => {
-      const next = new Set(prev);
-      next.has(sectionId) ? next.delete(sectionId) : next.add(sectionId);
-      return next;
-    });
-
-  // A "real" subset = some questions picked, but not every question (whole = no subset).
-  const allQuestionIds = React.useMemo(
-    () => sections.flatMap((s) => s.questions.map((q) => q.id)),
-    [sections],
-  );
-  const isRealSubset =
-    subsetOpen &&
-    selectedQuestionIds.size > 0 &&
-    selectedQuestionIds.size < allQuestionIds.length;
 
   /* ── Submit ────────────────────────────────────────────────────────────── */
 
@@ -223,27 +139,11 @@ export default function NewAudit() {
     } else {
       body.propertyId = form.propertyId;
     }
-    if (form.assigneeKind === "ME") {
-      if (me?.id) body.assigneeId = me.id;
-    } else if (form.assigneeKind === "ROLE_AT_TARGET") {
-      body.assigneeRule = form.assigneeRole;
-    } else {
-      body.assigneeId = form.assigneeUserId;
-    }
+    // One-off audits are always self-assigned.
+    if (me?.id) body.assigneeId = me.id;
     if (form.scheduledFor) body.scheduledFor = new Date(form.scheduledFor).toISOString();
     if (form.dueAt) body.dueAt = new Date(form.dueAt).toISOString();
     if (form.reminder !== "none") body.reminderOffsetMinutes = Number(form.reminder);
-    if (isRealSubset) {
-      // Include a section only if all its questions are selected; otherwise ship
-      // the explicit question ids so the server can narrow correctly.
-      const fullSectionIds = sections
-        .filter((s) => s.questions.length > 0 && s.questions.every((q) => selectedQuestionIds.has(q.id)))
-        .map((s) => s.id);
-      body.subsetJson = {
-        sectionIds: fullSectionIds,
-        questionIds: [...selectedQuestionIds],
-      };
-    }
     return body;
   };
 
@@ -257,7 +157,8 @@ export default function NewAudit() {
       toast({ title: `Audit ${res.data.ticketNo ?? ""} created`.trim() });
       qc.invalidateQueries({ queryKey: ["/audits"] });
       qc.invalidateQueries({ queryKey: ["/audits/my"] });
-      navigate(`/audits/${res.data.id}`);
+      if (onDone) onDone(res.data.id);
+      else navigate(`/audits/${res.data.id}`);
     },
     onError: (e: Error) => toast({ title: e.message || "Could not create audit", variant: "destructive" }),
   });
@@ -274,21 +175,21 @@ export default function NewAudit() {
           ? "Pick a property."
           : targetType === "ROOM" && !form.roomId
             ? "Pick a room."
-            : form.assigneeKind === "USER" && !form.assigneeUserId
-              ? "Pick an assignee."
-              : form.scheduledFor && form.dueAt && new Date(form.dueAt) < new Date(form.scheduledFor)
-                ? "Due date is before the scheduled date."
-                : null;
+            : form.scheduledFor && form.dueAt && new Date(form.dueAt) < new Date(form.scheduledFor)
+              ? "Due date is before the scheduled date."
+              : null;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
-      <PageHeader
-        title="New Audit"
-        subtitle="Create a one-off (ad-hoc) audit from a published template — target, assignee and optional schedule."
-        breadcrumbs={[{ label: "Audits" }, { label: "New Audit" }]}
-      />
+    <div className={inDialog ? "space-y-6" : "mx-auto max-w-4xl space-y-6"}>
+      {!inDialog && (
+        <PageHeader
+          title="New Audit"
+          subtitle="Create a one-off (ad-hoc) audit from a published template — target, assignee and optional schedule."
+          breadcrumbs={[{ label: "Audits" }, { label: "New Audit" }]}
+        />
+      )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 md:grid-cols-2">
         {/* What ────────────────────────────────────────────────────────── */}
         <Card>
           <CardHeader className="pb-3">
@@ -437,47 +338,10 @@ export default function NewAudit() {
 
             <div className="space-y-2">
               <Label>Assignee</Label>
-              <RadioGroup
-                value={form.assigneeKind}
-                onValueChange={(v) => set("assigneeKind", v as AssigneeKind)}
-                className="space-y-1"
-              >
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="ME" /> Me
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="ROLE_AT_TARGET" /> Role at the target
-                </label>
-                {usersAvailable && (
-                  <label className="flex items-center gap-2 text-sm">
-                    <RadioGroupItem value="USER" /> Specific user
-                  </label>
-                )}
-              </RadioGroup>
-              {form.assigneeKind === "ROLE_AT_TARGET" && (
-                <Select
-                  value={form.assigneeRole}
-                  onValueChange={(v) => set("assigneeRole", v as FormState["assigneeRole"])}
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="UNIT_LEAD">Unit Lead of the target</SelectItem>
-                    <SelectItem value="CLUSTER_MANAGER">Cluster Manager of the target</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-              {form.assigneeKind === "USER" && usersAvailable && (
-                <Select value={form.assigneeUserId} onValueChange={(v) => set("assigneeUserId", v)}>
-                  <SelectTrigger><SelectValue placeholder="Pick a user" /></SelectTrigger>
-                  <SelectContent>
-                    {(usersQuery.data?.data ?? []).map((u) => (
-                      <SelectItem key={u.id} value={u.id}>
-                        {u.name} · {titleCase(u.role)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              <p className="text-sm text-muted-foreground">
+                Assigned to you{me?.name ? ` (${me.name})` : ""} — you conduct
+                this audit.
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -521,102 +385,6 @@ export default function NewAudit() {
         </CardContent>
       </Card>
 
-      {/* Subset picker ────────────────────────────────────────────────── */}
-      {selectedTemplate && (
-        <Card>
-          <CardHeader className="pb-3">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between text-left"
-              onClick={() => setSubsetOpen((o) => !o)}
-            >
-              <div>
-                <CardTitle className="text-base">
-                  Scope
-                  {isRealSubset && (
-                    <Badge variant="secondary" className="ml-2 tabular-nums">
-                      {selectedQuestionIds.size} question{selectedQuestionIds.size === 1 ? "" : "s"}
-                    </Badge>
-                  )}
-                </CardTitle>
-                <CardDescription>
-                  Optional — narrow to specific sections or questions. Whole template by default.
-                </CardDescription>
-              </div>
-              {subsetOpen ? <ChevronDown className="h-5 w-5 shrink-0" /> : <ChevronRight className="h-5 w-5 shrink-0" />}
-            </button>
-          </CardHeader>
-          {subsetOpen && (
-            <CardContent className="space-y-2">
-              {versionQuery.isLoading ? (
-                <Skeleton className="h-40 w-full" />
-              ) : sections.length === 0 ? (
-                <p className="py-6 text-center text-sm text-muted-foreground">
-                  This version has no sections.
-                </p>
-              ) : (
-                <>
-                  <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                    <Info className="h-3.5 w-3.5 shrink-0" />
-                    Select nothing (or everything) to run the whole template.
-                  </div>
-                  <div className="max-h-[360px] space-y-1 overflow-y-auto rounded-md border p-2">
-                    {sections.map((s) => {
-                      const st = sectionState(s.id);
-                      const expanded = expandedSections.has(s.id);
-                      return (
-                        <div key={s.id} className="rounded">
-                          <div className="flex items-center gap-2 rounded px-1 py-1 hover:bg-muted/60">
-                            <Checkbox
-                              checked={st === "all" ? true : st === "some" ? "indeterminate" : false}
-                              onCheckedChange={(c) => toggleSection(s.id, c === true)}
-                            />
-                            <button
-                              type="button"
-                              className="flex flex-1 items-center gap-1 text-left text-sm font-medium"
-                              onClick={() => toggleExpanded(s.id)}
-                            >
-                              {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-                              <span className="truncate">{s.title}</span>
-                              <span className="ml-1 text-xs font-normal text-muted-foreground">
-                                ({s.questions.length})
-                              </span>
-                            </button>
-                          </div>
-                          {expanded && (
-                            <div className="ml-7 space-y-0.5 border-l pl-3">
-                              {s.questions.map((qn) => (
-                                <label
-                                  key={qn.id}
-                                  className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-sm hover:bg-muted/60"
-                                >
-                                  <Checkbox
-                                    className="mt-0.5"
-                                    checked={selectedQuestionIds.has(qn.id)}
-                                    onCheckedChange={(c) => toggleQuestion(qn.id, c === true)}
-                                  />
-                                  <span className="flex-1">
-                                    <span className="block">{qn.prompt}</span>
-                                    <span className="text-xs text-muted-foreground">
-                                      {titleCase(qn.type)}
-                                      {!NON_SCORED_TYPES.has(qn.type) && ` · weight ${qn.weight}`}
-                                    </span>
-                                  </span>
-                                </label>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </CardContent>
-          )}
-        </Card>
-      )}
-
       {/* Actions ──────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3">
         <Button
@@ -625,7 +393,7 @@ export default function NewAudit() {
         >
           Create audit
         </Button>
-        <Button variant="outline" onClick={() => navigate("/audits/my")}>Cancel</Button>
+        <Button variant="outline" onClick={() => (onDone ? onDone() : navigate("/audits/my"))}>Cancel</Button>
         {validationError && <p className="text-sm text-muted-foreground">{validationError}</p>}
       </div>
     </div>

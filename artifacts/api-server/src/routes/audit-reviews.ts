@@ -5,14 +5,13 @@
  * module gate (only those roles hold it) plus isSuperAdmin for reopen.
  */
 import { Router, type IRouter } from "express";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 import {
   db,
   auditsTable,
   auditReviewsTable,
   auditResponsesTable,
   auditEvidenceTable,
-  auditNonConformancesTable,
   auditTemplateVersionsTable,
   auditTemplatesTable,
   propertiesTable,
@@ -25,11 +24,9 @@ import { httpError, isSuperAdmin } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { notify } from "../lib/notification-service.js";
-import { appendAuditEvent } from "../lib/audit-events.js";
-import { applyAuditTransition, type AuditState } from "../lib/audit-state.js";
+import { applyAuditTransition } from "../lib/audit-state.js";
 import {
   auditActor,
-  createNonConformance,
   evidenceUrl,
   loadExecutionQuestions,
   maybeAutoCloseAudit,
@@ -43,14 +40,14 @@ async function loadAudit(id: string) {
   return audit;
 }
 
-/** Review queue (Submitted + Under Review), oldest first. */
+/** Review queue (Submitted only — PRD §8.5), oldest first. */
 router.get(
   "/queue",
   authenticate,
   authorize("AUDIT_REVIEW", "view"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
-    const where = inArray(auditsTable.state, ["SUBMITTED", "UNDER_REVIEW"]);
+    const where = eq(auditsTable.state, "SUBMITTED");
     const [countRow] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(auditsTable)
@@ -84,7 +81,7 @@ router.get(
 
 /**
  * Review workspace (FRD-REV-01): read-only responses with evidence, score
- * breakdown per section, NC list, auditor timeline incl. the auto-captured
+ * breakdown per section, auditor timeline incl. the auto-captured
  * timings/GPS (FRD-EXE-14) and the live submission proof (D-9).
  */
 router.get(
@@ -124,11 +121,6 @@ router.get(
       .select()
       .from(auditEvidenceTable)
       .where(eq(auditEvidenceTable.auditId, audit.id));
-    const ncs = await db
-      .select()
-      .from(auditNonConformancesTable)
-      .where(eq(auditNonConformancesTable.auditId, audit.id))
-      .orderBy(asc(auditNonConformancesTable.createdAt));
     const reviews = await db
       .select({ review: auditReviewsTable, reviewerName: usersTable.name })
       .from(auditReviewsTable)
@@ -172,7 +164,6 @@ router.get(
         responses,
         evidence: evidenceWithUrls,
         submissionProof: evidenceWithUrls.find((e) => e.id === audit.submissionEvidenceId) ?? null,
-        ncs,
         sectionScores,
         reviews: reviews.map((r) => ({ ...r.review, reviewerName: r.reviewerName })),
       },
@@ -180,38 +171,16 @@ router.get(
   },
 );
 
-/** Claim a submitted audit for review: SUBMITTED → UNDER_REVIEW. */
-router.post(
-  "/:id/claim",
-  authenticate,
-  authorize("AUDIT_REVIEW", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    await db.transaction(async (tx) => {
-      await applyAuditTransition(tx, audit, "UNDER_REVIEW", {
-        actor: auditActor(req),
-        reason: "Review started",
-      });
-    });
-    res.json({ success: true, data: await loadAudit(audit.id) });
-  },
-);
-
-/** Approve (FRD-REV-02); auto-closes immediately when no NC remains open. */
+/** Approve (PRD §8.5): straight from SUBMITTED; closes right after. */
 router.post(
   "/:id/approve",
   authenticate,
   authorize("AUDIT_REVIEW", "edit"),
   async (req, res) => {
-    let audit = await loadAudit(req.params["id"] as string);
+    const audit = await loadAudit(req.params["id"] as string);
     const actor = auditActor(req);
 
     await db.transaction(async (tx) => {
-      // Reviewers may approve straight from SUBMITTED (claim is optional).
-      if (audit.state === "SUBMITTED") {
-        await applyAuditTransition(tx, audit, "UNDER_REVIEW", { actor, reason: "Review started" });
-        audit = { ...audit, state: "UNDER_REVIEW" };
-      }
       await applyAuditTransition(tx, audit, "APPROVED", {
         actor,
         reason: (req.body?.comments as string) ?? "Approved",
@@ -236,7 +205,7 @@ router.post(
         entityId: audit.id,
       });
     }
-    // FRD-REV-04: accountable auto-closure once every NC is terminal.
+    // PRD §10: Review → Close (unconditional; safety-net job is the catch-up).
     await maybeAutoCloseAudit(audit.id, actor);
     res.json({ success: true, data: await loadAudit(audit.id) });
   },
@@ -248,16 +217,12 @@ router.post(
   authenticate,
   authorize("AUDIT_REVIEW", "edit"),
   async (req, res) => {
-    let audit = await loadAudit(req.params["id"] as string);
+    const audit = await loadAudit(req.params["id"] as string);
     const comment = String(req.body?.comment ?? "").trim();
     if (!comment) throw httpError(422, "A comment is required to reject (FRD-REV-02)");
     const actor = auditActor(req);
 
     await db.transaction(async (tx) => {
-      if (audit.state === "SUBMITTED") {
-        await applyAuditTransition(tx, audit, "UNDER_REVIEW", { actor, reason: "Review started" });
-        audit = { ...audit, state: "UNDER_REVIEW" };
-      }
       await applyAuditTransition(tx, audit, "REJECTED", { actor, reason: comment });
       // FRD-REV-02 AC: the audit returns to the auditor In Progress with
       // answers preserved — REJECTED is a routing state in the trail.
@@ -286,55 +251,6 @@ router.post(
       });
     }
     res.json({ success: true, data: await loadAudit(audit.id) });
-  },
-);
-
-/** Add a finding the auditor missed, during review (FRD-REV-03). */
-router.post(
-  "/:id/findings",
-  authenticate,
-  authorize("AUDIT_REVIEW", "edit"),
-  async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
-    if (!["SUBMITTED", "UNDER_REVIEW", "APPROVED"].includes(audit.state)) {
-      throw httpError(409, "Findings can be added during review only");
-    }
-    const severity = String(req.body?.severity ?? "").toUpperCase();
-    if (!["CRITICAL", "MAJOR", "MINOR"].includes(severity)) {
-      throw httpError(400, "severity must be CRITICAL | MAJOR | MINOR");
-    }
-    const description = String(req.body?.description ?? "").trim();
-    if (!description) throw httpError(422, "description required");
-
-    const [version] = await db
-      .select({ templateId: auditTemplateVersionsTable.templateId })
-      .from(auditTemplateVersionsTable)
-      .where(eq(auditTemplateVersionsTable.id, audit.templateVersionId));
-
-    const nc = await db.transaction(async (tx) =>
-      createNonConformance(tx, {
-        auditId: audit.id,
-        propertyId: audit.propertyId,
-        templateId: version?.templateId ?? null,
-        questionId: req.body?.questionId ? String(req.body.questionId) : null,
-        severity: severity as "CRITICAL",
-        category: (req.body?.category as string) ?? null,
-        description,
-        ownerId: req.body?.ownerId ? String(req.body.ownerId) : null,
-        source: "REVIEW",
-        actor: auditActor(req),
-      }),
-    );
-    await notify({
-      userId: nc.ownerId,
-      title: `Finding ${nc.ncNo} added in review (${nc.severity})`,
-      body: description.slice(0, 140),
-      type: "AUDIT_NC",
-      link: `/audits/ncs/${nc.id}`,
-      entityType: "NC",
-      entityId: nc.id,
-    });
-    res.status(201).json({ success: true, data: nc });
   },
 );
 

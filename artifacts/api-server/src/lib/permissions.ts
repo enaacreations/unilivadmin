@@ -25,12 +25,12 @@ export type Module =
   | "FOOD_ALL_ORDERS" | "FOOD_PLACE_ORDER" | "FOOD_KITCHEN_SUMMARY"
   | "FOOD_DISPATCH" | "FOOD_CONFIRM_DELIVERY" | "FOOD_WASTE_TRACKING"
   | "FOOD_REPORTS" | "FOOD_SETTINGS" | "FOOD_ORG"
-  // Audit & Inspection module (FRD v1.2.2). Coarse endpoint gates; fine-grained
+  // Audit & Inspection module (PRD v1.0). Coarse endpoint gates; fine-grained
   // audit-type/org-node truth lives in audit_role_grants (resolveAuditAccess).
   // AUDIT_LOG above is the unrelated host audit log.
-  | "AUDIT_DASHBOARD" | "AUDIT_REGISTER" | "AUDIT_EXECUTION" | "AUDIT_FINDINGS"
-  | "AUDIT_NCS" | "AUDIT_REVIEW" | "AUDIT_REPORTS" | "AUDIT_SCHEDULES"
-  | "AUDIT_TEMPLATES" | "AUDIT_ADMIN" | "AUDIT_TRAIL";
+  | "AUDIT_DASHBOARD" | "AUDIT_REGISTER" | "AUDIT_EXECUTION"
+  | "AUDIT_REVIEW" | "AUDIT_REPORTS" | "AUDIT_SCHEDULES"
+  | "AUDIT_TEMPLATES" | "AUDIT_ADMIN";
 
 export type Permission = "view" | "create" | "edit" | "delete";
 
@@ -49,9 +49,9 @@ const FOOD_MODULES: Module[] = [
 
 /** All Audit & Inspection modules, for the everything-granted roles. */
 const AUDIT_MODULES: Module[] = [
-  "AUDIT_DASHBOARD", "AUDIT_REGISTER", "AUDIT_EXECUTION", "AUDIT_FINDINGS",
-  "AUDIT_NCS", "AUDIT_REVIEW", "AUDIT_REPORTS", "AUDIT_SCHEDULES",
-  "AUDIT_TEMPLATES", "AUDIT_ADMIN", "AUDIT_TRAIL",
+  "AUDIT_DASHBOARD", "AUDIT_REGISTER", "AUDIT_EXECUTION",
+  "AUDIT_REVIEW", "AUDIT_REPORTS", "AUDIT_SCHEDULES",
+  "AUDIT_TEMPLATES", "AUDIT_ADMIN",
 ];
 
 type RoleMatrix = Partial<Record<Module, Partial<Record<Permission, boolean>>>>;
@@ -98,11 +98,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     FOOD_RECEIVE_UPDATE: VE, FOOD_DELIVERY_TRACKING: VE, FOOD_DASHBOARD: VIEW,
     FOOD_ALL_ORDERS: VIEW, FOOD_PLACE_ORDER: VE,
     FOOD_CONFIRM_DELIVERY: VE, FOOD_WASTE_TRACKING: VE, FOOD_REPORTS: VIEW,
-    // Audit & Inspection: conducts UL room audits for own property; auditee for
-    // NCs on it (CAPA via AUDIT_FINDINGS). No ad-hoc creation at launch.
+    // Audit & Inspection: conducts UL room audits for own property.
+    // No ad-hoc creation at launch.
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
     AUDIT_EXECUTION: { view: true, create: false, edit: true, delete: false },
-    AUDIT_FINDINGS: { view: true, create: true, edit: true, delete: false },
   },
   CLUSTER_MANAGER: {
     FOOD_RECEIVE_UPDATE: VE, FOOD_DELIVERY_TRACKING: VE, FOOD_DASHBOARD: VIEW,
@@ -112,21 +111,20 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     // read-only (C-1). Fine scoping via audit_role_grants.
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
     AUDIT_EXECUTION: { view: true, create: false, edit: true, delete: false },
-    AUDIT_FINDINGS: VIEW, AUDIT_NCS: VIEW,
   },
   CITY_HEAD: {
     FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
     FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
     FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
     // Audit & Inspection: oversight viewer — UL + CM for their city, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW, AUDIT_NCS: VIEW,
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
   },
   ZONAL_HEAD: {
     FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
     FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
     FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
     // Audit & Inspection: oversight viewer — UL + CM across the zone, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW, AUDIT_NCS: VIEW,
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
   },
   // B3-24: OPS_EXCELLENCE has FULL super-admin parity across every module (incl.
   // USERS / SETTINGS / AUDIT_LOG / FINANCE), per explicit product decision.
@@ -145,7 +143,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     FOOD_KITCHEN_SUMMARY: VIEW, FOOD_DISPATCH: VIEW, FOOD_CONFIRM_DELIVERY: VIEW,
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
     // Audit & Inspection: executive oversight viewer — UL + CM global, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW, AUDIT_NCS: VIEW,
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
   },
   // Kitchen users
   FNB_SUPERVISOR: {
@@ -176,7 +174,6 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
   CUSTOMER_EXPERIENCE: {
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
     AUDIT_EXECUTION: { view: true, create: true, edit: true, delete: false },
-    AUDIT_NCS: VIEW,
   },
 };
 

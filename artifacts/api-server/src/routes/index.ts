@@ -31,7 +31,6 @@ import geocodeRouter from "./geocode.js";
 import bulkRouter from "./bulk.js";
 import { mastersRouter } from "./masters.js";
 import { auditsRouter } from "./audits.js";
-import { auditNcsRouter } from "./audit-ncs.js";
 import { auditTemplatesRouter, auditBankRouter, auditBuilderRouter } from "./audit-templates.js";
 import { auditSchedulesRouter } from "./audit-schedules.js";
 import { auditReviewsRouter } from "./audit-reviews.js";
@@ -94,9 +93,8 @@ router.use("/food", foodOpsRouter);
 router.use("/geocode", geocodeRouter);
 router.use("/bulk", bulkRouter); // auth + authorize applied per-route inside
 router.use("/masters", mastersRouter); // auth + authorize(FOOD_SETTINGS) applied per-route inside
-// Audit & Inspection module (FRD v1.2.2) — auth + authorize per-route inside.
+// Audit & Inspection module (PRD v1.0) — auth + authorize per-route inside.
 router.use("/audits", auditsRouter);
-router.use("/audit/ncs", auditNcsRouter);
 router.use("/audit/templates", auditTemplatesRouter);
 router.use("/audit/bank", auditBankRouter);
 router.use("/audit", auditBuilderRouter); // /audit/sections/*, /audit/questions/*

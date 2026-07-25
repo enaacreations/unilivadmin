@@ -1,11 +1,10 @@
 /**
- * Audit & Inspection — template library & authoring routes (FA-02/03/04).
- * P1 scope: library register, template create (with v1 draft), detail with
- * version history. Builder mutations, bank, publish flow, clone, where-used,
- * diff, import/export and preview land in P2.
+ * Audit & Inspection — template library & authoring routes (PRD §8.3/§8.8).
+ * Library register, template create (with v1 draft), detail with version
+ * history, builder mutations, question bank, publish flow, where-used +
+ * schedule migration.
  */
 import { Router, type IRouter } from "express";
-import { createHash } from "crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -17,7 +16,6 @@ import {
   auditQuestionBankItemsTable,
   auditRatingScalesTable,
   auditRatingOptionsTable,
-  auditPerformanceBandsTable,
   auditSchedulesTable,
   auditsTable,
 } from "@workspace/db";
@@ -26,10 +24,10 @@ import { authorize } from "../middlewares/authorize.js";
 import { httpError, pick } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
-import { appendAuditEvent, canonicalJson, type DbLike } from "../lib/audit-events.js";
-import { auditActor, getAuditSetting, AUDIT_SETTING_DEFAULTS } from "../lib/audit-service.js";
+import { appendAuditEvent, type DbLike } from "../lib/audit-events.js";
+import { auditActor } from "../lib/audit-service.js";
 import { assertTransition, TEMPLATE_VERSION_TRANSITIONS, type TemplateVersionLifecycle } from "../lib/audit-state.js";
-import { scoreAudit, NON_SCORED_TYPES, type RatingScaleSnapshot } from "../lib/audit-scoring.js";
+import { NON_SCORED_TYPES, type RatingScaleSnapshot } from "../lib/audit-scoring.js";
 
 const router: IRouter = Router();
 
@@ -76,10 +74,30 @@ async function loadVersionContent(versionId: string) {
 }
 
 /**
+ * The starter rating scale seeded onto every new draft version. Templates own
+ * their scale (edited in the builder, frozen at publish) — there is no global
+ * scale library any more; this constant is the only default source.
+ */
+const DEFAULT_SCALE_SNAPSHOT: RatingScaleSnapshot = {
+  scaleId: "template-default",
+  name: "Standard 5-point",
+  options: [
+    { id: "excellent", label: "Excellent", multiplierPct: 100, isExcludedNa: false, color: null, orderIndex: 0 },
+    { id: "good", label: "Good", multiplierPct: 75, isExcludedNa: false, color: null, orderIndex: 1 },
+    { id: "average", label: "Average", multiplierPct: 50, isExcludedNa: false, color: null, orderIndex: 2 },
+    { id: "poor", label: "Poor", multiplierPct: 25, isExcludedNa: false, color: null, orderIndex: 3 },
+    { id: "na", label: "N/A", multiplierPct: 0, isExcludedNa: true, color: null, orderIndex: 4 },
+    // color/orderIndex ride along for the frontend renderer (same shape
+    // buildScaleSnapshot emits); the scorer's type only needs the core fields.
+  ] as unknown as RatingScaleSnapshot["options"],
+};
+
+/**
  * Build the rating-scale snapshot for a version: the single scale referenced
  * by its RATING questions, or the first active scale as the default. Two
  * scales in one version is rejected (one scale per version keeps scores
- * comparable — same spirit as D-7).
+ * comparable — same spirit as D-7). Legacy fallback — drafts that predate
+ * per-template scales and never edited their own.
  */
 async function buildScaleSnapshot(
   questions: (typeof auditQuestionsTable.$inferSelect)[],
@@ -131,42 +149,7 @@ async function buildScaleSnapshot(
   };
 }
 
-/** sha256 over canonicalized content + scale snapshot + result settings (FRD-TLB-03). */
-function computeContentHash(
-  content: Awaited<ReturnType<typeof loadVersionContent>>,
-  snapshot: RatingScaleSnapshot | null,
-  settings: { passThresholdPct: unknown; criticalFailGate: boolean; reviewRequired: boolean },
-): string {
-  const payload = {
-    settings,
-    ratingScaleSnapshot: snapshot,
-    sections: content.sections.map((s) => ({
-      title: s.title,
-      description: s.description,
-      audience: s.audience,
-      orderIndex: s.orderIndex,
-      questions: content.questions
-        .filter((q) => q.sectionId === s.id)
-        .map((q) => ({
-          prompt: q.prompt,
-          helpText: q.helpText,
-          type: q.type,
-          weight: q.weight,
-          mandatory: q.mandatory,
-          evidenceRule: q.evidenceRule,
-          optionsJson: q.optionsJson ?? null,
-          numericUnit: q.numericUnit,
-          numericMin: q.numericMin,
-          numericMax: q.numericMax,
-          autoNcJson: q.autoNcJson ?? null,
-          orderIndex: q.orderIndex,
-        })),
-    })),
-  };
-  return createHash("sha256").update(canonicalJson(payload)).digest("hex");
-}
-
-/** Copy one version's content rows into another version (fork/clone). */
+/** Copy one version's content rows into another version (fork). */
 async function copyVersionContent(tx: DbLike, fromVersionId: string, toVersionId: string): Promise<void> {
   const sections = await tx
     .select()
@@ -203,7 +186,6 @@ async function copyVersionContent(tx: DbLike, fromVersionId: string, toVersionId
         numericUnit: q.numericUnit,
         numericMin: q.numericMin,
         numericMax: q.numericMax,
-        autoNcJson: q.autoNcJson,
         bankItemId: q.bankItemId, // copy-on-insert provenance survives forks
         orderIndex: q.orderIndex,
       });
@@ -310,6 +292,8 @@ router.post(
           templateId: template!.id,
           versionNo: 1,
           lifecycle: "DRAFT",
+          // Per-template scale: every draft carries an editable scale from birth.
+          ratingScaleSnapshot: DEFAULT_SCALE_SNAPSHOT,
           createdBy: actor.id,
         })
         .returning();
@@ -351,7 +335,7 @@ router.get(
   },
 );
 
-/** Update template metadata + access scope (FR-TM-09); type is fixed. */
+/** Update template metadata; type is fixed. */
 router.patch(
   "/:id",
   authenticate,
@@ -363,7 +347,7 @@ router.patch(
       .where(eq(auditTemplatesTable.id, req.params["id"] as string));
     if (!existing) throw httpError(404, "Template not found");
 
-    const body = pick(req.body, ["name", "category", "description", "accessScopeJson"]);
+    const body = pick(req.body, ["name", "category", "description"]);
     if (Object.keys(body).length === 0) throw httpError(400, "Nothing to update");
 
     const actor = auditActor(req);
@@ -433,7 +417,7 @@ router.get(
   },
 );
 
-/* ── Version forking, clone & archive (FRD-TLB-03/06) ──────────────────────── */
+/* ── Version forking & archive (FRD-TLB-03) ────────────────────────────────── */
 
 /** Fork the next draft version, copying content from a source version. */
 router.post(
@@ -473,6 +457,9 @@ router.post(
           passThresholdPct: source.passThresholdPct,
           criticalFailGate: source.criticalFailGate,
           reviewRequired: source.reviewRequired,
+          // Per-template scale: the new draft starts from the source version's
+          // frozen scale so editing is a delta, not a rebuild.
+          ratingScaleSnapshot: source.ratingScaleSnapshot ?? DEFAULT_SCALE_SNAPSHOT,
           createdBy: actor.id,
         })
         .returning();
@@ -487,72 +474,6 @@ router.post(
         reason: `Draft v${version!.versionNo} forked from v${source.versionNo}`,
       });
       return version!;
-    });
-    res.status(201).json({ success: true, data: created });
-  },
-);
-
-/** Clone a template as a new template with a v1 draft (FRD-TLB-06). */
-router.post(
-  "/:id/clone",
-  authenticate,
-  authorize("AUDIT_TEMPLATES", "create"),
-  async (req, res) => {
-    const templateId = req.params["id"] as string;
-    const name = String(req.body?.name ?? "").trim();
-    if (!name) throw httpError(400, "name required for the cloned template");
-
-    const [template] = await db
-      .select()
-      .from(auditTemplatesTable)
-      .where(eq(auditTemplatesTable.id, templateId));
-    if (!template) throw httpError(404, "Template not found");
-    const [source] = await db
-      .select()
-      .from(auditTemplateVersionsTable)
-      .where(eq(auditTemplateVersionsTable.templateId, templateId))
-      .orderBy(desc(auditTemplateVersionsTable.versionNo))
-      .limit(1);
-    if (!source) throw httpError(404, "Template has no versions");
-
-    const actor = auditActor(req);
-    const created = await db.transaction(async (tx) => {
-      const [clone] = await tx
-        .insert(auditTemplatesTable)
-        .values({
-          id: newId(),
-          name,
-          auditType: template.auditType,
-          targetType: template.targetType,
-          category: template.category,
-          description: template.description,
-          createdBy: actor.id,
-        })
-        .returning();
-      const [version] = await tx
-        .insert(auditTemplateVersionsTable)
-        .values({
-          id: newId(),
-          templateId: clone!.id,
-          versionNo: 1,
-          lifecycle: "DRAFT",
-          passThresholdPct: source.passThresholdPct,
-          criticalFailGate: source.criticalFailGate,
-          reviewRequired: source.reviewRequired,
-          createdBy: actor.id,
-        })
-        .returning();
-      await copyVersionContent(tx, source.id, version!.id);
-      await appendAuditEvent(tx, {
-        entityType: "TEMPLATE",
-        entityId: clone!.id,
-        actorId: actor.id,
-        actorRole: actor.role,
-        kind: "STATE_CHANGE",
-        toState: "DRAFT",
-        reason: `Cloned from "${template.name}" v${source.versionNo}`,
-      });
-      return { ...clone!, versionId: version!.id };
     });
     res.status(201).json({ success: true, data: created });
   },
@@ -594,7 +515,27 @@ router.post(
   },
 );
 
-/* ── Version lifecycle: settings, approval, publish, deprecate (§5.7) ──────── */
+/* ── Version lifecycle: settings, publish, deprecate (§5.7) ────────────────── */
+
+/** The per-template rating scale, edited in the builder on the DRAFT version
+ *  and frozen at publish. Options score 0–100 like every other multiplier;
+ *  isExcludedNa marks an "N/A" option that drops out of both score sums. */
+const scaleSnapshotSchema = z.object({
+  scaleId: z.string().min(1).optional(),
+  name: z.string().min(1).max(100).default("Template scale"),
+  options: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        label: z.string().min(1).max(100),
+        multiplierPct: z.number().min(0).max(100),
+        isExcludedNa: z.boolean().default(false),
+        color: z.string().max(30).nullish(),
+        orderIndex: z.number().int().min(0),
+      }),
+    )
+    .min(2, "A rating scale needs at least 2 options"),
+});
 
 /** Edit version settings — DRAFT only (weights & content lock at publish, D-6). */
 router.patch(
@@ -604,12 +545,21 @@ router.patch(
   async (req, res) => {
     const version = await loadVersion(req.params["vid"] as string);
     assertDraftVersion(version);
-    const body = pick(req.body, ["passThresholdPct", "criticalFailGate", "reviewRequired", "changelogNote"]);
+    // reviewRequired is no longer editable — review is mandatory (PRD §8.5).
+    const body = pick(req.body, ["passThresholdPct", "criticalFailGate", "changelogNote", "ratingScaleSnapshot"]);
     if (Object.keys(body).length === 0) throw httpError(400, "Nothing to update");
     if (body.passThresholdPct != null) {
       const v = Number(body.passThresholdPct);
       if (Number.isNaN(v) || v < 0 || v > 100) throw httpError(422, "passThresholdPct must be 0–100");
       body.passThresholdPct = String(v);
+    }
+    if (body.ratingScaleSnapshot != null) {
+      const parsed = scaleSnapshotSchema.safeParse(body.ratingScaleSnapshot);
+      if (!parsed.success) throw httpError(400, "Invalid rating scale", parsed.error.flatten());
+      if (!parsed.data.options.some((o) => !o.isExcludedNa)) {
+        throw httpError(422, "The scale needs at least one scored (non-N/A) option");
+      }
+      body.ratingScaleSnapshot = { scaleId: parsed.data.scaleId ?? version.id, name: parsed.data.name, options: parsed.data.options };
     }
     const [row] = await db
       .update(auditTemplateVersionsTable)
@@ -620,73 +570,9 @@ router.patch(
   },
 );
 
-/** Submit a draft for co-approval (FR-TM-04, when the org setting is on). */
-router.post(
-  "/versions/:vid/submit-approval",
-  authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
-  async (req, res) => {
-    const version = await loadVersion(req.params["vid"] as string);
-    assertTransition(TEMPLATE_VERSION_TRANSITIONS, version.lifecycle as TemplateVersionLifecycle, "PENDING_APPROVAL", "TEMPLATE_VERSION");
-    const actor = auditActor(req);
-    const [row] = await db
-      .update(auditTemplateVersionsTable)
-      .set({ lifecycle: "PENDING_APPROVAL", submittedBy: actor.id, submittedAt: new Date() })
-      .where(eq(auditTemplateVersionsTable.id, version.id))
-      .returning();
-    await db.transaction(async (tx) => {
-      await appendAuditEvent(tx, {
-        entityType: "TEMPLATE_VERSION",
-        entityId: version.id,
-        actorId: actor.id,
-        actorRole: actor.role,
-        kind: "STATE_CHANGE",
-        fromState: version.lifecycle,
-        toState: "PENDING_APPROVAL",
-        reason: "Submitted for publish approval",
-      });
-    });
-    res.json({ success: true, data: row });
-  },
-);
-
-/** Bounce a pending version back to draft (co-approver rejects). */
-router.post(
-  "/versions/:vid/reject-approval",
-  authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
-  async (req, res) => {
-    const version = await loadVersion(req.params["vid"] as string);
-    assertTransition(TEMPLATE_VERSION_TRANSITIONS, version.lifecycle as TemplateVersionLifecycle, "DRAFT", "TEMPLATE_VERSION");
-    const reason = String(req.body?.reason ?? "").trim();
-    if (!reason) throw httpError(422, "reason required");
-    const actor = auditActor(req);
-    const [row] = await db
-      .update(auditTemplateVersionsTable)
-      .set({ lifecycle: "DRAFT" })
-      .where(eq(auditTemplateVersionsTable.id, version.id))
-      .returning();
-    await db.transaction(async (tx) => {
-      await appendAuditEvent(tx, {
-        entityType: "TEMPLATE_VERSION",
-        entityId: version.id,
-        actorId: actor.id,
-        actorRole: actor.role,
-        kind: "STATE_CHANGE",
-        fromState: "PENDING_APPROVAL",
-        toState: "DRAFT",
-        reason,
-      });
-    });
-    res.json({ success: true, data: row });
-  },
-);
-
 /**
  * Publish (FRD-TLB-02/03): mandatory changelog note; content validation;
- * freezes content + rating-scale snapshot; stamps a verifiable contentHash.
- * With co-approval on, only a PENDING_APPROVAL version publishes and the
- * approver must differ from the submitter.
+ * freezes content + rating-scale snapshot. DRAFT→PUBLISHED only.
  */
 router.post(
   "/versions/:vid/publish",
@@ -700,19 +586,6 @@ router.post(
     if (!changelogNote) throw httpError(422, "changelogNote is required to publish (FRD-TLB-02)");
 
     const actor = auditActor(req);
-    const coApproval = await getAuditSetting(
-      "publish_co_approval_required",
-      AUDIT_SETTING_DEFAULTS.publish_co_approval_required,
-    );
-    if (coApproval) {
-      if (version.lifecycle !== "PENDING_APPROVAL") {
-        throw httpError(409, "Co-approval is enabled — submit the draft for approval first (FR-TM-04)");
-      }
-      if (version.submittedBy && version.submittedBy === actor.id) {
-        throw httpError(403, "Co-approval requires a second person — the submitter cannot publish");
-      }
-    }
-
     const content = await loadVersionContent(version.id);
     if (content.sections.length === 0) throw httpError(422, "Cannot publish an empty template");
     const emptySections = content.sections.filter(
@@ -731,13 +604,32 @@ router.post(
         questions: weightless.map((q) => ({ id: q.id, prompt: q.prompt.slice(0, 80) })),
       });
     }
-
-    const snapshot = await buildScaleSnapshot(content.questions);
-    const contentHash = computeContentHash(content, snapshot, {
-      passThresholdPct: version.passThresholdPct,
-      criticalFailGate: version.criticalFailGate,
-      reviewRequired: version.reviewRequired,
+    // Choice questions must offer ≥2 labelled options, else they render as
+    // empty/unanswerable controls and silently drop from scoring at conduct.
+    const badChoice = content.questions.filter((q) => {
+      if (q.type !== "SINGLE_CHOICE" && q.type !== "MULTI_CHOICE") return false;
+      const opts = Array.isArray(q.optionsJson) ? q.optionsJson : [];
+      const labelled = opts.filter(
+        (o) => o && typeof o === "object" && String((o as { label?: unknown }).label ?? "").trim(),
+      );
+      return labelled.length < 2;
     });
+    if (badChoice.length > 0) {
+      throw httpError(422, "Choice questions need at least 2 labelled answer options", {
+        questions: badChoice.map((q) => ({ id: q.id, prompt: q.prompt.slice(0, 80) })),
+      });
+    }
+
+    // Per-template scale: the draft's own edited scale wins; fall back to the
+    // legacy global-library build only when the draft never defined one.
+    const draftScale = version.ratingScaleSnapshot as RatingScaleSnapshot | null;
+    const snapshot =
+      draftScale && Array.isArray(draftScale.options) && draftScale.options.length >= 2
+        ? draftScale
+        : await buildScaleSnapshot(content.questions);
+    if (!snapshot && content.questions.some((q) => q.type === "RATING")) {
+      throw httpError(422, "Define the template's rating scale before publishing — RATING questions need one");
+    }
 
     const published = await db.transaction(async (tx) => {
       const [row] = await tx
@@ -746,9 +638,9 @@ router.post(
           lifecycle: "PUBLISHED",
           changelogNote,
           ratingScaleSnapshot: snapshot,
-          contentHash,
+          // PRD §8.5: review is mandatory for every submitted audit.
+          reviewRequired: true,
           publishedBy: actor.id,
-          approvedBy: coApproval ? actor.id : null,
           publishedAt: new Date(),
         })
         .where(eq(auditTemplateVersionsTable.id, version.id))
@@ -762,7 +654,7 @@ router.post(
         fromState: version.lifecycle,
         toState: "PUBLISHED",
         reason: changelogNote,
-        afterJson: { contentHash, versionNo: version.versionNo },
+        afterJson: { versionNo: version.versionNo },
       });
       return row!;
     });
@@ -894,63 +786,19 @@ router.post(
   },
 );
 
-/** Annotated diff between two versions of the same template (FR-TM-03). */
-router.get(
-  "/versions/:vid/diff/:otherVid",
-  authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
-  async (req, res) => {
-    const a = await loadVersion(req.params["vid"] as string);
-    const b = await loadVersion(req.params["otherVid"] as string);
-    if (a.templateId !== b.templateId) throw httpError(422, "Versions belong to different templates");
+/* ── Question bank (FA-02) ─────────────────────────────────────────────────── */
 
-    const [contentA, contentB] = await Promise.all([loadVersionContent(a.id), loadVersionContent(b.id)]);
-    const sectionTitlesA = new Set(contentA.sections.map((s) => s.title));
-    const sectionTitlesB = new Set(contentB.sections.map((s) => s.title));
+/** A choice answer option. multiplierPct is bounded 0–100 server-side — the
+ *  server is the scoring authority; the UI clamp alone is not enough (an
+ *  out-of-range value inflates or corrupts the audit score). */
+const choiceOptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().max(200),
+  multiplierPct: z.number().min(0).max(100),
+});
 
-    const keyOf = (q: { prompt: string }, sections: typeof contentA.sections, sectionId: string) =>
-      `${sections.find((s) => s.id === sectionId)?.title ?? ""}::${q.prompt}`;
-    const mapA = new Map(contentA.questions.map((q) => [keyOf(q, contentA.sections, q.sectionId), q]));
-    const mapB = new Map(contentB.questions.map((q) => [keyOf(q, contentB.sections, q.sectionId), q]));
-
-    const added = [...mapB.keys()].filter((k) => !mapA.has(k));
-    const removed = [...mapA.keys()].filter((k) => !mapB.has(k));
-    const changed = [...mapB.keys()]
-      .filter((k) => mapA.has(k))
-      .map((k) => {
-        const qa = mapA.get(k)!;
-        const qb = mapB.get(k)!;
-        const changes: Record<string, { from: unknown; to: unknown }> = {};
-        for (const field of ["weight", "type", "mandatory", "evidenceRule"] as const) {
-          if (JSON.stringify(qa[field]) !== JSON.stringify(qb[field])) {
-            changes[field] = { from: qa[field], to: qb[field] };
-          }
-        }
-        if (JSON.stringify(qa.autoNcJson ?? null) !== JSON.stringify(qb.autoNcJson ?? null)) {
-          changes["autoNcRule"] = { from: qa.autoNcJson ?? null, to: qb.autoNcJson ?? null };
-        }
-        return Object.keys(changes).length ? { question: k, changes } : null;
-      })
-      .filter(Boolean);
-
-    res.json({
-      success: true,
-      data: {
-        from: { versionNo: a.versionNo, lifecycle: a.lifecycle },
-        to: { versionNo: b.versionNo, lifecycle: b.lifecycle },
-        sectionsAdded: [...sectionTitlesB].filter((t) => !sectionTitlesA.has(t)),
-        sectionsRemoved: [...sectionTitlesA].filter((t) => !sectionTitlesB.has(t)),
-        questionsAdded: added,
-        questionsRemoved: removed,
-        questionsChanged: changed,
-      },
-    });
-  },
-);
-
-/* ── Import / export / sandbox preview (FR-TM-07/08) ───────────────────────── */
-
-const importQuestionSchema = z.object({
+/** Base question payload shared by the builder routes. */
+const questionFieldsSchema = z.object({
   prompt: z.string().min(1).max(500),
   helpText: z.string().max(1000).nullish(),
   type: z.enum(QUESTION_TYPES).default("RATING"),
@@ -960,205 +808,9 @@ const importQuestionSchema = z.object({
   numericUnit: z.string().max(20).nullish(),
   numericMin: z.number().nullish(),
   numericMax: z.number().nullish(),
-  optionsJson: z.array(z.object({ id: z.string(), label: z.string(), multiplierPct: z.number() })).nullish(),
-  autoNcJson: z.unknown().nullish(),
+  optionsJson: z.array(choiceOptionSchema).nullish(),
   bankItemId: z.string().nullish(),
 });
-const importSchema = z.object({
-  sections: z
-    .array(
-      z.object({
-        title: z.string().min(1).max(200),
-        description: z.string().max(1000).nullish(),
-        audience: z.string().max(50).nullish(),
-        questions: z.array(importQuestionSchema).min(1),
-      }),
-    )
-    .min(1),
-});
-
-/** All-or-nothing content import into a DRAFT version (replaces content). */
-router.post(
-  "/versions/:vid/import",
-  authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
-  async (req, res) => {
-    const version = await loadVersion(req.params["vid"] as string);
-    assertDraftVersion(version);
-
-    const parsed = importSchema.safeParse(req.body);
-    if (!parsed.success) {
-      const report = parsed.error.issues.map((iss) => ({
-        path: iss.path.join("."),
-        error: iss.message,
-      }));
-      res.status(422).json({ success: false, error: "Validation failed — nothing imported", details: report });
-      return;
-    }
-
-    const actor = auditActor(req);
-    const counts = await db.transaction(async (tx) => {
-      // Replace existing content.
-      const oldSections = await tx
-        .select({ id: auditSectionsTable.id })
-        .from(auditSectionsTable)
-        .where(eq(auditSectionsTable.templateVersionId, version.id));
-      if (oldSections.length) {
-        await tx
-          .delete(auditSectionsTable)
-          .where(eq(auditSectionsTable.templateVersionId, version.id)); // questions cascade
-      }
-      let questionCount = 0;
-      for (let si = 0; si < parsed.data.sections.length; si++) {
-        const s = parsed.data.sections[si]!;
-        const sectionId = newId();
-        await tx.insert(auditSectionsTable).values({
-          id: sectionId,
-          templateVersionId: version.id,
-          title: s.title,
-          description: s.description ?? null,
-          audience: s.audience ?? null,
-          orderIndex: si,
-        });
-        for (let qi = 0; qi < s.questions.length; qi++) {
-          const q = s.questions[qi]!;
-          await tx.insert(auditQuestionsTable).values({
-            id: newId(),
-            sectionId,
-            prompt: q.prompt,
-            helpText: q.helpText ?? null,
-            type: q.type,
-            weight: q.weight,
-            mandatory: q.mandatory ?? false,
-            evidenceRule: q.evidenceRule ?? "NONE",
-            numericUnit: q.numericUnit ?? null,
-            numericMin: q.numericMin != null ? String(q.numericMin) : null,
-            numericMax: q.numericMax != null ? String(q.numericMax) : null,
-            optionsJson: q.optionsJson ?? null,
-            autoNcJson: q.autoNcJson ?? null,
-            bankItemId: q.bankItemId ?? null,
-            orderIndex: qi,
-          });
-          questionCount += 1;
-        }
-      }
-      await appendAuditEvent(tx, {
-        entityType: "TEMPLATE_VERSION",
-        entityId: version.id,
-        actorId: actor.id,
-        actorRole: actor.role,
-        kind: "CONFIG_CHANGE",
-        reason: `Content imported: ${parsed.data.sections.length} sections, ${questionCount} questions`,
-      });
-      return { sections: parsed.data.sections.length, questions: questionCount };
-    });
-    res.json({ success: true, data: counts });
-  },
-);
-
-/** Export a version's full content as JSON (backup / cross-env promotion). */
-router.get(
-  "/versions/:vid/export",
-  authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
-  async (req, res) => {
-    const version = await loadVersion(req.params["vid"] as string);
-    const [template] = await db
-      .select()
-      .from(auditTemplatesTable)
-      .where(eq(auditTemplatesTable.id, version.templateId));
-    const content = await loadVersionContent(version.id);
-    res.json({
-      success: true,
-      data: {
-        template: {
-          name: template?.name,
-          auditType: template?.auditType,
-          targetType: template?.targetType,
-          category: template?.category,
-        },
-        version: {
-          versionNo: version.versionNo,
-          lifecycle: version.lifecycle,
-          passThresholdPct: version.passThresholdPct,
-          criticalFailGate: version.criticalFailGate,
-          reviewRequired: version.reviewRequired,
-          contentHash: version.contentHash,
-        },
-        sections: content.sections.map((s) => ({
-          title: s.title,
-          description: s.description,
-          audience: s.audience,
-          questions: content.questions
-            .filter((q) => q.sectionId === s.id)
-            .map((q) => ({
-              prompt: q.prompt,
-              helpText: q.helpText,
-              type: q.type,
-              weight: q.weight,
-              mandatory: q.mandatory,
-              evidenceRule: q.evidenceRule,
-              numericUnit: q.numericUnit,
-              numericMin: q.numericMin,
-              numericMax: q.numericMax,
-              optionsJson: q.optionsJson,
-              autoNcJson: q.autoNcJson,
-            })),
-        })),
-      },
-    });
-  },
-);
-
-/** Sandbox scoring dry-run — nothing persisted (FRD-TLB-08). */
-router.post(
-  "/versions/:vid/preview-score",
-  authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
-  async (req, res) => {
-    const version = await loadVersion(req.params["vid"] as string);
-    const content = await loadVersionContent(version.id);
-    const snapshot =
-      version.lifecycle === "PUBLISHED" && version.ratingScaleSnapshot
-        ? (version.ratingScaleSnapshot as RatingScaleSnapshot)
-        : await buildScaleSnapshot(content.questions);
-
-    const answers = Array.isArray(req.body?.answers)
-      ? (req.body.answers as { questionId: string; answerJson: unknown }[])
-      : [];
-    const naCountsAgainst = await getAuditSetting(
-      "na_counts_against",
-      AUDIT_SETTING_DEFAULTS.na_counts_against,
-    );
-    const bands = await db
-      .select()
-      .from(auditPerformanceBandsTable)
-      .orderBy(asc(auditPerformanceBandsTable.orderIndex));
-
-    const result = scoreAudit({
-      questions: content.questions.map((q) => ({
-        id: q.id,
-        sectionId: q.sectionId,
-        type: q.type,
-        weight: q.weight,
-        mandatory: q.mandatory,
-        optionsJson: q.optionsJson as never,
-        numericMin: q.numericMin != null ? Number(q.numericMin) : null,
-        numericMax: q.numericMax != null ? Number(q.numericMax) : null,
-      })),
-      answers,
-      scaleSnapshot: snapshot,
-      naCountsAgainst: Boolean(naCountsAgainst),
-      passThresholdPct: version.passThresholdPct != null ? Number(version.passThresholdPct) : null,
-      criticalFailGate: version.criticalFailGate,
-      hasCriticalNc: false,
-      bands: bands.map((b) => ({ label: b.label, minPct: Number(b.minPct), maxPct: Number(b.maxPct) })),
-    });
-    res.json({ success: true, data: { ...result, scaleSnapshot: snapshot } });
-  },
-);
-
-/* ── Question bank (FA-02) ─────────────────────────────────────────────────── */
 
 const bankRouter: IRouter = Router();
 
@@ -1168,7 +820,7 @@ const bankItemSchema = z.object({
   type: z.enum(QUESTION_TYPES).default("RATING"),
   defaultWeight: z.number().int().min(0).default(0),
   defaultEvidenceRule: z.enum(EVIDENCE_RULES).default("NONE"),
-  defaultAutoNcJson: z.unknown().nullish(),
+  defaultOptionsJson: z.array(choiceOptionSchema).nullish(),
   tags: z.array(z.string().max(60)).default([]),
   numericUnit: z.string().max(20).nullish(),
   numericMin: z.number().nullish(),
@@ -1294,7 +946,7 @@ bankRouter.post(
         type: parsed.data.type,
         defaultWeight: parsed.data.defaultWeight,
         defaultEvidenceRule: parsed.data.defaultEvidenceRule,
-        defaultAutoNcJson: parsed.data.defaultAutoNcJson ?? null,
+        defaultOptionsJson: parsed.data.defaultOptionsJson ?? null,
         tags: parsed.data.tags,
         numericUnit: parsed.data.numericUnit ?? null,
         numericMin: parsed.data.numericMin != null ? String(parsed.data.numericMin) : null,
@@ -1318,10 +970,15 @@ bankRouter.patch(
     if (!existing) throw httpError(404, "Bank item not found");
     const body = pick(req.body, [
       "prompt", "helpText", "type", "defaultWeight", "defaultEvidenceRule",
-      "defaultAutoNcJson", "tags", "numericUnit", "numericMin", "numericMax",
+      "defaultOptionsJson", "tags", "numericUnit", "numericMin", "numericMax",
     ]);
     if (body.numericMin != null) body.numericMin = String(body.numericMin);
     if (body.numericMax != null) body.numericMax = String(body.numericMax);
+    if (body.defaultOptionsJson != null) {
+      const opts = z.array(choiceOptionSchema).safeParse(body.defaultOptionsJson);
+      if (!opts.success) throw httpError(400, "Invalid answer options", opts.error.flatten());
+      body.defaultOptionsJson = opts.data;
+    }
     // Copy-on-insert (FRD-QBK-03): editing the bank NEVER mutates templates —
     // template questions are independent copies with only provenance FKs.
     const [row] = await db
@@ -1450,7 +1107,7 @@ builderRouter.post(
   },
 );
 
-const questionBodySchema = importQuestionSchema.extend({
+const questionBodySchema = questionFieldsSchema.extend({
   ratingScaleId: z.string().nullish(),
 });
 
@@ -1478,11 +1135,10 @@ builderRouter.post(
         weight: item.defaultWeight,
         mandatory: false,
         evidenceRule: item.defaultEvidenceRule,
-        autoNcJson: item.defaultAutoNcJson,
         numericUnit: item.numericUnit,
         numericMin: item.numericMin != null ? Number(item.numericMin) : null,
         numericMax: item.numericMax != null ? Number(item.numericMax) : null,
-        optionsJson: null,
+        optionsJson: (item.defaultOptionsJson as z.infer<typeof questionBodySchema>["optionsJson"]) ?? null,
         bankItemId: item.id,
         ratingScaleId: null,
       };
@@ -1512,7 +1168,6 @@ builderRouter.post(
         numericUnit: values.numericUnit ?? null,
         numericMin: values.numericMin != null ? String(values.numericMin) : null,
         numericMax: values.numericMax != null ? String(values.numericMax) : null,
-        autoNcJson: values.autoNcJson ?? null,
         bankItemId: values.bankItemId ?? null,
         orderIndex: (maxRow?.max ?? -1) + 1,
       })
@@ -1537,11 +1192,16 @@ builderRouter.patch(
     const body = pick(req.body, [
       "prompt", "helpText", "type", "weight", "mandatory", "evidenceRule",
       "ratingScaleId", "optionsJson", "numericUnit", "numericMin", "numericMax",
-      "autoNcJson", "orderIndex", "sectionId",
+      "orderIndex", "sectionId",
     ]);
     if (Object.keys(body).length === 0) throw httpError(400, "Nothing to update");
     if (body.weight != null && (!Number.isInteger(body.weight) || body.weight < 0)) {
       throw httpError(422, "weight must be an integer ≥ 0");
+    }
+    if (body.optionsJson != null) {
+      const opts = z.array(choiceOptionSchema).safeParse(body.optionsJson);
+      if (!opts.success) throw httpError(400, "Invalid answer options", opts.error.flatten());
+      body.optionsJson = opts.data;
     }
     if (body.numericMin != null) body.numericMin = String(body.numericMin);
     if (body.numericMax != null) body.numericMax = String(body.numericMax);

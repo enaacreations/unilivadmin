@@ -1,7 +1,6 @@
 /**
  * Audit & Inspection — shared domain services: numbering allocation, module
- * settings, actor helpers. Grows with later phases (assignee resolution,
- * submit gate, auto-NC evaluation, notification dispatch).
+ * settings, actor helpers, submit gate, evidence storage, auto-close.
  */
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Request } from "express";
@@ -10,24 +9,19 @@ import {
   auditsTable,
   auditNumberingSchemesTable,
   auditAppSettingsTable,
-  auditAttachmentPoliciesTable,
   auditEvidenceTable,
-  auditNonConformancesTable,
   auditQuestionsTable,
   auditResponsesTable,
   auditSectionsTable,
-  auditSeveritySlasTable,
-  usersTable,
 } from "@workspace/db";
 import { putObject, getObjectUrl, isStorageConfigured } from "@workspace/storage";
 import { httpError } from "./authz.js";
-import { newId } from "./id.js";
 import { notify } from "./notification-service.js";
-import { appendAuditEvent, type DbLike } from "./audit-events.js";
+import { type DbLike } from "./audit-events.js";
 import { applyAuditTransition, type TransitionActor } from "./audit-state.js";
-import { resolveMultiplier, NON_SCORED_TYPES, type RatingScaleSnapshot, type ScoringQuestion } from "./audit-scoring.js";
+import { NON_SCORED_TYPES } from "./audit-scoring.js";
 
-export type NumberedObjectType = "AUDIT" | "NC" | "REPORT";
+export type NumberedObjectType = "AUDIT" | "REPORT";
 
 /**
  * Allocate the next human-readable number for an object type (FR-AD-06),
@@ -73,169 +67,6 @@ export async function getAuditSetting<T>(key: string, fallback: T): Promise<T> {
 /** The event-trail actor for a request (route handlers always have req.user). */
 export function auditActor(req: Request): TransitionActor {
   return { id: req.user?.id ?? null, role: req.user?.role ?? null };
-}
-
-/** The auditee responsible for a target: the property's active Unit Lead. */
-export async function resolveAuditeeOfTarget(propertyId: string): Promise<string | null> {
-  const [user] = await db
-    .select({ id: usersTable.id })
-    .from(usersTable)
-    .where(
-      and(
-        eq(usersTable.role, "UNIT_LEAD"),
-        eq(usersTable.propertyId, propertyId),
-        eq(usersTable.isActive, true),
-      ),
-    )
-    .limit(1);
-  return user?.id ?? null;
-}
-
-export interface SeveritySla {
-  capaDueHours: number;
-  reminderLeadHours: number;
-  escalationChainJson: { trigger: string; pct?: number; audience: string }[];
-}
-
-/** Severity → SLA row (FR-AD-03). Precedence template > org node > global. */
-export async function getSeveritySla(
-  severity: "CRITICAL" | "MAJOR" | "MINOR",
-  scope?: { templateId?: string | null },
-): Promise<SeveritySla> {
-  const rows = await db
-    .select()
-    .from(auditSeveritySlasTable)
-    .where(eq(auditSeveritySlasTable.severity, severity));
-  const byTemplate = scope?.templateId ? rows.find((r) => r.templateId === scope.templateId) : undefined;
-  const global = rows.find((r) => !r.templateId && !r.scopeLevel);
-  const chosen = byTemplate ?? global ?? rows[0];
-  if (!chosen) {
-    // Fail-safe defaults matching spec §6.2 if config is missing.
-    const fallback = { CRITICAL: 48, MAJOR: 168, MINOR: 720 }[severity];
-    return { capaDueHours: fallback, reminderLeadHours: 12, escalationChainJson: [] };
-  }
-  return {
-    capaDueHours: chosen.capaDueHours,
-    reminderLeadHours: chosen.reminderLeadHours,
-    escalationChainJson: (chosen.escalationChainJson ?? []) as SeveritySla["escalationChainJson"],
-  };
-}
-
-export interface AutoNcRule {
-  onAnswers?: string[];
-  belowMultiplierPct?: number;
-  severity: "CRITICAL" | "MAJOR" | "MINOR";
-  ownerRule?: string;
-}
-
-/**
- * Does this answer trip the question's auto-NC rule (FRD-EXE-07)? Triggers on
- * matching answer values/option ids, a below-threshold multiplier, or an
- * out-of-range NUMERIC answer when a rule exists.
- */
-export function evaluateAutoNc(
-  question: {
-    type: string;
-    autoNcJson: unknown;
-    optionsJson?: unknown;
-    numericMin?: string | number | null;
-    numericMax?: string | number | null;
-    weight: number;
-  },
-  answerJson: unknown,
-  snapshot: RatingScaleSnapshot | null,
-): { triggered: boolean; rule: AutoNcRule | null } {
-  const rule = (question.autoNcJson ?? null) as AutoNcRule | null;
-  if (!rule || !rule.severity) return { triggered: false, rule: null };
-
-  const a = (answerJson ?? {}) as Record<string, unknown>;
-  const answered: string[] = [];
-  if (a["value"] != null) answered.push(String(a["value"]).toUpperCase());
-  if (a["optionId"] != null) answered.push(String(a["optionId"]));
-  if (Array.isArray(a["optionIds"])) answered.push(...(a["optionIds"] as unknown[]).map(String));
-
-  if (rule.onAnswers?.some((trigger) => answered.includes(trigger))) {
-    return { triggered: true, rule };
-  }
-  const scoringQuestion: ScoringQuestion = {
-    id: "",
-    sectionId: "",
-    mandatory: false,
-    type: question.type,
-    weight: question.weight,
-    optionsJson: question.optionsJson as ScoringQuestion["optionsJson"],
-    numericMin: question.numericMin != null ? Number(question.numericMin) : null,
-    numericMax: question.numericMax != null ? Number(question.numericMax) : null,
-  };
-  const resolved = resolveMultiplier(scoringQuestion, answerJson, snapshot);
-  if (!resolved.isNa && resolved.multiplierPct != null) {
-    if (rule.belowMultiplierPct != null && resolved.multiplierPct < rule.belowMultiplierPct) {
-      return { triggered: true, rule };
-    }
-    // NUMERIC out-of-range scores 0 — a rule on a numeric question means
-    // "raise on out-of-range" (FRD-TAU-03 AC).
-    if (question.type === "NUMERIC" && resolved.multiplierPct === 0) {
-      return { triggered: true, rule };
-    }
-  }
-  return { triggered: false, rule };
-}
-
-export interface CreateNcInput {
-  auditId: string;
-  propertyId: string;
-  templateId?: string | null;
-  responseId?: string | null;
-  questionId?: string | null;
-  severity: "CRITICAL" | "MAJOR" | "MINOR";
-  category?: string | null;
-  description: string;
-  ownerId?: string | null;
-  source: "AUTO" | "MANUAL" | "REVIEW";
-  actor: TransitionActor;
-}
-
-/** Raise an NC (FRD-NCM-01): number it, stamp SLA due date, event it. */
-export async function createNonConformance(
-  tx: DbLike,
-  input: CreateNcInput,
-): Promise<typeof auditNonConformancesTable.$inferSelect> {
-  const ownerId = input.ownerId ?? (await resolveAuditeeOfTarget(input.propertyId));
-  if (!ownerId) {
-    throw httpError(422, "No owner resolvable for this NC — the target property has no Unit Lead; pass ownerId explicitly");
-  }
-  const sla = await getSeveritySla(input.severity, { templateId: input.templateId });
-  const ncNo = await allocateNumber(tx, "NC");
-  const [nc] = await tx
-    .insert(auditNonConformancesTable)
-    .values({
-      id: newId(),
-      ncNo,
-      auditId: input.auditId,
-      responseId: input.responseId ?? null,
-      questionId: input.questionId ?? null,
-      severity: input.severity,
-      category: input.category ?? null,
-      description: input.description,
-      ownerId,
-      dueAt: new Date(Date.now() + sla.capaDueHours * 3_600_000),
-      state: "OPEN",
-      source: input.source,
-      createdBy: input.actor.id,
-    })
-    .returning();
-  await appendAuditEvent(tx, {
-    entityType: "NC",
-    entityId: nc!.id,
-    auditId: input.auditId,
-    actorId: input.actor.id,
-    actorRole: input.actor.role ?? null,
-    kind: "STATE_CHANGE",
-    toState: "OPEN",
-    reason: `${input.source === "AUTO" ? "Auto-raised" : "Raised"}: ${input.description.slice(0, 120)}`,
-    afterJson: { ncNo, severity: input.severity, ownerId },
-  });
-  return nc!;
 }
 
 export interface SubmitBlocker {
@@ -365,20 +196,20 @@ export async function loadExecutionQuestions(
   return { sections: sections.filter((s) => usedSectionIds.has(s.id)), questions };
 }
 
-/** Attachment policy for a level, with permissive fallbacks (FR-AD-05). */
-export async function getAttachmentPolicy(level: string): Promise<{
+/**
+ * Attachment policy per level. Fixed module defaults (the per-level admin
+ * config table was removed with the simplified PRD); the level parameter is
+ * kept so future per-level differentiation stays a one-place change.
+ */
+export async function getAttachmentPolicy(_level: string): Promise<{
   maxFiles: number;
   maxSizeMb: number;
   allowedMime: string[];
 }> {
-  const [row] = await db
-    .select()
-    .from(auditAttachmentPoliciesTable)
-    .where(eq(auditAttachmentPoliciesTable.level, level));
   return {
-    maxFiles: row?.maxFiles ?? 5,
-    maxSizeMb: row?.maxSizeMb ?? 25,
-    allowedMime: (row?.allowedMimeJson as string[] | undefined) ?? ["image/jpeg", "image/png", "image/webp"],
+    maxFiles: 5,
+    maxSizeMb: 25,
+    allowedMime: ["image/jpeg", "image/png", "image/webp"],
   };
 }
 
@@ -437,15 +268,12 @@ export async function evidenceUrl(storageKey: string): Promise<string | null> {
   return getObjectUrl(storageKey, 3600);
 }
 
-/* ── Audit auto-close (FRD-REV-04) ─────────────────────────────────────────── */
-
-const NC_TERMINAL_STATES = ["VERIFIED", "CLOSED", "WAIVED"] as const;
+/* ── Audit auto-close (PRD §10: Review → Close) ────────────────────────────── */
 
 /**
- * Close an APPROVED audit once every NC on it is terminal (Verified/Closed/
- * Waived). Called synchronously after NC verify/waive, and by the safety-net
- * job (which additionally respects the `auto_close_days` setting). Returns
- * true when the audit was closed by this call.
+ * Close an APPROVED audit. Called synchronously after approval and by the
+ * safety-net job (which additionally respects the `auto_close_days` setting).
+ * Returns true when the audit was closed by this call.
  */
 export async function maybeAutoCloseAudit(
   auditId: string,
@@ -454,22 +282,7 @@ export async function maybeAutoCloseAudit(
   const [audit] = await db.select().from(auditsTable).where(eq(auditsTable.id, auditId));
   if (!audit || audit.state !== "APPROVED") return false;
 
-  const ncs = await db
-    .select({
-      ncNo: auditNonConformancesTable.ncNo,
-      state: auditNonConformancesTable.state,
-    })
-    .from(auditNonConformancesTable)
-    .where(eq(auditNonConformancesTable.auditId, auditId));
-  if (ncs.some((nc) => !(NC_TERMINAL_STATES as readonly string[]).includes(nc.state))) {
-    return false;
-  }
-
-  const label = (s: string) => s.charAt(0) + s.slice(1).toLowerCase();
-  const reason = ncs.length
-    ? `All findings resolved: ${ncs.map((nc) => `${nc.ncNo} (${label(nc.state)})`).join(", ")}`
-    : "No open findings";
-
+  const reason = "Closed after approval";
   await db.transaction(async (tx) => {
     await applyAuditTransition(tx, audit, "CLOSED", { actor, reason });
   });
@@ -493,11 +306,8 @@ export { NON_SCORED_TYPES };
 /** Default module settings, applied by the seed and used as code fallbacks. */
 export const AUDIT_SETTING_DEFAULTS = {
   na_counts_against: false, // D-1
-  publish_co_approval_required: false, // FR-TM-04
-  lookahead_days: 7, // FR-AD-07 recurrence look-ahead
-  auto_close_days: 0, // 0 = close as soon as all NCs terminal
-  adhoc_default_weight: 3, // X-7: fixed, not auditor-editable
-  manual_nudge_per_hour: 1, // FRD-NTF-04 rate limit
+  lookahead_days: 7, // recurrence look-ahead (schedule materializer)
+  auto_close_days: 0, // 0 = close as soon as approved
   report_share_ttl_hours: 72, // D-5 expiring links
   org_timezone: "Asia/Kolkata", // NFR-07 rendering timezone
 } as const;

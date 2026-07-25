@@ -213,9 +213,12 @@ function NamedReportsTab() {
     staleTime: 5 * 60_000,
   });
   const propertiesQuery = useQuery({
-    queryKey: ["/properties", "report-picker"],
-    queryFn: () => apiFetch<ApiList<{ id: string; name: string }>>("/properties?limit=100"),
+    // Audit-scoped property list — works for every reports persona (scoped
+    // roles lack the general PROPERTIES module, so /properties would 403).
+    queryKey: ["/audit/reports/filter-properties"],
+    queryFn: () => apiFetch<ApiList<{ id: string; name: string }>>("/audit/reports/filter-properties"),
     staleTime: 5 * 60_000,
+    retry: false,
   });
 
   const filterQs = React.useMemo(() => {
@@ -399,14 +402,18 @@ function NamedReportsTab() {
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
 
-export default function AuditReports() {
+/** Also embedded as the "Reports" tab of the Audit Dashboard hub (`embedded`
+ *  drops the page header). */
+export function ReportsPanel({ embedded = false }: { embedded?: boolean }) {
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Reports"
-        subtitle="Per-audit PDF registry plus the five named operational reports."
-        breadcrumbs={[{ label: "Audits" }, { label: "Reports" }]}
-      />
+    <div className={embedded ? "space-y-4" : "space-y-6"}>
+      {!embedded && (
+        <PageHeader
+          title="Reports"
+          subtitle="Per-audit PDF registry plus the five named operational reports."
+          breadcrumbs={[{ label: "Audits" }, { label: "Reports" }]}
+        />
+      )}
       <Tabs defaultValue="registry">
         <TabsList>
           <TabsTrigger value="registry">Registry</TabsTrigger>
@@ -421,4 +428,8 @@ export default function AuditReports() {
       </Tabs>
     </div>
   );
+}
+
+export default function AuditReports() {
+  return <ReportsPanel />;
 }

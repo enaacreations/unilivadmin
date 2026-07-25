@@ -15,8 +15,6 @@ import {
   auditsTable,
   auditReportsTable,
   auditReportSharesTable,
-  auditNonConformancesTable,
-  auditQuestionsTable,
   auditTemplateVersionsTable,
   auditTemplatesTable,
   propertiesTable,
@@ -88,6 +86,29 @@ router.get(
       })),
       meta: buildMeta(countRow?.count ?? 0, page, limit),
     });
+  },
+);
+
+/**
+ * Properties for the Reports property filter, scoped to the caller's audit
+ * access (AUDIT_REPORTS-gated). Distinct properties that have at least one
+ * audit the caller may see — so scoped roles (Unit Lead, City Head, …) get a
+ * working filter without needing the general PROPERTIES module.
+ */
+router.get(
+  "/filter-properties",
+  authenticate,
+  authorize("AUDIT_REPORTS", "view"),
+  async (req, res) => {
+    const access = await resolveAuditAccess(req.user!);
+    const scope = scopeAuditsCondition(access);
+    const rows = await db
+      .selectDistinct({ id: propertiesTable.id, name: propertiesTable.name })
+      .from(auditsTable)
+      .innerJoin(propertiesTable, eq(propertiesTable.id, auditsTable.propertyId))
+      .where(scope ? scope : undefined)
+      .orderBy(propertiesTable.name);
+    res.json({ success: true, data: rows });
   },
 );
 
@@ -429,38 +450,6 @@ router.get(
       .from(auditsTable)
       .where(where);
 
-    // NC analytics (FRD-ANL-03).
-    const ncConditions = [];
-    if (scope) ncConditions.push(scope);
-    const ncRows = await db
-      .select({
-        severity: auditNonConformancesTable.severity,
-        state: auditNonConformancesTable.state,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(auditNonConformancesTable)
-      .innerJoin(auditsTable, eq(auditsTable.id, auditNonConformancesTable.auditId))
-      .where(ncConditions.length ? and(...ncConditions) : undefined)
-      .groupBy(auditNonConformancesTable.severity, auditNonConformancesTable.state);
-    const ncTotal = ncRows.reduce((n, r) => n + r.count, 0);
-    const ncClosed = ncRows
-      .filter((r) => ["VERIFIED", "CLOSED", "WAIVED"].includes(r.state))
-      .reduce((n, r) => n + r.count, 0);
-
-    // Top failing questions (repeat findings).
-    const topFailing = await db
-      .select({
-        prompt: auditQuestionsTable.prompt,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(auditNonConformancesTable)
-      .innerJoin(auditQuestionsTable, eq(auditQuestionsTable.id, auditNonConformancesTable.questionId))
-      .innerJoin(auditsTable, eq(auditsTable.id, auditNonConformancesTable.auditId))
-      .where(ncConditions.length ? and(...ncConditions) : undefined)
-      .groupBy(auditQuestionsTable.prompt)
-      .orderBy(desc(sql`count(*)`))
-      .limit(10);
-
     // Score trend by month (FRD-ANL-02), last 6 months.
     const trend = await db
       .select({
@@ -502,12 +491,6 @@ router.get(
           compliancePct: kpi!.scored ? (kpi!.passed / kpi!.scored) * 100 : 0,
           activeAuditors: kpi!.activeAuditors ?? 0,
           totalAudits: kpi!.total ?? 0,
-        },
-        ncAnalytics: {
-          bySeverity: ncRows,
-          total: ncTotal,
-          capaClosureRate: ncTotal ? (ncClosed / ncTotal) * 100 : 0,
-          topFailingQuestions: topFailing,
         },
         scoreTrend: trend,
         volumeByTemplate,

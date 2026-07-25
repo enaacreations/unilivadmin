@@ -2,16 +2,16 @@ import * as React from "react";
 import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowDown, ArrowUp, Check, ChevronRight, Eye, Library, Loader2, Lock,
-  Plus, Star, Trash2,
+  ArrowDown, ArrowUp, Check, ChevronLeft, Library, Loader2, Lock,
+  Plus, Trash2,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -26,13 +26,42 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 import { cn } from "@/lib/utils";
 import {
-  EVIDENCE_RULES, NC_SEVERITIES, NON_SCORED_TYPES, QUESTION_TYPES,
+  EVIDENCE_RULES, NON_SCORED_TYPES, QUESTION_TYPES,
   sectionPoints, titleCase,
-  type ApiError, type ApiList, type ApiOne, type AutoNcRule, type BankItem,
-  type BuilderQuestion, type BuilderSection, type NcSeverity, type RatingScale,
-  type TemplateDetail, type VersionDetail,
+  type ApiError, type ApiList, type ApiOne, type BankItem,
+  type BuilderQuestion, type BuilderSection, type QuestionType,
+  type RatingScaleSnapshot, type ScaleOption, type TemplateDetail, type VersionDetail,
 } from "./lib";
-import { DuplicateWarning, LifecycleBadge, PublishDialog, useDuplicatePrompts } from "./shared";
+import { ChoiceOptionsEditor, DuplicateWarning, LifecycleBadge, newOptionId, PublishDialog, useDuplicatePrompts } from "./shared";
+
+/* Template builder (redesign — prototype "Template builder"). Category cards
+ * with inline question rows (reorder, mandatory, weight) and a score-model /
+ * pass-line sidebar. Wording, response type and options are edited in a details
+ * sheet (which surfaces the full question editor) — the same copy-on-insert
+ * question the Question Bank seeds. All builder edits require a DRAFT version. */
+
+const QTYPE_LABEL: Record<QuestionType, string> = {
+  YES_NO_NA: "Yes / No / N/A",
+  PASS_FAIL: "Pass / Fail",
+  RATING: "Rating",
+  SINGLE_CHOICE: "Single choice",
+  MULTI_CHOICE: "Multi choice",
+  NUMERIC: "Numeric",
+  TEXT: "Text",
+  PHOTO: "Photo",
+  SIGNATURE: "Signature",
+  DATE: "Date",
+  INSTRUCTION: "Instruction",
+};
+
+/** Category colour palette for the score-model bar (cycled by section index). */
+const CAT_COLORS = [
+  "bg-accent", "bg-info", "bg-success", "bg-warning",
+  "bg-[#7C5CFF]", "bg-[#E86FA6]", "bg-teal-500", "bg-amber-500",
+];
+
+const STEP =
+  "flex h-6 w-6 items-center justify-center rounded-[7px] border border-border bg-card text-[13px] leading-none text-foreground transition-colors hover:border-accent disabled:cursor-not-allowed disabled:opacity-40";
 
 /**
  * Prompt editor for a builder question with debounced near-duplicate detection.
@@ -66,51 +95,17 @@ function QuestionPromptField({
   );
 }
 
-/* ── Trigger-answer options for the auto-NC editor ───────────────────────── */
-
-function triggerOptions(
-  q: BuilderQuestion,
-  scales: RatingScale[] | undefined,
-): { id: string; label: string }[] | null {
-  switch (q.type) {
-    case "YES_NO_NA":
-      return [
-        { id: "NO", label: "No" },
-        { id: "NA", label: "N/A" },
-      ];
-    case "PASS_FAIL":
-      return [{ id: "FAIL", label: "Fail" }];
-    case "RATING": {
-      const scale =
-        (q.ratingScaleId && scales?.find((s) => s.id === q.ratingScaleId)) ||
-        scales?.find((s) => s.active) ||
-        scales?.[0];
-      if (!scale) return null;
-      return [...scale.options]
-        .sort((a, b) => a.orderIndex - b.orderIndex)
-        .map((o) => ({ id: o.id, label: `${o.label} (${Number(o.multiplierPct)}%)` }));
-    }
-    case "SINGLE_CHOICE":
-    case "MULTI_CHOICE":
-      return (q.optionsJson ?? []).map((o) => ({ id: o.id, label: o.label }));
-    default:
-      return null;
-  }
-}
-
-/* ── Inspector (right pane / mobile sheet) — fully controlled ────────────── */
+/* ── Inspector (question details sheet) — fully controlled ───────────────── */
 
 function Inspector({
   section,
   question,
-  scales,
   readOnly,
   onQuestionChange,
   onSectionChange,
 }: {
   section: BuilderSection | undefined;
   question: BuilderQuestion | undefined;
-  scales: RatingScale[] | undefined;
   readOnly: boolean;
   onQuestionChange: (qid: string, patch: Record<string, unknown>) => void;
   onSectionChange: (sid: string, patch: Record<string, unknown>) => void;
@@ -157,8 +152,6 @@ function Inspector({
   }
 
   const q = question;
-  const autoNc = q.autoNcJson;
-  const options = triggerOptions(q, scales);
   const setQ = (patch: Record<string, unknown>) => onQuestionChange(q.id, patch);
 
   return (
@@ -268,93 +261,17 @@ function Inspector({
         </div>
       )}
 
-      <div className="space-y-3 rounded-md border p-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium">Auto-NC</p>
-            <p className="text-xs text-muted-foreground">
-              Raise a non-conformance automatically on trigger answers.
-            </p>
-          </div>
-          <Switch
-            checked={autoNc != null}
+      {(q.type === "SINGLE_CHOICE" || q.type === "MULTI_CHOICE") && (
+        <div className="space-y-2">
+          <Label>Answer options</Label>
+          <ChoiceOptionsEditor
+            value={q.optionsJson ?? []}
+            multi={q.type === "MULTI_CHOICE"}
             disabled={readOnly}
-            onCheckedChange={(c) =>
-              setQ({
-                autoNcJson: c
-                  ? ({ onAnswers: [], severity: "MAJOR", ownerRule: "AUDITEE_OF_TARGET" } satisfies AutoNcRule)
-                  : null,
-              })
-            }
+            onChange={(opts) => setQ({ optionsJson: opts })}
           />
         </div>
-        {autoNc && (
-          <>
-            <div className="space-y-2">
-              <Label>Severity</Label>
-              <Select
-                value={autoNc.severity}
-                disabled={readOnly}
-                onValueChange={(v) => setQ({ autoNcJson: { ...autoNc, severity: v as NcSeverity } })}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {NC_SEVERITIES.map((s) => (
-                    <SelectItem key={s} value={s}>{titleCase(s)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Trigger answers</Label>
-              {options ? (
-                options.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Define answer options first — nothing to trigger on yet.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {options.map((o) => (
-                      <label key={o.id} className="flex items-center gap-2 text-sm">
-                        <Checkbox
-                          checked={autoNc.onAnswers.includes(o.id)}
-                          disabled={readOnly}
-                          onCheckedChange={(checked) =>
-                            setQ({
-                              autoNcJson: {
-                                ...autoNc,
-                                onAnswers: checked
-                                  ? [...autoNc.onAnswers, o.id]
-                                  : autoNc.onAnswers.filter((a) => a !== o.id),
-                              },
-                            })
-                          }
-                        />
-                        {o.label}
-                      </label>
-                    ))}
-                  </div>
-                )
-              ) : (
-                <Input
-                  value={autoNc.onAnswers.join(", ")}
-                  disabled={readOnly}
-                  placeholder="Comma-separated trigger values"
-                  onChange={(e) =>
-                    setQ({
-                      autoNcJson: {
-                        ...autoNc,
-                        onAnswers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                      },
-                    })
-                  }
-                />
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">Owner: auditee of target.</p>
-          </>
-        )}
-      </div>
+      )}
     </div>
   );
 }
@@ -457,6 +374,109 @@ function BankDialog({
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
 
+/* ── Rating-scale editor (per-template, sidebar card) ────────────────────── */
+
+/**
+ * Edits the version's own rating scale — the options every RATING question
+ * scores on. Local-buffered so intermediate/invalid states (blank label, one
+ * option) don't fire the debounced save; PATCHes only a valid scale (≥2
+ * options, all labelled, ≥1 scored non-N/A).
+ */
+function RatingScaleCard({
+  scale, readOnly, usedByRating, onSave,
+}: {
+  scale: RatingScaleSnapshot;
+  readOnly: boolean;
+  usedByRating: boolean;
+  onSave: (snap: RatingScaleSnapshot) => void;
+}) {
+  const scaleKey = JSON.stringify(scale.options ?? []);
+  const [opts, setOpts] = React.useState<ScaleOption[]>(scale.options ?? []);
+  const savedRef = React.useRef(scaleKey);
+  // Re-sync when the version reloads/forks underneath us.
+  React.useEffect(() => { setOpts(scale.options ?? []); savedRef.current = scaleKey; }, [scaleKey]);
+
+  const valid =
+    opts.length >= 2 && opts.every((o) => o.label.trim()) && opts.some((o) => !o.isExcludedNa);
+
+  React.useEffect(() => {
+    if (readOnly) return;
+    const key = JSON.stringify(opts);
+    if (key === savedRef.current || !valid) return;
+    const t = setTimeout(() => {
+      savedRef.current = key;
+      onSave({ ...scale, options: opts.map((o, i) => ({ ...o, orderIndex: i })) });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [opts, valid, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const patch = (id: string, p: Partial<ScaleOption>) =>
+    setOpts((os) => os.map((o) => (o.id === id ? { ...o, ...p } : o)));
+  const remove = (id: string) => setOpts((os) => os.filter((o) => o.id !== id));
+  const add = () =>
+    setOpts((os) => [...os, { id: newOptionId(), label: "", multiplierPct: 100, isExcludedNa: false, orderIndex: os.length }]);
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Rating scale</div>
+        <p className="mb-2.5 text-[11px] text-muted-foreground">
+          {usedByRating
+            ? "Options every Rating question scores on — score % is the points earned."
+            : "Set the scale your Rating questions will score on (no Rating questions yet)."}
+        </p>
+        <div className="space-y-1.5">
+          {opts.map((o) => (
+            <div key={o.id} className="flex items-center gap-1.5">
+              <Input
+                value={o.label}
+                disabled={readOnly}
+                onChange={(e) => patch(o.id, { label: e.target.value })}
+                placeholder="Label…"
+                className="h-8 flex-1 text-[12.5px]"
+              />
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={o.isExcludedNa ? "" : o.multiplierPct}
+                disabled={readOnly || o.isExcludedNa}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => patch(o.id, { multiplierPct: Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))) })}
+                className="h-8 w-[52px] text-[12.5px]"
+                placeholder="—"
+              />
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={() => patch(o.id, { isExcludedNa: !o.isExcludedNa })}
+                title="Toggle N/A — an excluded option that drops out of the score"
+                className={cn(
+                  "h-8 shrink-0 rounded-[7px] border px-2 text-[10.5px] font-bold transition-colors disabled:opacity-60",
+                  o.isExcludedNa ? "border-accent bg-accent/10 text-accent-strong" : "border-border bg-card text-muted-foreground",
+                )}
+              >N/A</button>
+              {!readOnly && opts.length > 2 && (
+                <button type="button" onClick={() => remove(o.id)} className="shrink-0 text-muted-foreground/60 hover:text-destructive" aria-label="Remove">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {!readOnly && (
+          <Button type="button" variant="outline" size="sm" className="mt-2 h-8" onClick={add}>
+            <Plus className="mr-1 h-3.5 w-3.5" /> Add option
+          </Button>
+        )}
+        {!readOnly && !valid && (
+          <p className="mt-2 text-[11px] font-medium text-warning">Needs ≥2 labelled options, at least one scored (non-N/A).</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function TemplateBuilder() {
   const params = useParams<{ id: string; vid: string }>();
   const { toast } = useToast();
@@ -477,11 +497,6 @@ export default function TemplateBuilder() {
     queryFn: () => apiFetch<ApiOne<TemplateDetail>>(`/audit/templates/${params.id}`),
     enabled: Boolean(params.id),
   });
-  const scalesQuery = useQuery({
-    queryKey: ["/audit/admin/rating-scales"],
-    queryFn: () => apiFetch<ApiList<RatingScale>>("/audit/admin/rating-scales"),
-    retry: false,
-  });
 
   const version = versionQuery.data?.data;
   const template = templateQuery.data?.data;
@@ -489,21 +504,36 @@ export default function TemplateBuilder() {
   const [forcedReadOnly, setForcedReadOnly] = React.useState(false);
   const readOnly = forcedReadOnly || (version != null && version.lifecycle !== "DRAFT");
 
+  // Template-level details (name / category / description) are edited right here
+  // in the builder — seeded once the template loads, saved on blur.
+  const [details, setDetails] = React.useState<{ name: string; category: string; description: string } | null>(null);
+  React.useEffect(() => {
+    if (template) setDetails((d) => d ?? { name: template.name, category: template.category ?? "", description: template.description ?? "" });
+  }, [template]);
+  const metaMut = useMutation({
+    mutationFn: (m: { name: string; category: string; description: string }) =>
+      apiFetch(`/audit/templates/${params.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: m.name.trim(), category: m.category.trim() || null, description: m.description.trim() || null }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/audit/templates", params.id] });
+      qc.invalidateQueries({ queryKey: ["/audit/templates"] });
+    },
+    onError: (e: Error) => toast({ title: e.message || "Couldn't save details", variant: "destructive" }),
+  });
+  const saveDetails = () => { if (details && details.name.trim()) metaMut.mutate(details); };
+
   const [selectedSectionId, setSelectedSectionId] = React.useState<string | null>(null);
   const [selectedQuestionId, setSelectedQuestionId] = React.useState<string | null>(null);
   const [saveState, setSaveState] = React.useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [addSectionTitle, setAddSectionTitle] = React.useState("");
   const [bankOpen, setBankOpen] = React.useState(false);
   const [publishOpen, setPublishOpen] = React.useState(false);
   const [sheetOpen, setSheetOpen] = React.useState(false);
-  // The desktop inspector pane appears at lg (1024px+); below that the
-  // inspector opens as a Sheet. Gate opening so the Sheet's overlay never
-  // dims a desktop viewport where the pane is already visible.
-  const openInspectorSheet = () => {
-    if (window.matchMedia("(max-width: 1023px)").matches) setSheetOpen(true);
-  };
   const [deleteQuestionId, setDeleteQuestionId] = React.useState<string | null>(null);
   const [deleteSectionId, setDeleteSectionId] = React.useState<string | null>(null);
+
+  const openInspector = () => setSheetOpen(true);
 
   const sections = React.useMemo(() => {
     const list = [...(version?.sections ?? [])].sort((a, b) => a.orderIndex - b.orderIndex);
@@ -626,7 +656,6 @@ export default function TemplateBuilder() {
         body: JSON.stringify({ templateVersionId: params.vid, title }),
       }),
     onSuccess: (res) => {
-      setAddSectionTitle("");
       setSelectedSectionId(res.data.id);
       setSelectedQuestionId(null);
       invalidateVersion();
@@ -666,7 +695,7 @@ export default function TemplateBuilder() {
     onSuccess: (res, vars) => {
       if (!vars.body["bankItemId"]) {
         setSelectedQuestionId(res.data.id);
-        openInspectorSheet();
+        openInspector();
       } else {
         toast({ title: "Question inserted" });
       }
@@ -695,6 +724,33 @@ export default function TemplateBuilder() {
     onError: onStructuralError,
   });
 
+  // Pass line lives on the draft version (PATCH passThresholdPct).
+  const passMut = useMutation({
+    mutationFn: (pct: number) =>
+      apiFetch(`/audit/templates/versions/${params.vid}`, {
+        method: "PATCH",
+        body: JSON.stringify({ passThresholdPct: pct }),
+      }),
+    onError: onStructuralError,
+  });
+
+  // The version's own rating scale (PATCH ratingScaleSnapshot).
+  const scaleMut = useMutation({
+    mutationFn: (snap: RatingScaleSnapshot) =>
+      apiFetch(`/audit/templates/versions/${params.vid}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ratingScaleSnapshot: snap }),
+      }),
+    onError: onStructuralError,
+  });
+  const saveScale = React.useCallback(
+    (snap: RatingScaleSnapshot) => {
+      patchCache((v) => ({ ...v, ratingScaleSnapshot: snap }));
+      scaleMut.mutate(snap);
+    },
+    [patchCache, scaleMut],
+  );
+
   const moveSection = (sid: string, dir: -1 | 1) => {
     const ids = sections.map((s) => s.id);
     const i = ids.indexOf(sid);
@@ -708,9 +764,8 @@ export default function TemplateBuilder() {
     reorderSectionsMut.mutate(ids);
   };
 
-  const moveQuestion = (qid: string, dir: -1 | 1) => {
-    if (!activeSection) return;
-    const ids = activeSection.questions.map((q) => q.id);
+  const moveQuestion = (section: BuilderSection, qid: string, dir: -1 | 1) => {
+    const ids = section.questions.map((q) => q.id);
     const i = ids.indexOf(qid);
     const j = i + dir;
     if (i < 0 || j < 0 || j >= ids.length) return;
@@ -718,22 +773,41 @@ export default function TemplateBuilder() {
     patchCache((v) => ({
       ...v,
       sections: v.sections.map((s) =>
-        s.id !== activeSection.id
+        s.id !== section.id
           ? s
           : { ...s, questions: s.questions.map((q) => ({ ...q, orderIndex: ids.indexOf(q.id) })) },
       ),
     }));
-    reorderQuestionsMut.mutate({ sid: activeSection.id, orderedIds: ids });
+    reorderQuestionsMut.mutate({ sid: section.id, orderedIds: ids });
+  };
+
+  const stepWeight = (q: BuilderQuestion, delta: number) =>
+    onQuestionChange(q.id, { weight: Math.max(0, q.weight + delta) });
+
+  const openQuestion = (s: BuilderSection, q: BuilderQuestion) => {
+    setSelectedSectionId(s.id);
+    setSelectedQuestionId(q.id);
+    openInspector();
+  };
+
+  const addBlank = (s: BuilderSection) => {
+    setSelectedSectionId(s.id);
+    addQuestionMut.mutate({ sid: s.id, body: { prompt: "New question", type: "RATING", weight: 5 } });
+  };
+
+  const openBank = (s: BuilderSection) => {
+    setSelectedSectionId(s.id);
+    setBankOpen(true);
   };
 
   /* ── Render ────────────────────────────────────────────────────────────── */
 
   if (versionQuery.isLoading) {
     return (
-      <div className="space-y-6">
-        <Skeleton className="h-16 w-full" />
-        <div className="grid gap-4 lg:grid-cols-[280px_1fr_340px]">
-          <Skeleton className="h-96" /><Skeleton className="h-96" /><Skeleton className="h-96" />
+      <div className="space-y-4">
+        <Skeleton className="h-14 w-full" />
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <Skeleton className="h-96" /><Skeleton className="h-96" />
         </div>
       </div>
     );
@@ -748,297 +822,284 @@ export default function TemplateBuilder() {
   }
 
   const totalPoints = sections.reduce((sum, s) => sum + sectionPoints(s.questions), 0);
+  const share = (s: BuilderSection) =>
+    totalPoints > 0 ? Math.round((sectionPoints(s.questions) / totalPoints) * 100) : 0;
+  const passThreshold =
+    version.passThresholdPct != null ? Math.round(Number(version.passThresholdPct)) : 75;
 
-  const inspector = (
-    <Inspector
-      section={activeSection}
-      question={selectedQuestion}
-      scales={scalesQuery.data?.data}
-      readOnly={readOnly}
-      onQuestionChange={onQuestionChange}
-      onSectionChange={onSectionChange}
-    />
-  );
+  const stepPass = (delta: number) => {
+    if (readOnly) return;
+    const next = Math.min(100, Math.max(0, passThreshold + delta));
+    if (next === passThreshold) return;
+    patchCache((v) => ({ ...v, passThresholdPct: String(next) }));
+    passMut.mutate(next);
+  };
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title={template ? `${template.name} — v${version.versionNo}` : `v${version.versionNo}`}
-        breadcrumbs={[
-          { label: "Audits" },
-          { label: "Templates", href: "/audits/templates" },
-          { label: template?.name ?? "Template", href: `/audits/templates/${params.id}` },
-          { label: `v${version.versionNo} builder` },
-        ]}
-        action={
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="mr-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
-              {saveState === "saving" && (<><Loader2 className="h-3 w-3 animate-spin" /> Saving…</>)}
-              {saveState === "saved" && (<><Check className="h-3 w-3 text-emerald-600" /> Saved</>)}
-              {saveState === "error" && <span className="text-destructive">Save failed</span>}
+    <div className="animate-fade-up space-y-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Button asChild variant="outline" size="icon" className="h-9 w-9 shrink-0">
+          <Link href={`/audits/templates/${params.id}`} aria-label="Back to template">
+            <ChevronLeft className="h-4 w-4" />
+          </Link>
+        </Button>
+        <div className="min-w-[220px] flex-1">
+          <h1 className="flex items-center gap-2 font-display text-2xl font-bold tracking-[-0.012em]">
+            {template?.name ?? "Template"}
+            <span className="font-mono text-[14px] font-semibold text-muted-foreground">
+              v{version.versionNo}{version.lifecycle === "DRAFT" ? " draft" : ""}
             </span>
-            <LifecycleBadge lifecycle={version.lifecycle} />
-            <Button variant="outline" size="sm" onClick={() => setBankOpen(true)} disabled={readOnly || !activeSection}>
-              <Library className="mr-1 h-4 w-4" /> Insert from bank
-            </Button>
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/audits/templates/${params.id}/versions/${params.vid}/preview`}>
-                <Eye className="mr-1 h-4 w-4" /> Preview
-              </Link>
-            </Button>
-            {version.lifecycle === "DRAFT" && !forcedReadOnly && (
-              <Button size="sm" onClick={() => setPublishOpen(true)}>Publish</Button>
-            )}
-          </div>
-        }
-      />
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Order questions, set mandatory flags and weightage — wording &amp; response types live in the Question Bank.
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+          {saveState === "saving" && (<><Loader2 className="h-3 w-3 animate-spin" /> Saving…</>)}
+          {saveState === "saved" && (<><Check className="h-3 w-3 text-success" /> Saved</>)}
+          {saveState === "error" && <span className="text-destructive">Save failed</span>}
+        </span>
+        <LifecycleBadge lifecycle={version.lifecycle} />
+        {version.lifecycle === "DRAFT" && !forcedReadOnly && (
+          <Button size="sm" onClick={() => setPublishOpen(true)}>Publish v{version.versionNo}</Button>
+        )}
+      </div>
 
-      {readOnly && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+      {!readOnly && details && (
+        <Card>
+          <CardContent className="grid gap-3 p-4 md:grid-cols-3">
+            <div>
+              <Label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Name</Label>
+              <Input value={details.name} onChange={(e) => setDetails((d) => (d ? { ...d, name: e.target.value } : d))} onBlur={saveDetails} placeholder="Template name" />
+            </div>
+            <div>
+              <Label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Category</Label>
+              <Input value={details.category} onChange={(e) => setDetails((d) => (d ? { ...d, category: e.target.value } : d))} onBlur={saveDetails} placeholder="Optional" />
+            </div>
+            <div>
+              <Label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Description</Label>
+              <Input value={details.description} onChange={(e) => setDetails((d) => (d ? { ...d, description: e.target.value } : d))} onBlur={saveDetails} placeholder="Optional" />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {readOnly ? (
+        <div className="flex items-center gap-2 rounded-[11px] border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm text-warning">
           <Lock className="h-4 w-4 shrink-0" />
           v{version.versionNo} — {titleCase(version.lifecycle)}, immutable. Create a
           new draft from the template's Versions tab to make changes.
         </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {[
+            "Create categories to group the checklist",
+            "Add questions from the Question Bank",
+            "Set order, mandatory flags & weights",
+          ].map((t, i) => (
+            <span key={t} className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-[12px] text-foreground">
+              <strong className="text-accent-strong">{i + 1}</strong> {t}
+            </span>
+          ))}
+        </div>
       )}
 
-      {/* Mobile: section picker */}
-      <div className="lg:hidden">
-        <Select
-          value={activeSection?.id ?? ""}
-          onValueChange={(v) => { setSelectedSectionId(v); setSelectedQuestionId(null); }}
-        >
-          <SelectTrigger><SelectValue placeholder="Pick a section" /></SelectTrigger>
-          <SelectContent>
-            {sections.map((s) => (
-              <SelectItem key={s.id} value={s.id}>
-                {s.title} ({s.questions.length})
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)_340px]">
-        {/* Left rail — sections */}
-        <div className="hidden self-start rounded-md border bg-card lg:block">
-          <p className="border-b px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Sections
-          </p>
-          <div className="max-h-[60vh] overflow-y-auto p-2">
-            {sections.map((s, i) => (
-              <div
-                key={s.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => { setSelectedSectionId(s.id); setSelectedQuestionId(null); }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") { setSelectedSectionId(s.id); setSelectedQuestionId(null); }
-                }}
-                className={cn(
-                  "group mb-1 flex cursor-pointer items-center gap-1 rounded-md px-2 py-2 text-sm",
-                  activeSection?.id === s.id ? "bg-primary/10 font-medium" : "hover:bg-muted",
-                )}
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate">{s.title}</p>
-                  <p className="text-xs text-muted-foreground tabular-nums">
-                    {s.questions.length} question{s.questions.length === 1 ? "" : "s"} · Σ {sectionPoints(s.questions)} pts
-                  </p>
-                </div>
-                {!readOnly && (
-                  <div className="flex flex-col opacity-0 transition-opacity group-hover:opacity-100">
-                    <Button
-                      variant="ghost" size="sm" className="h-5 w-5 p-0"
-                      disabled={i === 0 || reorderSectionsMut.isPending}
-                      onClick={(e) => { e.stopPropagation(); moveSection(s.id, -1); }}
-                    >
-                      <ArrowUp className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost" size="sm" className="h-5 w-5 p-0"
-                      disabled={i === sections.length - 1 || reorderSectionsMut.isPending}
-                      onClick={(e) => { e.stopPropagation(); moveSection(s.id, 1); }}
-                    >
-                      <ArrowDown className="h-3 w-3" />
-                    </Button>
-                  </div>
-                )}
-                {!readOnly && (
-                  <Button
-                    variant="ghost" size="sm"
-                    className="h-6 w-6 p-0 opacity-0 transition-opacity group-hover:opacity-100"
-                    onClick={(e) => { e.stopPropagation(); setDeleteSectionId(s.id); }}
-                  >
-                    <Trash2 className="h-3 w-3 text-destructive" />
-                  </Button>
-                )}
-              </div>
-            ))}
-            {sections.length === 0 && (
-              <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-                No sections yet.
-              </p>
-            )}
-          </div>
-          {!readOnly && (
-            <div className="flex gap-2 border-t p-2">
-              <Input
-                value={addSectionTitle}
-                onChange={(e) => setAddSectionTitle(e.target.value)}
-                placeholder="New section title"
-                className="h-8 text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && addSectionTitle.trim()) {
-                    addSectionMut.mutate(addSectionTitle.trim());
-                  }
-                }}
-              />
-              <Button
-                size="sm" variant="outline" className="h-8"
-                disabled={!addSectionTitle.trim() || addSectionMut.isPending}
-                onClick={() => addSectionMut.mutate(addSectionTitle.trim())}
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-        </div>
-
-        {/* Center — questions of the active section */}
-        <div className="min-w-0 space-y-2">
-          {activeSection ? (
-            <>
-              <div className="flex items-center justify-between">
-                <h2 className="flex items-center gap-1 text-sm font-medium">
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                  {activeSection.title}
-                </h2>
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  Σ {sectionPoints(activeSection.questions)} pts
-                </span>
-              </div>
-              {activeSection.questions.map((q, i) => (
-                <div
-                  key={q.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => { setSelectedQuestionId(q.id); openInspectorSheet(); }}
-                  onKeyDown={(e) => { if (e.key === "Enter") { setSelectedQuestionId(q.id); openInspectorSheet(); } }}
-                  className={cn(
-                    "group flex cursor-pointer items-start justify-between gap-3 rounded-md border bg-card p-3 transition-colors",
-                    selectedQuestionId === q.id
-                      ? "border-primary ring-1 ring-primary/30"
-                      : "hover:bg-muted/50",
-                  )}
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">
-                      {q.mandatory && (
-                        <Star className="mr-1 inline h-3.5 w-3.5 fill-amber-400 text-amber-400" aria-label="Mandatory" />
-                      )}
-                      {q.prompt || <span className="text-muted-foreground">Untitled question</span>}
-                    </p>
-                    {q.helpText && (
-                      <p className="mt-0.5 truncate text-xs text-muted-foreground">{q.helpText}</p>
-                    )}
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      <Badge variant="outline">{titleCase(q.type)}</Badge>
-                      {NON_SCORED_TYPES.has(q.type) ? (
-                        <Badge variant="secondary">Not scored</Badge>
-                      ) : (
-                        <Badge variant="secondary" className="tabular-nums">{q.weight} pts</Badge>
-                      )}
-                      {q.evidenceRule !== "NONE" && (
-                        <Badge variant="outline">📎 {titleCase(q.evidenceRule)}</Badge>
-                      )}
-                      {q.autoNcJson && (
-                        <Badge variant="destructive">Auto-NC · {titleCase(q.autoNcJson.severity)}</Badge>
-                      )}
-                    </div>
-                  </div>
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        {/* Left — category cards */}
+        <div className="min-w-0 space-y-3">
+          {sections.map((s, si) => (
+            <Card key={s.id}>
+              <CardContent className="p-4">
+                <div className="mb-2 flex items-center gap-2">
                   {!readOnly && (
-                    <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
-                      <Button
-                        variant="ghost" size="sm" className="h-6 w-6 p-0"
-                        disabled={i === 0 || reorderQuestionsMut.isPending}
-                        onClick={(e) => { e.stopPropagation(); moveQuestion(q.id, -1); }}
-                      >
-                        <ArrowUp className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost" size="sm" className="h-6 w-6 p-0"
-                        disabled={i === activeSection.questions.length - 1 || reorderQuestionsMut.isPending}
-                        onClick={(e) => { e.stopPropagation(); moveQuestion(q.id, 1); }}
-                      >
-                        <ArrowDown className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost" size="sm" className="h-6 w-6 p-0"
-                        onClick={(e) => { e.stopPropagation(); setDeleteQuestionId(q.id); }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      </Button>
-                    </div>
+                    <span className="flex flex-col">
+                      <button className={cn(STEP, "h-4 w-5 border-none bg-transparent text-muted-foreground hover:text-accent")} disabled={si === 0 || reorderSectionsMut.isPending} onClick={() => moveSection(s.id, -1)}><ArrowUp className="h-3 w-3" /></button>
+                      <button className={cn(STEP, "h-4 w-5 border-none bg-transparent text-muted-foreground hover:text-accent")} disabled={si === sections.length - 1 || reorderSectionsMut.isPending} onClick={() => moveSection(s.id, 1)}><ArrowDown className="h-3 w-3" /></button>
+                    </span>
                   )}
+                  <input
+                    value={s.title}
+                    disabled={readOnly}
+                    onChange={(e) => onSectionChange(s.id, { title: e.target.value })}
+                    placeholder="Category name…"
+                    className="min-w-0 flex-1 rounded-[7px] bg-transparent px-1.5 py-1 text-[13px] font-bold uppercase tracking-[0.05em] text-accent-strong outline-none focus:bg-background focus:ring-1 focus:ring-border disabled:opacity-100"
+                  />
+                  <span className="shrink-0 rounded-full bg-muted px-2 py-[2px] font-mono text-[11px] font-bold tabular-nums text-foreground">{share(s)}%</span>
                 </div>
-              ))}
-              {activeSection.questions.length === 0 && (
-                <p className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">
-                  No questions in this section yet.
-                </p>
-              )}
-              {!readOnly && (
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline" size="sm"
-                    disabled={addQuestionMut.isPending}
-                    onClick={() =>
-                      addQuestionMut.mutate({
-                        sid: activeSection.id,
-                        body: { prompt: "New question", type: "RATING", weight: 5 },
-                      })
-                    }
-                  >
-                    <Plus className="mr-1 h-4 w-4" /> Add question
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setBankOpen(true)}>
-                    <Library className="mr-1 h-4 w-4" /> Insert from bank
-                  </Button>
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="rounded-md border border-dashed py-16 text-center text-sm text-muted-foreground">
-              Add a section to start building.
+
+                {s.questions.map((q, qi) => {
+                  const scored = !NON_SCORED_TYPES.has(q.type);
+                  return (
+                    <div key={q.id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-dashed border-border py-2 last:border-0">
+                      {!readOnly && (
+                        <span className="flex flex-col">
+                          <button className={cn(STEP, "h-4 w-4 border-none bg-transparent text-muted-foreground/70 hover:text-accent")} disabled={qi === 0 || reorderQuestionsMut.isPending} onClick={() => moveQuestion(s, q.id, -1)}><ArrowUp className="h-3 w-3" /></button>
+                          <button className={cn(STEP, "h-4 w-4 border-none bg-transparent text-muted-foreground/70 hover:text-accent")} disabled={qi === s.questions.length - 1 || reorderQuestionsMut.isPending} onClick={() => moveQuestion(s, q.id, 1)}><ArrowDown className="h-3 w-3" /></button>
+                        </span>
+                      )}
+                      <span className="w-4 shrink-0 font-mono text-[10.5px] text-muted-foreground/70">{qi + 1}</span>
+                      <button
+                        onClick={() => openQuestion(s, q)}
+                        className="min-w-[130px] flex-1 truncate py-0.5 text-left text-[13px] font-semibold text-foreground hover:text-accent-strong"
+                        title="Edit wording, response type & options"
+                      >
+                        {q.prompt || <span className="text-muted-foreground">Untitled question</span>}
+                      </button>
+                      <button
+                        onClick={() => openQuestion(s, q)}
+                        className="shrink-0 rounded-full border border-border bg-background px-2.5 py-1 text-[10.5px] font-bold text-muted-foreground hover:border-accent"
+                        title="Response type — edit in details"
+                      >
+                        {QTYPE_LABEL[q.type]}
+                      </button>
+                      <button
+                        onClick={() => onQuestionChange(q.id, { mandatory: !q.mandatory })}
+                        disabled={readOnly}
+                        title="Mandatory — must be answered before submit"
+                        className={cn(
+                          "shrink-0 rounded-[8px] border px-2 py-1 text-[10.5px] font-bold transition-colors disabled:opacity-60",
+                          q.mandatory ? "border-accent bg-accent/10 text-accent-strong" : "border-border bg-card text-muted-foreground",
+                        )}
+                      >
+                        {q.mandatory ? "★ Required" : "Optional"}
+                      </button>
+                      {scored ? (
+                        <span className="flex shrink-0 items-center gap-1">
+                          <span className="text-[9px] font-bold uppercase tracking-[0.05em] text-muted-foreground/70">wt</span>
+                          <button className={cn(STEP, "h-[22px] w-[22px]")} disabled={readOnly} onClick={() => stepWeight(q, -1)}>−</button>
+                          <span className="w-6 text-center font-mono text-[12px] font-bold tabular-nums">{q.weight}</span>
+                          <button className={cn(STEP, "h-[22px] w-[22px]")} disabled={readOnly} onClick={() => stepWeight(q, 1)}>+</button>
+                        </span>
+                      ) : (
+                        <span className="shrink-0 text-[10px] font-semibold text-muted-foreground">Not scored</span>
+                      )}
+                      {!readOnly && (
+                        <button className="shrink-0 text-muted-foreground/60 hover:text-destructive" onClick={() => setDeleteQuestionId(q.id)} title="Remove question">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {s.questions.length === 0 && (
+                  <p className="py-4 text-center text-[12.5px] text-muted-foreground">No questions yet — add one below.</p>
+                )}
+
+                {!readOnly && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={addQuestionMut.isPending} onClick={() => openBank(s)}>
+                      <Library className="mr-1 h-4 w-4" /> Add from bank
+                    </Button>
+                    <Button variant="ghost" size="sm" disabled={addQuestionMut.isPending} onClick={() => addBlank(s)}>
+                      <Plus className="mr-1 h-4 w-4" /> Blank question
+                    </Button>
+                    <span className="flex-1" />
+                    <button className="text-[11.5px] font-semibold text-muted-foreground hover:text-destructive" onClick={() => setDeleteSectionId(s.id)}>
+                      Delete category
+                    </button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+
+          {!readOnly && (
+            <button
+              onClick={() => addSectionMut.mutate("New category")}
+              disabled={addSectionMut.isPending}
+              className="w-full rounded-[14px] border-[1.5px] border-dashed border-border bg-transparent py-3.5 text-[13.5px] font-bold text-muted-foreground transition-colors hover:border-accent hover:text-accent-strong disabled:opacity-60"
+            >
+              ＋ Add category
+            </button>
+          )}
+
+          {sections.length === 0 && readOnly && (
+            <p className="rounded-[14px] border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
+              This version has no sections.
             </p>
           )}
         </div>
 
-        {/* Right — inspector (desktop) */}
-        <div className="hidden self-start rounded-md border bg-card lg:block">
-          {inspector}
+        {/* Right — score model + pass line */}
+        <div className="space-y-3.5 lg:sticky lg:top-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Score model</div>
+              {totalPoints === 0 ? (
+                <p className="py-3 text-center text-[12.5px] text-muted-foreground">Add scored questions to see the weighting.</p>
+              ) : (
+                <>
+                  <div className="mb-2.5 flex h-3 gap-0.5 overflow-hidden rounded-full">
+                    {sections.filter((s) => sectionPoints(s.questions) > 0).map((s, i) => (
+                      <span key={s.id} className={cn("h-full", CAT_COLORS[i % CAT_COLORS.length])} style={{ width: `${share(s)}%` }} />
+                    ))}
+                  </div>
+                  {sections.map((s, i) => (
+                    <div key={s.id} className="flex items-center gap-2 py-[3px] text-[11.5px]">
+                      <span className={cn("h-2.5 w-2.5 rounded-[3px]", CAT_COLORS[i % CAT_COLORS.length])} />
+                      <span className="min-w-0 flex-1 truncate text-foreground">{s.title || "Untitled"}</span>
+                      <span className="font-mono font-bold tabular-nums text-foreground">{share(s)}%</span>
+                    </div>
+                  ))}
+                  <div className="mt-2 flex border-t border-dashed border-border pt-2 text-[12px] font-bold">
+                    <span className="flex-1">Total possible</span>
+                    <span className="font-mono tabular-nums">{totalPoints} pts</span>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Pass line</div>
+              <div className="flex items-center gap-2.5">
+                <div className="flex items-baseline gap-1">
+                  <span className="font-display text-[26px] font-extrabold text-success">{passThreshold}</span>
+                  <span className="text-[11.5px] text-muted-foreground">/100 to pass</span>
+                </div>
+                <span className="flex-1" />
+                {!readOnly && (
+                  <>
+                    <button className={STEP} disabled={passMut.isPending} onClick={() => stepPass(-1)}>−</button>
+                    <button className={STEP} disabled={passMut.isPending} onClick={() => stepPass(1)}>+</button>
+                  </>
+                )}
+              </div>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Bands: 90+ Excellent · {passThreshold}–89 Good · below {passThreshold} Fail
+              </p>
+            </CardContent>
+          </Card>
+
+          <RatingScaleCard
+            scale={version.ratingScaleSnapshot ?? { name: "Rating scale", options: [] }}
+            readOnly={readOnly}
+            usedByRating={sections.some((s) => s.questions.some((q) => q.type === "RATING"))}
+            onSave={saveScale}
+          />
+
+          <div className="rounded-[11px] bg-warning/10 px-3 py-2.5 text-[11.5px] font-semibold text-warning">
+            Every scored question needs a weight above 0 to publish. Published versions are immutable — historical audits keep the version they were scored with.
+          </div>
         </div>
       </div>
 
-      {/* Sticky footer — live points */}
-      <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center gap-x-5 gap-y-1 rounded-md border bg-card/95 px-4 py-2 text-sm shadow-sm backdrop-blur">
-        {sections.map((s) => (
-          <span key={s.id} className="text-muted-foreground">
-            {s.title}: <span className="font-medium tabular-nums text-foreground">{sectionPoints(s.questions)}</span>
-          </span>
-        ))}
-        <span className="ml-auto font-medium">
-          Total possible: <span className="tabular-nums">{totalPoints} pts</span>
-        </span>
-      </div>
-
-      {/* Mobile inspector sheet */}
+      {/* Question details sheet (all viewports) */}
       <Sheet open={sheetOpen && selectedQuestion != null} onOpenChange={setSheetOpen}>
-        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md lg:hidden">
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
           <SheetHeader>
             <SheetTitle className="font-display">Question details</SheetTitle>
           </SheetHeader>
-          {inspector}
+          <Inspector
+            section={activeSection}
+            question={selectedQuestion}
+            readOnly={readOnly}
+            onQuestionChange={onQuestionChange}
+            onSectionChange={onSectionChange}
+          />
         </SheetContent>
       </Sheet>
 
@@ -1072,8 +1133,8 @@ export default function TemplateBuilder() {
       <ConfirmDialog
         open={deleteSectionId != null}
         onOpenChange={(o) => { if (!o) setDeleteSectionId(null); }}
-        title="Delete section?"
-        description="The section and all its questions are removed from the draft. This cannot be undone."
+        title="Delete category?"
+        description="The category and all its questions are removed from the draft. This cannot be undone."
         onConfirm={() => deleteSectionMut.mutate(deleteSectionId!)}
         isConfirming={deleteSectionMut.isPending}
         confirmLabel="Delete"
