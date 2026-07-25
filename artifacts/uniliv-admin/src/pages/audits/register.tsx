@@ -7,18 +7,17 @@ import {
   UserCog,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import NewAudit from "./new-audit";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DatePicker } from "@/components/ui/date-picker";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { FormModal } from "@/components/ui/form-modal";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -38,15 +37,15 @@ import {
   type ApiError, type ApiList, type ApiOne, type ApiPage, type AuditRow, type AuditState, type AuditType,
 } from "./lib";
 import { TypeBadge } from "./shared";
-import { NcBoardPanel } from "./nc-board";
 
 const ALL = "__all__";
 const PAGE_SIZES = [20, 50, 100];
 type Segment = "all" | "active" | "completed";
 
 /** Audit Register (FRD-REG-01/02/03) — server-paginated, scoped list of every audit. */
-function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
+export function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
+  const [newAuditOpen, setNewAuditOpen] = React.useState(false);
   const { toast } = useToast();
   const qc = useQueryClient();
   const { can } = usePermissions();
@@ -61,11 +60,6 @@ function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
   const [to, setTo] = React.useState("");
   const [page, setPage] = React.useState(0); // zero-based
   const [pageSize, setPageSize] = React.useState(20);
-  const [deleteTarget, setDeleteTarget] = React.useState<AuditRow | null>(null);
-  const [reassignOpen, setReassignOpen] = React.useState(false);
-  const [reassignFrom, setReassignFrom] = React.useState("");
-  const [reassignTo, setReassignTo] = React.useState("");
-  const [reassignReason, setReassignReason] = React.useState("");
 
   const canBulkReassign = can("AUDIT_SCHEDULES", "edit");
 
@@ -109,69 +103,12 @@ function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
   const rangeFrom = total === 0 ? 0 : page * pageSize + 1;
   const rangeTo = Math.min(total, (page + 1) * pageSize);
 
-  const nudgeMut = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch(`/audits/${id}/nudge`, { method: "POST", body: JSON.stringify({}) }),
-    onSuccess: () => toast({ title: "Nudge sent to the assignee" }),
-    onError: (e: ApiError) =>
-      toast({
-        title: e.status === 429 ? "Rate limited" : "Nudge failed",
-        description: e.message,
-        variant: "destructive",
-      }),
-  });
-
-  const cancelMut = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch(`/audits/${id}/cancel`, {
-        method: "POST",
-        body: JSON.stringify({ reason: "Deleted from register" }),
-      }),
-    onSuccess: () => {
-      toast({ title: "Audit deleted" });
-      setDeleteTarget(null);
-      qc.invalidateQueries({ queryKey: ["/audits"] });
-    },
-    onError: (e: Error) => {
-      setDeleteTarget(null);
-      toast({ title: e.message || "Delete failed", variant: "destructive" });
-    },
-  });
-
-  const usersQuery = useQuery({
-    queryKey: ["/users", "bulk-reassign"],
-    queryFn: () =>
-      apiFetch<ApiList<{ id: string; name: string; role: string }>>("/users?limit=100"),
-    enabled: reassignOpen,
-  });
-
-  const bulkReassignMut = useMutation({
-    mutationFn: () =>
-      apiFetch<ApiOne<{ reassigned: number }>>("/audits/bulk-reassign", {
-        method: "POST",
-        body: JSON.stringify({
-          fromAssigneeId: reassignFrom,
-          toAssigneeId: reassignTo,
-          ...(reassignReason.trim() ? { reason: reassignReason.trim() } : {}),
-        }),
-      }),
-    onSuccess: (res) => {
-      toast({ title: `${res.data.reassigned} reassigned` });
-      setReassignOpen(false);
-      setReassignFrom(""); setReassignTo(""); setReassignReason("");
-      qc.invalidateQueries({ queryKey: ["/audits"] });
-    },
-    onError: (e: Error) => toast({ title: e.message || "Bulk reassign failed", variant: "destructive" }),
-  });
-
   const hasFilters =
     auditType !== ALL || states.length > 0 || overdueOnly || !!search || !!from || !!to;
   const resetFilters = () => {
     setAuditType(ALL); setStates([]); setOverdueOnly(false);
     setSearchInput(""); setSearch(""); setFrom(""); setTo(""); setPage(0);
   };
-
-  const canDelete = can("AUDIT_EXECUTION", "delete");
 
   const actions = (
     <div className="flex items-center gap-2">
@@ -184,18 +121,21 @@ function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
         <RefreshCw className={`mr-2 h-4 w-4 ${listQuery.isFetching ? "animate-spin" : ""}`} />
         Refresh
       </Button>
-      {canBulkReassign && (
-        <Button variant="outline" size="sm" onClick={() => setReassignOpen(true)}>
-          <UserCog className="mr-2 h-4 w-4" /> Bulk reassign
-        </Button>
-      )}
       {can("AUDIT_EXECUTION", "create") && (
-        <Button asChild size="sm">
-          <Link href="/audits/new">
-            <Plus className="mr-2 h-4 w-4" /> New Audit
-          </Link>
+        <Button size="sm" onClick={() => setNewAuditOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" /> New Audit
         </Button>
       )}
+      <Dialog open={newAuditOpen} onOpenChange={setNewAuditOpen}>
+        <DialogContent aria-describedby={undefined} className="flex max-h-[90vh] max-w-[880px] flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border px-5 py-3 text-left">
+            <DialogTitle className="text-base">New Audit</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <NewAudit inDialog onDone={(id) => { setNewAuditOpen(false); if (id) navigate(`/audits/${id}`); }} />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 
@@ -208,9 +148,9 @@ function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
         </div>
       ) : (
       <PageHeader
-        title="All Audits"
+        title="Previous Audits"
         subtitle="Every audit in your scope — search, segments and filters."
-        breadcrumbs={[{ label: "Audits" }, { label: "All Audits" }]}
+        breadcrumbs={[{ label: "Audits" }, { label: "Review Queue", href: "/audits/review" }, { label: "Previous audits" }]}
         action={actions}
       />
       )}
@@ -443,25 +383,6 @@ function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
                             <DropdownMenuItem onClick={() => navigate(`/audits/${r.id}`)}>
                               <Eye className="mr-2 h-4 w-4" /> View
                             </DropdownMenuItem>
-                            {!completed && (
-                              <DropdownMenuItem
-                                disabled={nudgeMut.isPending}
-                                onClick={() => nudgeMut.mutate(r.id)}
-                              >
-                                <BellRing className="mr-2 h-4 w-4" /> Nudge assignee
-                              </DropdownMenuItem>
-                            )}
-                            {pending && canDelete && (
-                              <>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  className="text-destructive focus:text-destructive"
-                                  onClick={() => setDeleteTarget(r)}
-                                >
-                                  <Trash2 className="mr-2 h-4 w-4" /> Delete
-                                </DropdownMenuItem>
-                              </>
-                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </TableCell>
@@ -522,106 +443,10 @@ function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
         </div>
       </div>
 
-      <ConfirmDialog
-        open={deleteTarget != null}
-        onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}
-        title="Delete audit?"
-        description={`${deleteTarget?.ticketNo ?? ""} — "${deleteTarget?.title ?? ""}" will be cancelled. Only pending audits can be deleted; this cannot be undone.`}
-        onConfirm={() => cancelMut.mutate(deleteTarget!.id)}
-        isConfirming={cancelMut.isPending}
-        confirmLabel="Delete"
-      />
-
-      {/* Bulk reassign (moves every open audit from one auditor to another). */}
-      <FormModal
-        open={reassignOpen}
-        onOpenChange={(o) => {
-          setReassignOpen(o);
-          if (!o) { setReassignFrom(""); setReassignTo(""); setReassignReason(""); }
-        }}
-        title="Bulk reassign audits"
-        onSave={() => { if (reassignFrom && reassignTo && reassignFrom !== reassignTo) bulkReassignMut.mutate(); }}
-        isSaving={bulkReassignMut.isPending}
-        saveLabel="Reassign all"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Moves every open audit assigned to the source auditor over to the
-            target auditor. Both are notified.
-          </p>
-          <div className="space-y-2">
-            <Label>From auditor</Label>
-            <Select value={reassignFrom} onValueChange={setReassignFrom}>
-              <SelectTrigger>
-                <SelectValue placeholder={usersQuery.isLoading ? "Loading users…" : "Pick the current auditor"} />
-              </SelectTrigger>
-              <SelectContent>
-                {(usersQuery.data?.data ?? []).map((u) => (
-                  <SelectItem key={u.id} value={u.id}>{u.name} · {titleCase(u.role)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>To auditor</Label>
-            <Select value={reassignTo} onValueChange={setReassignTo}>
-              <SelectTrigger>
-                <SelectValue placeholder={usersQuery.isLoading ? "Loading users…" : "Pick the new auditor"} />
-              </SelectTrigger>
-              <SelectContent>
-                {(usersQuery.data?.data ?? [])
-                  .filter((u) => u.id !== reassignFrom)
-                  .map((u) => (
-                    <SelectItem key={u.id} value={u.id}>{u.name} · {titleCase(u.role)}</SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>Reason <span className="text-muted-foreground">(optional)</span></Label>
-            <Textarea
-              value={reassignReason}
-              onChange={(e) => setReassignReason(e.target.value)}
-              rows={2}
-              placeholder="e.g. Auditor on leave"
-            />
-          </div>
-        </div>
-      </FormModal>
     </div>
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
- * All Audits hub — the register plus the findings board as tabs. "Findings"
- * (the NC kanban) shows for anyone with AUDIT_NCS view; personas without it
- * get the plain register, no tab chrome.
- * ──────────────────────────────────────────────────────────────────────────── */
 export default function AuditRegister() {
-  const { can } = usePermissions();
-  const showFindings = can("AUDIT_NCS", "view");
-  const [tab, setTab] = React.useState<"audits" | "findings">("audits");
-
-  if (!showFindings) return <RegisterPanel />;
-  return (
-    <div className="animate-fade-up space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="min-w-[220px] flex-1">
-          <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">All Audits</h1>
-          <p className="text-sm text-muted-foreground">
-            {tab === "audits"
-              ? "Every audit in your scope — search, segments and filters."
-              : "Findings raised by audits — track fixes through to closure."}
-          </p>
-        </div>
-        <Tabs value={tab} onValueChange={(v) => setTab(v as "audits" | "findings")}>
-          <TabsList>
-            <TabsTrigger value="audits">Audits</TabsTrigger>
-            <TabsTrigger value="findings">Findings</TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
-      {tab === "audits" ? <RegisterPanel embedded /> : <NcBoardPanel embedded />}
-    </div>
-  );
+  return <RegisterPanel />;
 }

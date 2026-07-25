@@ -1,17 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   AUDIT_TRANSITIONS,
-  NC_TRANSITIONS,
   TEMPLATE_VERSION_TRANSITIONS,
   assertTransition,
   canTransition,
   type AuditState,
-  type NcState,
   type TemplateVersionLifecycle,
 } from "../audit-state.js";
 
 const AUDIT_STATES = Object.keys(AUDIT_TRANSITIONS) as AuditState[];
-const NC_STATES = Object.keys(NC_TRANSITIONS) as NcState[];
 const TV_STATES = Object.keys(TEMPLATE_VERSION_TRANSITIONS) as TemplateVersionLifecycle[];
 
 describe("audit state machine (spec §4.1)", () => {
@@ -24,9 +21,10 @@ describe("audit state machine (spec §4.1)", () => {
     }
   });
 
-  it("collapses SUBMITTED→APPROVED for review-disabled templates (D-2)", () => {
+  it("approves/rejects directly from SUBMITTED (PRD §8.5) and never enters UNDER_REVIEW", () => {
     expect(canTransition(AUDIT_TRANSITIONS, "SUBMITTED", "APPROVED")).toBe(true);
-    expect(canTransition(AUDIT_TRANSITIONS, "SUBMITTED", "UNDER_REVIEW")).toBe(true);
+    expect(canTransition(AUDIT_TRANSITIONS, "SUBMITTED", "REJECTED")).toBe(true);
+    expect(canTransition(AUDIT_TRANSITIONS, "SUBMITTED", "UNDER_REVIEW")).toBe(false);
   });
 
   it("permits reopen CLOSED→IN_PROGRESS (FRD-REV-06) and nothing else from CLOSED", () => {
@@ -53,40 +51,17 @@ describe("audit state machine (spec §4.1)", () => {
     expect(() => assertTransition(AUDIT_TRANSITIONS, "REJECTED", "APPROVED", "AUDIT")).toThrow();
   });
 
-  it("supports the reference execution loop Scheduled→InProgress⇄Paused→Submitted", () => {
+  it("supports the execution loop Scheduled→InProgress→Submitted and rework", () => {
     expect(canTransition(AUDIT_TRANSITIONS, "SCHEDULED", "IN_PROGRESS")).toBe(true);
-    expect(canTransition(AUDIT_TRANSITIONS, "IN_PROGRESS", "PAUSED")).toBe(true);
-    expect(canTransition(AUDIT_TRANSITIONS, "PAUSED", "IN_PROGRESS")).toBe(true);
     expect(canTransition(AUDIT_TRANSITIONS, "IN_PROGRESS", "SUBMITTED")).toBe(true);
     expect(canTransition(AUDIT_TRANSITIONS, "REJECTED", "IN_PROGRESS")).toBe(true);
   });
-});
 
-describe("NC state machine (spec §4.2)", () => {
-  it("allows every legal transition and rejects every other pair", () => {
-    for (const from of NC_STATES) {
-      for (const to of NC_STATES) {
-        const legal = NC_TRANSITIONS[from].includes(to);
-        expect(canTransition(NC_TRANSITIONS, from, to)).toBe(legal);
-      }
+  it("never enters PAUSED (orphaned state; legacy rows can only exit)", () => {
+    for (const from of AUDIT_STATES) {
+      expect(canTransition(AUDIT_TRANSITIONS, from, "PAUSED")).toBe(false);
     }
-  });
-
-  it("routes failed verification RESOLVED→REOPENED→IN_PROGRESS (FRD-CAP-05)", () => {
-    expect(canTransition(NC_TRANSITIONS, "RESOLVED", "REOPENED")).toBe(true);
-    expect(canTransition(NC_TRANSITIONS, "REOPENED", "IN_PROGRESS")).toBe(true);
-  });
-
-  it("keeps WAIVED and CLOSED terminal", () => {
-    expect(NC_TRANSITIONS.WAIVED).toEqual([]);
-    expect(NC_TRANSITIONS.CLOSED).toEqual([]);
-  });
-
-  it("only VERIFIED reaches CLOSED", () => {
-    for (const from of NC_STATES) {
-      const reachesClosed = NC_TRANSITIONS[from].includes("CLOSED");
-      expect(reachesClosed).toBe(from === "VERIFIED");
-    }
+    expect(AUDIT_TRANSITIONS.PAUSED).toEqual(["IN_PROGRESS"]);
   });
 });
 
@@ -95,7 +70,10 @@ describe("template version lifecycle (spec §5.7)", () => {
     expect(TEMPLATE_VERSION_TRANSITIONS.PUBLISHED).toEqual(["DEPRECATED"]);
   });
 
-  it("co-approval can bounce PENDING_APPROVAL back to DRAFT", () => {
+  it("publish is DRAFT→PUBLISHED only; PENDING_APPROVAL is a legacy escape", () => {
+    expect(canTransition(TEMPLATE_VERSION_TRANSITIONS, "DRAFT", "PUBLISHED")).toBe(true);
+    expect(canTransition(TEMPLATE_VERSION_TRANSITIONS, "DRAFT", "PENDING_APPROVAL")).toBe(false);
+    // Legacy pending versions can still be published or bounced back to draft.
     expect(canTransition(TEMPLATE_VERSION_TRANSITIONS, "PENDING_APPROVAL", "DRAFT")).toBe(true);
     expect(canTransition(TEMPLATE_VERSION_TRANSITIONS, "PENDING_APPROVAL", "PUBLISHED")).toBe(true);
   });

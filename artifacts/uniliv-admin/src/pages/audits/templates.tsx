@@ -46,7 +46,6 @@ function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const [typeTab, setTypeTab] = React.useState<"ALL" | AuditType>("ALL");
   const [search, setSearch] = React.useState("");
   const [createOpen, setCreateOpen] = React.useState(false);
   const [form, setForm] = React.useState({
@@ -65,11 +64,9 @@ function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
     const all = templatesQuery.data?.data ?? [];
     const q = search.trim().toLowerCase();
     return all.filter(
-      (t) =>
-        (typeTab === "ALL" || t.auditType === typeTab) &&
-        (!q || t.name.toLowerCase().includes(q) || (t.category ?? "").toLowerCase().includes(q)),
+      (t) => !q || t.name.toLowerCase().includes(q) || (t.category ?? "").toLowerCase().includes(q),
     );
-  }, [templatesQuery.data, typeTab, search]);
+  }, [templatesQuery.data, search]);
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -86,7 +83,14 @@ function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
       toast({ title: "Template created — v1 draft ready" });
       setCreateOpen(false);
       qc.invalidateQueries({ queryKey: ["/audit/templates"] });
-      navigate(`/audits/templates/${res.data.id}`);
+      // Land straight in the builder for the new v1 draft — "build sections and
+      // questions next". Fall back to the detail if the version id isn't returned.
+      const vid = res.data.latestVersionId;
+      navigate(
+        vid
+          ? `/audits/templates/${res.data.id}/versions/${vid}/builder`
+          : `/audits/templates/${res.data.id}`,
+      );
     },
     onError: (e: Error) => toast({ title: e.message || "Create failed", variant: "destructive" }),
   });
@@ -110,12 +114,6 @@ function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Tabs value={typeTab} onValueChange={(v) => setTypeTab(v as "ALL" | AuditType)}>
-          <TabsList>
-            <TabsTrigger value="ALL">All</TabsTrigger>
-            {AUDIT_TYPES.map((t) => <TabsTrigger key={t} value={t}>{AUDIT_TYPE_LABELS[t]}</TabsTrigger>)}
-          </TabsList>
-        </Tabs>
         <div className="relative min-w-[220px] flex-1 sm:max-w-[300px]">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -135,7 +133,7 @@ function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
         <Card>
           <CardContent className="py-14 text-center">
             <p className="text-sm text-muted-foreground">
-              {search || typeTab !== "ALL" ? "No templates match your filters." : "No templates yet — create your first checklist."}
+              {search ? "No templates match your search." : "No templates yet — create your first checklist."}
             </p>
           </CardContent>
         </Card>
@@ -253,35 +251,29 @@ function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
  * when they run"). Schedules shows only with AUDIT_SCHEDULES view.
  * ──────────────────────────────────────────────────────────────────────────── */
 export default function AuditTemplates() {
-  const { can } = usePermissions();
-  const showSchedules = can("AUDIT_SCHEDULES", "view");
-  const [tab, setTab] = React.useState<"templates" | "bank" | "schedules">("templates");
+  const [tab, setTab] = React.useState<"templates" | "bank">("templates");
 
   const subtitle =
     tab === "templates"
       ? "What each audit asks, in what order, and how it scores."
-      : tab === "bank"
-        ? "Write once, reuse across every template."
-        : "Pick a template, scope it, set the cadence — assignment is automatic.";
+      : "Write once, reuse across every template.";
 
   return (
     <div className="animate-fade-up space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[220px] flex-1">
-          <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Templates</h1>
+          <h1 className="mb-0.5 font-display text-2xl font-bold tracking-[-0.012em]">Audit Templates</h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
-        <Tabs value={tab} onValueChange={(v) => setTab(v as "templates" | "bank" | "schedules")}>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as "templates" | "bank")}>
           <TabsList>
             <TabsTrigger value="templates">Templates</TabsTrigger>
             <TabsTrigger value="bank">Question bank</TabsTrigger>
-            {showSchedules && <TabsTrigger value="schedules">Schedules</TabsTrigger>}
           </TabsList>
         </Tabs>
       </div>
       {tab === "templates" && <TemplatesPanel embedded />}
       {tab === "bank" && <QuestionBankPanel embedded />}
-      {tab === "schedules" && showSchedules && <SchedulesPanel embedded />}
     </div>
   );
 }

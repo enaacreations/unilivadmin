@@ -213,9 +213,12 @@ function NamedReportsTab() {
     staleTime: 5 * 60_000,
   });
   const propertiesQuery = useQuery({
-    queryKey: ["/properties", "report-picker"],
-    queryFn: () => apiFetch<ApiList<{ id: string; name: string }>>("/properties?limit=100"),
+    // Audit-scoped property list — works for every reports persona (scoped
+    // roles lack the general PROPERTIES module, so /properties would 403).
+    queryKey: ["/audit/reports/filter-properties"],
+    queryFn: () => apiFetch<ApiList<{ id: string; name: string }>>("/audit/reports/filter-properties"),
     staleTime: 5 * 60_000,
+    retry: false,
   });
 
   const filterQs = React.useMemo(() => {

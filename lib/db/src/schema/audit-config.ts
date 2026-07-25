@@ -18,12 +18,6 @@ import { zonesTable, citiesTable, clustersTable } from "./food";
  * recorded as a CONFIG_CHANGE event in audit_events (FR-AD-10).
  * ──────────────────────────────────────────────────────────────────────────── */
 
-export const auditNcSeverityEnum = pgEnum("audit_nc_severity", [
-  "CRITICAL",
-  "MAJOR",
-  "MINOR",
-]);
-
 /** Module-internal persona roles (FRD §2), granted per user via audit_role_grants. */
 export const auditModuleRoleEnum = pgEnum("audit_module_role", [
   "ADMIN",
@@ -81,61 +75,6 @@ export const auditPerformanceBandsTable = pgTable("audit_performance_bands", {
 });
 
 /**
- * Severity → SLA config (FR-AD-03). Global rows have all scope fields null;
- * overrides resolve with precedence template > org node > global.
- * `templateId` is a plain text ref to audit_templates.id (no FK — audit.ts
- * imports this file, so a FK here would create an import cycle; integrity is
- * enforced at the app layer, same pattern as properties.clusterId).
- */
-export const auditSeveritySlasTable = pgTable("audit_severity_slas", {
-  id: text("id").primaryKey(),
-  severity: auditNcSeverityEnum("severity").notNull(),
-  capaDueHours: integer("capa_due_hours").notNull(),
-  reminderLeadHours: integer("reminder_lead_hours").notNull(),
-  /** Ordered chain: [{trigger:"ON_RAISE"|"PCT_ELAPSED"|"ON_BREACH", pct?, audience}] */
-  escalationChainJson: json("escalation_chain_json")
-    .$type<{ trigger: string; pct?: number; audience: string }[]>()
-    .default([])
-    .notNull(),
-  scopeLevel: auditScopeLevelEnum("scope_level"),
-  zoneId: text("zone_id").references(() => zonesTable.id),
-  cityId: text("city_id").references(() => citiesTable.id),
-  clusterId: text("cluster_id").references(() => clustersTable.id),
-  propertyId: text("property_id").references(() => propertiesTable.id),
-  templateId: text("template_id"),
-  updatedBy: text("updated_by"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
-
-/** Event × channel × audience notification rules (FR-AD-04). One row per event key. */
-export const auditNotificationRulesTable = pgTable("audit_notification_rules", {
-  id: text("id").primaryKey(),
-  eventKey: text("event_key").notNull().unique(),
-  /** Subset of EMAIL / PUSH / IN_APP / WHATSAPP (WhatsApp inactive at launch). */
-  channelsJson: json("channels_json").$type<string[]>().default([]).notNull(),
-  /** Audiences relative to the object: ASSIGNEE, AUDITEE, REVIEWERS, SCHEDULER, MANAGER_OF_ASSIGNEE, ADMINS. */
-  audienceJson: json("audience_json").$type<string[]>().default([]).notNull(),
-  subjectTemplate: text("subject_template"),
-  bodyTemplate: text("body_template"),
-  active: boolean("active").default(true).notNull(),
-  updatedBy: text("updated_by"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
-
-/** Attachment policy per level (FR-AD-05): AUDIT / RESPONSE / NC / CAPA / SUBMISSION. */
-export const auditAttachmentPoliciesTable = pgTable("audit_attachment_policies", {
-  id: text("id").primaryKey(),
-  level: text("level").notNull().unique(),
-  maxFiles: integer("max_files").notNull(),
-  maxSizeMb: integer("max_size_mb").notNull(),
-  allowedMimeJson: json("allowed_mime_json").$type<string[]>().default([]).notNull(),
-  updatedBy: text("updated_by"),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
-
-/**
  * Numbering schemes per object type (FR-AD-06), e.g. UNI-AUD-{seq}.
  * Allocation: UPDATE … SET next_seq = next_seq + 1 RETURNING inside the insert
  * transaction (row-lock serialized), wrapped in withUniqueRetry.
@@ -188,8 +127,7 @@ export const auditRoleGrantsTable = pgTable(
 /**
  * Module settings (key → JSON value). Dedicated table (not system_config) so
  * every change routes through the module's evented config writer (FR-AD-10).
- * Keys: na_counts_against, publish_co_approval_required, lookahead_days,
- * auto_close_days, adhoc_default_weight, manual_nudge_per_hour,
+ * Keys: na_counts_against, lookahead_days, auto_close_days,
  * report_share_ttl_hours, org_timezone.
  */
 export const auditAppSettingsTable = pgTable("audit_app_settings", {

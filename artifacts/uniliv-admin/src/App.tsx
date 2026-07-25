@@ -57,7 +57,6 @@ import AuditAdmin from "@/pages/audits/audit-admin";
 import AuditTemplates from "@/pages/audits/templates";
 import AuditTemplateDetail from "@/pages/audits/template-detail";
 import TemplateBuilder from "@/pages/audits/template-builder";
-import TemplatePreview from "@/pages/audits/template-preview";
 import QuestionBank from "@/pages/audits/question-bank";
 import AuditSchedules from "@/pages/audits/schedules";
 import ScheduleForm from "@/pages/audits/schedule-form";
@@ -67,15 +66,10 @@ import NewAudit from "@/pages/audits/new-audit";
 import MyAudits from "@/pages/audits/my-audits";
 import AuditDetail from "@/pages/audits/audit-detail";
 import AuditRunner from "@/pages/audits/audit-runner";
-import NcBoard from "@/pages/audits/nc-board";
-import NcDetail from "@/pages/audits/nc-detail";
-import MyFindings from "@/pages/audits/my-findings";
 import ReviewQueue from "@/pages/audits/review-queue";
 import ReviewWorkspace from "@/pages/audits/review-workspace";
 import AuditReports from "@/pages/audits/reports";
 import ReportViewer from "@/pages/audits/report-viewer";
-import AuditDashboard from "@/pages/audits/audit-dashboard";
-import TrailExplorer from "@/pages/audits/trail-explorer";
 import Facility from "@/pages/facility";
 import Electricity from "@/pages/electricity";
 import ResidentAttendance from "@/pages/resident-attendance";
@@ -229,14 +223,13 @@ function Router() {
       <Route path="/audit-log">{() => <ProtectedRoute component={AuditLog} />}</Route>
 
       {/* Audit & Inspection (FRD v1.2.2) — static routes before /audits/:id */}
-      <Route path="/audits/dashboard">{() => <ProtectedRoute component={AuditDashboard} />}</Route>
+      {/* The oversight dashboard was retired (PRD trim): the page is now the
+        * Review Queue at /audits/review; old links/bookmarks redirect. */}
+      <Route path="/audits/dashboard">{() => <Redirect to="/audits/review" />}</Route>
       <Route path="/audits/my">{() => <ProtectedRoute component={MyAudits} />}</Route>
-      <Route path="/audits/findings">{() => <ProtectedRoute component={MyFindings} />}</Route>
       <Route path="/audits/register">{() => <ProtectedRoute component={AuditRegister} />}</Route>
       <Route path="/audits/new">{() => <ProtectedRoute component={NewAudit} />}</Route>
       {/* NC board + finding detail */}
-      <Route path="/audits/ncs">{() => <ProtectedRoute component={NcBoard} />}</Route>
-      <Route path="/audits/ncs/:id">{() => <ProtectedRoute component={NcDetail} />}</Route>
       {/* Review queue + workspace */}
       <Route path="/audits/review">{() => <ProtectedRoute component={ReviewQueue} />}</Route>
       <Route path="/audits/review/:id">{() => <ProtectedRoute component={ReviewWorkspace} />}</Route>
@@ -248,14 +241,12 @@ function Router() {
       <Route path="/audits/schedules/new">{() => <ProtectedRoute component={ScheduleForm} />}</Route>
       <Route path="/audits/schedules/calendar">{() => <ProtectedRoute component={ScheduleCalendar} />}</Route>
       <Route path="/audits/schedules/:id">{() => <ProtectedRoute component={ScheduleForm} />}</Route>
-      {/* Templates: builder/preview before the :id detail catch-all */}
+      {/* Templates: builder before the :id detail catch-all */}
       <Route path="/audits/templates">{() => <ProtectedRoute component={AuditTemplates} />}</Route>
       <Route path="/audits/templates/:id/versions/:vid/builder">{() => <ProtectedRoute component={TemplateBuilder} />}</Route>
-      <Route path="/audits/templates/:id/versions/:vid/preview">{() => <ProtectedRoute component={TemplatePreview} />}</Route>
       <Route path="/audits/templates/:id">{() => <ProtectedRoute component={AuditTemplateDetail} />}</Route>
       <Route path="/audits/question-bank">{() => <ProtectedRoute component={QuestionBank} />}</Route>
       <Route path="/audits/admin">{() => <ProtectedRoute component={AuditAdmin} />}</Route>
-      <Route path="/audits/trail">{() => <ProtectedRoute component={TrailExplorer} />}</Route>
       {/* Runner must precede the :id catch-all (wouter matches in Switch order) */}
       <Route path="/audits/:id/run">{() => <ProtectedRoute component={AuditRunner} />}</Route>
       <Route path="/audits/:id">{() => <ProtectedRoute component={AuditDetail} />}</Route>

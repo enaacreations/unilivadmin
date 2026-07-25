@@ -2,7 +2,7 @@ import * as React from "react";
 import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowDown, ArrowUp, Check, ChevronLeft, Eye, Library, Loader2, Lock,
+  ArrowDown, ArrowUp, Check, ChevronLeft, Library, Loader2, Lock,
   Plus, Trash2,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -27,13 +26,13 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 import { cn } from "@/lib/utils";
 import {
-  EVIDENCE_RULES, NC_SEVERITIES, NON_SCORED_TYPES, QUESTION_TYPES,
+  EVIDENCE_RULES, NON_SCORED_TYPES, QUESTION_TYPES,
   sectionPoints, titleCase,
-  type ApiError, type ApiList, type ApiOne, type AutoNcRule, type BankItem,
-  type BuilderQuestion, type BuilderSection, type NcSeverity, type QuestionType,
-  type RatingScale, type TemplateDetail, type VersionDetail,
+  type ApiError, type ApiList, type ApiOne, type BankItem,
+  type BuilderQuestion, type BuilderSection, type QuestionType,
+  type RatingScaleSnapshot, type ScaleOption, type TemplateDetail, type VersionDetail,
 } from "./lib";
-import { ChoiceOptionsEditor, DuplicateWarning, LifecycleBadge, PublishDialog, useDuplicatePrompts } from "./shared";
+import { ChoiceOptionsEditor, DuplicateWarning, LifecycleBadge, newOptionId, PublishDialog, useDuplicatePrompts } from "./shared";
 
 /* Template builder (redesign — prototype "Template builder"). Category cards
  * with inline question rows (reorder, mandatory, weight) and a score-model /
@@ -96,51 +95,17 @@ function QuestionPromptField({
   );
 }
 
-/* ── Trigger-answer options for the auto-NC editor ───────────────────────── */
-
-function triggerOptions(
-  q: BuilderQuestion,
-  scales: RatingScale[] | undefined,
-): { id: string; label: string }[] | null {
-  switch (q.type) {
-    case "YES_NO_NA":
-      return [
-        { id: "NO", label: "No" },
-        { id: "NA", label: "N/A" },
-      ];
-    case "PASS_FAIL":
-      return [{ id: "FAIL", label: "Fail" }];
-    case "RATING": {
-      const scale =
-        (q.ratingScaleId && scales?.find((s) => s.id === q.ratingScaleId)) ||
-        scales?.find((s) => s.active) ||
-        scales?.[0];
-      if (!scale) return null;
-      return [...scale.options]
-        .sort((a, b) => a.orderIndex - b.orderIndex)
-        .map((o) => ({ id: o.id, label: `${o.label} (${Number(o.multiplierPct)}%)` }));
-    }
-    case "SINGLE_CHOICE":
-    case "MULTI_CHOICE":
-      return (q.optionsJson ?? []).map((o) => ({ id: o.id, label: o.label }));
-    default:
-      return null;
-  }
-}
-
 /* ── Inspector (question details sheet) — fully controlled ───────────────── */
 
 function Inspector({
   section,
   question,
-  scales,
   readOnly,
   onQuestionChange,
   onSectionChange,
 }: {
   section: BuilderSection | undefined;
   question: BuilderQuestion | undefined;
-  scales: RatingScale[] | undefined;
   readOnly: boolean;
   onQuestionChange: (qid: string, patch: Record<string, unknown>) => void;
   onSectionChange: (sid: string, patch: Record<string, unknown>) => void;
@@ -187,8 +152,6 @@ function Inspector({
   }
 
   const q = question;
-  const autoNc = q.autoNcJson;
-  const options = triggerOptions(q, scales);
   const setQ = (patch: Record<string, unknown>) => onQuestionChange(q.id, patch);
 
   return (
@@ -309,94 +272,6 @@ function Inspector({
           />
         </div>
       )}
-
-      <div className="space-y-3 rounded-md border p-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium">Auto-NC</p>
-            <p className="text-xs text-muted-foreground">
-              Raise a non-conformance automatically on trigger answers.
-            </p>
-          </div>
-          <Switch
-            checked={autoNc != null}
-            disabled={readOnly}
-            onCheckedChange={(c) =>
-              setQ({
-                autoNcJson: c
-                  ? ({ onAnswers: [], severity: "MAJOR", ownerRule: "AUDITEE_OF_TARGET" } satisfies AutoNcRule)
-                  : null,
-              })
-            }
-          />
-        </div>
-        {autoNc && (
-          <>
-            <div className="space-y-2">
-              <Label>Severity</Label>
-              <Select
-                value={autoNc.severity}
-                disabled={readOnly}
-                onValueChange={(v) => setQ({ autoNcJson: { ...autoNc, severity: v as NcSeverity } })}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {NC_SEVERITIES.map((s) => (
-                    <SelectItem key={s} value={s}>{titleCase(s)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Trigger answers</Label>
-              {options ? (
-                options.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Define answer options first — nothing to trigger on yet.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {options.map((o) => (
-                      <label key={o.id} className="flex items-center gap-2 text-sm">
-                        <Checkbox
-                          checked={autoNc.onAnswers.includes(o.id)}
-                          disabled={readOnly}
-                          onCheckedChange={(checked) =>
-                            setQ({
-                              autoNcJson: {
-                                ...autoNc,
-                                onAnswers: checked
-                                  ? [...autoNc.onAnswers, o.id]
-                                  : autoNc.onAnswers.filter((a) => a !== o.id),
-                              },
-                            })
-                          }
-                        />
-                        {o.label}
-                      </label>
-                    ))}
-                  </div>
-                )
-              ) : (
-                <Input
-                  value={autoNc.onAnswers.join(", ")}
-                  disabled={readOnly}
-                  placeholder="Comma-separated trigger values"
-                  onChange={(e) =>
-                    setQ({
-                      autoNcJson: {
-                        ...autoNc,
-                        onAnswers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                      },
-                    })
-                  }
-                />
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">Owner: auditee of target.</p>
-          </>
-        )}
-      </div>
     </div>
   );
 }
@@ -499,6 +374,109 @@ function BankDialog({
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
 
+/* ── Rating-scale editor (per-template, sidebar card) ────────────────────── */
+
+/**
+ * Edits the version's own rating scale — the options every RATING question
+ * scores on. Local-buffered so intermediate/invalid states (blank label, one
+ * option) don't fire the debounced save; PATCHes only a valid scale (≥2
+ * options, all labelled, ≥1 scored non-N/A).
+ */
+function RatingScaleCard({
+  scale, readOnly, usedByRating, onSave,
+}: {
+  scale: RatingScaleSnapshot;
+  readOnly: boolean;
+  usedByRating: boolean;
+  onSave: (snap: RatingScaleSnapshot) => void;
+}) {
+  const scaleKey = JSON.stringify(scale.options ?? []);
+  const [opts, setOpts] = React.useState<ScaleOption[]>(scale.options ?? []);
+  const savedRef = React.useRef(scaleKey);
+  // Re-sync when the version reloads/forks underneath us.
+  React.useEffect(() => { setOpts(scale.options ?? []); savedRef.current = scaleKey; }, [scaleKey]);
+
+  const valid =
+    opts.length >= 2 && opts.every((o) => o.label.trim()) && opts.some((o) => !o.isExcludedNa);
+
+  React.useEffect(() => {
+    if (readOnly) return;
+    const key = JSON.stringify(opts);
+    if (key === savedRef.current || !valid) return;
+    const t = setTimeout(() => {
+      savedRef.current = key;
+      onSave({ ...scale, options: opts.map((o, i) => ({ ...o, orderIndex: i })) });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [opts, valid, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const patch = (id: string, p: Partial<ScaleOption>) =>
+    setOpts((os) => os.map((o) => (o.id === id ? { ...o, ...p } : o)));
+  const remove = (id: string) => setOpts((os) => os.filter((o) => o.id !== id));
+  const add = () =>
+    setOpts((os) => [...os, { id: newOptionId(), label: "", multiplierPct: 100, isExcludedNa: false, orderIndex: os.length }]);
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Rating scale</div>
+        <p className="mb-2.5 text-[11px] text-muted-foreground">
+          {usedByRating
+            ? "Options every Rating question scores on — score % is the points earned."
+            : "Set the scale your Rating questions will score on (no Rating questions yet)."}
+        </p>
+        <div className="space-y-1.5">
+          {opts.map((o) => (
+            <div key={o.id} className="flex items-center gap-1.5">
+              <Input
+                value={o.label}
+                disabled={readOnly}
+                onChange={(e) => patch(o.id, { label: e.target.value })}
+                placeholder="Label…"
+                className="h-8 flex-1 text-[12.5px]"
+              />
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={o.isExcludedNa ? "" : o.multiplierPct}
+                disabled={readOnly || o.isExcludedNa}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => patch(o.id, { multiplierPct: Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))) })}
+                className="h-8 w-[52px] text-[12.5px]"
+                placeholder="—"
+              />
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={() => patch(o.id, { isExcludedNa: !o.isExcludedNa })}
+                title="Toggle N/A — an excluded option that drops out of the score"
+                className={cn(
+                  "h-8 shrink-0 rounded-[7px] border px-2 text-[10.5px] font-bold transition-colors disabled:opacity-60",
+                  o.isExcludedNa ? "border-accent bg-accent/10 text-accent-strong" : "border-border bg-card text-muted-foreground",
+                )}
+              >N/A</button>
+              {!readOnly && opts.length > 2 && (
+                <button type="button" onClick={() => remove(o.id)} className="shrink-0 text-muted-foreground/60 hover:text-destructive" aria-label="Remove">
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {!readOnly && (
+          <Button type="button" variant="outline" size="sm" className="mt-2 h-8" onClick={add}>
+            <Plus className="mr-1 h-3.5 w-3.5" /> Add option
+          </Button>
+        )}
+        {!readOnly && !valid && (
+          <p className="mt-2 text-[11px] font-medium text-warning">Needs ≥2 labelled options, at least one scored (non-N/A).</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function TemplateBuilder() {
   const params = useParams<{ id: string; vid: string }>();
   const { toast } = useToast();
@@ -519,17 +497,32 @@ export default function TemplateBuilder() {
     queryFn: () => apiFetch<ApiOne<TemplateDetail>>(`/audit/templates/${params.id}`),
     enabled: Boolean(params.id),
   });
-  const scalesQuery = useQuery({
-    queryKey: ["/audit/admin/rating-scales"],
-    queryFn: () => apiFetch<ApiList<RatingScale>>("/audit/admin/rating-scales"),
-    retry: false,
-  });
 
   const version = versionQuery.data?.data;
   const template = templateQuery.data?.data;
 
   const [forcedReadOnly, setForcedReadOnly] = React.useState(false);
   const readOnly = forcedReadOnly || (version != null && version.lifecycle !== "DRAFT");
+
+  // Template-level details (name / category / description) are edited right here
+  // in the builder — seeded once the template loads, saved on blur.
+  const [details, setDetails] = React.useState<{ name: string; category: string; description: string } | null>(null);
+  React.useEffect(() => {
+    if (template) setDetails((d) => d ?? { name: template.name, category: template.category ?? "", description: template.description ?? "" });
+  }, [template]);
+  const metaMut = useMutation({
+    mutationFn: (m: { name: string; category: string; description: string }) =>
+      apiFetch(`/audit/templates/${params.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: m.name.trim(), category: m.category.trim() || null, description: m.description.trim() || null }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/audit/templates", params.id] });
+      qc.invalidateQueries({ queryKey: ["/audit/templates"] });
+    },
+    onError: (e: Error) => toast({ title: e.message || "Couldn't save details", variant: "destructive" }),
+  });
+  const saveDetails = () => { if (details && details.name.trim()) metaMut.mutate(details); };
 
   const [selectedSectionId, setSelectedSectionId] = React.useState<string | null>(null);
   const [selectedQuestionId, setSelectedQuestionId] = React.useState<string | null>(null);
@@ -741,6 +734,23 @@ export default function TemplateBuilder() {
     onError: onStructuralError,
   });
 
+  // The version's own rating scale (PATCH ratingScaleSnapshot).
+  const scaleMut = useMutation({
+    mutationFn: (snap: RatingScaleSnapshot) =>
+      apiFetch(`/audit/templates/versions/${params.vid}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ratingScaleSnapshot: snap }),
+      }),
+    onError: onStructuralError,
+  });
+  const saveScale = React.useCallback(
+    (snap: RatingScaleSnapshot) => {
+      patchCache((v) => ({ ...v, ratingScaleSnapshot: snap }));
+      scaleMut.mutate(snap);
+    },
+    [patchCache, scaleMut],
+  );
+
   const moveSection = (sid: string, dir: -1 | 1) => {
     const ids = sections.map((s) => s.id);
     const i = ids.indexOf(sid);
@@ -851,15 +861,29 @@ export default function TemplateBuilder() {
           {saveState === "error" && <span className="text-destructive">Save failed</span>}
         </span>
         <LifecycleBadge lifecycle={version.lifecycle} />
-        <Button asChild variant="outline" size="sm">
-          <Link href={`/audits/templates/${params.id}/versions/${params.vid}/preview`}>
-            <Eye className="mr-1 h-4 w-4" /> Preview
-          </Link>
-        </Button>
         {version.lifecycle === "DRAFT" && !forcedReadOnly && (
           <Button size="sm" onClick={() => setPublishOpen(true)}>Publish v{version.versionNo}</Button>
         )}
       </div>
+
+      {!readOnly && details && (
+        <Card>
+          <CardContent className="grid gap-3 p-4 md:grid-cols-3">
+            <div>
+              <Label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Name</Label>
+              <Input value={details.name} onChange={(e) => setDetails((d) => (d ? { ...d, name: e.target.value } : d))} onBlur={saveDetails} placeholder="Template name" />
+            </div>
+            <div>
+              <Label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Category</Label>
+              <Input value={details.category} onChange={(e) => setDetails((d) => (d ? { ...d, category: e.target.value } : d))} onBlur={saveDetails} placeholder="Optional" />
+            </div>
+            <div>
+              <Label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">Description</Label>
+              <Input value={details.description} onChange={(e) => setDetails((d) => (d ? { ...d, description: e.target.value } : d))} onBlur={saveDetails} placeholder="Optional" />
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {readOnly ? (
         <div className="flex items-center gap-2 rounded-[11px] border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm text-warning">
@@ -1050,6 +1074,13 @@ export default function TemplateBuilder() {
             </CardContent>
           </Card>
 
+          <RatingScaleCard
+            scale={version.ratingScaleSnapshot ?? { name: "Rating scale", options: [] }}
+            readOnly={readOnly}
+            usedByRating={sections.some((s) => s.questions.some((q) => q.type === "RATING"))}
+            onSave={saveScale}
+          />
+
           <div className="rounded-[11px] bg-warning/10 px-3 py-2.5 text-[11.5px] font-semibold text-warning">
             Every scored question needs a weight above 0 to publish. Published versions are immutable — historical audits keep the version they were scored with.
           </div>
@@ -1065,7 +1096,6 @@ export default function TemplateBuilder() {
           <Inspector
             section={activeSection}
             question={selectedQuestion}
-            scales={scalesQuery.data?.data}
             readOnly={readOnly}
             onQuestionChange={onQuestionChange}
             onSectionChange={onSectionChange}

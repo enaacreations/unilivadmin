@@ -1,16 +1,16 @@
 /**
- * Audit & Inspection — guarded state machines (spec §4.1 / §4.2 / §5.7).
+ * Audit & Inspection — guarded state machines (spec §4.1 / §5.7).
  *
- * Three transition maps as data (same idiom as food's DISPATCH_TRANSITIONS)
+ * Transition maps as data (same idiom as food's DISPATCH_TRANSITIONS)
  * plus executors that validate the map, apply state-specific column updates
  * and append a hash-chained STATE_CHANGE event in the SAME transaction.
  * Illegal transitions throw 409 ILLEGAL_TRANSITION; callers log a
  * DENIED_ATTEMPT event outside the failed transaction (FRD-EXE-03 AC).
  *
- * `Overdue` is a derived flag on audits/NCs, never a state.
+ * `Overdue` is a derived flag on audits, never a state.
  */
 import { eq } from "drizzle-orm";
-import { auditsTable, auditNonConformancesTable } from "@workspace/db";
+import { auditsTable } from "@workspace/db";
 import { httpError } from "./authz.js";
 import { appendAuditEvent, type DbLike } from "./audit-events.js";
 
@@ -26,16 +26,6 @@ export type AuditState =
   | "CLOSED"
   | "CANCELLED";
 
-export type NcState =
-  | "OPEN"
-  | "IN_PROGRESS"
-  | "EXTENSION_REQUESTED"
-  | "RESOLVED"
-  | "VERIFIED"
-  | "REOPENED"
-  | "WAIVED"
-  | "CLOSED";
-
 export type TemplateVersionLifecycle =
   | "DRAFT"
   | "PENDING_APPROVAL"
@@ -44,42 +34,36 @@ export type TemplateVersionLifecycle =
   | "ARCHIVED";
 
 /**
- * Audit lifecycle (spec §4.1).
- * SUBMITTED→APPROVED is the review-disabled collapse (D-2); CLOSED→IN_PROGRESS
- * is the OE-only reopen (FRD-REV-06) — both additionally guarded by callers.
+ * Audit lifecycle (spec §4.1, trimmed to the PRD v1.0 review flow):
+ * every submit routes to SUBMITTED; reviewers approve/reject directly from
+ * SUBMITTED; CLOSED→IN_PROGRESS is the OE-only reopen (guarded by callers).
+ * PAUSED / UNDER_REVIEW / CANCELLED are orphaned states kept only so legacy
+ * rows can exit them — nothing enters them anymore.
  */
 export const AUDIT_TRANSITIONS: Record<AuditState, AuditState[]> = {
   DRAFT: ["SCHEDULED", "CANCELLED"],
   SCHEDULED: ["IN_PROGRESS", "CANCELLED"],
-  IN_PROGRESS: ["PAUSED", "SUBMITTED", "CANCELLED"],
-  PAUSED: ["IN_PROGRESS", "CANCELLED"],
-  SUBMITTED: ["UNDER_REVIEW", "APPROVED"],
-  UNDER_REVIEW: ["APPROVED", "REJECTED"],
+  IN_PROGRESS: ["SUBMITTED"],
+  PAUSED: ["IN_PROGRESS"], // legacy escape only
+  SUBMITTED: ["APPROVED", "REJECTED"],
+  UNDER_REVIEW: ["APPROVED", "REJECTED"], // legacy escape only
   REJECTED: ["IN_PROGRESS"],
   APPROVED: ["CLOSED"],
   CLOSED: ["IN_PROGRESS"],
   CANCELLED: [],
 };
 
-/** Non-conformance lifecycle (spec §4.2). */
-export const NC_TRANSITIONS: Record<NcState, NcState[]> = {
-  OPEN: ["IN_PROGRESS", "WAIVED"],
-  IN_PROGRESS: ["RESOLVED", "EXTENSION_REQUESTED", "WAIVED"],
-  EXTENSION_REQUESTED: ["IN_PROGRESS"],
-  RESOLVED: ["VERIFIED", "REOPENED"],
-  VERIFIED: ["CLOSED"],
-  REOPENED: ["IN_PROGRESS"],
-  WAIVED: [],
-  CLOSED: [],
-};
-
-/** TemplateVersion lifecycle (spec §5.7). Published versions are immutable. */
+/**
+ * TemplateVersion lifecycle (spec §5.7). Published versions are immutable.
+ * Publish is DRAFT→PUBLISHED only; PENDING_APPROVAL is an orphaned value kept
+ * so legacy pending versions can still be published or bounced back.
+ */
 export const TEMPLATE_VERSION_TRANSITIONS: Record<
   TemplateVersionLifecycle,
   TemplateVersionLifecycle[]
 > = {
-  DRAFT: ["PENDING_APPROVAL", "PUBLISHED", "ARCHIVED"],
-  PENDING_APPROVAL: ["PUBLISHED", "DRAFT"],
+  DRAFT: ["PUBLISHED", "ARCHIVED"],
+  PENDING_APPROVAL: ["PUBLISHED", "DRAFT"], // legacy escape only
   PUBLISHED: ["DEPRECATED"],
   DEPRECATED: ["ARCHIVED"],
   ARCHIVED: [],
@@ -179,44 +163,3 @@ export async function applyAuditTransition(
   });
 }
 
-export interface NcTransitionCtx {
-  actor: TransitionActor;
-  reason?: string | null;
-  auditId: string;
-}
-
-/** Apply a validated NC transition + STATE_CHANGE event in the caller's tx. */
-export async function applyNcTransition(
-  tx: DbLike,
-  nc: { id: string; state: string },
-  to: NcState,
-  ctx: NcTransitionCtx,
-): Promise<void> {
-  const from = nc.state as NcState;
-  assertTransition(NC_TRANSITIONS, from, to, "NC");
-
-  const now = new Date();
-  const set: Record<string, unknown> = { state: to, updatedAt: now };
-  if (to === "VERIFIED") set["verifiedAt"] = now;
-  if (to === "CLOSED") set["closedAt"] = now;
-  if (to === "IN_PROGRESS" && from === "REOPENED") {
-    // no-op beyond state; reopenCount is bumped when entering REOPENED
-  }
-
-  await tx
-    .update(auditNonConformancesTable)
-    .set(set)
-    .where(eq(auditNonConformancesTable.id, nc.id));
-
-  await appendAuditEvent(tx, {
-    entityType: "NC",
-    entityId: nc.id,
-    auditId: ctx.auditId,
-    actorId: ctx.actor.id,
-    actorRole: ctx.actor.role ?? null,
-    kind: "STATE_CHANGE",
-    fromState: from,
-    toState: to,
-    reason: ctx.reason ?? null,
-  });
-}

@@ -4,10 +4,10 @@
  * Reports are queued as PENDING rows at submission and rendered asynchronously
  * by runReportWorker() (registered with the other audit jobs): evidence-grade
  * PDF with audit metadata (performed-by, duration, GPS), score summary + trend
- * vs previous instances, rating distribution, per-section item tables, NC &
- * CAPA summary (gap-fix vs the reference product) and a sign-off block with
- * the live geotagged submission photo (D-9). Underlying data is immutable;
- * reopen produces a NEW revision, prior revisions stay downloadable (REV-06).
+ * vs previous instances, rating distribution, per-section item tables and a
+ * sign-off block with the live geotagged submission photo (D-9). Underlying
+ * data is immutable; reopen produces a NEW revision, prior revisions stay
+ * downloadable (REV-06).
  */
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import { and, asc, desc, eq, inArray, lt, ne, sql } from "drizzle-orm";
@@ -17,8 +17,6 @@ import {
   auditReportsTable,
   auditResponsesTable,
   auditEvidenceTable,
-  auditNonConformancesTable,
-  auditCorrectiveActionsTable,
   auditTemplateVersionsTable,
   auditTemplatesTable,
   propertiesTable,
@@ -239,23 +237,6 @@ export async function renderAuditReportPdf(reportId: string): Promise<Uint8Array
   const { sections, questions } = await loadExecutionQuestions(audit.templateVersionId, audit.subsetJson, audit.id);
   const responses = await db.select().from(auditResponsesTable).where(eq(auditResponsesTable.auditId, audit.id));
   const responseByQ = new Map(responses.map((r) => [r.questionId, r]));
-  const ncs = await db
-    .select()
-    .from(auditNonConformancesTable)
-    .where(eq(auditNonConformancesTable.auditId, audit.id))
-    .orderBy(asc(auditNonConformancesTable.createdAt));
-  const actions = ncs.length
-    ? await db
-        .select()
-        .from(auditCorrectiveActionsTable)
-        .where(inArray(auditCorrectiveActionsTable.ncId, ncs.map((n) => n.id)))
-        .orderBy(asc(auditCorrectiveActionsTable.createdAt))
-    : [];
-  const ownerIds = [...new Set(ncs.map((n) => n.ownerId))];
-  const owners = ownerIds.length
-    ? await db.select({ id: usersTable.id, name: usersTable.name }).from(usersTable).where(inArray(usersTable.id, ownerIds))
-    : [];
-  const ownerName = new Map(owners.map((o) => [o.id, o.name]));
 
   // Score trend: previous scored audits for the same target + template family.
   const trend = await db
@@ -396,31 +377,6 @@ export async function renderAuditReportPdf(reportId: string): Promise<Uint8Array
       if (r?.notes) {
         row(c, [{ value: `   note: ${r.notes}`, w: usable, color: GREY }], { size: 7 });
       }
-    }
-  }
-
-  // ── NC & CAPA summary (gap-fix: the reference report lacks this) ─────────
-  c.y -= 8;
-  ensure(c, 60);
-  text(c, `Findings & corrective actions (${ncs.length})`, { size: 11, bold: true, gap: 6 });
-  if (!ncs.length) {
-    text(c, "No non-conformances were raised on this audit.", { size: 9, color: GREY });
-  }
-  for (const nc of ncs) {
-    ensure(c, 46);
-    row(
-      c,
-      [
-        { value: `${nc.ncNo} · ${nc.severity}${nc.state === "WAIVED" ? " · WAIVED (risk accepted)" : ` · ${nc.state}`}`, w: 260, bold: true, color: nc.severity === "CRITICAL" ? RED : INK },
-        { value: `Owner: ${ownerName.get(nc.ownerId) ?? "—"}`, w: 140 },
-        { value: `Due: ${fmt(nc.dueAt, tz)}`, w: 115 },
-      ],
-      { shaded: true },
-    );
-    row(c, [{ value: nc.description, w: usable }], { size: 8 });
-    if (nc.waiverReason) row(c, [{ value: `Waiver: ${nc.waiverReason}`, w: usable, color: GREY }], { size: 7 });
-    for (const action of actions.filter((a) => a.ncId === nc.id)) {
-      row(c, [{ value: `   ↳ ${action.description}${action.completedAt ? ` (completed ${fmt(action.completedAt, tz)})` : ""}`, w: usable, color: GREY }], { size: 7 });
     }
   }
 

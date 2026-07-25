@@ -12,6 +12,7 @@ import {
 import {
   Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
+import { AutoBreadcrumbProvider } from "@/components/auto-breadcrumb"
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -420,6 +421,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const pageTitle = active?.item.title ?? activeGroup ?? "Home"
   // A detail route is a deeper path than the matched nav item (e.g. /residents/:id, /food/orders/:id).
   const isDetail = !!active && location !== active.item.href && location.startsWith(active.item.href)
+  // A page that renders its own breadcrumb (PageHeader) flips this so the
+  // generic "{Section} › Details" crumb below doesn't stack on top of it.
+  const [suppressBreadcrumb, setSuppressBreadcrumb] = React.useState(false)
 
   React.useEffect(() => { document.title = `${pageTitle} | Uniliv` }, [pageTitle])
 
@@ -497,24 +501,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-surface">
-          <div className="max-w-7xl mx-auto space-y-6">
-            {isDetail && active ? (
-              <Breadcrumb>
-                <BreadcrumbList>
-                  <BreadcrumbItem className="hidden sm:inline-flex">
-                    <BreadcrumbLink asChild>
-                      <Link href={active.item.href}>{active.item.title}</Link>
-                    </BreadcrumbLink>
-                  </BreadcrumbItem>
-                  <BreadcrumbSeparator className="hidden sm:inline-flex" />
-                  <BreadcrumbItem>
-                    <BreadcrumbPage>Details</BreadcrumbPage>
-                  </BreadcrumbItem>
-                </BreadcrumbList>
-              </Breadcrumb>
-            ) : null}
-            {children}
-          </div>
+          <AutoBreadcrumbProvider setSuppressed={setSuppressBreadcrumb}>
+            <div className="max-w-7xl mx-auto space-y-6">
+              {isDetail && active && !suppressBreadcrumb ? (
+                <Breadcrumb>
+                  <BreadcrumbList>
+                    <BreadcrumbItem className="hidden sm:inline-flex">
+                      <BreadcrumbLink asChild>
+                        <Link href={active.item.href}>{active.item.title}</Link>
+                      </BreadcrumbLink>
+                    </BreadcrumbItem>
+                    <BreadcrumbSeparator className="hidden sm:inline-flex" />
+                    <BreadcrumbItem>
+                      <BreadcrumbPage>Details</BreadcrumbPage>
+                    </BreadcrumbItem>
+                  </BreadcrumbList>
+                </Breadcrumb>
+              ) : null}
+              {children}
+            </div>
+          </AutoBreadcrumbProvider>
         </main>
       </div>
 

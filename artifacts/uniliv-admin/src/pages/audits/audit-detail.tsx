@@ -3,31 +3,24 @@ import { useParams, useLocation, Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
-  AlertCircle, ArrowLeft, ArrowRight, Bell, BellRing, ClipboardList,
-  FileBarChart, FileText, Loader2, Lock, MapPin, MessageSquare, Paperclip,
-  Pause, Play, Settings2, Share2, ShieldAlert, TrendingUp, UserPlus, X, XCircle,
+  AlertCircle, ArrowLeft, ArrowRight, Bell, ClipboardList,
+  FileBarChart, Loader2, Lock, MapPin, MessageSquare,
+  Play, Settings2, Share2, ShieldAlert, TrendingUp, UserPlus,
   type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { FormModal } from "@/components/ui/form-modal";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { locateOnce } from "@/hooks/use-geolocation";
 import { apiFetch } from "@/lib/api-fetch";
-import { fileToDownscaledDataUrl } from "@/lib/image";
 import { usePermissions } from "@/lib/use-permissions";
 import {
   AUDIT_STATE_BADGE, COMPLETED_AUDIT_STATES, RUNNABLE_STATES,
   fmtDateTime, fmtDuration, scoreColorClass, titleCase,
-  type ApiError, type ApiList, type ApiOne, type AuditCommentRow,
+  type ApiList, type ApiOne,
   type AuditDetailRow, type AuditEventRow, type AuditState, type RunPayload,
 } from "./lib";
 import { TypeBadge } from "./shared";
@@ -50,7 +43,6 @@ const EVENT_ICONS: Record<string, LucideIcon> = {
 function runnerLabel(state: AuditState): string {
   switch (state) {
     case "SCHEDULED": return "Start audit";
-    case "PAUSED": return "Resume audit";
     case "REJECTED": return "Start rework";
     default: return "Open runner";
   }
@@ -70,20 +62,16 @@ function MetaItem({ label, children }: { label: string; children: React.ReactNod
   );
 }
 
-/** Audit detail (FRD-EXE-01) — header, meta, Details/Comments/Activity, state-legal actions. */
+/** Audit detail (FRD-EXE-01) — header, meta, Details/Activity, state-legal actions. */
 export default function AuditDetail() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const { me, can } = usePermissions();
+  const { me } = usePermissions();
 
   const [tab, setTab] = React.useState("details");
-  const [cancelOpen, setCancelOpen] = React.useState(false);
-  const [cancelReason, setCancelReason] = React.useState("");
-  const [reassignOpen, setReassignOpen] = React.useState(false);
-  const [reassignTo, setReassignTo] = React.useState("");
   const [starting, setStarting] = React.useState(false);
 
   const auditQuery = useQuery({
@@ -92,26 +80,15 @@ export default function AuditDetail() {
   });
   const audit = auditQuery.data?.data;
 
-  const commentsQuery = useQuery({
-    queryKey: ["/audits", id, "comments"],
-    queryFn: () => apiFetch<ApiList<AuditCommentRow>>(`/audits/${id}/comments`),
-    enabled: tab === "comments",
-  });
   const eventsQuery = useQuery({
     queryKey: ["/audits", id, "events"],
     queryFn: () => apiFetch<ApiList<AuditEventRow>>(`/audits/${id}/events`),
     enabled: tab === "activity",
   });
-  const usersQuery = useQuery({
-    queryKey: ["/users", "reassign-picker"],
-    queryFn: () =>
-      apiFetch<ApiList<{ id: string; name: string; role: string }>>("/users?limit=100"),
-    enabled: reassignOpen,
-  });
 
   // Completed audits: pull the run payload to build the prototype scorecard
-  // (per-category scores + flagged findings) — server pre-computes per-response
-  // earned/max, so we just aggregate.
+  // (per-category scores) — server pre-computes per-response earned/max, so we
+  // just aggregate.
   const scored = !!audit && COMPLETED_AUDIT_STATES.includes(audit.state);
   const runQuery = useQuery({
     queryKey: ["/audits", id, "run"],
@@ -138,15 +115,9 @@ export default function AuditDetail() {
         return { id: s.id, name: s.title, pct: a && a.max > 0 ? Math.round((a.earned / a.max) * 100) : null };
       })
       .filter((c): c is { id: string; name: string; pct: number } => c.pct != null);
-    const qPrompt = new Map<string, string>();
-    for (const s of run.sections) for (const q of s.questions) qPrompt.set(q.id, q.prompt);
-    const flagged = run.ncs.map((n) => ({
-      id: n.id, ncNo: n.ncNo, severity: n.severity, desc: n.description,
-      prompt: n.questionId ? qPrompt.get(n.questionId) ?? null : null,
-    }));
     const proof = run.evidence.find((e) => e.kind === "SUBMISSION_PROOF") ?? null;
     const passLine = run.version.passThresholdPct != null ? Number(run.version.passThresholdPct) : 75;
-    return { cats, flagged, proof, passLine };
+    return { cats, proof, passLine };
   }, [runQuery.data]);
 
   const invalidate = () => {
@@ -168,102 +139,6 @@ export default function AuditDetail() {
     },
     onError: (e: Error) => toast({ title: e.message || "Could not start", variant: "destructive" }),
     onSettled: () => setStarting(false),
-  });
-
-  const actionMut = useMutation({
-    mutationFn: ({ action, body }: { action: "pause" | "resume" | "cancel"; body?: unknown }) =>
-      apiFetch(`/audits/${id}/${action}`, { method: "POST", body: JSON.stringify(body ?? {}) }),
-    onSuccess: (_r, vars) => {
-      toast({ title: `Audit ${vars.action === "cancel" ? "cancelled" : `${vars.action}d`}` });
-      setCancelOpen(false);
-      invalidate();
-    },
-    onError: (e: Error) => {
-      setCancelOpen(false);
-      toast({ title: e.message || "Action failed", variant: "destructive" });
-    },
-  });
-
-  const nudgeMut = useMutation({
-    mutationFn: () => apiFetch(`/audits/${id}/nudge`, { method: "POST", body: JSON.stringify({}) }),
-    onSuccess: () => toast({ title: "Nudge sent to the assignee" }),
-    onError: (e: ApiError) =>
-      toast({
-        title: e.status === 429 ? "Rate limited" : "Nudge failed",
-        description: e.message,
-        variant: "destructive",
-      }),
-  });
-
-  const reassignMut = useMutation({
-    mutationFn: () =>
-      apiFetch(`/audits/${id}/reassign`, {
-        method: "POST",
-        body: JSON.stringify({ assigneeId: reassignTo }),
-      }),
-    onSuccess: () => {
-      toast({ title: "Audit reassigned" });
-      setReassignOpen(false);
-      setReassignTo("");
-      invalidate();
-    },
-    onError: (e: Error) => toast({ title: e.message || "Reassign failed", variant: "destructive" }),
-  });
-
-  const [commentBody, setCommentBody] = React.useState("");
-  const [attachments, setAttachments] = React.useState<{ dataUrl: string; originalName: string; isImage: boolean }[]>([]);
-  const [attaching, setAttaching] = React.useState(false);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
-
-  const onPickFiles = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const room = Math.max(0, 5 - attachments.length);
-    const picked = Array.from(files).slice(0, room);
-    if (picked.length < files.length) {
-      toast({ title: "Up to 5 attachments per comment", variant: "destructive" });
-    }
-    setAttaching(true);
-    try {
-      const next = await Promise.all(
-        picked.map(async (file) => {
-          const isImage = file.type.startsWith("image/");
-          const dataUrl = isImage
-            ? await fileToDownscaledDataUrl(file)
-            : await new Promise<string>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result as string);
-                reader.onerror = () => reject(new Error("Could not read file"));
-                reader.readAsDataURL(file);
-              });
-          return { dataUrl, originalName: file.name, isImage };
-        }),
-      );
-      setAttachments((a) => [...a, ...next].slice(0, 5));
-    } catch (e) {
-      toast({ title: (e as Error).message || "Could not read file", variant: "destructive" });
-    } finally {
-      setAttaching(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
-  const commentMut = useMutation({
-    mutationFn: () =>
-      apiFetch(`/audits/${id}/comments`, {
-        method: "POST",
-        body: JSON.stringify({
-          body: commentBody.trim(),
-          ...(attachments.length
-            ? { attachments: attachments.map((a) => ({ dataUrl: a.dataUrl, originalName: a.originalName })) }
-            : {}),
-        }),
-      }),
-    onSuccess: () => {
-      setCommentBody("");
-      setAttachments([]);
-      qc.invalidateQueries({ queryKey: ["/audits", id, "comments"] });
-    },
-    onError: (e: Error) => toast({ title: e.message || "Comment failed", variant: "destructive" }),
   });
 
   if (auditQuery.isLoading) {
@@ -289,9 +164,7 @@ export default function AuditDetail() {
 
   const isAssignee = !!me?.id && me.id === audit.assigneeId;
   const completed = COMPLETED_AUDIT_STATES.includes(audit.state) || audit.state === "CANCELLED";
-  const pending = audit.state === "DRAFT" || audit.state === "SCHEDULED";
   const runnable = isAssignee && RUNNABLE_STATES.includes(audit.state);
-  const isAdmin = can("AUDIT_SCHEDULES", "edit");
   const pct = audit.scorePct != null ? Number(audit.scorePct) : null;
 
   const footerActions: React.ReactNode[] = [];
@@ -314,64 +187,6 @@ export default function AuditDetail() {
     footerActions.push(
       <Button key="open" className="min-h-11" onClick={() => navigate(`/audits/${id}/run`)}>
         <ClipboardList className="mr-2 h-4 w-4" /> Open runner
-      </Button>,
-      <Button
-        key="pause"
-        variant="outline"
-        className="min-h-11"
-        disabled={actionMut.isPending}
-        onClick={() => actionMut.mutate({ action: "pause" })}
-      >
-        <Pause className="mr-2 h-4 w-4" /> Pause
-      </Button>,
-    );
-  }
-  if (isAssignee && audit.state === "PAUSED") {
-    footerActions.push(
-      <Button
-        key="resume"
-        className="min-h-11"
-        disabled={actionMut.isPending}
-        onClick={() => actionMut.mutate({ action: "resume" })}
-      >
-        <Play className="mr-2 h-4 w-4" /> Resume
-      </Button>,
-    );
-  }
-  if (!completed) {
-    footerActions.push(
-      <Button
-        key="nudge"
-        variant="outline"
-        className="min-h-11"
-        disabled={nudgeMut.isPending}
-        onClick={() => nudgeMut.mutate()}
-      >
-        <BellRing className="mr-2 h-4 w-4" /> Nudge
-      </Button>,
-    );
-    if (isAdmin) {
-      footerActions.push(
-        <Button
-          key="reassign"
-          variant="outline"
-          className="min-h-11"
-          onClick={() => setReassignOpen(true)}
-        >
-          <UserPlus className="mr-2 h-4 w-4" /> Reassign
-        </Button>,
-      );
-    }
-  }
-  if (pending && can("AUDIT_EXECUTION", "delete")) {
-    footerActions.push(
-      <Button
-        key="cancel"
-        variant="outline"
-        className="min-h-11 text-destructive hover:text-destructive"
-        onClick={() => setCancelOpen(true)}
-      >
-        <XCircle className="mr-2 h-4 w-4" /> Cancel
       </Button>,
     );
   }
@@ -458,7 +273,7 @@ export default function AuditDetail() {
             </Card>
           )}
 
-          {/* Verification + Flagged */}
+          {/* Verification */}
           <div className="grid gap-4 sm:grid-cols-2">
             <Card>
               <CardContent className="space-y-2 p-5 text-sm">
@@ -485,24 +300,6 @@ export default function AuditDetail() {
                 )}
               </CardContent>
             </Card>
-            {scorecard.flagged.length > 0 && (
-              <Card>
-                <CardContent className="p-5">
-                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-warning">Flagged · {scorecard.flagged.length}</div>
-                  <div className="space-y-2">
-                    {scorecard.flagged.map((f) => (
-                      <div key={f.id} className="flex gap-2 border-b border-dashed border-border pb-2 last:border-0 last:pb-0">
-                        <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", f.severity === "CRITICAL" ? "bg-destructive" : f.severity === "MAJOR" ? "bg-warning" : "bg-muted-foreground")} />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium">{f.prompt ?? f.ncNo}</div>
-                          <div className="text-xs text-muted-foreground">{f.ncNo} · {titleCase(f.severity)}{f.desc ? ` — ${f.desc}` : ""}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            )}
           </div>
         </div>
       )}
@@ -592,7 +389,6 @@ export default function AuditDetail() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="details">Details</TabsTrigger>
-          <TabsTrigger value="comments">Comments</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
 
@@ -631,126 +427,6 @@ export default function AuditDetail() {
               </CardContent>
             </Card>
           )}
-        </TabsContent>
-
-        <TabsContent value="comments" className="space-y-4 pt-2">
-          {commentsQuery.isLoading ? (
-            <Skeleton className="h-32 w-full" />
-          ) : (
-            <div className="space-y-3">
-              {(commentsQuery.data?.data ?? []).length === 0 && (
-                <p className="py-6 text-center text-sm text-muted-foreground">No comments yet.</p>
-              )}
-              {(commentsQuery.data?.data ?? []).map((c) => (
-                <div key={c.id} className="rounded-lg border bg-card p-3">
-                  <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">{c.authorName ?? "Unknown"}</span>
-                    {c.authorRole && <span>{titleCase(c.authorRole)}</span>}
-                    <span>· {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}</span>
-                  </div>
-                  {c.body && <p className="whitespace-pre-wrap text-sm">{c.body}</p>}
-                  {c.attachments && c.attachments.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {c.attachments.map((att, i) => {
-                        const isImage = att.mime.startsWith("image/");
-                        return (
-                          <a
-                            key={i}
-                            href={att.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="group flex items-center gap-1.5 overflow-hidden rounded-md border bg-muted/40 text-xs hover:bg-muted"
-                            title={att.originalName ?? undefined}
-                          >
-                            {isImage ? (
-                              <img
-                                src={att.thumbUrl ?? att.url}
-                                alt={att.originalName ?? "attachment"}
-                                className="h-12 w-12 object-cover"
-                              />
-                            ) : (
-                              <span className="flex h-12 w-12 items-center justify-center">
-                                <FileText className="h-5 w-5 text-muted-foreground" />
-                              </span>
-                            )}
-                            <span className="max-w-[120px] truncate pr-2 text-muted-foreground group-hover:text-foreground">
-                              {att.originalName ?? (isImage ? "Image" : "Document")}
-                            </span>
-                          </a>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="space-y-2">
-            <Textarea
-              value={commentBody}
-              onChange={(e) => setCommentBody(e.target.value)}
-              placeholder="Add a comment…"
-              rows={3}
-              className="text-base"
-            />
-            {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {attachments.map((a, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-1.5 overflow-hidden rounded-md border bg-muted/40 pr-1 text-xs"
-                  >
-                    {a.isImage ? (
-                      <img src={a.dataUrl} alt={a.originalName} className="h-10 w-10 object-cover" />
-                    ) : (
-                      <span className="flex h-10 w-10 items-center justify-center">
-                        <FileText className="h-4 w-4 text-muted-foreground" />
-                      </span>
-                    )}
-                    <span className="max-w-[110px] truncate">{a.originalName}</span>
-                    <button
-                      type="button"
-                      className="rounded p-0.5 hover:bg-muted"
-                      onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
-                      aria-label="Remove attachment"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,application/pdf"
-              multiple
-              className="hidden"
-              onChange={(e) => void onPickFiles(e.target.files)}
-            />
-            <div className="flex items-center justify-between gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="min-h-11 sm:min-h-9"
-                disabled={attaching || attachments.length >= 5}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {attaching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Paperclip className="mr-2 h-4 w-4" />}
-                Attach{attachments.length > 0 ? ` (${attachments.length}/5)` : ""}
-              </Button>
-              <Button
-                size="sm"
-                className="min-h-11 sm:min-h-9"
-                disabled={(!commentBody.trim() && attachments.length === 0) || commentMut.isPending}
-                onClick={() => commentMut.mutate()}
-              >
-                {commentMut.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Post comment
-              </Button>
-            </div>
-          </div>
         </TabsContent>
 
         <TabsContent value="activity" className="pt-2">
@@ -808,57 +484,6 @@ export default function AuditDetail() {
         </div>
       )}
 
-      {/* Cancel dialog */}
-      <FormModal
-        open={cancelOpen}
-        onOpenChange={setCancelOpen}
-        title="Cancel audit"
-        onSave={() => actionMut.mutate({ action: "cancel", body: { reason: cancelReason.trim() || "Cancelled" } })}
-        isSaving={actionMut.isPending}
-        saveLabel="Cancel audit"
-      >
-        <div className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            Only pending audits can be cancelled. This cannot be undone.
-          </p>
-          <Label>Reason</Label>
-          <Textarea
-            value={cancelReason}
-            onChange={(e) => setCancelReason(e.target.value)}
-            placeholder="Why is this audit being cancelled?"
-            rows={3}
-          />
-        </div>
-      </FormModal>
-
-      {/* Reassign dialog (admin) */}
-      <FormModal
-        open={reassignOpen}
-        onOpenChange={(o) => { setReassignOpen(o); if (!o) setReassignTo(""); }}
-        title="Reassign audit"
-        onSave={() => { if (reassignTo) reassignMut.mutate(); }}
-        isSaving={reassignMut.isPending}
-        saveLabel="Reassign"
-      >
-        <div className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            Both the current and the new auditor are notified. Allowed until submission.
-          </p>
-          <Label>New assignee</Label>
-          <Select value={reassignTo} onValueChange={setReassignTo}>
-            <SelectTrigger>
-              <SelectValue placeholder={usersQuery.isLoading ? "Loading users…" : "Pick a user"} />
-            </SelectTrigger>
-            <SelectContent>
-              {(usersQuery.data?.data ?? []).map((u) => (
-                <SelectItem key={u.id} value={u.id}>
-                  {u.name} · {titleCase(u.role)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </FormModal>
     </div>
   );
 }

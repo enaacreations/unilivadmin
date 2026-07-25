@@ -2,32 +2,26 @@ import * as React from "react";
 import { useParams, useLocation, Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  AlertCircle, AlertTriangle, ArrowLeft, Camera, Check, CheckCircle2,
-  ChevronRight, Eraser, Info, Loader2, Lock, MapPinOff, Pen, Play, Plus,
-  RotateCcw, Send, Star, Trash2, X,
+  AlertCircle, AlertTriangle, ArrowLeft, Camera, CheckCircle2,
+  ChevronRight, Eraser, Info, Loader2, Lock, MapPinOff, Pen,
+  RotateCcw, Send, Star, X,
 } from "lucide-react";
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DatePicker } from "@/components/ui/date-picker";
 import {
   Drawer, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle,
 } from "@/components/ui/drawer";
-import { FormModal } from "@/components/ui/form-modal";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useToast } from "@/hooks/use-toast";
 import { locateOnce } from "@/hooks/use-geolocation";
 import { apiFetch } from "@/lib/api-fetch";
@@ -36,10 +30,10 @@ import { cn } from "@/lib/utils";
 import { useConfetti } from "@/components/ui/confetti";
 import { CameraCapture, type CaptureMeta } from "@/components/audits/camera-capture";
 import {
-  AUDIT_STATE_BADGE, NC_SEVERITIES, NON_SCORED_TYPES,
-  resolveMultiplierClient, scoreColorClass, titleCase,
-  type ApiError, type ApiList, type ApiOne, type NcSeverity, type QuestionType,
-  type RunEvidence, type RunNc, type RunPayload, type RunQuestion, type RunSection,
+  AUDIT_STATE_BADGE, NON_SCORED_TYPES,
+  scoreColorClass, titleCase,
+  type ApiError, type ApiOne,
+  type RunEvidence, type RunPayload, type RunQuestion, type RunSection,
   type ScaleSnapshot, type SubmitBlocker, type SubmitCheck,
 } from "./lib";
 
@@ -62,8 +56,6 @@ type AnswersMap = Record<string, LocalAnswer>;
 function hasAnswer(a: LocalAnswer | undefined): boolean {
   return !!a && (a.isNa || (a.answerJson != null && a.answerJson !== ""));
 }
-
-const ADHOC_TYPES: QuestionType[] = ["RATING", "YES_NO_NA", "PASS_FAIL", "TEXT"];
 
 /* ── Small pieces ────────────────────────────────────────────────────────── */
 
@@ -213,8 +205,7 @@ function AnswerInput({
                 type="button"
                 disabled={!editable}
                 // Re-tapping the current answer is a no-op (matches the old
-                // ToggleGroup) so it doesn't fire a redundant save / re-open
-                // the auto-NC dialog.
+                // ToggleGroup) so it doesn't fire a redundant save.
                 onClick={() => { if (current !== v) onAnswer({ value: v }); }}
                 className={cn(
                   "inline-flex h-11 w-full items-center justify-center rounded-[10px] border px-3 text-sm font-semibold transition-colors disabled:opacity-60",
@@ -418,27 +409,21 @@ function AnswerInput({
 /* ── Question card ───────────────────────────────────────────────────────── */
 
 function QuestionCard({
-  question, local, snapshot, editable, evidence, nc, ncSuggestedStale, maxFiles,
-  bulkMode, bulkSelected, flash,
-  onAnswer, onNotes, onRetry, onOpenCamera, onDeleteEvidence, onToggleBulk,
+  question, local, snapshot, editable, evidence, maxFiles, flash,
+  onAnswer, onNotes, onRetry, onOpenCamera, onDeleteEvidence,
 }: {
   question: RunQuestion;
   local: LocalAnswer | undefined;
   snapshot: ScaleSnapshot | null;
   editable: boolean;
   evidence: RunEvidence[];
-  nc: RunNc | undefined;
-  ncSuggestedStale: boolean;
   maxFiles: number;
-  bulkMode: boolean;
-  bulkSelected: boolean;
   flash: boolean;
   onAnswer: (answerJson: unknown) => void;
   onNotes: (notes: string) => void;
   onRetry: () => void;
   onOpenCamera: () => void;
   onDeleteEvidence: (eid: string) => void;
-  onToggleBulk: (checked: boolean) => void;
 }) {
   const [notesOpen, setNotesOpen] = React.useState(!!local?.notes);
   React.useEffect(() => {
@@ -474,14 +459,6 @@ function QuestionCard({
       }`}
     >
       <div className="flex items-start gap-3">
-        {bulkMode && (
-          <Checkbox
-            className="mt-1"
-            checked={bulkSelected}
-            onCheckedChange={(c) => onToggleBulk(c === true)}
-            aria-label="Select for bulk answer"
-          />
-        )}
         <div className="min-w-0 flex-1 space-y-3">
           {/* Prompt row */}
           <div className="flex items-start justify-between gap-2">
@@ -506,32 +483,6 @@ function QuestionCard({
               <SaveDot state={local?.saveState ?? "idle"} onRetry={onRetry} />
             </div>
           </div>
-
-          {/* NC chips */}
-          {(nc || ncSuggestedStale) && (
-            <div className="flex flex-wrap gap-1.5">
-              {nc && (
-                <Badge variant="destructive" className="gap-1">
-                  <AlertTriangle className="h-3 w-3" /> {nc.ncNo} · {titleCase(nc.severity)}
-                </Badge>
-              )}
-              {!nc && ncSuggestedStale && (
-                <Badge variant="warning" className="gap-1">
-                  <AlertTriangle className="h-3 w-3" /> NC suggested
-                </Badge>
-              )}
-            </div>
-          )}
-
-          {/* Prototype: a raised finding reads as a full callout, not just a chip. */}
-          {nc && (
-            <div className="rounded-[10px] bg-danger-soft px-3.5 py-3 text-[13px]">
-              <div className="mb-0.5 font-semibold text-destructive">A finding was raised</div>
-              <div className="text-muted-foreground">
-                {nc.description ? `"${nc.description}" — ` : ""}the property team has been asked to fix it before its deadline.
-              </div>
-            </div>
-          )}
 
           {/* Answer input */}
           <AnswerInput
@@ -642,10 +593,6 @@ export default function AuditRunner() {
   const snapshot = run?.scaleSnapshot ?? null;
   const sections: RunSection[] = React.useMemo(() => run?.sections ?? [], [run]);
   const allQuestions = React.useMemo(() => sections.flatMap((s) => s.questions), [sections]);
-  const questionById = React.useMemo(
-    () => new Map(allQuestions.map((q) => [q.id, q])),
-    [allQuestions],
-  );
 
   const isAssignee = !!me?.id && !!audit && me.id === audit.assigneeId;
   const editable = isAssignee && audit?.state === "IN_PROGRESS";
@@ -681,16 +628,6 @@ export default function AuditRunner() {
     });
   }, [run]);
 
-  const [ncDialog, setNcDialog] = React.useState<{
-    questionId: string;
-    responseId: string | null;
-    severity: NcSeverity;
-    description: string;
-  } | null>(null);
-  const [ncOwnerRequired, setNcOwnerRequired] = React.useState(false);
-  const [ncOwnerId, setNcOwnerId] = React.useState("");
-  const [suggestedQids, setSuggestedQids] = React.useState<Set<string>>(new Set());
-
   const invalidateRun = React.useCallback(() => {
     qc.invalidateQueries({ queryKey: ["/audits", id, "run"] });
     qc.invalidateQueries({ queryKey: ["/audits", id] });
@@ -701,14 +638,13 @@ export default function AuditRunner() {
       const local = answersRef.current[qid];
       if (!local) return Promise.resolve();
       const revAtSend = local.rev;
-      const question = questionById.get(qid);
-      const promise = apiFetch<ApiOne<{ id: string; ncSuggested: boolean; ncRule: { severity: NcSeverity } | null }>>(
+      // isNa (and all scoring) is derived server-side from the answer.
+      const promise = apiFetch<ApiOne<{ id: string }>>(
         `/audits/${id}/responses/${qid}`,
         {
           method: "PUT",
           body: JSON.stringify({
             answerJson: local.answerJson,
-            isNa: local.isNa,
             notes: local.notes,
           }),
         },
@@ -726,24 +662,6 @@ export default function AuditRunner() {
               },
             };
           });
-          if (res.data.ncSuggested && question) {
-            setNcOwnerRequired(false);
-            setNcOwnerId("");
-            setNcDialog({
-              questionId: qid,
-              responseId: res.data.id,
-              severity: res.data.ncRule?.severity ?? "MINOR",
-              description: `Failed: ${question.prompt}`,
-            });
-          } else {
-            // Answer changed to something clean — drop a stale suggestion chip.
-            setSuggestedQids((prev) => {
-              if (!prev.has(qid)) return prev;
-              const next = new Set(prev);
-              next.delete(qid);
-              return next;
-            });
-          }
         })
         .catch((e: Error) => {
           setAnswers((prev) => {
@@ -758,7 +676,7 @@ export default function AuditRunner() {
       inflightRef.current.set(qid, promise);
       return promise;
     },
-    [id, questionById, toast],
+    [id, toast],
   );
 
   const queueSave = React.useCallback(
@@ -793,14 +711,15 @@ export default function AuditRunner() {
 
   const setAnswer = React.useCallback(
     (question: RunQuestion, answerJson: unknown) => {
-      const resolved = resolveMultiplierClient(question, answerJson, snapshot);
       setAnswers((prev) => {
         const cur = prev[question.id];
         return {
           ...prev,
           [question.id]: {
             answerJson,
-            isNa: resolved.isNa,
+            // Server derives isNa (and all scoring) on save; the refetch
+            // reconciles this local placeholder.
+            isNa: false,
             notes: cur?.notes ?? null,
             responseId: cur?.responseId ?? null,
             saveState: "pending",
@@ -810,7 +729,7 @@ export default function AuditRunner() {
       });
       queueSave(question.id);
     },
-    [queueSave, snapshot],
+    [queueSave],
   );
 
   const setNotes = React.useCallback(
@@ -834,32 +753,13 @@ export default function AuditRunner() {
     [queueSave],
   );
 
-  /* — Derived progress & provisional score — */
+  /* — Derived progress (scoring is server-side at submit) — */
   const progress = React.useMemo(() => {
     const applicable = allQuestions.filter((q) => q.type !== "INSTRUCTION");
     const answered = applicable.filter((q) => hasAnswer(answers[q.id]));
     const mandatoryLeft = applicable.filter((q) => q.mandatory && !hasAnswer(answers[q.id])).length;
     return { total: applicable.length, answered: answered.length, mandatoryLeft };
   }, [allQuestions, answers]);
-
-  const scoreOf = React.useCallback(
-    (questions: RunQuestion[]): number | null => {
-      let earned = 0;
-      let max = 0;
-      for (const q of questions) {
-        if (NON_SCORED_TYPES.has(q.type) || q.weight <= 0) continue;
-        const local = answers[q.id];
-        if (!hasAnswer(local)) continue;
-        const r = resolveMultiplierClient(q, local!.answerJson, snapshot);
-        if (r.isNa || r.multiplierPct == null) continue;
-        earned += (r.multiplierPct / 100) * q.weight;
-        max += q.weight;
-      }
-      return max > 0 ? (earned / max) * 100 : null;
-    },
-    [answers, snapshot],
-  );
-  const provisionalPct = React.useMemo(() => scoreOf(allQuestions), [scoreOf, allQuestions]);
 
   /* — Accordion: default-open the first incomplete section — */
   const [openSection, setOpenSection] = React.useState<string>("");
@@ -878,7 +778,7 @@ export default function AuditRunner() {
     setOpenSection((firstIncomplete ?? sections[0])!.id);
   }, [sections, run]);
 
-  /* — Evidence & NCs by question — */
+  /* — Evidence by question — */
   const evidenceByResponse = React.useMemo(() => {
     const map = new Map<string, RunEvidence[]>();
     for (const e of run?.evidence ?? []) {
@@ -889,11 +789,6 @@ export default function AuditRunner() {
     }
     return map;
   }, [run?.evidence]);
-  const ncByQuestion = React.useMemo(() => {
-    const map = new Map<string, RunNc>();
-    for (const nc of run?.ncs ?? []) if (nc.questionId) map.set(nc.questionId, nc);
-    return map;
-  }, [run?.ncs]);
   const hasSubmissionProof = React.useMemo(
     () =>
       (run?.evidence ?? []).some(
@@ -904,15 +799,13 @@ export default function AuditRunner() {
 
   /* — State transitions from the runner — */
   const [transitionBusy, setTransitionBusy] = React.useState(false);
-  const startOrResume = async (action: "start" | "resume") => {
+  const startAudit = async () => {
     setTransitionBusy(true);
     try {
       const body: Record<string, unknown> = {};
-      if (action === "start") {
-        const geo = await locateOnce();
-        if (geo) body["geo"] = { lat: geo.lat, lng: geo.lng };
-      }
-      await apiFetch(`/audits/${id}/${action}`, { method: "POST", body: JSON.stringify(body) });
+      const geo = await locateOnce();
+      if (geo) body["geo"] = { lat: geo.lat, lng: geo.lng };
+      await apiFetch(`/audits/${id}/start`, { method: "POST", body: JSON.stringify(body) });
       invalidateRun();
     } catch (e) {
       toast({ title: (e as Error).message || "Action failed", variant: "destructive" });
@@ -1002,160 +895,6 @@ export default function AuditRunner() {
       toast({ title: (e as Error).message || "Delete failed", variant: "destructive" });
     }
   };
-
-  /* — Auto-NC dialog — */
-  const usersQuery = useQuery({
-    queryKey: ["/users", "nc-owner-picker"],
-    queryFn: () => apiFetch<ApiList<{ id: string; name: string; role: string }>>("/users?limit=100"),
-    enabled: ncOwnerRequired,
-  });
-  const ncMut = useMutation({
-    mutationFn: () =>
-      apiFetch<ApiOne<{ ncNo: string }>>(`/audits/${id}/ncs`, {
-        method: "POST",
-        body: JSON.stringify({
-          responseId: ncDialog?.responseId ?? undefined,
-          questionId: ncDialog?.questionId,
-          severity: ncDialog?.severity,
-          description: ncDialog?.description,
-          ...(ncOwnerId ? { ownerId: ncOwnerId } : {}),
-        }),
-      }),
-    onSuccess: (res) => {
-      toast({ title: `Finding ${res.data.ncNo} raised` });
-      if (ncDialog) {
-        setSuggestedQids((prev) => {
-          const next = new Set(prev);
-          next.delete(ncDialog.questionId);
-          return next;
-        });
-      }
-      setNcDialog(null);
-      setNcOwnerRequired(false);
-      setNcOwnerId("");
-      invalidateRun();
-    },
-    onError: (e: ApiError) => {
-      if (e.status === 422 && /owner/i.test(e.message)) {
-        setNcOwnerRequired(true);
-        toast({
-          title: "Pick an owner",
-          description: "The property has no Unit Lead — choose who owns this finding.",
-          variant: "destructive",
-        });
-        return;
-      }
-      toast({ title: e.message || "Could not raise the finding", variant: "destructive" });
-    },
-  });
-  const dismissNcDialog = () => {
-    if (ncDialog) setSuggestedQids((prev) => new Set(prev).add(ncDialog.questionId));
-    setNcDialog(null);
-    setNcOwnerRequired(false);
-    setNcOwnerId("");
-  };
-
-  /* — Bulk answer — */
-  const [bulkSectionId, setBulkSectionId] = React.useState<string | null>(null);
-  const [bulkSelected, setBulkSelected] = React.useState<Set<string>>(new Set());
-  const [bulkAnswer, setBulkAnswer] = React.useState<string>("");
-  const [bulkNote, setBulkNote] = React.useState("");
-  const bulkSection = sections.find((s) => s.id === bulkSectionId) ?? null;
-  const bulkType: QuestionType | null = React.useMemo(() => {
-    if (!bulkSection) return null;
-    const counts = new Map<QuestionType, number>();
-    for (const q of bulkSection.questions) {
-      if (q.type === "RATING" || q.type === "YES_NO_NA" || q.type === "PASS_FAIL") {
-        counts.set(q.type, (counts.get(q.type) ?? 0) + 1);
-      }
-    }
-    let best: QuestionType | null = null;
-    let bestCount = 0;
-    for (const [t, c] of counts) if (c > bestCount) { best = t; bestCount = c; }
-    return best;
-  }, [bulkSection]);
-  const exitBulk = () => {
-    setBulkSectionId(null);
-    setBulkSelected(new Set());
-    setBulkAnswer("");
-    setBulkNote("");
-  };
-  const bulkMut = useMutation({
-    mutationFn: () => {
-      const answerJson =
-        bulkType === "RATING" ? { optionId: bulkAnswer } : { value: bulkAnswer };
-      return apiFetch<ApiOne<{ questionId: string; ncSuggested: boolean }[]>>(
-        `/audits/${id}/responses/bulk`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            questionIds: [...bulkSelected],
-            answerJson,
-            ...(bulkNote.trim() ? { notes: bulkNote.trim() } : {}),
-          }),
-        },
-      );
-    },
-    onSuccess: (res) => {
-      const suggested = res.data.filter((r) => r.ncSuggested).map((r) => r.questionId);
-      if (suggested.length) {
-        setSuggestedQids((prev) => {
-          const next = new Set(prev);
-          for (const qid of suggested) next.add(qid);
-          return next;
-        });
-      }
-      toast({
-        title: `${res.data.length} answers applied`,
-        description: suggested.length ? `${suggested.length} flagged for a finding` : undefined,
-      });
-      // Reflect immediately, then let the refetch reconcile responseIds.
-      const answerJson = bulkType === "RATING" ? { optionId: bulkAnswer } : { value: bulkAnswer };
-      setAnswers((prev) => {
-        const next = { ...prev };
-        for (const qid of bulkSelected) {
-          const q = questionById.get(qid);
-          const resolved = q ? resolveMultiplierClient(q, answerJson, snapshot) : { isNa: false };
-          next[qid] = {
-            answerJson,
-            isNa: resolved.isNa,
-            notes: bulkNote.trim() || prev[qid]?.notes || null,
-            responseId: prev[qid]?.responseId ?? null,
-            saveState: "saved",
-            rev: (prev[qid]?.rev ?? 0) + 1,
-          };
-        }
-        return next;
-      });
-      exitBulk();
-      invalidateRun();
-    },
-    onError: (e: Error) => toast({ title: e.message || "Bulk answer failed", variant: "destructive" }),
-  });
-
-  /* — Ad-hoc questions — */
-  const [adhocFor, setAdhocFor] = React.useState<RunSection | null>(null);
-  const [adhocPrompt, setAdhocPrompt] = React.useState("");
-  const [adhocType, setAdhocType] = React.useState<QuestionType>("RATING");
-  const adhocMut = useMutation({
-    mutationFn: () =>
-      apiFetch(`/audits/${id}/adhoc-questions`, {
-        method: "POST",
-        body: JSON.stringify({
-          sectionId: adhocFor?.id,
-          prompt: adhocPrompt.trim(),
-          type: adhocType,
-        }),
-      }),
-    onSuccess: () => {
-      toast({ title: "Item added" });
-      setAdhocFor(null);
-      setAdhocPrompt("");
-      setAdhocType("RATING");
-      invalidateRun();
-    },
-    onError: (e: Error) => toast({ title: e.message || "Could not add item", variant: "destructive" }),
-  });
 
   /* — Submit sheet — */
   const [sheetOpen, setSheetOpen] = React.useState(false);
@@ -1258,11 +997,9 @@ export default function AuditRunner() {
   }
 
   const responsePolicy = run.policies.response;
-  const bulkActive = bulkSectionId != null;
   // Conduct redesign: gate the questions behind a dedicated Start screen so the
   // auditor does one thing at a time (matches "Audit App Prototype.dc.html").
   const notStarted = isAssignee && (audit.state === "SCHEDULED" || audit.state === "REJECTED");
-  const passLine = run.version.passThresholdPct != null ? Math.round(Number(run.version.passThresholdPct)) : null;
   // Per-category weight% = share of total scorable question weight (sections carry no weight of their own).
   const totalWeight = sections.reduce(
     (sum, s) => sum + s.questions.reduce((a, q) => a + (NON_SCORED_TYPES.has(q.type) ? 0 : Math.max(0, q.weight || 0)), 0),
@@ -1363,26 +1100,14 @@ export default function AuditRunner() {
           <Button
             className="h-[50px] w-full rounded-[12px] text-[15px] font-bold"
             disabled={transitionBusy}
-            onClick={() => startOrResume("start")}
+            onClick={() => void startAudit()}
           >
             {transitionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             {audit.state === "REJECTED" ? "Start rework →" : "Start audit →"}
           </Button>
         </div>
       )}
-      {isAssignee && audit.state === "PAUSED" && (
-        <Card className="mb-4">
-          <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
-            <Play className="h-8 w-8 text-primary" />
-            <p className="font-medium">This audit is paused.</p>
-            <Button className="min-h-11 px-8" disabled={transitionBusy} onClick={() => startOrResume("resume")}>
-              {transitionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-              Resume
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-      {!editable && !(isAssignee && ["SCHEDULED", "PAUSED", "REJECTED"].includes(audit.state)) && (
+      {!editable && !(isAssignee && ["SCHEDULED", "REJECTED"].includes(audit.state)) && (
         <div className="mb-4 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground">
           <Lock className="h-4 w-4 shrink-0" />
           {!isAssignee
@@ -1403,14 +1128,12 @@ export default function AuditRunner() {
         {sections.map((section) => {
           const applicable = section.questions.filter((q) => q.type !== "INSTRUCTION");
           const answeredCount = applicable.filter((q) => hasAnswer(answers[q.id])).length;
-          const sectionPct = scoreOf(section.questions);
           const secWeight = section.questions.reduce(
             (a, q) => a + (NON_SCORED_TYPES.has(q.type) ? 0 : Math.max(0, q.weight || 0)),
             0,
           );
           const secWeightPct = totalWeight > 0 ? Math.round((secWeight / totalWeight) * 100) : 0;
           const isOpen = openSection === section.id;
-          const inBulk = bulkSectionId === section.id;
           return (
             <AccordionItem
               key={section.id}
@@ -1430,40 +1153,12 @@ export default function AuditRunner() {
                   <span className="text-xs tabular-nums text-muted-foreground">
                     {answeredCount}/{applicable.length}
                   </span>
-                  {sectionPct != null && (
-                    <span className={`text-xs font-semibold tabular-nums ${scoreColorClass(sectionPct)}`}>
-                      {sectionPct.toFixed(0)}%
-                    </span>
-                  )}
                 </span>
               </AccordionTrigger>
               <AccordionContent>
                 {/* Perf (NFR-02): only the open section renders its questions. */}
                 {isOpen && (
                   <div className="space-y-3">
-                    {editable && (
-                      <div className="-mt-1 -mb-1 flex items-center justify-end gap-4">
-                        {inBulk && (
-                          <button
-                            type="button"
-                            onClick={() => setBulkSelected(new Set(applicable.map((q) => q.id)))}
-                            className="text-xs font-semibold text-muted-foreground hover:text-accent-strong"
-                          >
-                            Select all
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => (inBulk ? exitBulk() : (setBulkSectionId(section.id), setBulkSelected(new Set())))}
-                          className={cn(
-                            "text-xs font-semibold hover:text-accent-strong",
-                            inBulk ? "text-accent-strong" : "text-muted-foreground",
-                          )}
-                        >
-                          {inBulk ? "Done" : "Select multiple"}
-                        </button>
-                      </div>
-                    )}
                     {section.questions.map((q) => {
                       const local = answers[q.id];
                       const evidence = local?.responseId
@@ -1477,39 +1172,16 @@ export default function AuditRunner() {
                           snapshot={snapshot}
                           editable={editable}
                           evidence={evidence}
-                          nc={ncByQuestion.get(q.id)}
-                          ncSuggestedStale={suggestedQids.has(q.id)}
                           maxFiles={responsePolicy.maxFiles}
-                          bulkMode={inBulk}
-                          bulkSelected={bulkSelected.has(q.id)}
                           flash={flashQid === q.id}
                           onAnswer={(answerJson) => setAnswer(q, answerJson)}
                           onNotes={(notes) => setNotes(q, notes)}
                           onRetry={() => void doSave(q.id)}
                           onOpenCamera={() => setCameraTarget({ kind: "response", question: q })}
                           onDeleteEvidence={(eid) => void deleteEvidence(eid)}
-                          onToggleBulk={(checked) =>
-                            setBulkSelected((prev) => {
-                              const next = new Set(prev);
-                              if (checked) next.add(q.id);
-                              else next.delete(q.id);
-                              return next;
-                            })
-                          }
                         />
                       );
                     })}
-                    {editable && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="min-h-11 w-full border-dashed"
-                        onClick={() => setAdhocFor(section)}
-                      >
-                        <Plus className="mr-1.5 h-4 w-4" /> Add item
-                      </Button>
-                    )}
                   </div>
                 )}
               </AccordionContent>
@@ -1519,95 +1191,10 @@ export default function AuditRunner() {
       </Accordion>
       )}
 
-      {/* Bulk answer bar */}
-      {bulkActive && bulkSection && (
-        <div className="fixed inset-x-0 bottom-[76px] z-30 border-t bg-card shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)] md:left-64">
-          <div className="mx-auto w-full max-w-3xl space-y-2 px-4 py-3 sm:px-6">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-medium">
-                Bulk answer · {bulkSelected.size} selected
-              </p>
-              <Button type="button" variant="ghost" size="sm" onClick={exitBulk}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            {bulkType === "RATING" ? (
-              <div className="flex flex-wrap gap-2">
-                {[...(snapshot?.options ?? [])]
-                  .sort((x, y) => (x.orderIndex ?? 0) - (y.orderIndex ?? 0))
-                  .map((o) => (
-                    <button
-                      key={o.id}
-                      type="button"
-                      onClick={() => setBulkAnswer(o.id)}
-                      className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 text-sm ${
-                        bulkAnswer === o.id
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "bg-card hover:bg-muted"
-                      }`}
-                    >
-                      {o.color && (
-                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: o.color }} />
-                      )}
-                      {o.label}
-                    </button>
-                  ))}
-              </div>
-            ) : bulkType ? (
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                value={bulkAnswer}
-                onValueChange={(v) => { if (v) setBulkAnswer(v); }}
-                className="justify-start"
-              >
-                {(bulkType === "YES_NO_NA" ? ["YES", "NO", "NA"] : ["PASS", "FAIL"]).map((v) => (
-                  <ToggleGroupItem key={v} value={v} className="min-h-11 px-6 text-base">
-                    {v === "NA" ? "N/A" : titleCase(v)}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No bulk-answerable questions (Rating / Yes-No / Pass-Fail) in this section.
-              </p>
-            )}
-            <div className="flex items-center gap-2">
-              <Input
-                value={bulkNote}
-                onChange={(e) => setBulkNote(e.target.value)}
-                placeholder="Optional note for all selected"
-                className="min-h-11 text-base"
-              />
-              <Button
-                type="button"
-                className="min-h-11"
-                disabled={bulkSelected.size === 0 || !bulkAnswer || !bulkType || bulkMut.isPending}
-                onClick={() => bulkMut.mutate()}
-              >
-                {bulkMut.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                Apply
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Bottom live-score / submit dock */}
+      {/* Bottom submit dock (scoring is server-side at submit) */}
       {!notStarted && (
       <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)] md:left-64">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-3 sm:px-6">
-          <div className="shrink-0">
-            <div className="text-[10px] font-bold uppercase tracking-[0.07em] text-muted-foreground">Live score</div>
-            <div className="flex items-baseline gap-1.5">
-              <span className={cn("font-display text-2xl font-extrabold tabular-nums", scoreColorClass(provisionalPct))}>
-                {provisionalPct != null ? provisionalPct.toFixed(0) : "—"}
-              </span>
-              <span className="font-mono text-[11px] text-muted-foreground">
-                /100{passLine != null ? ` · pass ${passLine}` : ""}
-              </span>
-            </div>
-          </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-right text-xs text-muted-foreground">
               <span className="font-medium text-foreground tabular-nums">
@@ -1775,116 +1362,6 @@ export default function AuditRunner() {
         onCapture={uploadEvidence}
       />
 
-      {/* Auto-NC dialog */}
-      <FormModal
-        open={ncDialog != null}
-        onOpenChange={(o) => { if (!o) dismissNcDialog(); }}
-        title="Raise a finding?"
-        onSave={() => { if (ncDialog?.description.trim()) ncMut.mutate(); }}
-        isSaving={ncMut.isPending}
-        saveLabel="Raise NC"
-        cancelLabel="Dismiss"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            This answer trips the question's auto-NC rule. Confirm to raise a
-            non-conformance for the property team — attach evidence on the
-            question afterwards to strengthen it.
-          </p>
-          <div className="space-y-2">
-            <Label>Severity</Label>
-            <Select
-              value={ncDialog?.severity ?? "MINOR"}
-              onValueChange={(v) =>
-                setNcDialog((d) => (d ? { ...d, severity: v as NcSeverity } : d))
-              }
-            >
-              <SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {NC_SEVERITIES.map((s) => (
-                  <SelectItem key={s} value={s}>{titleCase(s)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>Description</Label>
-            <Textarea
-              value={ncDialog?.description ?? ""}
-              rows={3}
-              className="text-base"
-              onChange={(e) =>
-                setNcDialog((d) => (d ? { ...d, description: e.target.value } : d))
-              }
-            />
-          </div>
-          {ncOwnerRequired && (
-            <div className="space-y-2">
-              <Label>Owner</Label>
-              <p className="text-xs text-muted-foreground">
-                The property has no Unit Lead — pick who owns this finding.
-              </p>
-              <Select value={ncOwnerId} onValueChange={setNcOwnerId}>
-                <SelectTrigger className="min-h-11">
-                  <SelectValue placeholder={usersQuery.isLoading ? "Loading users…" : "Pick a user"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(usersQuery.data?.data ?? []).map((u) => (
-                    <SelectItem key={u.id} value={u.id}>
-                      {u.name} · {titleCase(u.role)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {usersQuery.isError && (
-                <p className="text-xs text-destructive">
-                  Couldn't load the user list with your role — ask an admin to
-                  assign a Unit Lead to this property, or raise the finding later.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      </FormModal>
-
-      {/* Ad-hoc question dialog */}
-      <FormModal
-        open={adhocFor != null}
-        onOpenChange={(o) => { if (!o) setAdhocFor(null); }}
-        title={`Add item — ${adhocFor?.title ?? ""}`}
-        onSave={() => { if (adhocPrompt.trim()) adhocMut.mutate(); }}
-        isSaving={adhocMut.isPending}
-        saveLabel="Add item"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Ad-hoc items get a fixed default weight and are queued for the
-            question bank (admin review).
-          </p>
-          <div className="space-y-2">
-            <Label>Prompt</Label>
-            <Textarea
-              value={adhocPrompt}
-              rows={3}
-              maxLength={500}
-              className="text-base"
-              placeholder="What should be checked?"
-              onChange={(e) => setAdhocPrompt(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Type</Label>
-            <Select value={adhocType} onValueChange={(v) => setAdhocType(v as QuestionType)}>
-              <SelectTrigger className="min-h-11"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {ADHOC_TYPES.map((t) => (
-                  <SelectItem key={t} value={t}>{titleCase(t)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </FormModal>
     </div>
   );
 }

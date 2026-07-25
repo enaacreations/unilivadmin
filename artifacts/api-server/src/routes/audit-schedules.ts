@@ -15,7 +15,6 @@ import {
   auditTemplateVersionsTable,
   propertiesTable,
   roomsTable,
-  usersTable,
 } from "@workspace/db";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
@@ -24,7 +23,7 @@ import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { appendAuditEvent } from "../lib/audit-events.js";
 import { auditActor } from "../lib/audit-service.js";
-import { enumerateOccurrences, isValidCron, resolveAssignee, type AssigneeRule } from "../lib/audit-jobs.js";
+import { enumerateOccurrences, isValidCron } from "../lib/audit-jobs.js";
 
 const router: IRouter = Router();
 
@@ -496,73 +495,6 @@ router.get(
     }
 
     res.json({ success: true, data: { audits, projected } });
-  },
-);
-
-/**
- * Auditor load preview (FRD-SCH-07): project every active schedule's
- * occurrences × targets over a window and bucket them per resolved assignee,
- * so a planner can spot overload before committing. Read-only; nothing persists.
- */
-router.get(
-  "/view/load-preview",
-  authenticate,
-  authorize("AUDIT_SCHEDULES", "view"),
-  async (req, res) => {
-    const from = req.query["from"] ? new Date(req.query["from"] as string) : new Date();
-    const to = req.query["to"]
-      ? new Date(req.query["to"] as string)
-      : new Date(from.getTime() + 30 * 86_400_000);
-    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to < from) {
-      throw httpError(400, "Invalid from/to range");
-    }
-
-    const schedules = await db
-      .select()
-      .from(auditSchedulesTable)
-      .where(eq(auditSchedulesTable.status, "ACTIVE"));
-
-    const byAssignee = new Map<string | null, number>();
-    let unassignedByRule = 0;
-    for (const schedule of schedules) {
-      const occurrences = enumerateOccurrences(schedule, new Date(from.getTime() - 1), to);
-      if (occurrences.length === 0) continue;
-      const targets = await db
-        .select()
-        .from(auditScheduleTargetsTable)
-        .where(eq(auditScheduleTargetsTable.scheduleId, schedule.id));
-      const rule = schedule.assigneeRule as AssigneeRule;
-      for (const target of targets) {
-        if (!target.propertyId) continue;
-        const assigneeId = await resolveAssignee(rule, target.propertyId);
-        if (!assigneeId) {
-          unassignedByRule += occurrences.length;
-          continue;
-        }
-        byAssignee.set(assigneeId, (byAssignee.get(assigneeId) ?? 0) + occurrences.length);
-      }
-    }
-
-    const assigneeIds = [...byAssignee.keys()].filter(Boolean) as string[];
-    const users = assigneeIds.length
-      ? await db
-          .select({ id: usersTable.id, name: usersTable.name, role: usersTable.role })
-          .from(usersTable)
-          .where(inArray(usersTable.id, assigneeIds))
-      : [];
-    const nameOf = new Map(users.map((u) => [u.id, u]));
-
-    const rows = [...byAssignee.entries()]
-      .filter(([id]) => id)
-      .map(([id, count]) => ({
-        assigneeId: id,
-        assigneeName: nameOf.get(id as string)?.name ?? id,
-        assigneeRole: nameOf.get(id as string)?.role ?? null,
-        count,
-      }))
-      .sort((a, b) => b.count - a.count);
-
-    res.json({ success: true, data: { window: { from, to }, byAuditor: rows, unassignedByRule } });
   },
 );
 

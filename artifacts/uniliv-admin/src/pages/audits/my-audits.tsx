@@ -6,13 +6,10 @@ import { AlertCircle, ClipboardCheck, RotateCcw } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { UserAvatar } from "@/components/ui/user-avatar";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiFetch } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
 import { fmtDateTime, type ApiList, type AuditRow, type AuditType } from "./lib";
 import { cn } from "@/lib/utils";
-import { MyFindingsPanel } from "./my-findings";
-import { NcBoardPanel } from "./nc-board";
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Conduct Home (redesign — "Audit App Prototype.dc.html", conducting personas).
@@ -294,36 +291,8 @@ function ConductHome() {
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
- * My Audits hub — the staff persona's single sidebar destination. Conduct home
- * plus their findings surfaces as tabs (permission-driven): "My findings"
- * (AUDIT_FINDINGS — UL/CM) and "Findings board" (AUDIT_NCS — CM/CX). Personas
- * with only conduct access get the plain home, no tab chrome.
- * ──────────────────────────────────────────────────────────────────────────── */
+/* My Audits — the staff persona's conduct home (the findings/NC subsystem was
+ * removed in the 2026-07 PRD trim, so no hub tabs remain). */
 export default function MyAudits() {
-  const { can } = usePermissions();
-  const tabs = [
-    { key: "audits", label: "My audits" },
-    ...(can("AUDIT_FINDINGS") ? [{ key: "findings", label: "My findings" }] : []),
-    ...(can("AUDIT_NCS") ? [{ key: "board", label: "Findings board" }] : []),
-  ];
-  const [tab, setTab] = React.useState("audits");
-
-  if (tabs.length === 1) return <ConductHome />;
-  return (
-    <div className="animate-fade-up">
-      <div className="mb-4 flex justify-center">
-        <Tabs value={tab} onValueChange={setTab}>
-          <TabsList>
-            {tabs.map((t) => <TabsTrigger key={t.key} value={t.key}>{t.label}</TabsTrigger>)}
-          </TabsList>
-        </Tabs>
-      </div>
-      {tab === "audits" && <ConductHome />}
-      {tab === "findings" && (
-        <div className="mx-auto max-w-[640px]"><MyFindingsPanel embedded /></div>
-      )}
-      {tab === "board" && <NcBoardPanel embedded />}
-    </div>
-  );
+  return <ConductHome />;
 }

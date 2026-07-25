@@ -2,10 +2,12 @@ import * as React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Archive, ArchiveRestore, Camera, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { MultiCombobox } from "@/components/ui/multi-combobox";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 import {
@@ -69,7 +71,7 @@ const EMPTY_FORM: BankForm = {
   optionsJson: [],
 };
 
-function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function Pill({ active, muted = false, onClick, children }: { active: boolean; muted?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       type="button"
@@ -78,13 +80,20 @@ function Pill({ active, onClick, children }: { active: boolean; onClick: () => v
         "rounded-full border px-3 py-[6px] text-[12px] font-semibold transition-colors",
         active
           ? "border-accent bg-accent text-accent-foreground"
-          : "border-border bg-card text-foreground hover:border-accent",
+          : muted
+            ? "border-transparent bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
+            : "border-border bg-card text-foreground hover:border-accent",
       )}
     >
       {children}
     </button>
   );
 }
+
+/** Response types split by whether they contribute points — the "info only"
+ *  group is styled muted so it reads as secondary at a glance. */
+const SCORED_TYPES = QUESTION_TYPES.filter((t) => !NON_SCORED_TYPES.has(t));
+const INFO_TYPES = QUESTION_TYPES.filter((t) => NON_SCORED_TYPES.has(t));
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <div className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">{children}</div>;
@@ -342,18 +351,29 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
         </div>
       </div>
 
-      {editorOpen && (
-        <Card className="animate-fade-up border-accent">
-          <CardContent className="space-y-4 p-[18px]">
-            <div className="flex items-center gap-2">
+      <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
+        <DialogContent aria-describedby={undefined} className="flex max-h-[88vh] max-w-[620px] flex-col gap-0 overflow-hidden p-0">
+          {/* Header bar — action + scoring/usage badges */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-accent/[0.06] px-5 py-2.5 pr-12">
+            <DialogTitle asChild>
               <span className="flex-1 text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">
                 {editing ? "Edit question" : "New question"}
               </span>
-              {editing && editing.usageCount > 0 && (
-                <span className="font-mono text-[11px] text-muted-foreground">used in {editing.usageCount}</span>
-              )}
-            </div>
+            </DialogTitle>
+            <span className={cn(
+              "rounded-full px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.05em]",
+              scored ? "bg-success-soft text-success" : "bg-muted text-muted-foreground",
+            )}>
+              {scored ? "Scored" : "Info only"}
+            </span>
+            {editing && editing.usageCount > 0 && (
+              <span className="rounded-full bg-info-soft px-2 py-[3px] text-[11px] font-semibold text-info">
+                used in {editing.usageCount}
+              </span>
+            )}
+          </div>
 
+          <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto p-5">
             <div>
               <FieldLabel>Question</FieldLabel>
               <Input
@@ -366,32 +386,48 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
             </div>
 
             <div>
-              <FieldLabel>Help text (optional)</FieldLabel>
+              <FieldLabel>Help text <span className="font-medium normal-case tracking-normal text-muted-foreground/60">— optional</span></FieldLabel>
               <Input
                 value={form.helpText}
                 onChange={(e) => setForm((f) => ({ ...f, helpText: e.target.value }))}
                 placeholder="A hint shown to the auditor under the question"
+                className="h-9"
               />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <FieldLabel>Response type</FieldLabel>
+            {/* Response type — full width */}
+            <div>
+              <FieldLabel>Response type</FieldLabel>
+              <div className="space-y-1.5">
                 <div className="flex flex-wrap gap-1.5">
-                  {QUESTION_TYPES.map((t) => (
-                    <Pill key={t} active={form.type === t} onClick={() => setType(t)}>
-                      {QTYPE_LABEL[t]}
-                    </Pill>
+                  {SCORED_TYPES.map((t) => (
+                    <Pill key={t} active={form.type === t} onClick={() => setType(t)}>{QTYPE_LABEL[t]}</Pill>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-0.5 text-[9.5px] font-bold uppercase tracking-[0.08em] text-muted-foreground/60">Info only</span>
+                  {INFO_TYPES.map((t) => (
+                    <Pill key={t} active={form.type === t} muted onClick={() => setType(t)}>{QTYPE_LABEL[t]}</Pill>
                   ))}
                 </div>
               </div>
-              <div>
-                <FieldLabel>Tags</FieldLabel>
-                <TagPicker value={form.tags} suggestions={knownTags} onChange={(tags) => setForm((f) => ({ ...f, tags }))} />
-              </div>
             </div>
 
-            {/* Type-specific configuration */}
+            {/* Tags — full width multi-select */}
+            <div>
+              <FieldLabel>Tags</FieldLabel>
+              <MultiCombobox
+                options={knownTags}
+                value={form.tags}
+                onChange={(tags) => setForm((f) => ({ ...f, tags }))}
+                creatable
+                placeholder="Add tags…"
+                searchPlaceholder="Search or add a tag…"
+                emptyText="No matching tags."
+              />
+            </div>
+
+            {/* Type-specific configuration (full width) */}
             {isChoice && (
               <ChoiceOptionsEditor
                 value={form.optionsJson}
@@ -400,22 +436,23 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
               />
             )}
             {isRating && (
-              <div className="rounded-[10px] border border-border bg-background px-3 py-2.5 text-[12px] text-muted-foreground">
-                Scored on your configured <span className="font-semibold text-foreground">rating scale</span> — manage scale options in Audit Admin. Each rating's score is applied at conduct time.
+              <div className="flex items-start gap-2 rounded-[10px] border border-info/20 bg-info-soft px-3 py-2.5 text-[12px] text-foreground/80">
+                <span className="mt-[3px] h-2 w-2 shrink-0 rounded-full bg-info" />
+                <span>Scored on your configured <span className="font-semibold text-foreground">rating scale</span> — manage scale options in Audit Admin. Each rating's score is applied at conduct time.</span>
               </div>
             )}
             {isNumeric && (
-              <div className="grid gap-3 rounded-[10px] border border-border bg-background p-3 sm:grid-cols-3">
+              <div className="grid gap-3 rounded-[10px] border border-border bg-muted/20 p-3 sm:grid-cols-3">
                 <div>
                   <FieldLabel>Unit</FieldLabel>
                   <Input value={form.numericUnit} onChange={(e) => setForm((f) => ({ ...f, numericUnit: e.target.value }))} placeholder="ppm, °C, count" className="h-9" />
                 </div>
                 <div>
-                  <FieldLabel>Pass min</FieldLabel>
+                  <FieldLabel><span className="text-success">Pass</span> min</FieldLabel>
                   <Input type="number" value={form.numericMin} onChange={(e) => setForm((f) => ({ ...f, numericMin: e.target.value }))} placeholder="—" className="h-9" />
                 </div>
                 <div>
-                  <FieldLabel>Pass max</FieldLabel>
+                  <FieldLabel><span className="text-success">Pass</span> max</FieldLabel>
                   <Input type="number" value={form.numericMax} onChange={(e) => setForm((f) => ({ ...f, numericMax: e.target.value }))} placeholder="—" className="h-9" />
                 </div>
                 <p className="text-[11px] text-muted-foreground sm:col-span-3">
@@ -424,40 +461,44 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
               </div>
             )}
 
-            {scored && (
-              <div className="flex items-center gap-3 rounded-[10px] border border-border bg-background px-3 py-2.5">
-                <div className="flex-1">
-                  <span className="text-[12px] font-bold text-foreground">Default weight</span>
-                  <p className="text-[11px] text-muted-foreground">Its share of the section score when added to a template.</p>
+            {/* Weight + evidence side by side */}
+            <div className={cn("grid gap-4", scored ? "sm:grid-cols-2" : "grid-cols-1")}>
+              {scored && (
+                <div className="flex items-center gap-3 rounded-[10px] border border-border bg-muted/20 px-3 py-2">
+                  <div className="flex-1">
+                    <div className="text-[12px] font-bold text-foreground">Default weight</div>
+                    <p className="text-[11px] leading-tight text-muted-foreground">Share of the section score.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, defaultWeight: Math.max(0, f.defaultWeight - 1) }))}
+                    className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-border bg-card text-foreground hover:border-accent"
+                  >−</button>
+                  <span className="w-8 text-center font-mono text-[16px] font-extrabold tabular-nums text-accent-strong">{form.defaultWeight}</span>
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, defaultWeight: f.defaultWeight + 1 }))}
+                    className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-border bg-card text-foreground hover:border-accent"
+                  >+</button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setForm((f) => ({ ...f, defaultWeight: Math.max(0, f.defaultWeight - 1) }))}
-                  className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-border bg-card text-foreground hover:border-accent"
-                >−</button>
-                <span className="w-9 text-center font-mono text-[15px] font-bold tabular-nums">{form.defaultWeight}</span>
-                <button
-                  type="button"
-                  onClick={() => setForm((f) => ({ ...f, defaultWeight: f.defaultWeight + 1 }))}
-                  className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-border bg-card text-foreground hover:border-accent"
-                >+</button>
-              </div>
-            )}
-
-            <div>
-              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">
-                <Camera className="h-3 w-3" /> Photo evidence
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {EVIDENCE_RULES.map((r) => (
-                  <Pill key={r} active={form.defaultEvidenceRule === r} onClick={() => setForm((f) => ({ ...f, defaultEvidenceRule: r }))}>
-                    {EVIDENCE_LABEL[r]}
-                  </Pill>
-                ))}
+              )}
+              <div className="rounded-[10px] border border-border bg-muted/20 px-3 py-2">
+                <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-muted-foreground">
+                  <Camera className="h-3 w-3" /> Photo evidence
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {EVIDENCE_RULES.map((r) => (
+                    <Pill key={r} active={form.defaultEvidenceRule === r} onClick={() => setForm((f) => ({ ...f, defaultEvidenceRule: r }))}>
+                      {EVIDENCE_LABEL[r]}
+                    </Pill>
+                  ))}
+                </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5 pt-1">
+          </div>
+
+          <div className="flex items-center gap-2.5 border-t border-border bg-card px-5 py-3">
               {editing && (
                 <Button
                   type="button"
@@ -475,16 +516,15 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
               )}
               <span className="flex-1" />
               {choiceInvalid && (
-                <span className="text-[11.5px] font-medium text-muted-foreground">Add at least 2 labelled options</span>
+                <span className="text-[11.5px] font-medium text-amber-600">Add at least 2 labelled options</span>
               )}
               <Button type="button" variant="outline" onClick={() => setEditorOpen(false)}>Cancel</Button>
               <Button type="button" disabled={!canSave} onClick={() => saveMut.mutate()}>
                 {saveMut.isPending ? "Saving…" : "Save question"}
               </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {bankQuery.isLoading ? (
         <div className="space-y-2">
