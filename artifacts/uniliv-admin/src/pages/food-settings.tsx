@@ -28,7 +28,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Download, FileDown, FileText, ChevronDown } from "lucide-react";
+import { Download, FileDown, FileText, ChevronDown, CornerDownRight } from "lucide-react";
 import {
   foodApi, foodKeys, MEAL_TYPES, BRANDS, MEAL_LABEL, DAY_LABEL, fmtQty, PREPARATIONS, PREPARATION_LABEL,
   type Dish, type MenuRotationRow, type PerResidentRule,
@@ -153,8 +153,15 @@ export default function FoodSettings() {
 // 1) DISHES
 // ════════════════════════════════════════════════════════════════════════════
 type IngredientRow = { ingredientId: string; quantity: string; unit: string };
-type DishForm = { name: string; component: string; unit: string; preparations: string[]; brands: string[]; ingredients: IngredientRow[]; isActive: boolean };
-const emptyDish: DishForm = { name: "", component: "HOT_FOOD", unit: "SERVING", preparations: ["VEG"], brands: [], ingredients: [], isActive: true };
+type DishForm = { name: string; component: string; unit: string; preparations: string[]; brands: string[]; ingredients: IngredientRow[]; sideDishIds: string[]; isActive: boolean };
+const emptyDish: DishForm = { name: "", component: "HOT_FOOD", unit: "SERVING", preparations: ["VEG"], brands: [], ingredients: [], sideDishIds: [], isActive: true };
+
+/**
+ * Components a side dish plausibly belongs to. Used only to sort the picker so
+ * the likely accompaniments float to the top — every dish stays selectable,
+ * because "what goes with what" is a kitchen decision, not a taxonomy rule.
+ */
+const SIDE_COMPONENTS = ["CHUTNEY", "CURD_RAITA", "PICKLE", "PAPAD_PICKLE", "SALAD", "BREAD", "SABZI", "DAL"];
 
 // Live, admin-managed brand list (active only).
 function useActiveBrands(): { code: string; name: string }[] {
@@ -201,16 +208,41 @@ function DishesTab() {
 
   const brandOptions = useActiveBrands();
   const { data: ingredientsMaster = [] } = useQuery<Ingredient[]>({ queryKey: foodKeys.ingredients(), queryFn: () => foodApi.listIngredients() });
-  const openCreate = () => { setEditing(null); setForm(emptyDish); setModalOpen(true); };
+  // "Comes with a side dish" is DERIVED from whether any option is selected —
+  // deliberately not stored on the dish, so the flag can never disagree with
+  // the rows. This holds the toggle open while the user is still picking.
+  const [sidesOpen, setSidesOpen] = React.useState(false);
+
+  const openCreate = () => { setEditing(null); setForm(emptyDish); setSidesOpen(false); setModalOpen(true); };
   const openEdit = async (d: Dish) => {
     setEditing(d);
-    setForm({ name: d.name, component: d.component, unit: d.unit, preparations: d.preparations ?? [], brands: d.brands ?? [], ingredients: [], isActive: d.isActive });
+    setForm({ name: d.name, component: d.component, unit: d.unit, preparations: d.preparations ?? [], brands: d.brands ?? [], ingredients: [], sideDishIds: d.sideDishIds ?? [], isActive: d.isActive });
+    setSidesOpen((d.sideDishIds ?? []).length > 0);
     setModalOpen(true);
     try {
       const full = await foodApi.getDish(d.id);
-      setForm((f) => ({ ...f, ingredients: (full.ingredients ?? []).map((i) => ({ ingredientId: i.ingredientId, quantity: i.quantity != null ? String(i.quantity) : "", unit: i.unit ?? "" })) }));
+      setForm((f) => ({
+        ...f,
+        ingredients: (full.ingredients ?? []).map((i) => ({ ingredientId: i.ingredientId, quantity: i.quantity != null ? String(i.quantity) : "", unit: i.unit ?? "" })),
+        sideDishIds: full.sideDishIds ?? f.sideDishIds,
+      }));
+      setSidesOpen((full.sideDishIds ?? []).length > 0);
     } catch { /* leave ingredients empty */ }
   };
+  const toggleSideDish = (id: string) =>
+    setForm((f) => ({ ...f, sideDishIds: f.sideDishIds.includes(id) ? f.sideDishIds.filter((x) => x !== id) : [...f.sideDishIds, id] }));
+  // Turning the toggle off clears the selection, so "off" always means "no rows".
+  const onSidesToggle = (open: boolean) => {
+    setSidesOpen(open);
+    if (!open) setForm((f) => ({ ...f, sideDishIds: [] }));
+  };
+  // Candidate accompaniments: any other active dish, likely components first.
+  const sideCandidates = React.useMemo(() => {
+    const rank = (c: string) => { const i = SIDE_COMPONENTS.indexOf(c); return i === -1 ? SIDE_COMPONENTS.length : i; };
+    return allDishes
+      .filter((d) => d.isActive && d.id !== editing?.id)
+      .sort((a, b) => rank(a.component) - rank(b.component) || a.name.localeCompare(b.name));
+  }, [allDishes, editing?.id]);
   const toggleDishBrand = (code: string) =>
     setForm((f) => ({ ...f, brands: f.brands.includes(code) ? f.brands.filter((b) => b !== code) : [...f.brands, code] }));
   const togglePrep = (p: string) =>
@@ -236,6 +268,10 @@ function DishesTab() {
         return ps.length ? <div className="flex flex-wrap gap-1">{ps.map((p) => (
           <Badge key={p} variant="outline" className={`text-[10px] ${p === "NON_VEG" ? "text-destructive" : p === "JAIN" ? "text-amber-600" : "text-success"}`}>{PREPARATION_LABEL[p] ?? p}</Badge>
         ))}</div> : <span className="text-muted-foreground text-xs">—</span>;
+      } },
+    { id: "sides", header: "Sides", cell: ({ row }: any) => {
+        const n: number = (row.original.sideDishIds ?? []).length;
+        return n ? <Badge variant="outline" className="text-[10px]">{n} option{n > 1 ? "s" : ""}</Badge> : <span className="text-muted-foreground text-xs">—</span>;
       } },
     { accessorKey: "isActive", header: "Status", cell: ({ row }: any) => <Badge variant={row.original.isActive ? "success" : "secondary"} className="text-[10px]">{row.original.isActive ? "ACTIVE" : "INACTIVE"}</Badge> },
     { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} onDelete={() => setDelTarget(row.original)} /> },
@@ -309,6 +345,32 @@ function DishesTab() {
                 </label>
               ))}
             </div>
+          </div>
+          <div className="border-t pt-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Does it come with a side dish?</Label>
+                <p className="text-xs text-muted-foreground">
+                  e.g. Paratha with Curd / Chutney / Bhaji. Pick every option that's possible —
+                  which one is actually served is chosen per menu.
+                </p>
+              </div>
+              <Switch checked={sidesOpen} onCheckedChange={onSidesToggle} />
+            </div>
+            {sidesOpen && (
+              <div className="mt-3 max-h-52 overflow-y-auto rounded-md border p-2">
+                {sideCandidates.length === 0 && <p className="text-xs text-muted-foreground">No other active dishes to pair with.</p>}
+                <div className="flex flex-wrap gap-2">
+                  {sideCandidates.map((d) => (
+                    <label key={d.id} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm ${form.sideDishIds.includes(d.id) ? "border-accent bg-accent/5" : "border-border"}`}>
+                      <Checkbox checked={form.sideDishIds.includes(d.id)} onCheckedChange={() => toggleSideDish(d.id)} />
+                      {d.name}
+                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{labelize(d.component)}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <div className="border-t pt-3">
             <div className="flex items-center justify-between mb-2">
@@ -456,6 +518,9 @@ function RotationTab() {
   const [delTarget, setDelTarget] = React.useState<MenuRotationRow | null>(null);
   const [form, setForm] = React.useState<RotationForm>(emptyRotation);
   const [bulkDishIds, setBulkDishIds] = React.useState<string[]>([]); // create-mode multi-dish
+  // Chosen accompaniments, keyed by the parent dish id (e.g. chole → [bhature]).
+  // Only dishes with side options configured on the master appear here.
+  const [sideSel, setSideSel] = React.useState<Record<string, string[]>>({});
 
   const params: Record<string, unknown> = { kitchenId: kitchen, brand, rotationWeek: week, dayOfWeek: day, mealType: meal };
   const { data: rows = [], isLoading } = useQuery<MenuRotationRow[]>({
@@ -475,18 +540,23 @@ function RotationTab() {
       const ids = bulkDishIds.length ? bulkDishIds : (v.dishId ? [v.dishId] : []);
       // Edit replaces the whole slot — but PRESERVE each existing dish's own slotLabel/sortOrder
       // (e.g. "Veg" vs "Veg 2"); only newly-added dishes get the form label + a tail order.
+      // Sides ride along on their parent item; the server turns each into its
+      // own rotation row tagged with parentRotationId.
+      const sidesFor = (dishId: string) => sideSel[dishId]?.length ? { sideDishIds: sideSel[dishId] } : {};
       if (editing) {
         const orig = new Map(rows
-          .filter((x) => x.kitchenId === v.kitchenId && x.brand === v.brand && x.rotationWeek === v.rotationWeek && x.dayOfWeek === v.dayOfWeek && x.mealType === v.mealType)
+          .filter((x) => x.kitchenId === v.kitchenId && x.brand === v.brand && x.rotationWeek === v.rotationWeek && x.dayOfWeek === v.dayOfWeek && x.mealType === v.mealType && !x.parentRotationId)
           .map((x) => [x.dishId, { slotLabel: x.slotLabel, sortOrder: x.sortOrder }]));
         let tail = Math.max(0, ...[...orig.values()].map((o) => o.sortOrder));
         const items = ids.map((dishId) => {
           const o = orig.get(dishId);
-          return o ? { dishId, slotLabel: o.slotLabel, sortOrder: o.sortOrder } : { dishId, slotLabel: v.slotLabel || null, sortOrder: ++tail };
+          return o
+            ? { dishId, slotLabel: o.slotLabel, sortOrder: o.sortOrder, ...sidesFor(dishId) }
+            : { dishId, slotLabel: v.slotLabel || null, sortOrder: ++tail, ...sidesFor(dishId) };
         });
         return foodApi.replaceRotationSlot({ kitchenId: v.kitchenId, brand: v.brand, rotationWeek: v.rotationWeek, dayOfWeek: v.dayOfWeek, mealType: v.mealType, items });
       }
-      const items = ids.map((dishId, i) => ({ dishId, slotLabel: v.slotLabel || null, sortOrder: v.sortOrder + i }));
+      const items = ids.map((dishId, i) => ({ dishId, slotLabel: v.slotLabel || null, sortOrder: v.sortOrder + i, ...sidesFor(dishId) }));
       return foodApi.createRotationBulk({ kitchenId: v.kitchenId, brand: v.brand, mealType: v.mealType, rotationWeek: v.rotationWeek, dayOfWeek: v.dayOfWeek, items });
     },
     onSuccess: (res: any) => {
@@ -506,18 +576,43 @@ function RotationTab() {
     setEditing(null);
     setForm({ ...emptyRotation, kitchenId: kitchen !== "ALL" ? kitchen : (kitchens[0]?.id ?? ""), brand: (brand !== "ALL" ? brand : brandOptions[0]?.code) ?? "UNILIV" });
     setBulkDishIds([]);
+    setSideSel({});
     setModalOpen(true);
   };
   // Edit operates on the WHOLE menu slot — preload all dishes in that slot.
   const openEdit = (r: MenuRotationRow) => {
     setEditing(r);
     setForm({ kitchenId: r.kitchenId ?? "", brand: r.brand, rotationWeek: r.rotationWeek, dayOfWeek: r.dayOfWeek, mealType: r.mealType, dishId: "", slotLabel: r.slotLabel ?? "", sortOrder: r.sortOrder });
-    const slotIds = rows.filter((x) => x.kitchenId === r.kitchenId && x.brand === r.brand && x.rotationWeek === r.rotationWeek && x.dayOfWeek === r.dayOfWeek && x.mealType === r.mealType).map((x) => x.dishId);
-    setBulkDishIds([...new Set(slotIds)]);
+    const slotRows = rows.filter((x) => x.kitchenId === r.kitchenId && x.brand === r.brand && x.rotationWeek === r.rotationWeek && x.dayOfWeek === r.dayOfWeek && x.mealType === r.mealType);
+    // Side rows are NOT menu items in their own right — keep them out of the
+    // dish picker and rebuild them as their parent's selection instead.
+    setBulkDishIds([...new Set(slotRows.filter((x) => !x.parentRotationId).map((x) => x.dishId))]);
+    const parentDishById = new Map(slotRows.filter((x) => !x.parentRotationId).map((x) => [x.id, x.dishId]));
+    const sel: Record<string, string[]> = {};
+    for (const x of slotRows) {
+      if (!x.parentRotationId) continue;
+      const parentDish = parentDishById.get(x.parentRotationId);
+      if (parentDish) sel[parentDish] = [...(sel[parentDish] ?? []), x.dishId];
+    }
+    setSideSel(sel);
     setModalOpen(true);
   };
   const toggleBulkDish = (id: string) =>
-    setBulkDishIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+    setBulkDishIds((ids) => {
+      const next = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+      // Dropping a dish drops the sides that were chosen for it.
+      if (!next.includes(id)) setSideSel((s) => { const { [id]: _drop, ...rest } = s; return rest; });
+      return next;
+    });
+  const toggleSide = (parentDishId: string, sideId: string) =>
+    setSideSel((s) => {
+      const cur = s[parentDishId] ?? [];
+      return { ...s, [parentDishId]: cur.includes(sideId) ? cur.filter((x) => x !== sideId) : [...cur, sideId] };
+    });
+  const chosenSideIds = React.useMemo(
+    () => [...new Set(bulkDishIds.flatMap((id) => sideSel[id] ?? []))],
+    [bulkDishIds, sideSel],
+  );
   const submit = () => {
     if (!form.kitchenId) { toast({ title: "Kitchen is required", variant: "destructive" }); return; }
     if (bulkDishIds.length === 0) { toast({ title: "Select at least one dish", variant: "destructive" }); return; }
@@ -529,8 +624,11 @@ function RotationTab() {
   // Live composition validation + shared-ingredient warning for the chosen dishes.
   // B3-16: returns the machine-readable { ok, violations } verdict we HARD-BLOCK Save on.
   const { data: validation } = useQuery({
-    queryKey: foodKeys.rotationValidate({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType, dishIds: bulkDishIds.join(",") }),
-    queryFn: () => foodApi.validateComposition({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType, dishIds: bulkDishIds }),
+    // Sides are sent separately: they're EXEMPT from composition-slot counting
+    // (a paired Bhature must not fill the meal's "1 BREAD" slot) but still
+    // participate in shared-ingredient detection.
+    queryKey: foodKeys.rotationValidate({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType, dishIds: bulkDishIds.join(","), sideDishIds: chosenSideIds.join(",") }),
+    queryFn: () => foodApi.validateComposition({ kitchenId: form.kitchenId, brand: form.brand, mealType: form.mealType, dishIds: bulkDishIds, sideDishIds: chosenSideIds }),
     enabled: modalOpen && !!form.kitchenId && !!form.brand && !!form.mealType && bulkDishIds.length > 0,
   });
   // Hard-block when the backend verdict says the selection is invalid (slot
@@ -555,7 +653,11 @@ function RotationTab() {
     { accessorKey: "rotationWeek", header: "Week", cell: ({ row }: any) => <span className="font-mono text-xs">W{row.original.rotationWeek}</span> },
     { accessorKey: "dayOfWeek", header: "Day", cell: ({ row }: any) => DAY_LABEL[row.original.dayOfWeek] ?? row.original.dayOfWeek },
     { accessorKey: "mealType", header: "Meal", cell: ({ row }: any) => MEAL_LABEL[row.original.mealType as MealType] ?? row.original.mealType },
-    { accessorKey: "dishId", header: "Dish", cell: ({ row }: any) => <span className="font-medium text-primary">{row.original.dishName ?? dishName(row.original.dishId)}</span> },
+    // Side rows are ordinary rotation rows; render them indented under their
+    // parent so the grid reads as "Chole ↳ Bhature (side)".
+    { accessorKey: "dishId", header: "Dish", cell: ({ row }: any) => row.original.parentRotationId
+        ? <span className="flex items-center gap-1.5 pl-4 text-sm text-muted-foreground"><CornerDownRight className="h-3.5 w-3.5 shrink-0" />{row.original.dishName ?? dishName(row.original.dishId)}<Badge variant="outline" className="text-[10px]">side</Badge></span>
+        : <span className="font-medium text-primary">{row.original.dishName ?? dishName(row.original.dishId)}</span> },
     { accessorKey: "slotLabel", header: "Slot", cell: ({ row }: any) => row.original.slotLabel ? <span className="text-xs">{row.original.slotLabel}</span> : <span className="text-muted-foreground text-xs">—</span> },
     { accessorKey: "sortOrder", header: "Order", cell: ({ row }: any) => <span className="text-muted-foreground text-xs">{row.original.sortOrder}</span> },
     { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} onDelete={() => setDelTarget(row.original)} /> },
@@ -699,13 +801,40 @@ function RotationTab() {
             </div>
             <p className="text-xs text-muted-foreground mb-2">{editing ? "Edit the dishes in this menu slot." : "Pick one or more dishes for this slot."}</p>
             <div className="max-h-52 space-y-1 overflow-y-auto rounded-md border p-2">
-              {dishes.filter((d) => d.isActive).map((d) => (
-                <label key={d.id} className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60 ${bulkDishIds.includes(d.id) ? "bg-accent/5" : ""}`}>
-                  <Checkbox checked={bulkDishIds.includes(d.id)} onCheckedChange={() => toggleBulkDish(d.id)} />
-                  <span className="flex-1">{d.name}</span>
-                  <Badge variant="secondary" className="text-[10px] uppercase">{labelize(d.component)}</Badge>
-                </label>
-              ))}
+              {dishes.filter((d) => d.isActive).map((d) => {
+                const picked = bulkDishIds.includes(d.id);
+                const options = (d.sideDishIds ?? [])
+                  .map((sid) => dishes.find((x) => x.id === sid))
+                  .filter((x): x is Dish => !!x && x.isActive);
+                return (
+                  <React.Fragment key={d.id}>
+                    <label className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60 ${picked ? "bg-accent/5" : ""}`}>
+                      <Checkbox checked={picked} onCheckedChange={() => toggleBulkDish(d.id)} />
+                      <span className="flex-1">{d.name}</span>
+                      {options.length > 0 && <Badge variant="outline" className="text-[10px]">+ sides</Badge>}
+                      <Badge variant="secondary" className="text-[10px] uppercase">{labelize(d.component)}</Badge>
+                    </label>
+                    {/* Accompaniments configured on the dish master. Shown only
+                        once the parent is actually on the menu. */}
+                    {picked && options.length > 0 && (
+                      <div className="mb-1 ml-7 flex flex-wrap items-center gap-1.5 border-l pl-3">
+                        <span className="text-[11px] text-muted-foreground">Served with:</span>
+                        {options.map((s) => {
+                          const on = (sideSel[d.id] ?? []).includes(s.id);
+                          return (
+                            <button
+                              key={s.id} type="button" onClick={() => toggleSide(d.id, s.id)}
+                              className={`rounded-full border px-2 py-0.5 text-[11px] transition-colors ${on ? "border-accent bg-accent/10 text-accent-foreground" : "border-border text-muted-foreground hover:bg-muted"}`}
+                            >
+                              {on ? "✓ " : "+ "}{s.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </div>
 
             {/* B3-16: HARD-BLOCK panel — when the verdict is not ok, list every

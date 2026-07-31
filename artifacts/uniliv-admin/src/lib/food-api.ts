@@ -190,12 +190,21 @@ export interface VarianceByDayRow { date: string; ordered: number; received: num
 export interface VarianceByDayData { rows: VarianceByDayRow[] }
 
 export interface DishIngredientRow { id?: string; ingredientId: string; ingredientName?: string | null; quantity: string | number | null; unit: string | null }
+/** A dish that may be served alongside another (see dish_side_options). */
+export interface DishSideOptionRow {
+  id: string; sideDishId: string; sideDishName: string | null;
+  component: string | null; unit: string | null; sortOrder: number;
+}
 export interface Dish {
   id: string; name: string; component: string; unit: string;
   brands: string[];
   preparations: string[];
   photoUrl: string | null; isActive: boolean;
   ingredients?: DishIngredientRow[];
+  /** Dishes configured as possible accompaniments. Present on list + detail. */
+  sideDishIds?: string[];
+  /** Detail view only — the same options joined to name/component. */
+  sideOptions?: DishSideOptionRow[];
 }
 export interface Ingredient { id: string; name: string; unit: string; isActive: boolean }
 export interface MenuRotationRow {
@@ -203,6 +212,8 @@ export interface MenuRotationRow {
   rotationWeek: number; dayOfWeek: number;
   mealType: MealType; dishId: string; dishName?: string; slotLabel: string | null;
   sortOrder: number; isActive: boolean;
+  /** Set when this row is a side dish served with the referenced parent row. */
+  parentRotationId?: string | null;
 }
 export interface PerResidentRule {
   id: string; brand: FoodBrand; mealType: MealType; dishId: string; dishName?: string;
@@ -623,8 +634,11 @@ export const foodApi = {
   // check. Returns the full RotationValidation including the machine-readable
   // `ok` / `violations` verdict to HARD-BLOCK a menu/slot save. Pass dishIds as an
   // array (qs() serializes it) plus brand + mealType (and optional kitchenId).
-  validateComposition: (p: { brand: string; mealType: MealType | string; kitchenId?: string | null; dishIds: string[] }) =>
-    apiFetch<Envelope<RotationValidation>>(`/food/menu-rotation/validate${qs({ ...p, dishIds: p.dishIds.join(",") })}`).then((r) => r.data),
+  // `sideDishIds` are excluded from composition-slot counting server-side (a
+  // paired Bhature must not fill the meal's "1 BREAD" slot) but still checked
+  // for shared ingredients.
+  validateComposition: (p: { brand: string; mealType: MealType | string; kitchenId?: string | null; dishIds: string[]; sideDishIds?: string[] }) =>
+    apiFetch<Envelope<RotationValidation>>(`/food/menu-rotation/validate${qs({ ...p, dishIds: p.dishIds.join(","), sideDishIds: (p.sideDishIds ?? []).join(",") })}`).then((r) => r.data),
   autoFillRotation: (p: Record<string, unknown> = {}) => apiFetch<Envelope<AutoFillItem[]>>(`/food/menu-rotation/auto-fill${qs(p)}`).then((r) => r.data),
   // Menu-composition rules
   listCompositionRules: (p: Record<string, unknown> = {}) => apiFetch<Envelope<CompositionRule[]>>(`/food/composition-rules${qs(p)}`).then((r) => r.data),

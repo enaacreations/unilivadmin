@@ -17,6 +17,7 @@ import {
   foodOrderEventsTable,
   foodAdditionalOrderItemsTable,
   dishesTable,
+  dishSideOptionsTable,
   ingredientsTable,
   dishIngredientsTable,
   menuCompositionRuleTable,
@@ -1735,7 +1736,17 @@ foodRouter.get("/dishes", authenticate, async (req, res) => {
     const sort = req.query["sort"] as string | undefined;
     const orderCol = sort === "newest" ? desc(dishesTable.createdAt) : asc(dishesTable.name);
     const rows = await db.select().from(dishesTable).where(where).orderBy(orderCol);
-    res.json({ success: true, data: rows });
+    // Attach configured side-dish options in ONE query (not per row) so the
+    // dish list can render the "comes with sides" state without an N+1.
+    const opts = rows.length
+      ? await db.select({ dishId: dishSideOptionsTable.dishId, sideDishId: dishSideOptionsTable.sideDishId })
+          .from(dishSideOptionsTable)
+          .where(inArray(dishSideOptionsTable.dishId, rows.map((r) => r.id)))
+          .orderBy(asc(dishSideOptionsTable.sortOrder))
+      : [];
+    const byDish = new Map<string, string[]>();
+    for (const o of opts) byDish.set(o.dishId, [...(byDish.get(o.dishId) ?? []), o.sideDishId]);
+    res.json({ success: true, data: rows.map((r) => ({ ...r, sideDishIds: byDish.get(r.id) ?? [] })) });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -1752,6 +1763,38 @@ async function replaceDishIngredients(dishId: string, ingredients: unknown): Pro
     quantity: it.quantity != null && it.quantity !== "" ? String(it.quantity) : null,
     unit: it.unit != null && it.unit !== "" ? it.unit : null, updatedAt: new Date(),
   })));
+}
+
+/**
+ * Replace a dish's side-dish options from a list of dish ids.
+ *
+ * Self-pairing is dropped (a dish can't be its own side) and duplicates are
+ * collapsed, so the unique (dish_id, side_dish_id) index can't be violated by
+ * a sloppy payload.
+ */
+async function replaceDishSideOptions(dishId: string, sideDishIds: unknown): Promise<void> {
+  await db.delete(dishSideOptionsTable).where(eq(dishSideOptionsTable.dishId, dishId));
+  const ids = Array.isArray(sideDishIds) ? sideDishIds : [];
+  const unique = [...new Set(ids.filter((s): s is string => typeof s === "string" && !!s && s !== dishId))];
+  if (!unique.length) return;
+  await db.insert(dishSideOptionsTable).values(unique.map((sideDishId, i) => ({
+    id: newId(), dishId, sideDishId, sortOrder: i, updatedAt: new Date(),
+  })));
+}
+
+/** Loads a dish's configured side options, joined to the side dish's name/component. */
+async function loadDishSideOptions(dishId: string) {
+  return db.select({
+    id: dishSideOptionsTable.id,
+    sideDishId: dishSideOptionsTable.sideDishId,
+    sideDishName: dishesTable.name,
+    component: dishesTable.component,
+    unit: dishesTable.unit,
+    sortOrder: dishSideOptionsTable.sortOrder,
+  }).from(dishSideOptionsTable)
+    .leftJoin(dishesTable, eq(dishSideOptionsTable.sideDishId, dishesTable.id))
+    .where(eq(dishSideOptionsTable.dishId, dishId))
+    .orderBy(asc(dishSideOptionsTable.sortOrder));
 }
 
 /** Loads a dish's ingredients joined to ingredient names. */
@@ -1780,6 +1823,8 @@ const createDishSchema = z.object({
   photoUrl: z.string().max(2048).nullish(),
   isActive: z.boolean().optional(),
   ingredients: z.array(zIngredient).optional(),
+  /** Dishes that may be served alongside this one (see dish_side_options). */
+  sideDishIds: z.array(zId).optional(),
 }).passthrough();
 
 foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
@@ -1799,6 +1844,7 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), a
       updatedAt: new Date(),
     }).returning();
     if (b.ingredients !== undefined) await replaceDishIngredients(row.id, b.ingredients);
+    if (b.sideDishIds !== undefined) await replaceDishSideOptions(row.id, b.sideDishIds);
     res.status(201).json({ success: true, data: row });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
@@ -1808,7 +1854,11 @@ foodRouter.get("/dishes/:id", authenticate, async (req, res) => {
     const [row] = await db.select().from(dishesTable).where(eq(dishesTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const ingredients = await loadDishIngredients(row.id);
-    res.json({ success: true, data: { ...row, ingredients } });
+    const sideOptions = await loadDishSideOptions(row.id);
+    res.json({
+      success: true,
+      data: { ...row, ingredients, sideOptions, sideDishIds: sideOptions.map((s) => s.sideDishId) },
+    });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -1821,6 +1871,8 @@ const updateDishSchema = z.object({
   photoUrl: z.string().max(2048).nullish(),
   isActive: z.boolean().optional(),
   ingredients: z.array(zIngredient).optional(),
+  /** Dishes that may be served alongside this one (see dish_side_options). */
+  sideDishIds: z.array(zId).optional(),
 }).passthrough();
 
 foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
@@ -1833,6 +1885,7 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), 
     const [row] = await db.update(dishesTable).set(u as Partial<typeof dishesTable.$inferInsert>).where(eq(dishesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     if (b.ingredients !== undefined) await replaceDishIngredients(row.id, b.ingredients);
+    if (b.sideDishIds !== undefined) await replaceDishSideOptions(row.id, b.sideDishIds);
     res.json({ success: true, data: row });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
@@ -2074,7 +2127,46 @@ const zRotationItem = z.object({
   dishId: zId,
   slotLabel: z.string().max(256).nullish(),
   sortOrder: z.coerce.number().nullish(),
+  /**
+   * Side dishes chosen to accompany this item, from the options configured on
+   * the dish master. Each becomes its own rotation row with parentRotationId
+   * pointing at this item.
+   */
+  sideDishIds: z.array(zId).optional(),
 }).passthrough();
+
+/**
+ * Guard for the side-dish quick-add path: a rotation row whose dish has no
+ * per-resident portion rule for this (brand, mealType) is silently skipped by
+ * computeOrderItems — it shows on the menu but never reaches the kitchen.
+ *
+ * Main dishes go through the deliberate builder flow (and all currently carry
+ * rules); sides are added with one click, so they are the realistic way an
+ * unpriced dish sneaks into a menu. Returns the names of offending dishes.
+ */
+async function sideDishesMissingPortionRule(
+  brand: string, mealType: string, sideDishIds: string[],
+): Promise<string[]> {
+  if (!sideDishIds.length) return [];
+  const rules = await db.select({ dishId: perResidentRuleTable.dishId })
+    .from(perResidentRuleTable)
+    .where(and(
+      eq(perResidentRuleTable.brand, brand as never),
+      eq(perResidentRuleTable.mealType, mealType as never),
+      eq(perResidentRuleTable.isActive, true),
+      inArray(perResidentRuleTable.dishId, sideDishIds),
+    ));
+  const priced = new Set(rules.map((r) => r.dishId));
+  const missing = [...new Set(sideDishIds)].filter((id) => !priced.has(id));
+  if (!missing.length) return [];
+  const named = await db.select({ name: dishesTable.name })
+    .from(dishesTable).where(inArray(dishesTable.id, missing));
+  return named.map((n) => n.name);
+}
+
+/** Flattens the side selections across a set of rotation items. */
+const collectSideIds = (items: Array<{ dishId: string; sideDishIds?: string[] }>): string[] =>
+  [...new Set(items.flatMap((it) => it.sideDishIds ?? []).filter(Boolean))];
 
 const bulkRotationSchema = z.object({
   kitchenId: zId,
@@ -2089,28 +2181,50 @@ foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", 
   try {
     if (!validateBody(bulkRotationSchema, req, res)) return;
     const b = req.body || {};
-    const items: Array<{ dishId: string; slotLabel?: string; sortOrder?: number }> = Array.isArray(b.items) ? b.items : [];
+    const items: Array<{ dishId: string; slotLabel?: string; sortOrder?: number; sideDishIds?: string[] }> = Array.isArray(b.items) ? b.items : [];
     if (!b.kitchenId || !b.brand || !b.mealType || b.dayOfWeek == null || !items.length) {
       res.status(400).json({ success: false, error: "kitchenId, brand, mealType, dayOfWeek and at least one item required" }); return;
     }
+    const unpriced = await sideDishesMissingPortionRule(b.brand, b.mealType, collectSideIds(items));
+    if (unpriced.length) {
+      res.status(400).json({
+        success: false,
+        error: `No portion rule for ${String(b.mealType).toLowerCase()} — the kitchen would never be told to cook: ${unpriced.join(", ")}. Add a Portion Size Rule first.`,
+        details: { dishes: unpriced },
+      });
+      return;
+    }
     const now = new Date();
-    const values = items
-      .filter((it) => it.dishId)
-      .map((it, i) => ({
-        id: newId(),
-        kitchenId: b.kitchenId,
-        brand: b.brand,
-        rotationWeek: b.rotationWeek != null ? Number(b.rotationWeek) : 1,
-        dayOfWeek: Number(b.dayOfWeek),
-        mealType: b.mealType,
+    const base = {
+      kitchenId: b.kitchenId,
+      brand: b.brand,
+      rotationWeek: b.rotationWeek != null ? Number(b.rotationWeek) : 1,
+      dayOfWeek: Number(b.dayOfWeek),
+      mealType: b.mealType,
+    };
+    const valid = items.filter((it) => it.dishId);
+    if (!valid.length) { res.status(400).json({ success: false, error: "No valid items" }); return; }
+    const rows = await db.transaction(async (tx) => {
+      const parents = await tx.insert(foodMenuRotationTable).values(valid.map((it, i) => ({
+        id: newId(), ...base,
         dishId: it.dishId,
         slotLabel: it.slotLabel ?? null,
         sortOrder: it.sortOrder != null ? Number(it.sortOrder) : i,
         isActive: true,
         updatedAt: now,
-      }));
-    if (!values.length) { res.status(400).json({ success: false, error: "No valid items" }); return; }
-    const rows = await db.insert(foodMenuRotationTable).values(values).returning();
+      }))).returning();
+      const sideValues = valid.flatMap((it, i) =>
+        (it.sideDishIds ?? []).filter(Boolean).map((sideDishId, j) => ({
+          id: newId(), ...base,
+          dishId: sideDishId, slotLabel: null,
+          sortOrder: (parents[i]?.sortOrder ?? i) * 100 + j + 1,
+          parentRotationId: parents[i]!.id, isActive: true, updatedAt: now,
+        })),
+      );
+      if (!sideValues.length) return parents;
+      const sides = await tx.insert(foodMenuRotationTable).values(sideValues).returning();
+      return [...parents, ...sides];
+    });
     res.status(201).json({ success: true, data: rows });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
@@ -2130,9 +2244,18 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
     if (!validateBody(slotRotationSchema, req, res)) return;
     const b = req.body || {};
     const { kitchenId, brand, rotationWeek, dayOfWeek, mealType } = b;
-    const items: Array<{ dishId: string; slotLabel?: string | null; sortOrder?: number }> = Array.isArray(b.items) ? b.items : [];
+    const items: Array<{ dishId: string; slotLabel?: string | null; sortOrder?: number; sideDishIds?: string[] }> = Array.isArray(b.items) ? b.items : [];
     if (!kitchenId || !brand || !mealType || rotationWeek == null || dayOfWeek == null) {
       res.status(400).json({ success: false, error: "kitchenId, brand, rotationWeek, dayOfWeek, mealType required" }); return;
+    }
+    const unpriced = await sideDishesMissingPortionRule(brand, mealType, collectSideIds(items));
+    if (unpriced.length) {
+      res.status(400).json({
+        success: false,
+        error: `No portion rule for ${mealType.toLowerCase()} — the kitchen would never be told to cook: ${unpriced.join(", ")}. Add a Portion Size Rule first.`,
+        details: { dishes: unpriced },
+      });
+      return;
     }
     const slotWhere = and(
       eq(foodMenuRotationTable.kitchenId, kitchenId),
@@ -2150,12 +2273,26 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
       await tx.delete(foodMenuRotationTable).where(slotWhere);
       const valid = items.filter((it) => it.dishId);
       if (!valid.length) return [];
-      return tx.insert(foodMenuRotationTable).values(valid.map((it, i) => ({
+      // Parents first — the side rows need their ids for parentRotationId.
+      const parents = await tx.insert(foodMenuRotationTable).values(valid.map((it, i) => ({
         id: newId(), kitchenId, brand, rotationWeek: Number(rotationWeek), dayOfWeek: Number(dayOfWeek), mealType,
         dishId: it.dishId, slotLabel: it.slotLabel ?? null, sortOrder: it.sortOrder != null ? Number(it.sortOrder) : i,
         effectiveFrom: effByDish.get(it.dishId)?.effectiveFrom ?? null, effectiveTo: effByDish.get(it.dishId)?.effectiveTo ?? null,
         isActive: true, updatedAt: now,
       }))).returning();
+      // Chosen side dishes become ordinary rows tagged with their parent, so
+      // every downstream consumer (resolveMenu → order items → dispatch) sees
+      // them as normal dishes with no special handling.
+      const sideValues = valid.flatMap((it, i) =>
+        (it.sideDishIds ?? []).filter(Boolean).map((sideDishId, j) => ({
+          id: newId(), kitchenId, brand, rotationWeek: Number(rotationWeek), dayOfWeek: Number(dayOfWeek), mealType,
+          dishId: sideDishId, slotLabel: null, sortOrder: (parents[i]?.sortOrder ?? i) * 100 + j + 1,
+          parentRotationId: parents[i]!.id, isActive: true, updatedAt: now,
+        })),
+      );
+      if (!sideValues.length) return parents;
+      const sides = await tx.insert(foodMenuRotationTable).values(sideValues).returning();
+      return [...parents, ...sides];
     });
     res.json({ success: true, data: rows });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
@@ -2169,11 +2306,20 @@ foodRouter.get("/menu-rotation/validate", authenticate, async (req, res) => {
     const kitchenId = (req.query["kitchenId"] as string) || null;
     const raw = req.query["dishIds"] ?? req.query["dishId"];
     const dishIds = (Array.isArray(raw) ? raw.map(String) : String(raw ?? "").split(",")).map((s) => s.trim()).filter(Boolean);
+    // Side dishes are EXEMPT from composition-slot counting: a Bhature chosen
+    // to accompany Chole must not consume the meal's "1 BREAD" slot. They are
+    // still checked for shared ingredients, which applies to the whole plate.
+    const sideRaw = req.query["sideDishIds"];
+    const sideDishIds = new Set(
+      (Array.isArray(sideRaw) ? sideRaw.map(String) : String(sideRaw ?? "").split(","))
+        .map((s) => s.trim()).filter(Boolean),
+    );
     if (!brand || !mealType) { res.status(400).json({ success: false, error: "brand, mealType required" }); return; }
     const rule = await resolveCompositionRule(brand, mealType, kitchenId);
-    const dishes = await loadDishesForValidation(dishIds);
+    const countedIds = dishIds.filter((id) => !sideDishIds.has(id));
+    const dishes = await loadDishesForValidation(countedIds);
     const validation = validateMenuAgainstRule(rule, dishes);
-    const sharedIngredients = await detectSharedIngredients(dishIds);
+    const sharedIngredients = await detectSharedIngredients([...new Set([...dishIds, ...sideDishIds])]);
     // Flat machine-readable verdict so the frontend can HARD-BLOCK a selection
     // ({ ok, violations:[{type,message,dishIds}] }) without re-deriving from slots.
     const verdict = buildCompositionVerdict(validation, sharedIngredients);

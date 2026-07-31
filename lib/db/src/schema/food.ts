@@ -26,6 +26,7 @@ import {
   index,
   uniqueIndex,
   pgEnum,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { propertiesTable, usersTable } from "./core";
@@ -240,6 +241,34 @@ export const dishesTable = pgTable("dishes", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+/**
+ * Side-dish options for a dish — "Paratha comes with curd / chutney / bhaji".
+ *
+ * The relation is DIRECTIONAL and owned by the anchor dish: `dishId` is the
+ * main item the F&B manager is configuring, `sideDishId` is one accompaniment
+ * it MAY be served with. Which of the options is actually served is chosen
+ * later, per menu slot (see `foodMenuRotationTable.parentRotationId`) — this
+ * table only records what is *possible*.
+ *
+ * Deliberately no "is side dish" flag on `dishes`: whether a dish comes with
+ * sides is simply whether it has rows here, so the two can never drift. The
+ * existing `component` enum (CHUTNEY / CURD_RAITA / PICKLE / …) already
+ * classifies the accompaniments themselves.
+ */
+export const dishSideOptionsTable = pgTable("dish_side_options", {
+  id: text("id").primaryKey(),
+  /** The anchor dish (e.g. Paratha, Chole). */
+  dishId: text("dish_id").notNull().references(() => dishesTable.id, { onDelete: "cascade" }),
+  /** An accompaniment that may be served with it (e.g. Curd, Bhature). */
+  sideDishId: text("side_dish_id").notNull().references(() => dishesTable.id, { onDelete: "cascade" }),
+  sortOrder: integer("sort_order").default(0).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  dishIdx: index("idx_dish_side_options_dish").on(t.dishId),
+  uniq: uniqueIndex("uq_dish_side_option").on(t.dishId, t.sideDishId),
+}));
+
 /** Ingredient master (ingredients used in dishes — Aloo, Pyaaz, Tomato, …). */
 export const ingredientsTable = pgTable("ingredients", {
   id: text("id").primaryKey(),
@@ -326,6 +355,20 @@ export const foodMenuRotationTable = pgTable("food_menu_rotation", {
   /** Display label for the service-set slot, e.g. "Veg", "Veg 2", "Hot Food". */
   slotLabel: text("slot_label"),
   sortOrder: integer("sort_order").default(0).notNull(),
+  /**
+   * Set when this row is a SIDE DISH served with another row in the same slot
+   * (e.g. the Bhature chosen to accompany Chole). Null for a normal menu item.
+   *
+   * Sides are deliberately stored as ordinary rotation rows rather than as a
+   * nested field on the parent, so `resolveMenu` / `computeOrderItems` /
+   * Kitchen Summary / dispatch pick them up with no changes — a side dish
+   * reaches the kitchen exactly like any other dish. The UI renders them
+   * indented under their parent. Sides are EXEMPT from menu-composition slot
+   * counting (a paired Bhature must not consume the meal's "1 BREAD" slot).
+   */
+  parentRotationId: text("parent_rotation_id").references(
+    (): AnyPgColumn => foodMenuRotationTable.id, { onDelete: "cascade" },
+  ),
   /** Seasonal validity window; null = always applicable. */
   effectiveFrom: timestamp("effective_from"),
   effectiveTo: timestamp("effective_to"),
@@ -336,6 +379,7 @@ export const foodMenuRotationTable = pgTable("food_menu_rotation", {
   resolveIdx: index("idx_rotation_resolve").on(
     t.kitchenId, t.brand, t.mealType, t.rotationWeek, t.dayOfWeek, t.isActive,
   ),
+  parentIdx: index("idx_rotation_parent").on(t.parentRotationId),
 }));
 
 /**
@@ -783,6 +827,7 @@ export type Cluster = typeof clustersTable.$inferSelect;
 export type UserScope = typeof userScopesTable.$inferSelect;
 export type Dish = typeof dishesTable.$inferSelect;
 export type FoodMenuRotation = typeof foodMenuRotationTable.$inferSelect;
+export type DishSideOption = typeof dishSideOptionsTable.$inferSelect;
 export type PerResidentRule = typeof perResidentRuleTable.$inferSelect;
 export type DeliveryPartner = typeof deliveryPartnersTable.$inferSelect;
 export type Agency = typeof agenciesTable.$inferSelect;
