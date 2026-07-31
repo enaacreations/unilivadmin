@@ -212,12 +212,14 @@ function DishesTab() {
   // deliberately not stored on the dish, so the flag can never disagree with
   // the rows. This holds the toggle open while the user is still picking.
   const [sidesOpen, setSidesOpen] = React.useState(false);
+  const [sideSearch, setSideSearch] = React.useState("");
 
-  const openCreate = () => { setEditing(null); setForm(emptyDish); setSidesOpen(false); setModalOpen(true); };
+  const openCreate = () => { setEditing(null); setForm(emptyDish); setSidesOpen(false); setSideSearch(""); setModalOpen(true); };
   const openEdit = async (d: Dish) => {
     setEditing(d);
     setForm({ name: d.name, component: d.component, unit: d.unit, preparations: d.preparations ?? [], brands: d.brands ?? [], ingredients: [], sideDishIds: d.sideDishIds ?? [], isActive: d.isActive });
     setSidesOpen((d.sideDishIds ?? []).length > 0);
+    setSideSearch("");
     setModalOpen(true);
     try {
       const full = await foodApi.getDish(d.id);
@@ -237,12 +239,20 @@ function DishesTab() {
     if (!open) setForm((f) => ({ ...f, sideDishIds: [] }));
   };
   // Candidate accompaniments: any other active dish, likely components first.
+  // Already-selected dishes always stay visible and sort to the top, so a
+  // search can never hide a pick the user has already made.
   const sideCandidates = React.useMemo(() => {
     const rank = (c: string) => { const i = SIDE_COMPONENTS.indexOf(c); return i === -1 ? SIDE_COMPONENTS.length : i; };
+    const q = sideSearch.trim().toLowerCase();
     return allDishes
       .filter((d) => d.isActive && d.id !== editing?.id)
-      .sort((a, b) => rank(a.component) - rank(b.component) || a.name.localeCompare(b.name));
-  }, [allDishes, editing?.id]);
+      .filter((d) => !q || form.sideDishIds.includes(d.id) || d.name.toLowerCase().includes(q) || labelize(d.component).toLowerCase().includes(q))
+      .sort((a, b) => {
+        const sa = form.sideDishIds.includes(a.id) ? 0 : 1;
+        const sb = form.sideDishIds.includes(b.id) ? 0 : 1;
+        return sa - sb || rank(a.component) - rank(b.component) || a.name.localeCompare(b.name);
+      });
+  }, [allDishes, editing?.id, sideSearch, form.sideDishIds]);
   const toggleDishBrand = (code: string) =>
     setForm((f) => ({ ...f, brands: f.brands.includes(code) ? f.brands.filter((b) => b !== code) : [...f.brands, code] }));
   const togglePrep = (p: string) =>
@@ -358,16 +368,30 @@ function DishesTab() {
               <Switch checked={sidesOpen} onCheckedChange={onSidesToggle} />
             </div>
             {sidesOpen && (
-              <div className="mt-3 max-h-52 overflow-y-auto rounded-md border p-2">
-                {sideCandidates.length === 0 && <p className="text-xs text-muted-foreground">No other active dishes to pair with.</p>}
-                <div className="flex flex-wrap gap-2">
-                  {sideCandidates.map((d) => (
-                    <label key={d.id} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm ${form.sideDishIds.includes(d.id) ? "border-accent bg-accent/5" : "border-border"}`}>
-                      <Checkbox checked={form.sideDishIds.includes(d.id)} onCheckedChange={() => toggleSideDish(d.id)} />
-                      {d.name}
-                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{labelize(d.component)}</span>
-                    </label>
-                  ))}
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="relative flex-1">
+                    <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <Input value={sideSearch} onChange={(e) => setSideSearch(e.target.value)} placeholder="Search side dishes…" className="h-9 pl-9" />
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">{form.sideDishIds.length} selected</span>
+                </div>
+                <div className="max-h-52 overflow-y-auto rounded-md border p-2">
+                  {sideCandidates.length === 0 && (
+                    <p className="text-xs text-muted-foreground">{sideSearch.trim() ? "No dishes match that search." : "No other active dishes to pair with."}</p>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {sideCandidates.map((d) => {
+                      const on = form.sideDishIds.includes(d.id);
+                      return (
+                        <label key={d.id} className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm transition-colors ${on ? "border-accent bg-accent/10 font-medium text-accent-strong" : "border-border hover:bg-muted/60"}`}>
+                          <Checkbox checked={on} onCheckedChange={() => toggleSideDish(d.id)} />
+                          {d.name}
+                          <span className={`text-[10px] uppercase tracking-wider ${on ? "text-accent-strong/70" : "text-muted-foreground"}`}>{labelize(d.component)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
@@ -577,6 +601,7 @@ function RotationTab() {
     setForm({ ...emptyRotation, kitchenId: kitchen !== "ALL" ? kitchen : (kitchens[0]?.id ?? ""), brand: (brand !== "ALL" ? brand : brandOptions[0]?.code) ?? "UNILIV" });
     setBulkDishIds([]);
     setSideSel({});
+    setDishSearch("");
     setModalOpen(true);
   };
   // Edit operates on the WHOLE menu slot — preload all dishes in that slot.
@@ -595,6 +620,7 @@ function RotationTab() {
       if (parentDish) sel[parentDish] = [...(sel[parentDish] ?? []), x.dishId];
     }
     setSideSel(sel);
+    setDishSearch("");
     setModalOpen(true);
   };
   const toggleBulkDish = (id: string) =>
@@ -613,6 +639,15 @@ function RotationTab() {
     () => [...new Set(bulkDishIds.flatMap((id) => sideSel[id] ?? []))],
     [bulkDishIds, sideSel],
   );
+  // Dish search for the slot builder. Selected dishes always stay visible so a
+  // search can never hide something already on the menu.
+  const [dishSearch, setDishSearch] = React.useState("");
+  const pickerDishes = React.useMemo(() => {
+    const q = dishSearch.trim().toLowerCase();
+    return dishes
+      .filter((d) => d.isActive)
+      .filter((d) => !q || bulkDishIds.includes(d.id) || d.name.toLowerCase().includes(q) || labelize(d.component).toLowerCase().includes(q));
+  }, [dishes, dishSearch, bulkDishIds]);
   const submit = () => {
     if (!form.kitchenId) { toast({ title: "Kitchen is required", variant: "destructive" }); return; }
     if (bulkDishIds.length === 0) { toast({ title: "Select at least one dish", variant: "destructive" }); return; }
@@ -800,18 +835,23 @@ function RotationTab() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mb-2">{editing ? "Edit the dishes in this menu slot." : "Pick one or more dishes for this slot."}</p>
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input value={dishSearch} onChange={(e) => setDishSearch(e.target.value)} placeholder="Search dishes…" className="h-9 pl-9" />
+            </div>
             <div className="max-h-52 space-y-1 overflow-y-auto rounded-md border p-2">
-              {dishes.filter((d) => d.isActive).map((d) => {
+              {pickerDishes.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">No dishes match that search.</p>}
+              {pickerDishes.map((d) => {
                 const picked = bulkDishIds.includes(d.id);
                 const options = (d.sideDishIds ?? [])
                   .map((sid) => dishes.find((x) => x.id === sid))
                   .filter((x): x is Dish => !!x && x.isActive);
                 return (
                   <React.Fragment key={d.id}>
-                    <label className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60 ${picked ? "bg-accent/5" : ""}`}>
+                    <label className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${picked ? "bg-accent/10 font-medium text-accent-strong" : "hover:bg-muted/60"}`}>
                       <Checkbox checked={picked} onCheckedChange={() => toggleBulkDish(d.id)} />
                       <span className="flex-1">{d.name}</span>
-                      {options.length > 0 && <Badge variant="outline" className="text-[10px]">+ sides</Badge>}
+                      {options.length > 0 && <Badge variant="outline" className={`text-[10px] ${picked ? "border-accent/40 text-accent-strong" : ""}`}>+ sides</Badge>}
                       <Badge variant="secondary" className="text-[10px] uppercase">{labelize(d.component)}</Badge>
                     </label>
                     {/* Accompaniments configured on the dish master. Shown only
@@ -824,7 +864,11 @@ function RotationTab() {
                           return (
                             <button
                               key={s.id} type="button" onClick={() => toggleSide(d.id, s.id)}
-                              className={`rounded-full border px-2 py-0.5 text-[11px] transition-colors ${on ? "border-accent bg-accent/10 text-accent-foreground" : "border-border text-muted-foreground hover:bg-muted"}`}
+                              // Selected = SOLID accent fill with white text, the
+                              // same pairing the app's primary buttons use. The
+                              // old `bg-accent/10 text-accent-foreground` put pure
+                              // white on a 10% tint — effectively white-on-white.
+                              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${on ? "border-accent bg-accent text-white" : "border-border text-muted-foreground hover:border-accent/50 hover:bg-muted"}`}
                             >
                               {on ? "✓ " : "+ "}{s.name}
                             </button>
