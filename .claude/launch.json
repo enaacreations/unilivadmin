@@ -2,9 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "uniliv-api",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "set -a; . ./.env; set +a; export PORT=8090; exec pnpm --filter @workspace/api-server run dev"],
+      "port": 8090
+    },
+    {
       "name": "uniliv-web",
       "runtimeExecutable": "sh",
-      "runtimeArgs": ["-c", "set -a; . ./.env; set +a; export BASE_PATH=/ API_PROXY_TARGET=http://localhost:8090; exec pnpm --filter @workspace/uniliv-admin run dev"],
+      "runtimeArgs": ["-c", "_P=\"$PORT\"; set -a; . ./.env; set +a; export PORT=\"${_P:-3000}\" BASE_PATH=/ API_PROXY_TARGET=http://localhost:8090; exec pnpm --filter @workspace/uniliv-admin run dev"],
       "autoPort": true
     },
     {
