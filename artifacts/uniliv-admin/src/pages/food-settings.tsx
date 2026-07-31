@@ -89,6 +89,52 @@ function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete?: () =
   );
 }
 
+/**
+ * Settings navigation, split by how often a tab is actually used.
+ *
+ * PRIMARY is the day-to-day menu-building loop and stays visible. Portion Size
+ * Rules earns its place there because a dish is unusable without one — the
+ * menu-rotation guard tells the manager "Add a Portion Size Rule first", so
+ * that tab must be reachable without hunting through a dropdown.
+ *
+ * SECONDARY is configured once and rarely revisited, so it folds behind "More".
+ */
+type SettingsTab = { value: string; label: string; icon: typeof Globe; gated?: boolean };
+
+const PRIMARY_TABS: SettingsTab[] = [
+  { value: "dishes", label: "Dishes", icon: UtensilsCrossed },
+  { value: "ingredients", label: "Ingredients", icon: Boxes },
+  { value: "rotation", label: "Menu Rotation", icon: CalendarRange },
+  { value: "composition", label: "Menu Rules", icon: SlidersHorizontal },
+  { value: "rules", label: "Portion Size Rules", icon: Scale },
+];
+
+const SECONDARY_GROUPS: { label: string; items: SettingsTab[] }[] = [
+  {
+    label: "Kitchen and service",
+    items: [
+      { value: "kitchens", label: "Kitchens", icon: ChefHat },
+      { value: "meals", label: "Meal Types", icon: ListChecks },
+      { value: "cutoffs", label: "Cut-offs & Service", icon: Clock },
+      { value: "partners", label: "Agencies", icon: Truck },
+    ],
+  },
+  {
+    label: "Access",
+    items: [
+      { value: "hierarchy", label: "Hierarchy", icon: Network },
+      { value: "users", label: "Users & Scopes", icon: ShieldCheck },
+    ],
+  },
+  {
+    // Org-wide defaults — Super Admin and F&B Manager only (see canFoodDefaults).
+    label: "Advanced",
+    items: [
+      { value: "food-defaults", label: "Food Defaults", icon: Globe, gated: true },
+    ],
+  },
+];
+
 export default function FoodSettings() {
   const { data: lookups } = useQuery<FoodLookups>({
     queryKey: foodKeys.lookups(),
@@ -103,6 +149,10 @@ export default function FoodSettings() {
   // leads food ops org-wide, so they get the tab too (backend PUT mirrors this).
   const canFoodDefaults = isSuperAdmin || role === "FNB_MANAGER";
 
+  // Controlled so the "More" dropdown can drive the same Tabs root.
+  const [tab, setTab] = React.useState("dishes");
+  const activeSecondary = SECONDARY_GROUPS.flatMap((g) => g.items).find((it) => it.value === tab);
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -110,24 +160,61 @@ export default function FoodSettings() {
         subtitle="Manage dishes, menu rotation, portion size rules, delivery partners, kitchens, meal types, cut-off windows, hierarchy and user scopes"
       />
 
-      <Tabs defaultValue="dishes" className="space-y-4">
+      <Tabs value={tab} onValueChange={setTab} className="space-y-4">
         <div className="sticky top-0 z-10 -mx-1 bg-background px-1 pb-1">
-          <TabsList className="flex w-full flex-nowrap justify-start gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <TabsTrigger value="dishes" className="shrink-0 whitespace-nowrap"><UtensilsCrossed className="h-4 w-4 mr-2" /> Dishes</TabsTrigger>
-            <TabsTrigger value="ingredients" className="shrink-0 whitespace-nowrap"><Boxes className="h-4 w-4 mr-2" /> Ingredients</TabsTrigger>
-            <TabsTrigger value="rotation" className="shrink-0 whitespace-nowrap"><CalendarRange className="h-4 w-4 mr-2" /> Menu Rotation</TabsTrigger>
-            <TabsTrigger value="composition" className="shrink-0 whitespace-nowrap"><SlidersHorizontal className="h-4 w-4 mr-2" /> Menu Rules</TabsTrigger>
-            <TabsTrigger value="rules" className="shrink-0 whitespace-nowrap"><Scale className="h-4 w-4 mr-2" /> Portion Size Rules</TabsTrigger>
-            <TabsTrigger value="partners" className="shrink-0 whitespace-nowrap"><Truck className="h-4 w-4 mr-2" /> Agencies</TabsTrigger>
-            <TabsTrigger value="kitchens" className="shrink-0 whitespace-nowrap"><ChefHat className="h-4 w-4 mr-2" /> Kitchens</TabsTrigger>
-            <TabsTrigger value="meals" className="shrink-0 whitespace-nowrap"><ListChecks className="h-4 w-4 mr-2" /> Meal Types</TabsTrigger>
-            <TabsTrigger value="cutoffs" className="shrink-0 whitespace-nowrap"><Clock className="h-4 w-4 mr-2" /> Cut-offs & Service</TabsTrigger>
-            <TabsTrigger value="hierarchy" className="shrink-0 whitespace-nowrap"><Network className="h-4 w-4 mr-2" /> Hierarchy</TabsTrigger>
-            <TabsTrigger value="users" className="shrink-0 whitespace-nowrap"><ShieldCheck className="h-4 w-4 mr-2" /> Users & Scopes</TabsTrigger>
-            {canFoodDefaults && (
-              <TabsTrigger value="food-defaults" className="shrink-0 whitespace-nowrap"><Globe className="h-4 w-4 mr-2" /> Food Defaults</TabsTrigger>
-            )}
-          </TabsList>
+          {/* The "More" trigger sits OUTSIDE TabsList — Radix's tab list owns
+              roving focus and swallows pointer/keyboard events for any child
+              that isn't a TabsTrigger, so a DropdownMenuTrigger nested inside
+              it never opens. The wrapper carries the muted pill styling so the
+              two still read as one strip. */}
+          <div className="inline-flex max-w-full items-center gap-1 rounded-lg bg-muted p-1 text-muted-foreground">
+            <TabsList className="flex h-auto flex-nowrap justify-start gap-1 overflow-x-auto bg-transparent p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {PRIMARY_TABS.map(({ value, label, icon: Icon }) => (
+                <TabsTrigger key={value} value={value} className="shrink-0 whitespace-nowrap">
+                  <Icon className="h-4 w-4 mr-2" /> {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            {/* Everything below is configured once and rarely revisited, so it
+                lives behind one trigger. The trigger names the active item and
+                renders selected — otherwise a tab inside a dropdown leaves you
+                unsure where you are. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={activeSecondary ? `More settings, ${activeSecondary.label} selected` : "More settings"}
+                  className={`inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeSecondary ? "bg-background text-foreground shadow" : ""}`}
+                >
+                  {activeSecondary
+                    ? <><activeSecondary.icon className="h-4 w-4 mr-2" /> More · {activeSecondary.label}</>
+                    : <>More</>}
+                  <ChevronDown className="h-4 w-4 ml-1.5 opacity-70" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-56">
+                {SECONDARY_GROUPS.map((group, gi) => {
+                  const items = group.items.filter((it) => !it.gated || canFoodDefaults);
+                  if (!items.length) return null;
+                  return (
+                    <React.Fragment key={group.label}>
+                      {gi > 0 && <DropdownMenuSeparator />}
+                      <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">{group.label}</DropdownMenuLabel>
+                      {items.map(({ value, label, icon: Icon }) => (
+                        <DropdownMenuItem
+                          key={value}
+                          onSelect={() => setTab(value)}
+                          className={tab === value ? "bg-accent/10 font-medium text-accent-strong" : ""}
+                        >
+                          <Icon className="h-4 w-4 mr-2 text-muted-foreground" /> {label}
+                        </DropdownMenuItem>
+                      ))}
+                    </React.Fragment>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
 
         <TabsContent value="dishes"><DishesTab /></TabsContent>
