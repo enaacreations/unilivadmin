@@ -1,7 +1,7 @@
 # ── Build context excludes (keep the image + context small) ──
 **/node_modules
 **/dist
-artifacts/*/dist
+apps/*/dist
 lib/*/dist
 .git
 .gitignore

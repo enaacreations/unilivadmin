@@ -19,7 +19,7 @@ run = "pnpm --filter @workspace/uniliv-admin run dev"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/uniliv-admin", "run", "build" ]
-publicDir = "artifacts/uniliv-admin/dist/public"
+publicDir = "apps/uniliv-admin/dist/public"
 serve = "static"
 
 [[services.production.rewrites]]

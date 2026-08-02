@@ -41,7 +41,7 @@ ENV API_BUNDLE_TARGET=production
 RUN pnpm --filter @workspace/api-server run build
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Web build — Vite outputs static assets to artifacts/uniliv-admin/dist/public.
+# Web build — Vite outputs static assets to apps/uniliv-admin/dist/public.
 # vite.config requires PORT + BASE_PATH at config-load time (even for `build`).
 # ─────────────────────────────────────────────────────────────────────────────
 FROM base AS web-build
@@ -57,7 +57,7 @@ FROM node:22-alpine AS api
 ENV NODE_ENV=production
 ENV PORT=8090
 WORKDIR /app
-COPY --from=api-build /repo/artifacts/api-server/dist ./dist
+COPY --from=api-build /repo/apps/api-server/dist ./dist
 EXPOSE 8090
 USER node
 CMD ["node", "--enable-source-maps", "dist/index.mjs"]
@@ -67,5 +67,5 @@ CMD ["node", "--enable-source-maps", "dist/index.mjs"]
 # ─────────────────────────────────────────────────────────────────────────────
 FROM nginx:1.27-alpine AS web
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=web-build /repo/artifacts/uniliv-admin/dist/public /usr/share/nginx/html
+COPY --from=web-build /repo/apps/uniliv-admin/dist/public /usr/share/nginx/html
 EXPOSE 80
