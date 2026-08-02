@@ -1746,7 +1746,29 @@ foodRouter.get("/dishes", authenticate, async (req, res) => {
       : [];
     const byDish = new Map<string, string[]>();
     for (const o of opts) byDish.set(o.dishId, [...(byDish.get(o.dishId) ?? []), o.sideDishId]);
-    res.json({ success: true, data: rows.map((r) => ({ ...r, sideDishIds: byDish.get(r.id) ?? [] })) });
+    // Ingredients ride along on the LIST too — one batched join, same shape the
+    // detail endpoint returns. The plate composer greys out every candidate that
+    // would clash ("shares Aloo") as you type, so the whole catalogue's
+    // ingredients have to be answerable locally; per-dish fetches can't do it.
+    const ings = rows.length
+      ? await db.select({
+          id: dishIngredientsTable.id, dishId: dishIngredientsTable.dishId,
+          ingredientId: dishIngredientsTable.ingredientId, ingredientName: ingredientsTable.name,
+          quantity: dishIngredientsTable.quantity, unit: dishIngredientsTable.unit,
+        }).from(dishIngredientsTable)
+          .leftJoin(ingredientsTable, eq(dishIngredientsTable.ingredientId, ingredientsTable.id))
+          .where(inArray(dishIngredientsTable.dishId, rows.map((r) => r.id)))
+      : [];
+    const ingByDish = new Map<string, { id: string; ingredientId: string; ingredientName: string | null; quantity: string | null; unit: string | null }[]>();
+    for (const { dishId, ...g } of ings) ingByDish.set(dishId, [...(ingByDish.get(dishId) ?? []), g]);
+    res.json({
+      success: true,
+      data: rows.map((r) => ({
+        ...r,
+        sideDishIds: byDish.get(r.id) ?? [],
+        ingredients: ingByDish.get(r.id) ?? [],
+      })),
+    });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 

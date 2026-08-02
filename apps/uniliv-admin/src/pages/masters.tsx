@@ -21,8 +21,8 @@ const TYPE_ICON: Record<string, LucideIcon> = {
   kitchens: ChefHat,
 };
 
-/** Advanced masters live in the richer Food Settings editors. The settings page
- *  does not read a tab from the URL, so we deep-link to /food/settings directly. */
+/** Advanced masters live in the richer Service Set editors. That page does not
+ *  read a tab from the URL, so we deep-link to /food/settings directly. */
 const ADVANCED: Array<{ label: string; description: string; icon: LucideIcon }> = [
   { label: "Dishes", description: "Menu dishes with components & portion data", icon: UtensilsCrossed },
   { label: "Ingredients", description: "Raw ingredients used in composition rules", icon: Carrot },
@@ -110,14 +110,14 @@ export default function Masters() {
         )}
       </section>
 
-      {/* Section B — advanced masters (rich editors in Food Settings) */}
+      {/* Section B — advanced masters (rich editors in Service Set) */}
       <section className="space-y-4">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="w-4 h-4 text-accent" />
           <h2 className="text-sm font-display font-semibold uppercase tracking-wider text-muted-foreground">
             Advanced masters
           </h2>
-          <span className="text-xs text-muted-foreground">— managed in Food Settings</span>
+          <span className="text-xs text-muted-foreground">— managed in Service Set</span>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
