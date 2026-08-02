@@ -4,7 +4,7 @@ Status: **approved direction** (decisions below), phased build.
 Owners: platform. Last updated: 2026-06-20.
 
 This document is the contract the build executes against. It supersedes the
-inline best-effort `notify()` engine in `artifacts/api-server/src/lib/notification-service.ts`,
+inline best-effort `notify()` engine in `apps/api-server/src/lib/notification-service.ts`,
 which it **evolves** rather than replaces — the existing tables (`notification_outbox`,
 `notifications`, `notification_preferences`, `push_subscriptions`) and channel enum
 (EMAIL · SMS · PUSH · WHATSAPP · IN_APP) are already the right shape and are kept.

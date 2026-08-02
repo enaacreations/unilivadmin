@@ -7,7 +7,7 @@ Vite (web), Express + Drizzle ORM (API), and PostgreSQL.
 ## Architecture
 
 ```
-artifacts/
+apps/
   uniliv-admin/    React + Vite + TS web app
   api-server/      Express + Drizzle + JWT API
   mockup-sandbox/  Component preview / design canvas
@@ -27,8 +27,8 @@ pnpm --filter @workspace/api-server run seed # seed demo data (if available)
 
 Workflows are managed by Replit:
 
-- `artifacts/api-server: API Server` → Express on `:8080`, served at `/api`
-- `artifacts/uniliv-admin: web` → Vite dev server, served at `/`
+- `apps/api-server: API Server` → Express on `:8080`, served at `/api`
+- `apps/uniliv-admin: web` → Vite dev server, served at `/`
 
 For ad-hoc requests use the shared proxy: `curl localhost:80/api/healthz`.
 
@@ -75,8 +75,8 @@ Password: Admin@123
 
 12 roles, 25 modules. Defined in:
 
-- Backend: `artifacts/api-server/src/lib/permissions.ts` + `middlewares/authorize.ts`
-- Frontend: `artifacts/uniliv-admin/src/lib/permissions.ts` + `lib/use-permissions.ts`
+- Backend: `apps/api-server/src/lib/permissions.ts` + `middlewares/authorize.ts`
+- Frontend: `apps/uniliv-admin/src/lib/permissions.ts` + `lib/use-permissions.ts`
 
 | Role | Modules |
 | --- | --- |

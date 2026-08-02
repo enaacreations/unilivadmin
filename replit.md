@@ -21,7 +21,7 @@ UNILIV Admin is built as a full-stack monorepo.
 -   **API Client**: Orval generates React Query hooks from an OpenAPI specification, providing a type-safe and efficient way to interact with the backend API.
 
 ### Monorepo Structure
-The project is organized into `artifacts/` for deployable applications (API server and frontend), `lib/` for shared libraries (DB schema, OpenAPI spec, generated Zod schemas, API client), and `scripts/` for utilities like database seeding.
+The project is organized into `apps/` for deployable applications (API server and frontend), `lib/` for shared libraries (DB schema, OpenAPI spec, generated Zod schemas, API client), and `scripts/` for utilities like database seeding.
 
 ### Database Schema (PostgreSQL via Drizzle)
 The Drizzle ORM schema is modularized into `core.ts`, `hrms.ts`, `procurement.ts`, `kitchen.ts`, `sales.ts`, and `lnd.ts`, covering all major operational domains with specific tables and fields for properties, residents, employees, inventory, leads, courses, and more. Key additions include detailed fields for kitchen recipes and menu planning, comprehensive sales lead tracking with activity logs, and detailed L&D course management with progress tracking and quizzes.

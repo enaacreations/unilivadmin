@@ -25,9 +25,9 @@ pnpm --filter @workspace/api-server run test -- audit-scoring   # run a single t
 
 Dev servers are run as **Replit workflows**, not from the workspace root (never run `pnpm dev` at root):
 
-- `artifacts/api-server: API Server` → Express on its own port, served at `/api/*`
-- `artifacts/uniliv-admin: web` → Vite dev server, served at `/`
-- `artifacts/mockup-sandbox: Component Preview` → served at `/__mockup`
+- `apps/api-server: API Server` → Express on its own port, served at `/api/*`
+- `apps/uniliv-admin: web` → Vite dev server, served at `/`
+- `apps/mockup-sandbox: Component Preview` → served at `/__mockup`
 
 **Ad-hoc API calls go through the shared proxy on port 80, never the service port directly:**
 ```bash
@@ -39,7 +39,7 @@ Default login: `admin@uniliv.com` / `Admin@123`.
 ## Architecture
 
 ```
-artifacts/
+apps/
   api-server/      Express 5 + Drizzle + JWT API (the backend)
   uniliv-admin/    React 19 + Vite + TS web app (the frontend)
   notify-service/  Standalone BullMQ worker that delivers notifications
@@ -59,7 +59,7 @@ Drizzle schema is split by domain under `lib/db/src/schema/` (`core`, `auth`, `h
 `audit-config`, `lnd`, `system`). Schema changes are applied with `drizzle-kit push` — **there are
 no migration files**. Import tables/`db`/`pool` from `@workspace/db`.
 
-### API server (`artifacts/api-server`)
+### API server (`apps/api-server`)
 - Built with **esbuild** (`build.mjs` → `dist/index.mjs`), run with Node. Not tsx in prod.
 - One router file per domain in `src/routes/`, all mounted in `src/routes/index.ts` under `/api`.
   Business logic that's reused lives in `src/lib/*-service.ts`.
@@ -78,7 +78,7 @@ no migration files**. Import tables/`db`/`pool` from `@workspace/db`.
   requires a strong `SESSION_SECRET`, forbids `DEV_OTP`, and disables dev-OTP backdoors. Read the
   header comment there before touching auth/secret/cookie behaviour.
 
-### Web app (`artifacts/uniliv-admin`)
+### Web app (`apps/uniliv-admin`)
 - React 19, **Wouter** for routing (see `src/App.tsx`), **Zustand** for global state
   (`src/lib/store.ts` — auth + global property filter), **TanStack Query** for server state,
   Tailwind + shadcn/ui (Radix) components under `src/components/ui`.
@@ -104,9 +104,9 @@ channels (EMAIL, SMS, WHATSAPP, PUSH/FCM, WEBPUSH/VAPID, IN_APP). See `NOTIFICAT
 
 The permission model is the backbone of this app: ~25 roles × dozens of modules. The matrix is
 duplicated on both sides and **must be kept in sync**:
-- Backend: `artifacts/api-server/src/lib/permissions.ts` (`ROLE_PERMISSIONS`, `can()`, `UserRole`,
+- Backend: `apps/api-server/src/lib/permissions.ts` (`ROLE_PERMISSIONS`, `can()`, `UserRole`,
   `Module`, `Permission`) + `middlewares/authorize.ts`.
-- Frontend: `artifacts/uniliv-admin/src/lib/permissions.ts` + `src/lib/use-permissions.ts`.
+- Frontend: `apps/uniliv-admin/src/lib/permissions.ts` + `src/lib/use-permissions.ts`.
 
 Adding a module or role means editing the matrix in **both** places. The two large sub-domains —
 **Food Ordering & Kitchen Ops** (`FOOD_*` modules, roles like UNIT_LEAD / FNB_MANAGER) and

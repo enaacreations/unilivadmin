@@ -45,7 +45,7 @@ PostgreSQL.
                 ▼                                           ▼
    ┌────────────────────────┐                ┌──────────────────────────┐
    │  Express API server    │                │  Vite-built React SPA    │
-   │  (artifacts/api-server)│                │  (artifacts/uniliv-admin)│
+   │  (apps/api-server)│                │  (apps/uniliv-admin)│
    │  JWT auth, RBAC,       │                │  TanStack Query,         │
    │  Drizzle ORM           │                │  Wouter, Zustand         │
    └───────────┬────────────┘                └──────────────────────────┘
@@ -66,8 +66,8 @@ and production.
 ## 2. Repository Layout
 
 ```
-artifacts-monorepo/
-├── artifacts/
+unilivadmin/
+├── apps/
 │   ├── uniliv-admin/        React + Vite + TS web app (UI)
 │   │   └── src/
 │   │       ├── pages/       Route-level page components (35 pages)
@@ -119,9 +119,9 @@ pnpm --filter @workspace/db run push   # apply schema to PostgreSQL
 
 | Workflow                                       | Command                                      | Path served |
 |-----------------------------------------------|----------------------------------------------|-------------|
-| `artifacts/api-server: API Server`            | `pnpm --filter @workspace/api-server run dev` | `/api/*`    |
-| `artifacts/uniliv-admin: web`                 | `pnpm --filter @workspace/uniliv-admin run dev` | `/`       |
-| `artifacts/mockup-sandbox: Component Preview` | `pnpm --filter @workspace/mockup-sandbox run dev` | `/__mockup` |
+| `apps/api-server: API Server`            | `pnpm --filter @workspace/api-server run dev` | `/api/*`    |
+| `apps/uniliv-admin: web`                 | `pnpm --filter @workspace/uniliv-admin run dev` | `/`       |
+| `apps/mockup-sandbox: Component Preview` | `pnpm --filter @workspace/mockup-sandbox run dev` | `/__mockup` |
 
 > Never run `pnpm dev` at the workspace root. Use the configured workflows instead.
 
@@ -217,7 +217,7 @@ A 12-role × 25-module permission matrix is shared between FE and BE.
 ### Backend enforcement
 
 ```ts
-// artifacts/api-server/src/middlewares/authorize.ts
+// apps/api-server/src/middlewares/authorize.ts
 import { authorize } from "../middlewares/authorize.js";
 
 router.get("/", authenticate, authorize("SETTINGS", "view"), handler);
@@ -232,7 +232,7 @@ router.use(authenticate, authorize("EXECUTIVE_DASHBOARD", "view"));
 ### Frontend enforcement
 
 ```ts
-// artifacts/uniliv-admin/src/lib/use-permissions.ts
+// apps/uniliv-admin/src/lib/use-permissions.ts
 const { can, role, propertyId } = usePermissions();
 
 if (can("RESIDENTS", "create")) { /* show button */ }
@@ -504,7 +504,7 @@ broadcast messages, including `POST /communications/preview` and `POST /communic
 
 ## 10. Frontend Routes
 
-Routes are defined in `artifacts/uniliv-admin/src/App.tsx` (Wouter). Every protected route is
+Routes are defined in `apps/uniliv-admin/src/App.tsx` (Wouter). Every protected route is
 wrapped in `<ProtectedRoute>` (auth check) → `<Layout>` (chrome) → `<PageGuard>` (RBAC).
 
 | Path | Component | Module |
@@ -700,7 +700,7 @@ Visible to `SUPER_ADMIN` and `FINANCE`. Layout:
 - **Row 4**: Headcount by department (bar) + on-leave-today count.
 - **Row 5**: Top 5 overdue residents and Top 5 SLA-breached complaints.
 
-Implementation: `artifacts/uniliv-admin/src/pages/executive-dashboard.tsx` consuming
+Implementation: `apps/uniliv-admin/src/pages/executive-dashboard.tsx` consuming
 `/api/executive/*` endpoints.
 
 ---
@@ -816,7 +816,7 @@ connection string. Never push schema during a hot deployment without a pre-publi
 
 Use the `restart_workflow` tool (or the Replit UI) when:
 
-- Code in `artifacts/api-server/src/**` changes (esbuild rebuilds & restarts on dev).
+- Code in `apps/api-server/src/**` changes (esbuild rebuilds & restarts on dev).
 - A new dependency is added to a workspace package.
 
 The web app uses Vite HMR — most changes are picked up instantly.
@@ -835,8 +835,8 @@ The web app uses Vite HMR — most changes are picked up instantly.
 
 ### Logs
 
-- API server: `/tmp/logs/artifactsapi-server_API_Server_*.log`
-- Web app: `/tmp/logs/artifactsuniliv-admin_web_*.log`
+- API server: `/tmp/logs/appsapi-server_API_Server_*.log`
+- Web app: `/tmp/logs/appsuniliv-admin_web_*.log`
 - Browser console: `/tmp/logs/browser_console_*.log`
 
 Use `refresh_all_logs` (Replit tool) to capture and rotate logs.
@@ -856,17 +856,17 @@ Change this immediately in any non-development environment.
 
 | Concern | File |
 |---------|------|
-| FE permissions matrix | `artifacts/uniliv-admin/src/lib/permissions.ts` |
-| FE permission hook    | `artifacts/uniliv-admin/src/lib/use-permissions.ts` |
-| FE API fetch helper   | `artifacts/uniliv-admin/src/lib/api-fetch.ts` |
-| FE state store        | `artifacts/uniliv-admin/src/lib/store.ts` |
-| FE layout / sidebar   | `artifacts/uniliv-admin/src/components/layout.tsx` |
-| FE notification bell  | `artifacts/uniliv-admin/src/components/notification-bell.tsx` |
-| FE 403 page           | `artifacts/uniliv-admin/src/pages/forbidden.tsx` |
-| BE permissions matrix | `artifacts/api-server/src/lib/permissions.ts` |
-| BE authorize mw       | `artifacts/api-server/src/middlewares/authorize.ts` |
-| BE auth mw            | `artifacts/api-server/src/middlewares/auth.ts` |
-| BE id helper          | `artifacts/api-server/src/lib/id.ts` |
-| BE route registry     | `artifacts/api-server/src/routes/index.ts` |
+| FE permissions matrix | `apps/uniliv-admin/src/lib/permissions.ts` |
+| FE permission hook    | `apps/uniliv-admin/src/lib/use-permissions.ts` |
+| FE API fetch helper   | `apps/uniliv-admin/src/lib/api-fetch.ts` |
+| FE state store        | `apps/uniliv-admin/src/lib/store.ts` |
+| FE layout / sidebar   | `apps/uniliv-admin/src/components/layout.tsx` |
+| FE notification bell  | `apps/uniliv-admin/src/components/notification-bell.tsx` |
+| FE 403 page           | `apps/uniliv-admin/src/pages/forbidden.tsx` |
+| BE permissions matrix | `apps/api-server/src/lib/permissions.ts` |
+| BE authorize mw       | `apps/api-server/src/middlewares/authorize.ts` |
+| BE auth mw            | `apps/api-server/src/middlewares/auth.ts` |
+| BE id helper          | `apps/api-server/src/lib/id.ts` |
+| BE route registry     | `apps/api-server/src/routes/index.ts` |
 | Drizzle schema entry  | `lib/db/src/schema/index.ts` |
 | OpenAPI spec          | `lib/api-spec/openapi.yaml` |

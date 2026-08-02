@@ -12,7 +12,7 @@
 
 **Symptom (your first screenshot):** course thumbnail placeholders, empty states, table footers, drawer handles, tab lists, kbd badges, and many other surfaces showed dark grey blocks with no readable text.
 
-**Root cause:** In `artifacts/uniliv-admin/src/index.css` the Tailwind tokens for muted background and muted foreground were aliased to the **same** color:
+**Root cause:** In `apps/uniliv-admin/src/index.css` the Tailwind tokens for muted background and muted foreground were aliased to the **same** color:
 
 ```css
 --color-muted: var(--muted);            /* #64748B (slate-500) */
