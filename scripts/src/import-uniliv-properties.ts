@@ -18,7 +18,7 @@
  * Idempotent + re-runnable: stable property match on sourceUrl, stable photo
  * skip on sourceUrl. Safe to run repeatedly.
  *
- * Run:  set -a; . ./.env; set +a
+ * Run:  set -a; . ./.env.api; set +a
  *       pnpm --filter @workspace/scripts run import:uniliv
  */
 import { randomUUID } from "node:crypto";

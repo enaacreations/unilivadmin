@@ -14,7 +14,7 @@
  *                      with .onConflictDoNothing() (or onConflictDoUpdate for the
  *                      2 new properties), so a second run is a clean no-op.
  *
- * Run:  set -a; . ./.env; set +a
+ * Run:  set -a; . ./.env.api; set +a
  *       pnpm --filter @workspace/scripts run seed:demo
  */
 import { db, pool } from "@workspace/db";

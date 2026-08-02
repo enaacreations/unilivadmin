@@ -9,7 +9,7 @@
  * property. Dry-run by default; pass --apply to write. Targets whichever DB
  * DATABASE_URL points at — run against local first, then prod.
  *
- *   set -a; . ./.env; set +a
+ *   set -a; . ./.env.api; set +a
  *   pnpm --filter @workspace/scripts run scope:unit-leads            # dry-run
  *   pnpm --filter @workspace/scripts run scope:unit-leads -- --apply  # write
  */

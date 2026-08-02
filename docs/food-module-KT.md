@@ -109,14 +109,16 @@ Key libs/components:
 4. **Schema is `drizzle-kit push`, not migrations.** `pnpm --filter @workspace/db run push`
    syncs the DB to the code schema. No versioned SQL migration files.
 5. **Seeds order matters:** `seed` → `seed:food` → **`seed:food-extra` (after food; now-relative dates)** → `seed:audit`.
-6. **No dotenv.** Apps read env from the process; `set -a; source .env; set +a` before running.
-   API & Web both throw if `PORT` unset; Web also needs `BASE_PATH` + `API_PROXY_TARGET`.
+6. **No dotenv.** Apps read env from the process; `set -a; source .env.api; set +a` (API,
+   scripts) or `source .env.web` (web) before running — two files because both processes
+   read `PORT`. API & Web both throw if `PORT` unset; Web also needs `BASE_PATH` +
+   `API_PROXY_TARGET`.
 7. **Keep FE/BE `permissions.ts` in sync** — they're two copies of the same matrix.
 
 ## 9. Run & verify locally
 
 See `docs/…setup` (or the README). Short version: Node 22, pnpm 10.30.3, local Postgres `uniliv`,
-`.env` at root, `pnpm install` → `db push` → seeds → run API (`PORT=8090 … api-server dev`) +
+`.env.api` + `.env.web` at root, `pnpm install` → `db push` → seeds → run API (`PORT=8090 … api-server dev`) +
 Web (`PORT=5173 BASE_PATH=/ API_PROXY_TARGET=http://localhost:8090 … uniliv-admin dev`).
 Login `admin@uniliv.com` / `Admin@123`, OTP `000000` (`ALLOW_DEV_OTP=true`).
 

@@ -20,7 +20,7 @@
  * Targets whichever DB `DATABASE_URL` points at — run it against local first.
  *
  * Run (local):
- *   set -a; . ./.env; set +a
+ *   set -a; . ./.env.api; set +a
  *   pnpm --filter @workspace/scripts run geocode:properties            # dry-run
  *   pnpm --filter @workspace/scripts run geocode:properties -- --apply  # write
  *

@@ -3,7 +3,7 @@
  * cycled rotationWeek, dayOfWeek, effective range) for TOMORROW, per property,
  * and report which have a menu vs not. Makes ZERO writes.
  *
- *   set -a; . ./.env; set +a
+ *   set -a; . ./.env.api; set +a
  *   pnpm --filter @workspace/scripts exec tsx ./src/diag-menu.ts
  */
 import { db, pool, propertiesTable, kitchensTable, foodMenuRotationTable } from "@workspace/db";

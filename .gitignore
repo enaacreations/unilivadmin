@@ -11,7 +11,9 @@ out-tsc
 # dependencies
 node_modules
 
-# local environment (never commit secrets; see .env.example / .env.docker.example)
+# local environment (never commit secrets; see .env.api.example / .env.web.example
+# / .env.docker.example). The API and the web dev server have separate files
+# because both read PORT.
 .env
 .env.local
 .env.*.local
