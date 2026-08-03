@@ -394,6 +394,8 @@ export interface OrderPreviewItem {
   dishId: string; dishName: string; component: string; unit: string;
   slotLabel: string | null; sortOrder: number;
   qtyPerResident: number; defaultPersons: number; defaultOrderedQty: number;
+  /** Side served with another dish on the same plate — grouped under its parent in the UI. */
+  parentDishId?: string | null;
 }
 export interface OrderPreviewMeal { mealType: MealType; label: string; items: OrderPreviewItem[] }
 
@@ -616,7 +618,14 @@ export const foodApi = {
   listDishes: (p: Record<string, unknown> = {}) => apiFetch<Envelope<Dish[]>>(`/food/dishes${qs(p)}`).then((r) => r.data),
   getDish: (id: string) => apiFetch<Envelope<Dish>>(`/food/dishes/${id}`).then((r) => r.data),
   createDish: (b: Record<string, unknown>) => apiFetch<Envelope<Dish>>(`/food/dishes`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
-  updateDish: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Dish>>(`/food/dishes/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  /**
+   * Un-pairing a side cascades into the rotation (a chosen side is stored as a
+   * rotation row), so the server reports how many planned plates it had to strip
+   * — the drawer surfaces that rather than letting plates change silently.
+   */
+  updateDish: (id: string, b: Record<string, unknown>) =>
+    apiFetch<Envelope<Dish> & { meta?: { rotationSidesRemoved?: number } }>(`/food/dishes/${id}`, { method: "PUT", body: JSON.stringify(b) })
+      .then((r) => ({ dish: r.data, rotationSidesRemoved: r.meta?.rotationSidesRemoved ?? 0 })),
   deleteDish: (id: string) => apiFetch<Envelope<unknown>>(`/food/dishes/${id}`, { method: "DELETE" }),
 
   // Ingredients master

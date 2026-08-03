@@ -174,14 +174,25 @@ export function DishDrawer({
         })),
         sideDishIds: d.sidesOn ? d.sideDishIds : [],
       };
-      const dish = d.id ? await foodApi.updateDish(d.id, body) : await foodApi.createDish(body);
-      await syncPortions(dish.id, d);
-      return dish;
+      const saved = d.id
+        ? await foodApi.updateDish(d.id, body)
+        : { dish: await foodApi.createDish(body), rotationSidesRemoved: 0 };
+      await syncPortions(saved.dish.id, d);
+      return saved;
     },
-    onSuccess: (dish) => {
+    onSuccess: ({ dish, rotationSidesRemoved }) => {
       toast({ title: draft?.id ? `${dish.name} updated` : `${dish.name} added` });
+      // Dropping a side rewrites already-planned plates, so say so — the board
+      // is a different screen and the change would otherwise go unnoticed.
+      if (rotationSidesRemoved > 0) {
+        toast({
+          title: `Removed from ${rotationSidesRemoved} planned ${rotationSidesRemoved === 1 ? "plate" : "plates"}`,
+          description: "Menu Rotation no longer serves the accompaniments you un-paired.",
+        });
+      }
       qc.invalidateQueries({ queryKey: ["food", "dishes"] });
       qc.invalidateQueries({ queryKey: ["food", "rules"] });
+      qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
       onSaved();
     },
     onError: (e: any) => toast({ title: e?.message || "Could not save the dish", variant: "destructive" }),
@@ -418,6 +429,14 @@ export function DishDrawer({
                     )}
                   </div>
                 </div>
+                {/* The two directions aren't symmetric, and the asymmetry is
+                    invisible from here — say it rather than surprise them. */}
+                {draft.id && (
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    Adding an option affects plates you compose from now on. Removing one strips it
+                    from plates already in Menu Rotation.
+                  </p>
+                )}
               </div>
             )}
           </div>

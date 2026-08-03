@@ -165,6 +165,9 @@ export interface ResolvedDish {
   unit: string;
   slotLabel: string | null;
   sortOrder: number;
+  /** Set when this dish is a side served with another dish on the same plate
+   *  (rotation rows tagged parentRotationId) — consumers group them as one item. */
+  parentDishId: string | null;
 }
 
 /** Resolves a property's food config (brand code + serving kitchen). */
@@ -226,15 +229,26 @@ export async function resolveMenu(
   if (!kitchenId) return [];
   const dow = isoDayOfWeek(serviceDate);
 
-  // Determine how many rotation weeks exist for this kitchen+brand, then cycle.
+  // The rotation cycles over the weeks that actually have a plate for THIS
+  // (meal, day) inside its seasonal window — not every week that exists for the
+  // kitchen. Counting weeks kitchen-wide meant one plate saved into week 2 gave
+  // every meal a 2-week cycle, so on alternate ISO weeks the meals still only
+  // filled in week 1 resolved to an empty week and the unit lead had nothing to
+  // order. Scoping the cycle this way makes an empty resolve impossible: every
+  // week in `weeks` is one this query already proved has rows.
+  const cellWhere = and(
+    eq(foodMenuRotationTable.kitchenId, kitchenId),
+    eq(foodMenuRotationTable.brand, brand as any),
+    eq(foodMenuRotationTable.mealType, mealType as any),
+    eq(foodMenuRotationTable.dayOfWeek, dow),
+    eq(foodMenuRotationTable.isActive, true),
+    or(isNull(foodMenuRotationTable.effectiveFrom), lte(foodMenuRotationTable.effectiveFrom, serviceDate)),
+    or(isNull(foodMenuRotationTable.effectiveTo), gte(foodMenuRotationTable.effectiveTo, serviceDate)),
+  );
   const weeksRows = await db
     .selectDistinct({ w: foodMenuRotationTable.rotationWeek })
     .from(foodMenuRotationTable)
-    .where(and(
-      eq(foodMenuRotationTable.kitchenId, kitchenId),
-      eq(foodMenuRotationTable.brand, brand as any),
-      eq(foodMenuRotationTable.isActive, true),
-    ));
+    .where(cellWhere);
   const weeks = weeksRows.map((r) => r.w).sort((a, b) => a - b);
   const numWeeks = weeks.length || 1;
   const rotationWeek = weeks.length
@@ -243,6 +257,8 @@ export async function resolveMenu(
 
   const rows = await db
     .select({
+      id: foodMenuRotationTable.id,
+      parentRotationId: foodMenuRotationTable.parentRotationId,
       dishId: foodMenuRotationTable.dishId,
       slotLabel: foodMenuRotationTable.slotLabel,
       sortOrder: foodMenuRotationTable.sortOrder,
@@ -253,20 +269,13 @@ export async function resolveMenu(
     })
     .from(foodMenuRotationTable)
     .innerJoin(dishesTable, eq(foodMenuRotationTable.dishId, dishesTable.id))
-    .where(
-      and(
-        eq(foodMenuRotationTable.kitchenId, kitchenId),
-        eq(foodMenuRotationTable.brand, brand as any),
-        eq(foodMenuRotationTable.mealType, mealType as any),
-        eq(foodMenuRotationTable.rotationWeek, rotationWeek),
-        eq(foodMenuRotationTable.dayOfWeek, dow),
-        eq(foodMenuRotationTable.isActive, true),
-        or(isNull(foodMenuRotationTable.effectiveFrom), lte(foodMenuRotationTable.effectiveFrom, serviceDate)),
-        or(isNull(foodMenuRotationTable.effectiveTo), gte(foodMenuRotationTable.effectiveTo, serviceDate)),
-      ),
-    )
+    .where(and(cellWhere, eq(foodMenuRotationTable.rotationWeek, rotationWeek)))
     .orderBy(foodMenuRotationTable.sortOrder);
 
+  // A side's parent row lives in the same resolved cell, so the id → dishId map
+  // is local. A dangling parentRotationId (parent row deleted) degrades to a
+  // standalone dish rather than an orphan.
+  const dishByRotationId = new Map(rows.map((r) => [r.id, r.dishId]));
   return rows.map((r) => ({
     dishId: r.dishId,
     dishName: r.dishName,
@@ -275,6 +284,7 @@ export async function resolveMenu(
     unit: r.unit,
     slotLabel: r.slotLabel,
     sortOrder: r.sortOrder,
+    parentDishId: r.parentRotationId ? (dishByRotationId.get(r.parentRotationId) ?? null) : null,
   }));
 }
 
@@ -345,6 +355,8 @@ export interface OrderPreviewItem {
   qtyPerResident: number | null;
   defaultPersons: number;
   defaultOrderedQty: number;
+  /** Side served with another dish — the ordering UI groups it under its parent. */
+  parentDishId: string | null;
 }
 
 /**
@@ -376,6 +388,7 @@ export async function resolveOrderPreview(
       qtyPerResident: qpr,
       defaultPersons,
       defaultOrderedQty: qpr != null ? Math.round(defaultPersons * qpr * 1000) / 1000 : 0,
+      parentDishId: m.parentDishId,
     };
   });
 }

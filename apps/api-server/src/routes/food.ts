@@ -43,7 +43,7 @@ import {
   foodOrderDraftsTable,
   foodOrderBatchesTable,
 } from "@workspace/db";
-import { and, eq, or, ilike, sql, desc, asc, gte, lte, lt, inArray, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, or, ilike, sql, desc, asc, gte, lte, lt, inArray, notInArray, isNull, isNotNull } from "drizzle-orm";
 import type { AnyColumn } from "drizzle-orm";
 import { canTransition } from "../lib/order-transitions.js";
 import { z } from "zod";
@@ -951,10 +951,11 @@ foodRouter.get("/property-options", authenticate, authorize("FOOD_CONFIRM_DELIVE
 // Edit an order. The ONLY editable input is the people count (`residentsCount`) —
 // the number of residents the meal is being prepared for, which is the per-person
 // basis that drives every item's quantity. Item quantities / totalQuantity supplied
-// by the client are IGNORED; we recompute them SERVER-SIDE via computeOrderItems,
-// exactly like place-order, so the order stays internally consistent. `notes` is
-// also editable. Allowed while PLACED / ACCEPTED / DISPATCHED (never once
-// CANCELLED / DELIVERED / REJECTED).
+// by the client are IGNORED; the existing lines are rescaled SERVER-SIDE from the
+// new headcount, so the order stays internally consistent. Unlike place-order this
+// does NOT re-resolve the menu — the dish set is fixed once the order exists (see
+// the recompute block below). `notes` is also editable. Allowed while PLACED /
+// ACCEPTED / DISPATCHED (never once CANCELLED / DELIVERED / REJECTED).
 const updateOrderSchema = z.object({
   residentsCount: z.coerce.number().nullish(),
   // Staff eating the same meal. Items are recomputed on the TOTAL (residents +
@@ -1030,19 +1031,30 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
     const [updated] = await db.update(foodOrdersTable).set(update as Partial<typeof foodOrdersTable.$inferInsert>).where(eq(foodOrdersTable.id, id)).returning();
 
     if (recompute) {
-      // Recompute items server-side from the new people count, mirroring place-order.
-      const computed = await computeOrderItems(order.kitchenId, order.brand, order.mealType, order.serviceDate, people);
-      await db.delete(foodOrderItemsTable).where(eq(foodOrderItemsTable.orderId, id));
-      if (computed.length) {
-        await db.insert(foodOrderItemsTable).values(computed.map((it) => ({
-          id: newId(),
-          orderId: id,
-          dishId: it.dishId,
-          unit: it.unit as never,
+      // Rescale the items this order ALREADY has — never re-resolve the menu.
+      //
+      // This path used to delete every row and rebuild from computeOrderItems,
+      // i.e. from the CURRENT rotation. That made a headcount tweak silently
+      // re-sync a placed order to whatever Service Set had changed since (dishes
+      // appearing and disappearing under the kitchen), discard the unit lead's
+      // per-dish person overrides, and wipe preparedQty / receivedQty /
+      // wastedQty. An order is a commitment: only the quantities move.
+      //
+      // Each line keeps its own per-person rate (orderedQty ÷ personsCount), so
+      // a line ordered at a non-default rate stays at that rate. Lines whose
+      // personsCount was deliberately set away from the order-wide headcount are
+      // left alone — that override is a statement about a dish, not about the
+      // headcount, and it survives until someone edits it directly.
+      const existing = await db.select().from(foodOrderItemsTable).where(eq(foodOrderItemsTable.orderId, id));
+      for (const it of existing) {
+        if (it.personsCount !== prevPeople) continue;
+        const prevQty = Number(it.orderedQty ?? 0);
+        const rate = it.personsCount > 0 ? prevQty / it.personsCount : 0;
+        await db.update(foodOrderItemsTable).set({
           personsCount: people,
-          orderedQty: String(it.orderedQty),
+          orderedQty: String(Math.round(rate * people * 1000) / 1000),
           updatedAt: new Date(),
-        })));
+        }).where(eq(foodOrderItemsTable.id, it.id));
       }
     }
 
@@ -1794,14 +1806,42 @@ async function replaceDishIngredients(dishId: string, ingredients: unknown): Pro
  * collapsed, so the unique (dish_id, side_dish_id) index can't be violated by
  * a sloppy payload.
  */
-async function replaceDishSideOptions(dishId: string, sideDishIds: unknown): Promise<void> {
+async function replaceDishSideOptions(dishId: string, sideDishIds: unknown): Promise<string[]> {
   await db.delete(dishSideOptionsTable).where(eq(dishSideOptionsTable.dishId, dishId));
   const ids = Array.isArray(sideDishIds) ? sideDishIds : [];
   const unique = [...new Set(ids.filter((s): s is string => typeof s === "string" && !!s && s !== dishId))];
-  if (!unique.length) return;
+  if (!unique.length) return unique;
   await db.insert(dishSideOptionsTable).values(unique.map((sideDishId, i) => ({
     id: newId(), dishId, sideDishId, sortOrder: i, updatedAt: new Date(),
   })));
+  return unique;
+}
+
+/**
+ * Drops rotation rows serving a side that is no longer an option on its parent dish.
+ *
+ * A chosen side lives in the rotation as an ordinary row tagged with
+ * `parentRotationId` (see PUT /menu-rotation/slot), and NOTHING on the ordering
+ * path reads dish_side_options — resolveMenu joins dishes only. So un-pairing a
+ * side on the dish master would otherwise leave every already-composed plate
+ * still serving it, and the unit lead would keep ordering it forever.
+ *
+ * Removals cascade; additions deliberately do NOT. The plate composer picks a
+ * subset of the available sides per plate, so auto-adding a newly-paired side to
+ * existing plates would overwrite a deliberate choice rather than honour one.
+ *
+ * Returns the number of rotation rows removed.
+ */
+async function pruneRotationSidesForDish(dishId: string, keepSideIds: string[]): Promise<number> {
+  const parents = await db.select({ id: foodMenuRotationTable.id })
+    .from(foodMenuRotationTable)
+    .where(eq(foodMenuRotationTable.dishId, dishId));
+  if (!parents.length) return 0;
+  const removed = await db.delete(foodMenuRotationTable).where(and(
+    inArray(foodMenuRotationTable.parentRotationId, parents.map((p) => p.id)),
+    ...(keepSideIds.length ? [notInArray(foodMenuRotationTable.dishId, keepSideIds)] : []),
+  )).returning({ id: foodMenuRotationTable.id });
+  return removed.length;
 }
 
 /** Loads a dish's configured side options, joined to the side dish's name/component. */
@@ -1907,8 +1947,14 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), 
     const [row] = await db.update(dishesTable).set(u as Partial<typeof dishesTable.$inferInsert>).where(eq(dishesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     if (b.ingredients !== undefined) await replaceDishIngredients(row.id, b.ingredients);
-    if (b.sideDishIds !== undefined) await replaceDishSideOptions(row.id, b.sideDishIds);
-    res.json({ success: true, data: row });
+    // Un-pairing a side has to reach the composed plates too, or the rotation
+    // keeps serving an accompaniment this dish no longer has.
+    let rotationSidesRemoved = 0;
+    if (b.sideDishIds !== undefined) {
+      const kept = await replaceDishSideOptions(row.id, b.sideDishIds);
+      rotationSidesRemoved = await pruneRotationSidesForDish(row.id, kept);
+    }
+    res.json({ success: true, data: row, meta: { rotationSidesRemoved } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -2158,37 +2204,40 @@ const zRotationItem = z.object({
 }).passthrough();
 
 /**
- * Guard for the side-dish quick-add path: a rotation row whose dish has no
- * per-resident portion rule for this (brand, mealType) is silently skipped by
- * computeOrderItems — it shows on the menu but never reaches the kitchen.
+ * A rotation row whose dish has no per-resident portion rule for this (brand,
+ * mealType) is silently skipped by computeOrderItems — it shows on the menu but
+ * never reaches the kitchen. Reject the save instead.
  *
- * Main dishes go through the deliberate builder flow (and all currently carry
- * rules); sides are added with one click, so they are the realistic way an
- * unpriced dish sneaks into a menu. Returns the names of offending dishes.
+ * This covers mains as well as sides. It used to check sides only, on the
+ * reasoning that mains go through the deliberate builder flow and all carried
+ * rules; but a main can now be created straight from the Dishes grid without
+ * ever opening the portion editor, so an unpriced main is just as reachable —
+ * and a silently-uncooked main is the worse failure. Returns offending names.
  */
-async function sideDishesMissingPortionRule(
-  brand: string, mealType: string, sideDishIds: string[],
+async function dishesMissingPortionRule(
+  brand: string, mealType: string, dishIds: string[],
 ): Promise<string[]> {
-  if (!sideDishIds.length) return [];
+  const unique = [...new Set(dishIds.filter(Boolean))];
+  if (!unique.length) return [];
   const rules = await db.select({ dishId: perResidentRuleTable.dishId })
     .from(perResidentRuleTable)
     .where(and(
       eq(perResidentRuleTable.brand, brand as never),
       eq(perResidentRuleTable.mealType, mealType as never),
       eq(perResidentRuleTable.isActive, true),
-      inArray(perResidentRuleTable.dishId, sideDishIds),
+      inArray(perResidentRuleTable.dishId, unique),
     ));
   const priced = new Set(rules.map((r) => r.dishId));
-  const missing = [...new Set(sideDishIds)].filter((id) => !priced.has(id));
+  const missing = unique.filter((id) => !priced.has(id));
   if (!missing.length) return [];
   const named = await db.select({ name: dishesTable.name })
     .from(dishesTable).where(inArray(dishesTable.id, missing));
   return named.map((n) => n.name);
 }
 
-/** Flattens the side selections across a set of rotation items. */
-const collectSideIds = (items: Array<{ dishId: string; sideDishIds?: string[] }>): string[] =>
-  [...new Set(items.flatMap((it) => it.sideDishIds ?? []).filter(Boolean))];
+/** Every dish a slot payload would put on the menu — the items and their sides. */
+const collectDishIds = (items: Array<{ dishId: string; sideDishIds?: string[] }>): string[] =>
+  [...new Set(items.flatMap((it) => [it.dishId, ...(it.sideDishIds ?? [])]).filter(Boolean))];
 
 const bulkRotationSchema = z.object({
   kitchenId: zId,
@@ -2207,11 +2256,11 @@ foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", 
     if (!b.kitchenId || !b.brand || !b.mealType || b.dayOfWeek == null || !items.length) {
       res.status(400).json({ success: false, error: "kitchenId, brand, mealType, dayOfWeek and at least one item required" }); return;
     }
-    const unpriced = await sideDishesMissingPortionRule(b.brand, b.mealType, collectSideIds(items));
+    const unpriced = await dishesMissingPortionRule(b.brand, b.mealType, collectDishIds(items));
     if (unpriced.length) {
       res.status(400).json({
         success: false,
-        error: `No portion rule for ${String(b.mealType).toLowerCase()} — the kitchen would never be told to cook: ${unpriced.join(", ")}. Add a Portion Size Rule first.`,
+        error: `No portion rule for ${String(b.mealType).toLowerCase()} — the kitchen would never be told to cook: ${unpriced.join(", ")}. Set a portion per resident on the dish first.`,
         details: { dishes: unpriced },
       });
       return;
@@ -2270,11 +2319,11 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
     if (!kitchenId || !brand || !mealType || rotationWeek == null || dayOfWeek == null) {
       res.status(400).json({ success: false, error: "kitchenId, brand, rotationWeek, dayOfWeek, mealType required" }); return;
     }
-    const unpriced = await sideDishesMissingPortionRule(brand, mealType, collectSideIds(items));
+    const unpriced = await dishesMissingPortionRule(brand, mealType, collectDishIds(items));
     if (unpriced.length) {
       res.status(400).json({
         success: false,
-        error: `No portion rule for ${mealType.toLowerCase()} — the kitchen would never be told to cook: ${unpriced.join(", ")}. Add a Portion Size Rule first.`,
+        error: `No portion rule for ${mealType.toLowerCase()} — the kitchen would never be told to cook: ${unpriced.join(", ")}. Set a portion per resident on the dish first.`,
         details: { dishes: unpriced },
       });
       return;

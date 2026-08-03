@@ -465,7 +465,7 @@ foodOpsRouter.get("/system-config/food-defaults", authenticate, async (req, res)
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-/** Upsert the global food defaults. Top-tier admins + F&B Manager (org-wide setting). */
+/** Upsert the global food defaults. Top-tier admins only (org-wide setting). */
 // Both fields optional; the handler hand-validates HH:MM / positive-number formats
 // (keep these loose so those specific 400 messages are preserved).
 const foodDefaultsSchema = z.object({
@@ -475,8 +475,8 @@ const foodDefaultsSchema = z.object({
 
 foodOpsRouter.put("/system-config/food-defaults", authenticate, async (req, res) => {
   try {
-    // Org-wide food defaults: top-tier admins + F&B Manager (org-wide food lead).
-    if (!isSuperAdmin(req.user?.role) && req.user?.role !== "FNB_MANAGER") {
+    // Org-wide food defaults: top-tier admins only.
+    if (!isSuperAdmin(req.user?.role)) {
       res.status(403).json({ success: false, error: "Forbidden — food administrators only" });
       return;
     }

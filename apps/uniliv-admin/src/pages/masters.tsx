@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
   Database, ArrowRight, ChefHat, Boxes, Building2, MapPin, Network,
-  UtensilsCrossed, Carrot, Truck, SlidersHorizontal, Layers, Lock, AlertCircle,
+  UtensilsCrossed, Carrot, SlidersHorizontal, Layers, Lock, AlertCircle,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
@@ -26,9 +26,7 @@ const TYPE_ICON: Record<string, LucideIcon> = {
 const ADVANCED: Array<{ label: string; description: string; icon: LucideIcon }> = [
   { label: "Dishes", description: "Menu dishes with components & portion data", icon: UtensilsCrossed },
   { label: "Ingredients", description: "Raw ingredients used in composition rules", icon: Carrot },
-  { label: "Agencies", description: "Delivery agencies & partners", icon: Truck },
   { label: "Composition Rules", description: "Dish → component composition by meal", icon: Layers },
-  { label: "Portion Size Rules", description: "Per-meal portion sizing defaults", icon: SlidersHorizontal },
 ];
 
 /** Fixed enum masters — system-defined, not editable through the admin UI. */

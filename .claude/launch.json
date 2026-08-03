@@ -14,6 +14,12 @@
       "autoPort": true
     },
     {
+      "name": "uniliv-api-8091",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "set -a; . ./.env.api; set +a; export PORT=8091 RUN_SCHEDULERS=false; exec pnpm --filter @workspace/api-server run dev"],
+      "port": 8091
+    },
+    {
       "name": "uniliv-web-8091",
       "runtimeExecutable": "sh",
       "runtimeArgs": ["-c", "_P=\"$PORT\"; set -a; . ./.env.web; set +a; export PORT=\"${_P:-$PORT}\" API_PROXY_TARGET=http://localhost:8091; exec pnpm --filter @workspace/uniliv-admin run dev"],

@@ -1634,7 +1634,7 @@ function OrderModePanel({
   previewMeals: Array<{
     mealType: MealType;
     label: string;
-    items: Array<{ dishId: string; dishName: string; unit: string; qtyPerResident: number }>;
+    items: Array<{ dishId: string; dishName: string; unit: string; qtyPerResident: number; parentDishId?: string | null }>;
   }>;
   selectedMeal: MealType | null;
   /** The orderable meals in tab order — drives the "Next: {meal}" CTA. */
@@ -1748,34 +1748,58 @@ function OrderModePanel({
         <Skeleton className="h-32 w-full" />
       ) : (
         <div className="grid gap-2.5 sm:grid-cols-2">
-          {meal.items.map((d) => {
-            const qty = dishQty(meal.mealType, d.dishId, d.qtyPerResident, d.unit);
-            const ppl = dishPersons(meal.mealType, d.dishId);
-            return (
-              <div
-                key={d.dishId}
-                className="flex items-center gap-2.5 rounded-[12px] border border-border bg-background px-3 py-2.5"
-              >
-                <DishIcon name={d.dishName} meal={meal.mealType} size={40} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13.5px] font-semibold">{d.dishName}</span>
-                  {/* Quantity is derived (portion × people) and shown read-only. */}
-                  <span className="block text-[11px] text-muted-foreground">
-                    <span className="font-mono font-semibold tabular-nums text-foreground">{qty}</span>{" "}
-                    {d.unit.toLowerCase()}
+          {(() => {
+            // A side dish (parentDishId) rides on its parent's card — one plate,
+            // one item, one people count. A side whose parent isn't on this
+            // meal (stale rotation) falls back to its own card.
+            const ids = new Set(meal.items.map((d) => d.dishId));
+            const parents = meal.items.filter((d) => !d.parentDishId || !ids.has(d.parentDishId));
+            return parents.map((d) => {
+              const sides = meal.items.filter((s) => s.parentDishId === d.dishId);
+              const qty = dishQty(meal.mealType, d.dishId, d.qtyPerResident, d.unit);
+              const ppl = dishPersons(meal.mealType, d.dishId);
+              // One stepper drives the whole plate: parent + sides in lockstep.
+              const setPlatePersons = (n: number) => {
+                setDishPersons(meal.mealType, d.dishId, n);
+                for (const s of sides) setDishPersons(meal.mealType, s.dishId, n);
+              };
+              return (
+                <div
+                  key={d.dishId}
+                  className="flex items-center gap-2.5 rounded-[12px] border border-border bg-background px-3 py-2.5"
+                >
+                  <DishIcon name={d.dishName} meal={meal.mealType} size={40} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13.5px] font-semibold">
+                      {[d.dishName, ...sides.map((s) => s.dishName)].join(" + ")}
+                    </span>
+                    {/* Quantity is derived (portion × people) and shown read-only. */}
+                    <span className="block text-[11px] text-muted-foreground">
+                      <span className="font-mono font-semibold tabular-nums text-foreground">{qty}</span>{" "}
+                      {d.unit.toLowerCase()}
+                      {sides.map((s) => (
+                        <React.Fragment key={s.dishId}>
+                          {" · "}
+                          <span className="font-mono font-semibold tabular-nums text-foreground">
+                            {dishQty(meal.mealType, s.dishId, s.qtyPerResident, s.unit)}
+                          </span>{" "}
+                          {s.unit.toLowerCase()} {s.dishName}
+                        </React.Fragment>
+                      ))}
+                    </span>
                   </span>
-                </span>
-                {/* The +/- sets how many PEOPLE eat this dish — the quantity
-                    recomputes live; the quantity itself is never edited. */}
-                <MiniStepper
-                  value={ppl}
-                  display={`${ppl} ppl`}
-                  onMinus={() => setDishPersons(meal.mealType, d.dishId, ppl - 1)}
-                  onPlus={() => setDishPersons(meal.mealType, d.dishId, ppl + 1)}
-                />
-              </div>
-            );
-          })}
+                  {/* The +/- sets how many PEOPLE eat this plate — the quantity
+                      recomputes live; the quantity itself is never edited. */}
+                  <MiniStepper
+                    value={ppl}
+                    display={`${ppl} ppl`}
+                    onMinus={() => setPlatePersons(ppl - 1)}
+                    onPlus={() => setPlatePersons(ppl + 1)}
+                  />
+                </div>
+              );
+            });
+          })()}
         </div>
       )}
 
