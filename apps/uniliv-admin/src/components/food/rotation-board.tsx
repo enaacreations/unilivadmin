@@ -9,7 +9,9 @@
  * A note on scoping: the prototype had no kitchen dimension, but
  * `food_menu_rotation` is keyed by (kitchen, brand, week, day, meal) and the
  * write endpoints require a kitchen — so the board carries a kitchen picker
- * alongside the brand toggle.
+ * alongside the brand toggle. F&B manager logins run exactly one kitchen, so
+ * for them the picker is hidden and the board pins itself to their kitchen
+ * (via lookups.myKitchenIds).
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -25,9 +27,10 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiDownload } from "@/lib/api-fetch";
+import { usePermissions } from "@/lib/use-permissions";
 import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, DAY_LABEL,
-  type MealType, type MealWindow, type MenuRotationRow,
+  type FoodLookups, type MealType, type MealWindow, type MenuRotationRow,
 } from "@/lib/food-api";
 import {
   DAY_SHORT, MEAL_SHORT, ROTATION_WEEKS, WEEK_DAYS,
@@ -77,16 +80,31 @@ export function RotationBoard(
   const { data: dishes = [] } = useDishCatalogue();
   const { data: rules = [] } = useCompositionRules();
 
+  // F&B managers run exactly one kitchen: no picker, pinned to their own
+  // kitchen (listKitchens is unscoped, so "first kitchen" would be wrong).
+  const { role } = usePermissions();
+  const kitchenBound = role === "FNB_MANAGER";
+  const { data: lookups } = useQuery<FoodLookups>({
+    queryKey: foodKeys.lookups(),
+    queryFn: () => foodApi.lookups(),
+    enabled: kitchenBound,
+  });
+
   const [kitchenId, setKitchenId] = React.useState("");
   const [brand, setBrand] = React.useState("");
   const [week, setWeek] = React.useState(1);
   const [clipboard, setClipboard] = React.useState<number | null>(null);
   const [sel, setSel] = React.useState<{ day: number; meal: MealType } | null>(null);
 
-  // Default to the first kitchen / brand once the master lists land.
+  // Default the kitchen once the master lists land: the caller's own kitchen
+  // for kitchen-bound roles, otherwise the first kitchen. Waits for the role
+  // (and, when bound, the lookups) so a manager never lands on kitchens[0].
   React.useEffect(() => {
-    if (!kitchenId && kitchens.length) setKitchenId(kitchens[0]!.id);
-  }, [kitchens, kitchenId]);
+    if (kitchenId || !kitchens.length || !role) return;
+    if (kitchenBound && !lookups) return;
+    const mine = kitchenBound ? lookups?.myKitchenIds?.[0] : null;
+    setKitchenId(mine ?? kitchens[0]!.id);
+  }, [kitchens, kitchenId, role, kitchenBound, lookups]);
   React.useEffect(() => {
     if (!brand && brands.length) setBrand(brands[0]!.code);
   }, [brands, brand]);
@@ -263,12 +281,14 @@ export function RotationBoard(
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={kitchenId} onValueChange={(v) => { setKitchenId(v); setSel(null); }}>
-            <SelectTrigger className="w-52"><SelectValue placeholder="Kitchen" /></SelectTrigger>
-            <SelectContent>
-              {kitchens.map((k) => <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {!kitchenBound && (
+            <Select value={kitchenId} onValueChange={(v) => { setKitchenId(v); setSel(null); }}>
+              <SelectTrigger className="w-52"><SelectValue placeholder="Kitchen" /></SelectTrigger>
+              <SelectContent>
+                {kitchens.map((k) => <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
           {brands.length > 1 && (
             <Segmented
               value={brand}

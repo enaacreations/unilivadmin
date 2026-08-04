@@ -42,6 +42,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { useAppStore } from "@/lib/store";
+import { usePermissions } from "@/lib/use-permissions";
 import {
   foodApi, foodKeys, orderPeople, MEAL_TYPES, BRANDS, MEAL_LABEL, ORDER_STATUS_PILL, orderStatusPill, shortMeal,
   type FoodOrder, type FoodBrand, type MealType,
@@ -105,6 +106,10 @@ export default function FoodDispatch() {
   const { confetti, fire } = useConfetti();
   const [, setLocation] = useLocation();
   const { propertyId: storeProperty, setPropertyId: setGlobalProperty } = useAppStore();
+  // F&B managers run one kitchen — the trip drawer's kitchen field (an override
+  // on top of the van's auto-derived kitchen) is hidden for them.
+  const { role } = usePermissions();
+  const kitchenBound = role === "FNB_MANAGER";
 
   const [tab, setTab] = React.useState<"queue" | "transit" | "trips">("queue");
   const [propertyId, setPropertyId] = React.useState<string>(storeProperty ?? ALL);
@@ -778,26 +783,28 @@ export default function FoodDispatch() {
                 )}
               </div>
 
-              <div className="space-y-1.5">
-                <Label className="flex items-center gap-1.5">
-                  <ChefHat className="w-3.5 h-3.5 text-muted-foreground" /> Kitchen
-                </Label>
-                <Select
-                  value={tripForm.kitchenId}
-                  onValueChange={(v) => setTripForm((f) => ({ ...f, kitchenId: v }))}
-                >
-                  <SelectTrigger><SelectValue placeholder="Select kitchen (optional)" /></SelectTrigger>
-                  <SelectContent>
-                    {kitchens.length === 0 ? (
-                      <div className="px-2 py-1.5 text-sm text-muted-foreground">No kitchens configured</div>
-                    ) : (
-                      kitchens.map((k) => (
-                        <SelectItem key={k.id} value={k.id}>{k.name} ({k.code})</SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
+              {!kitchenBound && (
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1.5">
+                    <ChefHat className="w-3.5 h-3.5 text-muted-foreground" /> Kitchen
+                  </Label>
+                  <Select
+                    value={tripForm.kitchenId}
+                    onValueChange={(v) => setTripForm((f) => ({ ...f, kitchenId: v }))}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select kitchen (optional)" /></SelectTrigger>
+                    <SelectContent>
+                      {kitchens.length === 0 ? (
+                        <div className="px-2 py-1.5 text-sm text-muted-foreground">No kitchens configured</div>
+                      ) : (
+                        kitchens.map((k) => (
+                          <SelectItem key={k.id} value={k.id}>{k.name} ({k.code})</SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">

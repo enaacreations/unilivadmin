@@ -16,9 +16,10 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
+import { usePermissions } from "@/lib/use-permissions";
 import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, PREPARATION_LABEL,
-  type CompositionRule, type CompositionSlot, type Dish, type MealType, type MenuRotationRow,
+  type CompositionRule, type CompositionSlot, type Dish, type FoodLookups, type MealType, type MenuRotationRow,
 } from "@/lib/food-api";
 import {
   MEAL_SHORT, ROTATION_WEEKS, WEEK_DAYS,
@@ -61,6 +62,17 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
   const [draft, setDraft] = React.useState<DraftSlot[] | null>(null);
   const [genKitchen, setGenKitchen] = React.useState("");
 
+  // F&B managers run exactly one kitchen: no picker on the generate panel, and
+  // generation pins to their own kitchen (listKitchens is unscoped, so "first
+  // kitchen" would be wrong for them).
+  const { role } = usePermissions();
+  const kitchenBound = role === "FNB_MANAGER";
+  const { data: lookups } = useQuery<FoodLookups>({
+    queryKey: foodKeys.lookups(),
+    queryFn: () => foodApi.lookups(),
+    enabled: kitchenBound,
+  });
+
   // Arriving from a rotation cell that had no rule — open on the exact plate
   // that was missing rather than making the user find it again.
   React.useEffect(() => {
@@ -70,7 +82,12 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
   }, [focus?.brand, focus?.meal]);
 
   React.useEffect(() => { if (!brand && brands.length) setBrand(brands[0]!.code); }, [brands, brand]);
-  React.useEffect(() => { if (!genKitchen && kitchens.length) setGenKitchen(kitchens[0]!.id); }, [kitchens, genKitchen]);
+  React.useEffect(() => {
+    if (genKitchen || !kitchens.length || !role) return;
+    if (kitchenBound && !lookups) return;
+    const mine = kitchenBound ? lookups?.myKitchenIds?.[0] : null;
+    setGenKitchen(mine ?? kitchens[0]!.id);
+  }, [kitchens, genKitchen, role, kitchenBound, lookups]);
   // Switching brand or meal abandons an unsaved edit to the previous rule.
   React.useEffect(() => { setDraft(null); }, [brand, meal]);
 
@@ -333,6 +350,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
       <GenerateFromRule
         brand={brand} brandName={brandName} rules={rules} dishes={dishes}
         kitchens={kitchens} kitchenId={genKitchen} onKitchenChange={setGenKitchen}
+        canPickKitchen={!kitchenBound}
         dirty={dirty}
       />
     </div>
@@ -346,7 +364,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
  * because "what's still empty" is a question about the rotation as a whole.
  */
 function GenerateFromRule({
-  brand, brandName, rules, dishes, kitchens, kitchenId, onKitchenChange, dirty,
+  brand, brandName, rules, dishes, kitchens, kitchenId, onKitchenChange, canPickKitchen, dirty,
 }: {
   brand: string;
   brandName: string;
@@ -355,6 +373,7 @@ function GenerateFromRule({
   kitchens: { id: string; name: string }[];
   kitchenId: string;
   onKitchenChange: (v: string) => void;
+  canPickKitchen: boolean;
   dirty: boolean;
 }) {
   const qc = useQueryClient();
@@ -439,7 +458,7 @@ function GenerateFromRule({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {kitchens.length > 1 && (
+          {canPickKitchen && kitchens.length > 1 && (
             <Select value={kitchenId} onValueChange={onKitchenChange}>
               <SelectTrigger className="w-44"><SelectValue placeholder="Kitchen" /></SelectTrigger>
               <SelectContent>
