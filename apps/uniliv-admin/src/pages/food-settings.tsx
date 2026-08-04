@@ -104,12 +104,17 @@ export default function FoodSettings() {
   // config but not these org-wide fallbacks.
   const canFoodDefaults = isSuperAdmin;
 
+  // Controlled so the rotation board can send you to Menu Rules when a meal has
+  // no rule to build against.
+  const [tab, setTab] = React.useState("dishes");
+  const [rulesFocus, setRulesFocus] = React.useState<{ brand: string; meal: MealType }>();
+
   // No PageHeader: every tab already opens with its own heading and one-line
   // explanation, so a page-level title only pushed the tab strip down and
   // repeated what the sidebar already says.
   return (
     <div className="space-y-6">
-      <Tabs defaultValue="dishes" className="space-y-4">
+      <Tabs value={tab} onValueChange={setTab} className="space-y-4">
         <div className="sticky top-0 z-10 -mx-1 bg-background px-1 pb-1">
           <TabsList className="flex h-auto w-fit max-w-full flex-nowrap justify-start gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {TABS.filter((t) => !t.gated || canFoodDefaults).map(({ value, label, icon: Icon }) => (
@@ -125,8 +130,10 @@ export default function FoodSettings() {
             work on a visit to, say, Meal Types. */}
         <TabsContent value="dishes"><DishesCatalogue /></TabsContent>
         <TabsContent value="ingredients"><IngredientsGrid /></TabsContent>
-        <TabsContent value="rotation"><RotationBoard /></TabsContent>
-        <TabsContent value="composition"><MenuRulesEditor /></TabsContent>
+        <TabsContent value="rotation">
+          <RotationBoard onGoToRules={(f) => { setRulesFocus(f); setTab("composition"); }} />
+        </TabsContent>
+        <TabsContent value="composition"><MenuRulesEditor focus={rulesFocus} /></TabsContent>
         <TabsContent value="meals"><MealTypesTab /></TabsContent>
         <TabsContent value="cutoffs"><CutoffWindowsTab properties={properties} propName={propName} /></TabsContent>
         {canFoodDefaults && (

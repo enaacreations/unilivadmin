@@ -1657,6 +1657,53 @@ function OrderModePanel({
   const mealIdx = selectedMeal ? orderedMeals.indexOf(selectedMeal) : -1;
   const isLastMeal = mealIdx === -1 || mealIdx >= orderedMeals.length - 1;
   const nextMeal = isLastMeal ? null : orderedMeals[mealIdx + 1] ?? null;
+  // One row per dish. A main and a side render the same way — the side just
+  // sits indented under its parent — so each keeps its own people count and a
+  // unit lead can order fewer portions of the side than of the main.
+  const dishRow = (
+    mealType: MealType,
+    d: { dishId: string; dishName: string; unit: string; qtyPerResident: number },
+    opts?: { side?: boolean },
+  ) => {
+    const isSide = opts?.side ?? false;
+    const ppl = dishPersons(mealType, d.dishId);
+    const qty = dishQty(mealType, d.dishId, d.qtyPerResident, d.unit);
+    return (
+      <div className="flex items-center gap-2.5">
+        <DishIcon name={d.dishName} meal={mealType} size={isSide ? 28 : 40} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "truncate font-semibold",
+                isSide ? "text-[12.5px] text-muted-foreground" : "text-[13.5px]",
+              )}
+            >
+              {d.dishName}
+            </span>
+            {isSide && (
+              <span className="shrink-0 rounded px-1 py-px text-[10px] font-medium text-muted-foreground ring-1 ring-border">
+                side
+              </span>
+            )}
+          </span>
+          {/* Quantity is derived (portion × people) and shown read-only. */}
+          <span className="block text-[11px] text-muted-foreground">
+            <span className="font-mono font-semibold tabular-nums text-foreground">{qty}</span>{" "}
+            {d.unit.toLowerCase()}
+          </span>
+        </span>
+        {/* The +/- sets how many PEOPLE eat this dish — the quantity recomputes
+            live; the quantity itself is never edited. */}
+        <MiniStepper
+          value={ppl}
+          display={`${ppl} ppl`}
+          onMinus={() => setDishPersons(mealType, d.dishId, ppl - 1)}
+          onPlus={() => setDishPersons(mealType, d.dishId, ppl + 1)}
+        />
+      </div>
+    );
+  };
   return (
     // The dishes flow naturally — no fixed-height scroll box — so every dish is
     // visible as you scroll the page. Long menus aren't crammed into a small
@@ -1749,53 +1796,31 @@ function OrderModePanel({
       ) : (
         <div className="grid gap-2.5 sm:grid-cols-2">
           {(() => {
-            // A side dish (parentDishId) rides on its parent's card — one plate,
-            // one item, one people count. A side whose parent isn't on this
-            // meal (stale rotation) falls back to its own card.
+            // A side dish (parentDishId) rides on its parent's card as its own
+            // row: one plate stays one card, but main and side are counted
+            // separately. A side whose parent isn't on this meal (stale
+            // rotation) falls back to its own card.
             const ids = new Set(meal.items.map((d) => d.dishId));
             const parents = meal.items.filter((d) => !d.parentDishId || !ids.has(d.parentDishId));
             return parents.map((d) => {
               const sides = meal.items.filter((s) => s.parentDishId === d.dishId);
-              const qty = dishQty(meal.mealType, d.dishId, d.qtyPerResident, d.unit);
-              const ppl = dishPersons(meal.mealType, d.dishId);
-              // One stepper drives the whole plate: parent + sides in lockstep.
-              const setPlatePersons = (n: number) => {
-                setDishPersons(meal.mealType, d.dishId, n);
-                for (const s of sides) setDishPersons(meal.mealType, s.dishId, n);
-              };
               return (
                 <div
                   key={d.dishId}
-                  className="flex items-center gap-2.5 rounded-[12px] border border-border bg-background px-3 py-2.5"
+                  // Column, centred: the grid stretches every card in a row to
+                  // match the tallest, so a plain dish sitting beside a plate
+                  // with sides keeps its content centred instead of top-aligned.
+                  className="flex flex-col justify-center rounded-[12px] border border-border bg-background px-3 py-2.5"
                 >
-                  <DishIcon name={d.dishName} meal={meal.mealType} size={40} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13.5px] font-semibold">
-                      {[d.dishName, ...sides.map((s) => s.dishName)].join(" + ")}
-                    </span>
-                    {/* Quantity is derived (portion × people) and shown read-only. */}
-                    <span className="block text-[11px] text-muted-foreground">
-                      <span className="font-mono font-semibold tabular-nums text-foreground">{qty}</span>{" "}
-                      {d.unit.toLowerCase()}
-                      {sides.map((s) => (
-                        <React.Fragment key={s.dishId}>
-                          {" · "}
-                          <span className="font-mono font-semibold tabular-nums text-foreground">
-                            {dishQty(meal.mealType, s.dishId, s.qtyPerResident, s.unit)}
-                          </span>{" "}
-                          {s.unit.toLowerCase()} {s.dishName}
-                        </React.Fragment>
-                      ))}
-                    </span>
-                  </span>
-                  {/* The +/- sets how many PEOPLE eat this plate — the quantity
-                      recomputes live; the quantity itself is never edited. */}
-                  <MiniStepper
-                    value={ppl}
-                    display={`${ppl} ppl`}
-                    onMinus={() => setPlatePersons(ppl - 1)}
-                    onPlus={() => setPlatePersons(ppl + 1)}
-                  />
+                  {dishRow(meal.mealType, d)}
+                  {sides.map((s) => (
+                    <div
+                      key={s.dishId}
+                      className="mt-2 border-t border-dashed border-border pl-3 pt-2"
+                    >
+                      {dishRow(meal.mealType, s, { side: true })}
+                    </div>
+                  ))}
                 </div>
               );
             });

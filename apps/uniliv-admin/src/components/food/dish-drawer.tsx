@@ -215,6 +215,26 @@ export function DishDrawer({
   const ingMatches = ingredients.filter((g) => g.isActive && g.name.toLowerCase().includes(ql));
   const canCreateIng = !!q && !ingredients.some((g) => g.name.toLowerCase() === ql);
 
+  // A dish has to be served at a meal to exist usefully: computeOrderItems skips
+  // dishes with no per-resident rule, so one with an empty grid can never be
+  // ordered. Only cells that will actually become a rule count — syncPortions
+  // drops blanks and non-positive numbers, so those must not satisfy the check.
+  const portionCell = (brandCode: string, m: MealType) =>
+    (draft.portions[brandCode]?.[m] ?? "").trim();
+  const isValidPortion = (raw: string) => {
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0;
+  };
+  const filledMeals = MEAL_TYPES.filter((m) =>
+    brands.some((b) => isValidPortion(portionCell(b.code, m))),
+  );
+  /** Why saving is blocked, or null when the dish is good to go. */
+  const blockReason = !draft.name.trim()
+    ? "Give the dish a name to save it."
+    : filledMeals.length === 0
+      ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
+      : null;
+
   // Which other dish this one can now never share a plate with — the single most
   // consequential side effect of adding an ingredient, so it is stated plainly.
   const conflict = (() => {
@@ -462,6 +482,7 @@ export function DishDrawer({
             </div>
             <p className="mb-2 text-[11px] text-muted-foreground">
               Leave blank if the dish isn’t served at that meal for that brand.
+              Fill at least one meal — a dish with no portion can’t be ordered.
             </p>
             <div className="overflow-hidden rounded-lg border bg-card">
               <div
@@ -494,7 +515,13 @@ export function DishDrawer({
                       })}
                       placeholder="—" inputMode="decimal"
                       aria-label={`${b.name} ${MEAL_LABEL[m]} portion`}
-                      className="h-8 bg-transparent text-center font-mono text-sm"
+                      // Flagged, not blocked: syncPortions silently skips a cell
+                      // that isn't a positive number, so say so at the cell.
+                      className={`h-8 bg-transparent text-center font-mono text-sm ${
+                        portionCell(b.code, m) && !isValidPortion(portionCell(b.code, m))
+                          ? "border-destructive text-destructive"
+                          : ""
+                      }`}
                     />
                   ))}
                 </div>
@@ -513,15 +540,21 @@ export function DishDrawer({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 border-t bg-card px-6 py-3.5">
-          <Button
-            className="flex-1 bg-accent text-white hover:bg-accent/90"
-            disabled={!draft.name.trim() || save.isPending}
-            onClick={() => save.mutate()}
-          >
-            {save.isPending ? "Saving…" : "Save dish"}
-          </Button>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+        <div className="shrink-0 border-t bg-card px-6 py-3.5">
+          {/* A disabled button with no reason reads as a bug — always say why. */}
+          {blockReason && (
+            <p className="mb-2 text-[11px] text-muted-foreground">{blockReason}</p>
+          )}
+          <div className="flex items-center gap-2">
+            <Button
+              className="flex-1 bg-accent text-white hover:bg-accent/90"
+              disabled={!!blockReason || save.isPending}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? "Saving…" : "Save dish"}
+            </Button>
+            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          </div>
         </div>
       </SheetContent>
     </Sheet>

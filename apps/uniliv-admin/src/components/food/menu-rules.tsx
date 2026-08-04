@@ -47,7 +47,7 @@ const countLabel = (s: CompositionSlot) =>
     : s.maxCount !== s.minCount ? `${s.minCount}–${s.maxCount}`
     : `${s.minCount}`;
 
-export function MenuRulesEditor() {
+export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: MealType } } = {}) {
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -56,10 +56,18 @@ export function MenuRulesEditor() {
   const { data: dishes = [] } = useDishCatalogue();
   const { data: rules = [], isLoading } = useCompositionRules();
 
-  const [brand, setBrand] = React.useState("");
-  const [meal, setMeal] = React.useState<MealType>("LUNCH");
+  const [brand, setBrand] = React.useState(focus?.brand ?? "");
+  const [meal, setMeal] = React.useState<MealType>(focus?.meal ?? "LUNCH");
   const [draft, setDraft] = React.useState<DraftSlot[] | null>(null);
   const [genKitchen, setGenKitchen] = React.useState("");
+
+  // Arriving from a rotation cell that had no rule — open on the exact plate
+  // that was missing rather than making the user find it again.
+  React.useEffect(() => {
+    if (!focus) return;
+    setBrand(focus.brand);
+    setMeal(focus.meal);
+  }, [focus?.brand, focus?.meal]);
 
   React.useEffect(() => { if (!brand && brands.length) setBrand(brands[0]!.code); }, [brands, brand]);
   React.useEffect(() => { if (!genKitchen && kitchens.length) setGenKitchen(kitchens[0]!.id); }, [kitchens, genKitchen]);

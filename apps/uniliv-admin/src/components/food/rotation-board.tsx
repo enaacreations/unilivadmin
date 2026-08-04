@@ -15,7 +15,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle, Check, CheckCircle2, CircleAlert, ClipboardPaste, Copy, Download,
-  FileDown, FileText, ChevronDown, Plus, Sparkles,
+  FileDown, FileText, ChevronDown, Plus, SlidersHorizontal, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,7 +66,9 @@ function Segmented<T extends string | number>({
   );
 }
 
-export function RotationBoard() {
+export function RotationBoard(
+  { onGoToRules }: { onGoToRules?: (focus: { brand: string; meal: MealType }) => void } = {},
+) {
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -402,6 +404,7 @@ export function RotationBoard() {
                     slots={slots}
                     dishById={dishById}
                     onOpen={() => setSel({ day, meal })}
+                    onGoToRules={() => onGoToRules?.({ brand, meal })}
                   />
                 ))}
               </React.Fragment>
@@ -428,6 +431,9 @@ export function RotationBoard() {
           serviceTime={serviceTime(sel.meal)}
           isSaving={saveSlot.isPending}
           onSave={(plate) => saveSlot.mutate({ day: sel.day, meal: sel.meal, plate })}
+          {...(onGoToRules
+            ? { onGoToRules: () => { onGoToRules({ brand, meal: sel.meal }); setSel(null); } }
+            : {})}
         />
       )}
     </div>
@@ -436,7 +442,7 @@ export function RotationBoard() {
 
 /** One plate on the board: what's on it, and whether it satisfies its rule. */
 function BoardCell({
-  cell, plate, slots, dishById, onOpen,
+  cell, plate, slots, dishById, onOpen, onGoToRules,
 }: {
   /** "Monday Lunch" — the cell's position, which its contents never state. */
   cell: string;
@@ -444,8 +450,25 @@ function BoardCell({
   slots: ReturnType<typeof slotsOf>;
   dishById: Map<string, import("@/lib/food-api").Dish>;
   onOpen: () => void;
+  onGoToRules: () => void;
 }) {
+  const noRule = slots.length === 0;
+
   if (!plate.length) {
+    // Rules before rotation: an empty cell with no rule has nothing to compose
+    // against, so it points at the fix instead of opening an unusable drawer.
+    if (noRule) {
+      return (
+        <button
+          type="button" onClick={onGoToRules}
+          aria-label={`${cell} — no menu rule set. Open Menu Rules to define one.`}
+          className="flex min-h-[118px] flex-col items-center justify-center gap-1.5 rounded-[10px] border border-dashed p-2 text-muted-foreground transition-colors hover:border-accent/50 hover:bg-muted/40"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+          <span className="px-1 text-center text-[11px] leading-tight">Set a rule first</span>
+        </button>
+      );
+    }
     return (
       <button
         type="button" onClick={onOpen} aria-label={`${cell} — empty, build meal`}
@@ -462,7 +485,6 @@ function BoardCell({
     .filter((r) => r.dishIds.length < r.slot.minCount)
     .map((r) => r.slot.slotLabel || componentLabel(r.slot.component));
   const clash = verdict.clashes[0];
-  const noRule = slots.length === 0;
 
   // Sides render indented under the dish they accompany, so the cell reads the
   // way the plate is actually served.
@@ -482,7 +504,7 @@ function BoardCell({
   return (
     <button
       type="button" onClick={onOpen}
-      aria-label={`${cell} — ${lines.length} dish${lines.length === 1 ? "" : "es"}, ${status}. Open to edit.`}
+      aria-label={`${cell} — ${lines.length} dish${lines.length === 1 ? "" : "es"}, ${status}. ${noRule ? "Open to clear." : "Open to edit."}`}
       className="flex min-h-[118px] flex-col rounded-[10px] border bg-card p-2 text-left transition-colors hover:border-accent/50"
     >
       <div className="flex flex-1 flex-col gap-[3px]">

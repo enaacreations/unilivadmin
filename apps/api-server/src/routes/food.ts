@@ -2319,6 +2319,20 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
     if (!kitchenId || !brand || !mealType || rotationWeek == null || dayOfWeek == null) {
       res.status(400).json({ success: false, error: "kitchenId, brand, rotationWeek, dayOfWeek, mealType required" }); return;
     }
+    // Rules before rotation: with no composition rule there is nothing to build
+    // the plate against, so dishes may not be added. Clearing stays allowed —
+    // rotation rows that predate the rule must never become unremovable.
+    if (items.some((it) => it.dishId)) {
+      const rule = await resolveCompositionRule(brand, mealType, kitchenId ?? null);
+      if (!rule?.slots.length) {
+        res.status(422).json({
+          success: false,
+          error: `No menu rule for ${mealType.toLowerCase()} — define the plate under Menu Rules before building this rotation.`,
+          details: { brand, mealType },
+        });
+        return;
+      }
+    }
     const unpriced = await dishesMissingPortionRule(brand, mealType, collectDishIds(items));
     if (unpriced.length) {
       res.status(400).json({
@@ -2405,6 +2419,16 @@ foodRouter.get("/menu-rotation/auto-fill", authenticate, async (req, res) => {
     const mealType = req.query["mealType"] as string | undefined;
     const kitchenId = (req.query["kitchenId"] as string) || null;
     if (!brand || !mealType) { res.status(400).json({ success: false, error: "brand, mealType required" }); return; }
+    // Same gate as the slot write — there is no plate to fill without a rule.
+    const rule = await resolveCompositionRule(brand, mealType, kitchenId);
+    if (!rule?.slots.length) {
+      res.status(422).json({
+        success: false,
+        error: `No menu rule for ${mealType.toLowerCase()} — define the plate under Menu Rules first.`,
+        details: { brand, mealType },
+      });
+      return;
+    }
     const items = await autoFillMenu(brand, mealType, kitchenId);
     res.json({ success: true, data: items });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }

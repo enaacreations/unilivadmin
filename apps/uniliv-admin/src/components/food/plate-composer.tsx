@@ -40,7 +40,7 @@ const PICKER_PREVIEW = 6;
 
 export function PlateComposer({
   open, onOpenChange, day, meal, week, brand, brandName, slots, ruleMissing,
-  dishes, dishById, initialPlate, nearby, serviceTime, onSave, isSaving,
+  dishes, dishById, initialPlate, nearby, serviceTime, onSave, isSaving, onGoToRules,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -58,6 +58,8 @@ export function PlateComposer({
   serviceTime?: string | null;
   onSave: (plate: PlateEntry[]) => void;
   isSaving: boolean;
+  /** Jumps to the Menu Rules tab so a missing rule can be fixed without hunting. */
+  onGoToRules?: () => void;
 }) {
   const [draft, setDraft] = React.useState<PlateEntry[]>(initialPlate);
   const [search, setSearch] = React.useState<Record<string, string>>({});
@@ -115,29 +117,70 @@ export function PlateComposer({
               </Button>
             </div>
           </div>
-          <div className="mt-3 flex items-center gap-3">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-              <div
-                className={`h-full transition-all ${verdict.ok ? "bg-success" : "bg-warning"}`}
-                style={{ width: `${Math.round((verdict.met / Math.max(1, verdict.total)) * 100)}%` }}
-              />
+          {/* Nothing to measure without a rule — a "0 of 0 slots met" bar would
+              read as a full, healthy plate. */}
+          {!ruleMissing && (
+            <div className="mt-3 flex items-center gap-3">
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                <div
+                  className={`h-full transition-all ${verdict.ok ? "bg-success" : "bg-warning"}`}
+                  style={{ width: `${Math.round((verdict.met / Math.max(1, verdict.total)) * 100)}%` }}
+                />
+              </div>
+              <span className={`whitespace-nowrap text-xs font-medium ${blocked ? "text-destructive" : verdict.ok ? "text-success" : "text-warning"}`}>
+                {blocked ? "Blocked — ingredient clash" : `${verdict.met} of ${verdict.total} slots met`}
+              </span>
             </div>
-            <span className={`whitespace-nowrap text-xs font-medium ${blocked ? "text-destructive" : verdict.ok ? "text-success" : "text-warning"}`}>
-              {blocked ? "Blocked — ingredient clash" : `${verdict.met} of ${verdict.total} slots met`}
-            </span>
-          </div>
+          )}
         </div>
 
         {/* ── slots ──────────────────────────────────────────────────────── */}
         <div className="flex-1 space-y-2.5 overflow-y-auto bg-background px-6 py-4">
+          {/* No rule → clear-only. Dishes can't be added (the server refuses
+              too), but whatever is already here stays visible and removable so
+              a plate built before the rule existed never gets stranded. */}
           {ruleMissing && (
-            <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
-              No menu rule is set for {brandName} {MEAL_LABEL[meal]} yet, so nothing here can be
-              validated. Define the plate under <span className="font-medium text-foreground">Menu Rules</span> first.
-            </div>
+            <>
+              <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                No menu rule is set for {brandName} {MEAL_LABEL[meal]} yet, so this plate can’t be
+                built or checked. Define the courses under{" "}
+                {onGoToRules ? (
+                  <button
+                    type="button" onClick={onGoToRules}
+                    className="font-medium text-accent-strong underline underline-offset-2"
+                  >
+                    Menu Rules
+                  </button>
+                ) : (
+                  <span className="font-medium text-foreground">Menu Rules</span>
+                )}{" "}
+                first.
+              </div>
+
+              {draft.length > 0 && (
+                <div className="rounded-xl border bg-card">
+                  <div className="flex items-center justify-between px-3.5 pb-1.5 pt-2.5">
+                    <span className="text-sm font-semibold text-primary">On this plate</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {draft.length} dish{draft.length === 1 ? "" : "es"}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1.5 px-3.5 pb-3">
+                    {draft.map((e) => (
+                      <div key={e.dishId} className="flex items-center gap-3 rounded-lg bg-muted px-2.5 py-2">
+                        <PrepDot dish={dishById.get(e.dishId)} />
+                        <span className="flex-1 text-sm font-medium">
+                          {dishById.get(e.dishId)?.name ?? e.dishId}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
-          {verdict.rows.map((row, ri) => {
+          {!ruleMissing && verdict.rows.map((row, ri) => {
             const slot = row.slot;
             const slotId = slot.id ?? `${slot.component ?? "any"}-${ri}`;
             const met = row.dishIds.length >= slot.minCount;
@@ -294,8 +337,10 @@ export function PlateComposer({
             );
           })}
 
-          {/* dishes on the plate that no slot asked for */}
-          {verdict.extras.length > 0 && (
+          {/* Dishes on the plate that no slot asked for. Only meaningful when a
+              rule exists — with no slots every dish lands here, which read as
+              the whole menu being off-rule. */}
+          {!ruleMissing && verdict.extras.length > 0 && (
             <div className="rounded-xl border bg-card">
               <div className="flex items-center justify-between px-3.5 pb-1.5 pt-2.5">
                 <span className="text-sm font-semibold text-primary">Off-rule extras</span>
@@ -334,21 +379,35 @@ export function PlateComposer({
 
         {/* ── footer ─────────────────────────────────────────────────────── */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-t bg-card px-6 py-3.5">
-          <Button
-            variant="outline" size="sm" disabled={ruleMissing}
-            onClick={() => setDraft((d) => fillPlate(d, slots, brand, dishById, dishes, 7))}
-          >
-            <Sparkles className="mr-1.5 h-3.5 w-3.5" /> Auto-fill rest
-          </Button>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          {!ruleMissing && (
             <Button
-              className="bg-accent text-white hover:bg-accent/90"
-              disabled={blocked || isSaving}
-              onClick={() => onSave(draft)}
+              variant="outline" size="sm"
+              onClick={() => setDraft((d) => fillPlate(d, slots, brand, dishById, dishes, 7))}
             >
-              {isSaving ? "Saving…" : saveLabel}
+              <Sparkles className="mr-1.5 h-3.5 w-3.5" /> Auto-fill rest
             </Button>
+          )}
+          <div className="flex flex-1 items-center justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            {/* Clearing is the one write the server still accepts without a rule,
+                so it's the only action offered — a partial removal would 422. */}
+            {ruleMissing ? (
+              <Button
+                variant="destructive"
+                disabled={draft.length === 0 || isSaving}
+                onClick={() => onSave([])}
+              >
+                {isSaving ? "Clearing…" : "Clear plate"}
+              </Button>
+            ) : (
+              <Button
+                className="bg-accent text-white hover:bg-accent/90"
+                disabled={blocked || isSaving}
+                onClick={() => onSave(draft)}
+              >
+                {isSaving ? "Saving…" : saveLabel}
+              </Button>
+            )}
           </div>
         </div>
       </SheetContent>
