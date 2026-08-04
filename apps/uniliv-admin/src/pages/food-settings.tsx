@@ -115,7 +115,14 @@ export default function FoodSettings() {
   return (
     <div className="space-y-6">
       <Tabs value={tab} onValueChange={setTab} className="space-y-4">
-        <div className="sticky top-0 z-10 -mx-1 bg-background px-1 pb-1">
+        {/* The scroll container (<main>) is padded, so a plain `top-0` pins the
+            strip to its PADDING box — leaving a gap the width of that padding in
+            which content scrolls visibly above the tabs. Cancel the padding on
+            all four sides with negative top/margins, then add it back as the
+            strip's own padding: the tabs stay exactly where they were, but the
+            opaque background now reaches the scrollport edges and nothing can
+            slide past it. */}
+        <div className="sticky -top-4 sm:-top-6 z-20 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 bg-background px-4 sm:px-6 pt-4 sm:pt-6 pb-2">
           <TabsList className="flex h-auto w-fit max-w-full flex-nowrap justify-start gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {TABS.filter((t) => !t.gated || canFoodDefaults).map(({ value, label, icon: Icon }) => (
               <TabsTrigger key={value} value={value} className="shrink-0 whitespace-nowrap">
