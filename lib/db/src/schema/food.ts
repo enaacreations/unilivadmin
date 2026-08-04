@@ -659,6 +659,106 @@ export const foodOrderDraftsTable = pgTable("food_order_drafts", {
 }));
 
 /* ────────────────────────────────────────────────────────────────────────────
+ * Shared order plan (pre-placement)
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * Supersedes foodOrderDraftsTable, which is keyed per USER and so gave every
+ * editor a private, parallel copy of the same day's order — a unit lead and an
+ * ops-excellence admin working the same property never saw each other's
+ * numbers, and whoever placed first silently won.
+ *
+ * The plan is instead keyed by PROPERTY + service day: one agreed set of
+ * numbers that everyone with place-order rights reads and writes. Two tables,
+ * one row per editable cell (a meal's headcount, or one dish's people count),
+ * because a cell is the unit of concurrent editing — two people adjusting
+ * different dishes must never overwrite one another, which a single shared
+ * blob cannot guarantee.
+ *
+ * Locking: a FOOD_ORDER_LOCK holder (SUPER_ADMIN / OPS_EXCELLENCE) can pin a
+ * cell. Pinned cells are read-only to everyone else and are re-applied
+ * server-side at placement, so the lock survives a hand-crafted request.
+ * Locks are day-scoped and swept with their service date — they can never
+ * silently constrain a later order.
+ */
+
+/** Per-meal headcount for one property + service day. */
+export const foodOrderPlanMealsTable = pgTable("food_order_plan_meals", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id")
+    .notNull()
+    .references(() => propertiesTable.id),
+  /** IST calendar day this plan is for (00:00 IST instant), as food_orders. */
+  serviceDate: timestamp("service_date").notNull(),
+  mealType: mealTypeEnum("meal_type").notNull(),
+  /** Residents eating this meal. 0 skips the meal. */
+  residents: integer("residents").notNull().default(0),
+  /** Staff eating this meal — same food, uncapped. */
+  staff: integer("staff").notNull().default(0),
+  /**
+   * When set, the headcount is read-only to non-lock-holders. Locking the
+   * headcount is what makes a dish lock hold: quantity is derived from people,
+   * so an unlocked headcount lets the base shift under every pinned dish.
+   */
+  isLocked: boolean("is_locked").notNull().default(false),
+  /** Optional "why", surfaced on the unit lead's row to pre-empt escalation. */
+  lockNote: text("lock_note"),
+  lockedByUserId: text("locked_by_user_id").references(() => usersTable.id, {
+    onDelete: "set null",
+  }),
+  lockedAt: timestamp("locked_at"),
+  updatedByUserId: text("updated_by_user_id").references(() => usersTable.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  propDayMealIdx: uniqueIndex("uq_food_order_plan_meals").on(
+    t.propertyId, t.serviceDate, t.mealType,
+  ),
+  /** Backs the stale-plan sweep (past service days across properties). */
+  dayIdx: index("idx_food_order_plan_meals_day").on(t.serviceDate),
+}));
+
+/** Per-dish people count for one property + service day + meal. */
+export const foodOrderPlanDishesTable = pgTable("food_order_plan_dishes", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id")
+    .notNull()
+    .references(() => propertiesTable.id),
+  /** IST calendar day this plan is for (00:00 IST instant), as food_orders. */
+  serviceDate: timestamp("service_date").notNull(),
+  mealType: mealTypeEnum("meal_type").notNull(),
+  dishId: text("dish_id")
+    .notNull()
+    .references(() => dishesTable.id, { onDelete: "cascade" }),
+  /**
+   * How many people eat this dish. Quantity is always derived (portion rule ×
+   * persons) and never stored — the same contract the order panel has always
+   * had, so a rule change still flows through to an unplaced order.
+   */
+  persons: integer("persons").notNull().default(0),
+  /** When set, this dish's count is read-only to non-lock-holders. */
+  isLocked: boolean("is_locked").notNull().default(false),
+  /** Optional "why", surfaced on the unit lead's row. */
+  lockNote: text("lock_note"),
+  lockedByUserId: text("locked_by_user_id").references(() => usersTable.id, {
+    onDelete: "set null",
+  }),
+  lockedAt: timestamp("locked_at"),
+  updatedByUserId: text("updated_by_user_id").references(() => usersTable.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  propDayMealDishIdx: uniqueIndex("uq_food_order_plan_dishes").on(
+    t.propertyId, t.serviceDate, t.mealType, t.dishId,
+  ),
+  /** Backs the stale-plan sweep (past service days across properties). */
+  dayIdx: index("idx_food_order_plan_dishes_day").on(t.serviceDate),
+}));
+
+/* ────────────────────────────────────────────────────────────────────────────
  * Orders & lifecycle (PRD §7.2–7.7)
  * ──────────────────────────────────────────────────────────────────────────── */
 
@@ -866,6 +966,8 @@ export type Kitchen = typeof kitchensTable.$inferSelect;
 export type FoodDispatch = typeof foodDispatchesTable.$inferSelect;
 export type FoodOrderBatch = typeof foodOrderBatchesTable.$inferSelect;
 export type FoodOrderDraft = typeof foodOrderDraftsTable.$inferSelect;
+export type FoodOrderPlanMeal = typeof foodOrderPlanMealsTable.$inferSelect;
+export type FoodOrderPlanDish = typeof foodOrderPlanDishesTable.$inferSelect;
 export type FoodMealConfig = typeof foodMealConfigTable.$inferSelect;
 export type FoodMealWindow = typeof foodMealWindowsTable.$inferSelect;
 export type FoodCutoffRow = typeof foodCutoffsTable.$inferSelect;

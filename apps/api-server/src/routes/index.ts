@@ -27,6 +27,7 @@ import { facilityRouter, electricityRouter, residentAttendanceRouter, outPassRou
 import { walletRouter } from "./wallet.js";
 import foodRouter from "./food.js";
 import foodOpsRouter from "./food-ops.js";
+import foodPlanRouter from "./food-plan.js";
 import geocodeRouter from "./geocode.js";
 import bulkRouter from "./bulk.js";
 import { mastersRouter } from "./masters.js";
@@ -90,6 +91,7 @@ router.use("/iot", iotIngestionRouter);
 router.use(walletRouter);
 router.use("/food", foodRouter);
 router.use("/food", foodOpsRouter);
+router.use("/food", foodPlanRouter);
 router.use("/geocode", geocodeRouter);
 router.use("/bulk", bulkRouter); // auth + authorize applied per-route inside
 router.use("/masters", mastersRouter); // auth + authorize(FOOD_SETTINGS) applied per-route inside

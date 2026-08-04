@@ -413,6 +413,30 @@ export interface OrderPreview {
   brand: string | null; kitchenId: string | null; configured: boolean; meals: OrderPreviewMeal[];
 }
 
+/** Lock metadata carried by every plan cell. */
+export interface PlanLock {
+  isLocked: boolean;
+  /** Optional "why", written by the locker and shown on the unit lead's row. */
+  lockNote: string | null;
+  lockedByUserId: string | null;
+  lockedByName: string | null;
+  lockedAt: string | null;
+}
+export interface OrderPlanMeal extends PlanLock {
+  mealType: MealType; residents: number; staff: number; updatedAt: string;
+}
+export interface OrderPlanDish extends PlanLock {
+  mealType: MealType; dishId: string; persons: number; updatedAt: string;
+}
+/**
+ * The shared pre-placement plan for one property + service day. `canLock`
+ * mirrors the caller's FOOD_ORDER_LOCK grant so the UI can show lock controls
+ * without re-deriving the permission matrix.
+ */
+export interface OrderPlan {
+  meals: OrderPlanMeal[]; dishes: OrderPlanDish[]; canLock: boolean;
+}
+
 type Envelope<T> = { success: boolean; data: T; meta?: PageMeta };
 export interface PageMeta { total: number; page: number; limit: number; totalPages: number }
 
@@ -484,6 +508,7 @@ export const foodKeys = {
   // WS9 — standalone order tracking by order number / id.
   trackOrder: (term: string) => ["food", "track", term] as const,
   orderDraft: (p: Record<string, unknown>) => ["food", "order-draft", p] as const,
+  orderPlan: (p: Record<string, unknown>) => ["food", "order-plan", p] as const,
 };
 
 // ─── API surface ─────────────────────────────────────────────────────────────
@@ -533,6 +558,22 @@ export const foodApi = {
     apiFetch<Envelope<{ updatedAt: string }>>(`/food/order-draft`, { method: "PUT", body: JSON.stringify(body) }).then((r) => r.data),
   deleteOrderDraft: (p: { propertyId: string; serviceDate: string }) =>
     apiFetch<Envelope<null>>(`/food/order-draft${qs(p)}`, { method: "DELETE" }).then((r) => r.data),
+  // Shared pre-placement plan — keyed (property, serviceDate), so a unit lead
+  // and an ops-excellence admin edit the SAME numbers. Supersedes the per-user
+  // draft above. Locked cells are read-only to non-FOOD_ORDER_LOCK roles and
+  // re-applied server-side at placement.
+  orderPlan: (p: { propertyId: string; serviceDate: string }) =>
+    apiFetch<Envelope<OrderPlan>>(`/food/order-plan${qs(p)}`).then((r) => r.data),
+  saveOrderPlan: (body: {
+    propertyId: string; serviceDate: string;
+    meals?: Array<{ mealType: MealType; residents?: number; staff?: number; lock?: boolean; lockNote?: string | null }>;
+    dishes?: Array<{ mealType: MealType; dishId: string; persons?: number; lock?: boolean; lockNote?: string | null }>;
+  }) =>
+    apiFetch<Envelope<OrderPlan>>(`/food/order-plan`, { method: "PATCH", body: JSON.stringify(body) }).then((r) => r.data),
+  clearOrderPlanLocks: (body: {
+    propertyId: string; serviceDate: string; mealType?: MealType; dishId?: string;
+  }) =>
+    apiFetch<Envelope<OrderPlan>>(`/food/order-plan/locks`, { method: "DELETE", body: JSON.stringify(body) }).then((r) => r.data),
   updateOrder: (id: string, body: Record<string, unknown>) =>
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}`, { method: "PUT", body: JSON.stringify(body) }).then((r) => r.data),
   // B3-6 — edit an order's people count (the only editable quantity input). Item

@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO } from "date-fns";
 import {
-  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, PartyPopper, Truck, Trash2,
+  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, LockOpen, MapPin, PartyPopper, Truck, Trash2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -34,6 +34,7 @@ import {
   type MealType,
   type OrderDetail,
   type OrderStatus,
+  type PlanLock,
 } from "@/lib/food-api";
 
 /* ────────────────────────────── helpers ────────────────────────────── */
@@ -222,6 +223,56 @@ function MiniStepper({
         +
       </button>
     </span>
+  );
+}
+
+/**
+ * A pinned number, shown where the stepper would be. Deliberately NOT a
+ * disabled MiniStepper: a greyed-out +/− invites tapping and explains nothing,
+ * whereas a plain number plus a lock reads as "this is settled".
+ */
+function LockedValue({ display, lock, unit }: {
+  display: string;
+  lock: PlanLock;
+  /** Who set it — the role reads less personal than a name on a unit lead's screen. */
+  unit?: string;
+}) {
+  return (
+    <span className="flex shrink-0 items-center gap-1.5" title={
+      [lock.lockedByName ? `Set by ${lock.lockedByName}` : "Set by ops excellence",
+       lock.lockNote || null].filter(Boolean).join(" — ")
+    }>
+      <span className="min-w-[52px] text-center font-mono text-[12.5px] font-semibold tabular-nums text-muted-foreground">
+        {display}{unit ? ` ${unit}` : ""}
+      </span>
+      <Lock className="h-[15px] w-[15px] shrink-0 text-muted-foreground" />
+    </span>
+  );
+}
+
+/** Pin / unpin toggle. Only rendered for FOOD_ORDER_LOCK holders. */
+function LockToggle({ locked, busy, onToggle, label }: {
+  locked: boolean;
+  busy: boolean;
+  onToggle: (lock: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      aria-label={locked ? `Unlock ${label}` : `Lock ${label}`}
+      aria-pressed={locked}
+      onClick={() => onToggle(!locked)}
+      className={cn(
+        "flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] border transition-colors disabled:opacity-40",
+        locked
+          ? "border-accent bg-accent text-white"
+          : "border-border bg-card text-muted-foreground hover:bg-muted",
+      )}
+    >
+      {locked ? <Lock className="h-[14px] w-[14px]" /> : <LockOpen className="h-[14px] w-[14px]" />}
+    </button>
   );
 }
 
@@ -479,18 +530,48 @@ export default function FoodDashboard() {
   // property with 0 occupancy caps residents at 0 (staff stay uncapped). Mirrors
   // residentsCapForProperty on the server exactly.
   const residentsCap = occupied > 0 ? Math.ceil(occupied * 1.2) : 0;
+  // Resolution order for every cell: a LOCKED plan cell always wins (an admin's
+  // pin is not overridable), then this session's unsaved edit, then the shared
+  // plan, then the default.
+  //
+  // These close over mealLock/planMealOf/pendingCells/queueCellWrite, which are
+  // declared with the plan query further down. That is safe only because none
+  // of them is CALLED during the component body — every call site is either an
+  // event handler or inside the returned JSX, by which point the whole body has
+  // run. Keep it that way: invoking one of these above the plan query would
+  // throw on the temporal dead zone.
   // Residents only — drives the residentsCount column. Can be 0 (skip the meal).
-  const residentsFor = (mealType: MealType): number => headcounts[mealType] ?? baseHead;
+  const residentsFor = (mealType: MealType): number => {
+    const locked = mealLock(mealType);
+    if (locked) return locked.residents;
+    return headcounts[mealType] ?? planMealOf(mealType)?.residents ?? baseHead;
+  };
   // Staff only — drives the new staffCount column (0 when unset).
-  const staffFor = (mealType: MealType): number => staffCounts[mealType] ?? 0;
+  const staffFor = (mealType: MealType): number => {
+    const locked = mealLock(mealType);
+    if (locked) return locked.staff;
+    return staffCounts[mealType] ?? planMealOf(mealType)?.staff ?? 0;
+  };
   // TOTAL people eating this meal = residents + staff. Every quantity (dish qty,
   // per-dish persons default) is computed from this.
   const effHeadFor = (mealType: MealType): number => residentsFor(mealType) + staffFor(mealType);
   // Residents clamp to [0, cap]: 0 skips the meal, cap enforces the 20% limit.
-  const setResidentsFor = (mealType: MealType, n: number) =>
-    setHeadcounts((h) => ({ ...h, [mealType]: Math.min(residentsCap, Math.max(0, n)) }));
-  const setStaffFor = (mealType: MealType, n: number) =>
-    setStaffCounts((s) => ({ ...s, [mealType]: Math.max(0, n) }));
+  const setResidentsFor = (mealType: MealType, n: number) => {
+    if (mealLock(mealType)) return; // pinned by ops excellence
+    const v = Math.min(residentsCap, Math.max(0, n));
+    setHeadcounts((h) => ({ ...h, [mealType]: v }));
+    const prev = pendingCells.current.meals.get(mealType) ?? {};
+    pendingCells.current.meals.set(mealType, { ...prev, residents: v, staff: prev.staff ?? staffFor(mealType) });
+    queueCellWrite();
+  };
+  const setStaffFor = (mealType: MealType, n: number) => {
+    if (mealLock(mealType)) return;
+    const v = Math.max(0, n);
+    setStaffCounts((s) => ({ ...s, [mealType]: v }));
+    const prev = pendingCells.current.meals.get(mealType) ?? {};
+    pendingCells.current.meals.set(mealType, { ...prev, staff: v, residents: prev.residents ?? residentsFor(mealType) });
+    queueCellWrite();
+  };
   const { data: preview } = useQuery({
     queryKey: foodKeys.orderPreview({ propertyId, serviceDate: myNext?.serviceDate, persons: 1 }),
     queryFn: () =>
@@ -510,99 +591,163 @@ export default function FoodDashboard() {
     setDishOverrides({});
   }, [propertyId]);
   const dishKey = (mealType: MealType, dishId: string) => `${mealType}:${dishId}`;
-  const dishPersons = (mealType: MealType, dishId: string): number =>
-    dishOverrides[dishKey(mealType, dishId)]?.persons ?? effHeadFor(mealType);
+  const dishPersons = (mealType: MealType, dishId: string): number => {
+    const locked = dishLock(mealType, dishId);
+    if (locked) return locked.persons;
+    return dishOverrides[dishKey(mealType, dishId)]?.persons
+      ?? planDishOf(mealType, dishId)?.persons
+      ?? effHeadFor(mealType);
+  };
   const dishQty = (mealType: MealType, dishId: string, perResident: number, unit: string): number => {
     const raw = perResident * dishPersons(mealType, dishId);
     return isFractionalUnit(unit) ? Math.round(raw * 10) / 10 : Math.round(raw);
   };
   const setDishPersonsOverride = (mealType: MealType, dishId: string, persons: number) => {
-    setDishOverrides((q) => ({
-      ...q,
-      [dishKey(mealType, dishId)]: { persons: Math.max(1, persons) },
-    }));
+    if (dishLock(mealType, dishId)) return; // pinned by ops excellence
+    const v = Math.max(1, persons);
+    setDishOverrides((q) => ({ ...q, [dishKey(mealType, dishId)]: { persons: v } }));
+    pendingCells.current.dishes.set(dishKey(mealType, dishId), { mealType, dishId, persons: v });
+    queueCellWrite();
   };
 
-  /* ── server-side draft: a half-built order follows the unit lead across
-     browsers/devices (stored per user+property+serviceDate). ── */
-  const draftParams =
+  /* ── shared order plan ────────────────────────────────────────────────────
+     Keyed (property, serviceDate) rather than per user, so a unit lead and an
+     ops-excellence admin working the same day edit the SAME numbers. Local
+     state above is the edit buffer; the plan is the source of truth, and a
+     locked cell always reads from the plan (never from the buffer). ── */
+  const planParams =
     propertyId && myNext ? { propertyId, serviceDate: myNext.serviceDate } : null;
-  const draftId = draftParams ? `${draftParams.propertyId}:${draftParams.serviceDate}` : null;
-  const { data: serverDraft } = useQuery({
-    queryKey: foodKeys.orderDraft({ propertyId, serviceDate: myNext?.serviceDate }),
-    queryFn: () => foodApi.orderDraft(draftParams!),
-    enabled: !!draftParams && nextPending && canPlace,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false, // never clobber in-progress edits
+  const planId = planParams ? `${planParams.propertyId}:${planParams.serviceDate}` : null;
+  // Pause polling while an edit is in flight — a refetch landing mid-stepper
+  // would snap the number back under the user's finger.
+  const [planDirty, setPlanDirty] = React.useState(false);
+  const { data: plan } = useQuery({
+    queryKey: foodKeys.orderPlan({ propertyId, serviceDate: myNext?.serviceDate }),
+    queryFn: () => foodApi.orderPlan(planParams!),
+    enabled: !!planParams && nextPending && canPlace,
+    refetchInterval: planDirty ? false : 20_000,
+    refetchOnWindowFocus: !planDirty,
   });
-  // Restore the draft ONCE per property+day, then let live edits win.
-  const restoredFor = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    if (!draftId || restoredFor.current === draftId || serverDraft === undefined) return;
-    restoredFor.current = draftId;
-    const p = serverDraft?.payload as
-      | {
-          v: number;
-          headcounts?: Partial<Record<MealType, number>>;
-          staffCounts?: Partial<Record<MealType, number>>;
-          headcount?: number | null;
-          overrides: Record<string, DishOverride>;
-        }
-      | null
-      | undefined;
-    if (p) {
-      // Restored residents must respect the CURRENT cap — a draft saved when
-      // occupancy was higher (or a legacy draft with no client cap) could hold a
-      // count above today's residentsCap, which the server would 422 on send.
-      const clampRes = (n: number) => Math.min(residentsCap, Math.max(0, n));
-      if (p.headcounts && typeof p.headcounts === "object") {
-        // v2+: per-meal residents.
-        const clamped: Partial<Record<MealType, number>> = {};
-        for (const [m, n] of Object.entries(p.headcounts)) {
-          if (typeof n === "number") clamped[m as MealType] = clampRes(n);
-        }
-        setHeadcounts(clamped);
-      } else if (typeof p.headcount === "number") {
-        // Legacy v1 draft (single scalar) — apply it to every meal so a
-        // resumed pre-deploy draft keeps the count the lead had set.
-        const h = clampRes(p.headcount);
-        setHeadcounts(Object.fromEntries(MEAL_TYPES.map((m) => [m, h])) as Partial<Record<MealType, number>>);
-      }
-      // v3+: per-meal staff. v1/v2 drafts have no staffCounts → stays {} → 0.
-      if (p.staffCounts && typeof p.staffCounts === "object") setStaffCounts(p.staffCounts);
-      if (p.overrides && typeof p.overrides === "object") {
-        // Overrides are people-only now. Sanitize legacy pre-deploy drafts that
-        // pinned an absolute `qty` (a removed feature) down to their `persons`
-        // pin so no stale, no-longer-honored qty lingers in state.
-        const clean: Record<string, DishOverride> = {};
-        for (const [k, v] of Object.entries(p.overrides)) {
-          if (v && typeof (v as DishOverride).persons === "number") clean[k] = { persons: (v as DishOverride).persons };
-        }
-        setDishOverrides(clean);
-      }
-    }
-  }, [serverDraft, draftId]);
-  // Debounced autosave of every edit (per-meal residents/staff / per-dish overrides).
-  const draftDirty =
-    Object.keys(headcounts).length > 0 ||
-    Object.keys(staffCounts).length > 0 ||
-    Object.keys(dishOverrides).length > 0;
-  const [draftSavedAt, setDraftSavedAt] = React.useState<Date | null>(null);
-  const [savingDraft, setSavingDraft] = React.useState(false);
-  React.useEffect(() => {
-    if (!draftParams || !nextPending || !canPlace || !draftDirty) return;
-    if (restoredFor.current !== draftId) return; // wait for the restore pass
-    const t = setTimeout(() => {
-      setSavingDraft(true);
+  const canLockOrder = !!plan?.canLock;
+  const planMealOf = (mealType: MealType) => plan?.meals.find((m) => m.mealType === mealType);
+  const planDishOf = (mealType: MealType, dishId: string) =>
+    plan?.dishes.find((d) => d.mealType === mealType && d.dishId === dishId);
+  const mealLock = (mealType: MealType) => {
+    const c = planMealOf(mealType);
+    return c?.isLocked ? c : null;
+  };
+  const dishLock = (mealType: MealType, dishId: string) => {
+    const c = planDishOf(mealType, dishId);
+    return c?.isLocked ? c : null;
+  };
+
+  // Queued cell writes, flushed on a debounce so a burst of stepper taps is one
+  // request. Keyed so repeated taps on the same cell collapse to its last value.
+  const pendingCells = React.useRef<{
+    meals: Map<MealType, { residents?: number; staff?: number }>;
+    dishes: Map<string, { mealType: MealType; dishId: string; persons: number }>;
+  }>({ meals: new Map(), dishes: new Map() });
+  const [planSavedAt, setPlanSavedAt] = React.useState<Date | null>(null);
+  const [savingPlan, setSavingPlan] = React.useState(false);
+  const flushTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const queueCellWrite = React.useCallback(() => {
+    setPlanDirty(true);
+    if (flushTimer.current) clearTimeout(flushTimer.current);
+    flushTimer.current = setTimeout(() => {
+      const params = planParams;
+      const buf = pendingCells.current;
+      if (!params || (!buf.meals.size && !buf.dishes.size)) { setPlanDirty(false); return; }
+      const meals = [...buf.meals.entries()].map(([mealType, v]) => ({ mealType, ...v }));
+      const dishes = [...buf.dishes.values()];
+      buf.meals.clear();
+      buf.dishes.clear();
+      setSavingPlan(true);
       foodApi
-        .saveOrderDraft({ ...draftParams, payload: { v: 3, headcounts, staffCounts, overrides: dishOverrides } })
-        .then(() => setDraftSavedAt(new Date()))
-        .catch(() => {/* draft persistence is best-effort */})
-        .finally(() => setSavingDraft(false));
+        .saveOrderPlan({ ...params, meals, dishes })
+        .then((fresh) => {
+          setPlanSavedAt(new Date());
+          // Adopt the server's copy so a concurrent editor's cells appear and
+          // our own buffer stops shadowing what we just persisted.
+          qc.setQueryData(
+            foodKeys.orderPlan({ propertyId, serviceDate: myNext?.serviceDate }),
+            fresh,
+          );
+          setHeadcounts({});
+          setStaffCounts({});
+          setDishOverrides({});
+        })
+        .catch((e: any) => {
+          // A 403 here means someone locked the cell between render and save.
+          toast({
+            title: e?.message || "Couldn't save those numbers",
+            description: "Ops excellence may have just locked them. Refreshing.",
+            variant: "destructive",
+          });
+          void qc.invalidateQueries({ queryKey: ["food", "order-plan"] });
+          setHeadcounts({});
+          setStaffCounts({});
+          setDishOverrides({});
+        })
+        .finally(() => { setSavingPlan(false); setPlanDirty(false); });
     }, 800);
-    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [headcounts, staffCounts, dishOverrides, draftId, nextPending, canPlace, draftDirty]);
+  }, [planId, propertyId, myNext?.serviceDate]);
+
+  // Reset the buffer when the day or property changes — dishIds are a shared
+  // catalogue, so carrying a buffer across would edit the wrong plan.
+  React.useEffect(() => {
+    pendingCells.current.meals.clear();
+    pendingCells.current.dishes.clear();
+    setPlanSavedAt(null);
+  }, [planId]);
+
+  // If a cell we were editing gets locked out from under us, say so rather than
+  // silently discarding the edit.
+  const prevLockedRef = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    if (!plan) return;
+    const now = new Set<string>([
+      ...plan.meals.filter((m) => m.isLocked).map((m) => `meal:${m.mealType}`),
+      ...plan.dishes.filter((d) => d.isLocked).map((d) => `dish:${d.mealType}:${d.dishId}`),
+    ]);
+    const newlyLocked = [...now].filter((k) => !prevLockedRef.current.has(k));
+    prevLockedRef.current = now;
+    if (!newlyLocked.length || canLockOrder) return;
+    const touched = newlyLocked.some((k) => {
+      if (k.startsWith("meal:")) {
+        const m = k.slice(5) as MealType;
+        return headcounts[m] !== undefined || staffCounts[m] !== undefined;
+      }
+      return dishOverrides[k.slice(5)] !== undefined;
+    });
+    if (touched) {
+      toast({
+        title: "Ops excellence just set some of these numbers",
+        description: "Your unsaved changes to those items were replaced.",
+      });
+      setHeadcounts({});
+      setStaffCounts({});
+      setDishOverrides({});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, canLockOrder]);
+
+  /** Lock / unlock one cell. Only reachable for FOOD_ORDER_LOCK holders. */
+  const lockMutation = useMutation({
+    mutationFn: (v: {
+      meals?: Array<{ mealType: MealType; lock: boolean; lockNote?: string | null }>;
+      dishes?: Array<{ mealType: MealType; dishId: string; lock: boolean; lockNote?: string | null }>;
+      clearAll?: boolean;
+    }) =>
+      v.clearAll
+        ? foodApi.clearOrderPlanLocks({ ...planParams! })
+        : foodApi.saveOrderPlan({ ...planParams!, meals: v.meals, dishes: v.dishes }),
+    onSuccess: (fresh) => {
+      qc.setQueryData(foodKeys.orderPlan({ propertyId, serviceDate: myNext?.serviceDate }), fresh);
+    },
+    onError: (e: any) => toast({ title: e?.message || "Couldn't change the lock", variant: "destructive" }),
+  });
 
   const placeMutation = useMutation({
     mutationFn: () => {
@@ -635,19 +780,19 @@ export default function FoodDashboard() {
       });
     },
     onSuccess: (res) => {
-      // The draft served its purpose — clear it (server + local, best-effort).
-      if (draftParams) void foodApi.deleteOrderDraft(draftParams).catch(() => {});
+      // The plan served its purpose. Its rows are swept with their service day,
+      // so there is nothing to delete here — just drop the local edit buffer.
       setDishOverrides({});
       setHeadcounts({});
       setStaffCounts({});
-      setDraftSavedAt(null);
+      setPlanSavedAt(null);
       // Targeted refresh: order lists (incl. streak + journey), the placed
-      // day's details, next-orders state and the (now deleted) draft. A broad
-      // ["food"] invalidation would also re-fetch lookups/overview needlessly.
+      // day's details, next-orders state and the plan. A broad ["food"]
+      // invalidation would also re-fetch lookups/overview needlessly.
       qc.invalidateQueries({ queryKey: ["food", "orders"] });
       qc.invalidateQueries({ queryKey: ["food", "order"] });
       qc.invalidateQueries({ queryKey: foodKeys.nextOrders() });
-      qc.invalidateQueries({ queryKey: ["food", "order-draft"] });
+      qc.invalidateQueries({ queryKey: ["food", "order-plan"] });
       fire();
       toast({
         variant: "success",
@@ -1060,8 +1205,19 @@ export default function FoodDashboard() {
                   onSend={() => placeMutation.mutate()}
                   sending={placeMutation.isPending}
                   mealsCount={missingMeals.filter((m) => effHeadFor(m.mealType) > 0).length}
-                  draftSavedAt={draftSavedAt}
-                  savingDraft={savingDraft}
+                  planSavedAt={planSavedAt}
+                  savingPlan={savingPlan}
+                  canLock={canLockOrder}
+                  mealLock={mealLock}
+                  dishLock={dishLock}
+                  onToggleMealLock={(mealType, lock) =>
+                    lockMutation.mutate({ meals: [{ mealType, lock }] })
+                  }
+                  onToggleDishLock={(mealType, dishId, lock) =>
+                    lockMutation.mutate({ dishes: [{ mealType, dishId, lock }] })
+                  }
+                  onClearAllLocks={() => lockMutation.mutate({ clearAll: true })}
+                  lockBusy={lockMutation.isPending}
                 />
               ) : selected.order == null ? (
                 <div className="rounded-[12px] border border-dashed border-border px-4 py-9 text-center text-sm text-muted-foreground">
@@ -1612,7 +1768,8 @@ function WasteColumn({
 
 function OrderModePanel({
   myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, residents, setResidents, staff, setStaff, occupied, residentsMax, previewMeals,
-  selectedMeal, orderedMeals, onSelectMeal, dishQty, dishPersons, setDishPersons, onSend, sending, mealsCount, draftSavedAt, savingDraft,
+  selectedMeal, orderedMeals, onSelectMeal, dishQty, dishPersons, setDishPersons, onSend, sending, mealsCount, planSavedAt, savingPlan,
+  canLock, mealLock, dishLock, onToggleMealLock, onToggleDishLock, onClearAllLocks, lockBusy,
 }: {
   myNextCutoffAt: string | null;
   myNextCutoffTime: string | null;
@@ -1646,8 +1803,17 @@ function OrderModePanel({
   onSend: () => void;
   sending: boolean;
   mealsCount: number;
-  draftSavedAt: Date | null;
-  savingDraft: boolean;
+  planSavedAt: Date | null;
+  savingPlan: boolean;
+  /** Caller holds FOOD_ORDER_LOCK — show the pin controls. */
+  canLock: boolean;
+  /** The plan cell when pinned, else null. Pinned cells are read-only here. */
+  mealLock: (mealType: MealType) => PlanLock | null;
+  dishLock: (mealType: MealType, dishId: string) => PlanLock | null;
+  onToggleMealLock: (mealType: MealType, lock: boolean) => void;
+  onToggleDishLock: (mealType: MealType, dishId: string, lock: boolean) => void;
+  onClearAllLocks: () => void;
+  lockBusy: boolean;
 }) {
   // The dish grid shows the selected meal; the unit lead walks meal by meal via
   // the sticky "Next" CTA, and the last meal's CTA places every meal at once.
@@ -1668,6 +1834,7 @@ function OrderModePanel({
     const isSide = opts?.side ?? false;
     const ppl = dishPersons(mealType, d.dishId);
     const qty = dishQty(mealType, d.dishId, d.qtyPerResident, d.unit);
+    const lock = dishLock(mealType, d.dishId);
     return (
       <div className="flex items-center gap-2.5">
         <DishIcon name={d.dishName} meal={mealType} size={isSide ? 28 : 40} />
@@ -1691,19 +1858,41 @@ function OrderModePanel({
           <span className="block text-[11px] text-muted-foreground">
             <span className="font-mono font-semibold tabular-nums text-foreground">{qty}</span>{" "}
             {d.unit.toLowerCase()}
+            {lock && (
+              <span className="ml-1">
+                · {lock.lockNote || `set by ${lock.lockedByName ?? "ops excellence"}`}
+              </span>
+            )}
           </span>
         </span>
         {/* The +/- sets how many PEOPLE eat this dish — the quantity recomputes
-            live; the quantity itself is never edited. */}
-        <MiniStepper
-          value={ppl}
-          display={`${ppl} ppl`}
-          onMinus={() => setDishPersons(mealType, d.dishId, ppl - 1)}
-          onPlus={() => setDishPersons(mealType, d.dishId, ppl + 1)}
-        />
+            live; the quantity itself is never edited. A pinned dish shows the
+            settled number instead, and only a lock holder can release it. */}
+        {lock ? (
+          <LockedValue display={`${ppl} ppl`} lock={lock} />
+        ) : (
+          <MiniStepper
+            value={ppl}
+            display={`${ppl} ppl`}
+            onMinus={() => setDishPersons(mealType, d.dishId, ppl - 1)}
+            onPlus={() => setDishPersons(mealType, d.dishId, ppl + 1)}
+          />
+        )}
+        {canLock && (
+          <LockToggle
+            locked={!!lock}
+            busy={lockBusy}
+            label={d.dishName}
+            onToggle={(v) => onToggleDishLock(mealType, d.dishId, v)}
+          />
+        )}
       </div>
     );
   };
+  const headLock = selectedMeal ? mealLock(selectedMeal) : null;
+  // How much of this meal is settled — drives the banner on both sides.
+  const lockedDishCount = (meal?.items ?? []).filter((d) => dishLock(meal!.mealType, d.dishId)).length;
+  const anyLocked = !!headLock || lockedDishCount > 0;
   return (
     // The dishes flow naturally — no fixed-height scroll box — so every dish is
     // visible as you scroll the page. Long menus aren't crammed into a small
@@ -1716,6 +1905,29 @@ function OrderModePanel({
           <span className="font-mono font-semibold text-warning">{untilLabel(myNextCutoffAt, now)}</span> left
         </span>
       </div>
+
+      {/* The plan is shared, so say so — otherwise a number changing under you
+          looks like a bug rather than a colleague. */}
+      {anyLocked && (
+        <div className="mb-3.5 flex flex-wrap items-center gap-2 rounded-[10px] border border-border bg-background/60 px-3.5 py-2.5 text-[12.5px]">
+          <Lock className="h-[14px] w-[14px] shrink-0 text-muted-foreground" />
+          <span className="flex-1">
+            {canLock
+              ? `You've settled ${headLock ? "the headcount" : ""}${headLock && lockedDishCount ? " and " : ""}${lockedDishCount ? `${lockedDishCount} dish${lockedDishCount === 1 ? "" : "es"}` : ""} — the unit lead can't change ${headLock && lockedDishCount ? "them" : "it"}.`
+              : "Ops excellence set some numbers for this meal. Those are fixed."}
+          </span>
+          {canLock && (
+            <button
+              type="button"
+              onClick={onClearAllLocks}
+              disabled={lockBusy}
+              className="rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold hover:bg-muted disabled:opacity-40"
+            >
+              Unlock all
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="mb-3.5 rounded-[10px] border border-border bg-background/60 px-3.5 py-3">
         <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -1741,54 +1953,94 @@ function OrderModePanel({
             </div>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2.5">
-          <div className="flex items-center gap-2.5">
-            <span className="w-[64px] text-xs font-semibold text-muted-foreground">Residents</span>
-            <button
-              type="button"
-              onClick={() => setResidents(Math.max(0, residents - 1))}
-              aria-label="Fewer residents"
-              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
-            >
-              −
-            </button>
-            <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums">
-              {residents}
+        {/* Headcount is the load-bearing lock: every unlocked dish derives its
+            quantity from these people, so pinning a dish without pinning the
+            headcount would let the base shift underneath it. */}
+        {headLock ? (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <div className="flex items-center gap-2.5">
+              <span className="w-[64px] text-xs font-semibold text-muted-foreground">Residents</span>
+              <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums text-muted-foreground">
+                {residents}
+              </span>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <span className="w-[64px] text-xs font-semibold text-muted-foreground">Staff</span>
+              <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums text-muted-foreground">
+                {staff}
+              </span>
+            </div>
+            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Lock className="h-[13px] w-[13px]" />
+              {headLock.lockNote || `Set by ${headLock.lockedByName ?? "ops excellence"}`}
             </span>
-            <button
-              type="button"
-              onClick={() => setResidents(residents + 1)}
-              disabled={residents >= residentsMax}
-              aria-label="More residents"
-              title={residents >= residentsMax ? `Limit reached — max ${residentsMax} (120% of ${occupied} occupied)` : undefined}
-              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              +
-            </button>
+            {canLock && selectedMeal && (
+              <LockToggle
+                locked
+                busy={lockBusy}
+                label="headcount"
+                onToggle={(v) => onToggleMealLock(selectedMeal, v)}
+              />
+            )}
           </div>
-          <div className="flex items-center gap-2.5">
-            <span className="w-[64px] text-xs font-semibold text-muted-foreground">Staff</span>
-            <button
-              type="button"
-              onClick={() => setStaff(Math.max(0, staff - 1))}
-              aria-label="Fewer staff"
-              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
-            >
-              −
-            </button>
-            <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums">
-              {staff}
-            </span>
-            <button
-              type="button"
-              onClick={() => setStaff(staff + 1)}
-              aria-label="More staff"
-              className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
-            >
-              +
-            </button>
+        ) : (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2.5">
+            <div className="flex items-center gap-2.5">
+              <span className="w-[64px] text-xs font-semibold text-muted-foreground">Residents</span>
+              <button
+                type="button"
+                onClick={() => setResidents(Math.max(0, residents - 1))}
+                aria-label="Fewer residents"
+                className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
+              >
+                −
+              </button>
+              <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums">
+                {residents}
+              </span>
+              <button
+                type="button"
+                onClick={() => setResidents(residents + 1)}
+                disabled={residents >= residentsMax}
+                aria-label="More residents"
+                title={residents >= residentsMax ? `Limit reached — max ${residentsMax} (120% of ${occupied} occupied)` : undefined}
+                className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <span className="w-[64px] text-xs font-semibold text-muted-foreground">Staff</span>
+              <button
+                type="button"
+                onClick={() => setStaff(Math.max(0, staff - 1))}
+                aria-label="Fewer staff"
+                className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
+              >
+                −
+              </button>
+              <span className="min-w-[40px] text-center font-mono text-base font-semibold tabular-nums">
+                {staff}
+              </span>
+              <button
+                type="button"
+                onClick={() => setStaff(staff + 1)}
+                aria-label="More staff"
+                className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted"
+              >
+                +
+              </button>
+            </div>
+            {canLock && selectedMeal && (
+              <LockToggle
+                locked={false}
+                busy={lockBusy}
+                label="headcount"
+                onToggle={(v) => onToggleMealLock(selectedMeal, v)}
+              />
+            )}
           </div>
-        </div>
+        )}
       </div>
 
       {meal == null ? (
@@ -1834,14 +2086,14 @@ function OrderModePanel({
       <div className="-mx-[18px] mt-3.5 border-t border-border bg-card px-[18px] pb-[2px] pt-2.5">
         {/* Always-on reassurance that edits persist — autosaves silently. */}
         <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-          {savingDraft ? (
+          {savingPlan ? (
             <>
               <Loader2 className="h-3 w-3 animate-spin" /> Saving…
             </>
-          ) : draftSavedAt ? (
+          ) : planSavedAt ? (
             <>
               <Check className="h-3 w-3 text-success" strokeWidth={3} />
-              Changes saved · {format(draftSavedAt, "h:mm a")}
+              Changes saved · {format(planSavedAt, "h:mm a")}
             </>
           ) : (
             <>
