@@ -6,9 +6,10 @@
  * answers it at a glance: every cell is a plate, colour-coded against its meal's
  * composition rule, and clicking one opens the composer for that plate.
  *
- * A note on scoping: `food_menu_rotation` is keyed by (kitchen, brand, week,
- * day, meal) and the write endpoints require a kitchen — the board silently
- * scopes itself to the first kitchen rather than exposing a picker.
+ * A note on scoping: the prototype had no kitchen dimension, but
+ * `food_menu_rotation` is keyed by (kitchen, brand, week, day, meal) and the
+ * write endpoints require a kitchen — so the board carries a kitchen picker
+ * alongside the brand toggle.
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,6 +22,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiDownload } from "@/lib/api-fetch";
 import {
@@ -261,6 +263,12 @@ export function RotationBoard(
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Select value={kitchenId} onValueChange={(v) => { setKitchenId(v); setSel(null); }}>
+            <SelectTrigger className="w-52"><SelectValue placeholder="Kitchen" /></SelectTrigger>
+            <SelectContent>
+              {kitchens.map((k) => <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
           {brands.length > 1 && (
             <Segmented
               value={brand}
