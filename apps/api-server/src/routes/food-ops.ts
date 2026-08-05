@@ -55,14 +55,12 @@ import {
   getPropertyFoodConfig,
   resolveOrderPreview,
   resolveMenu,
-  resolveRulesByDish,
   getDefaultCutoffTime,
   getSystemConfigValue,
   getWasteEditWindowMs,
   FOOD_DEFAULT_CUTOFF_KEY,
   FOOD_WASTE_WINDOW_KEY,
 } from "../lib/food-service.js";
-import { readPlan } from "./food-plan.js";
 import { notify, notifyOrderEvent } from "../lib/notification-service.js";
 import { toCsv, toPdf, toXls, fmtDate, fmtDateTime, fileDateStamp, sanitizeForFilename } from "../lib/export-service.js";
 import { blindIndex } from "../lib/field-crypto.js";
@@ -1363,23 +1361,6 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       return;
     }
 
-    // Locked cells win over whatever the client sent. The disabled stepper in
-    // the UI is only a hint — this is the control. Applied to EVERY caller,
-    // including lock holders: an admin changes a pinned number by editing the
-    // plan, never by crafting a placement request, so there is exactly one
-    // source of truth for a locked quantity.
-    const plan = await readPlan(propertyId, dayStart);
-    const lockedMeal = new Map<string, (typeof plan.meals)[number]>(
-      plan.meals.filter((m) => m.isLocked).map((m) => [String(m.mealType), m]),
-    );
-    const lockedDish = new Map<string, (typeof plan.dishes)[number]>(
-      plan.dishes.filter((d) => d.isLocked).map((d) => [`${d.mealType}:${d.dishId}`, d]),
-    );
-    for (const meal of mealsToPlace) {
-      const pin = lockedMeal.get(meal.mealType);
-      if (pin) { meal.residentsCount = pin.residents; meal.staffCount = pin.staff; }
-    }
-
     // 20% ordering cap (validated up-front so we never insert a partial batch).
     // cap is 0 for a property with no ACTIVE residents → residents must be 0
     // (staff-only order); staff itself is never capped here.
@@ -1416,31 +1397,15 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       // Per-item editing path, else legacy quantity path.
       let itemRows: Array<{ dishId: string; personsCount: number; orderedQty: number; unit: string }> = [];
       if (Array.isArray(meal.items) && meal.items.length) {
-        // Locked dishes are re-derived from the plan's people count and the
-        // standing portion rule, so a hand-crafted orderedQty can't get past
-        // the pin. Only fetched when this meal actually has a locked dish.
-        const pinnedIds = meal.items
-          .filter((it) => it.dishId && lockedDish.has(`${meal.mealType}:${it.dishId}`))
-          .map((it) => it.dishId);
-        const pinnedRules = pinnedIds.length
-          ? await resolveRulesByDish(brand, meal.mealType, pinnedIds)
-          : new Map<string, { qty: number; unit: string }>();
-
         for (const it of meal.items) {
-          const pin = it.dishId ? lockedDish.get(`${meal.mealType}:${it.dishId}`) : undefined;
-          const rule = it.dishId ? pinnedRules.get(it.dishId) : undefined;
-          // A pinned dish with no portion rule can't be re-derived; drop it
-          // rather than fall back to the client's number and honour the lock
-          // in name only.
-          if (pin && !rule) continue;
-          const oq = pin && rule ? pin.persons * rule.qty : Number(it.orderedQty);
+          const oq = Number(it.orderedQty);
           if (!it.dishId || !allowed.has(it.dishId) || !Number.isFinite(oq) || oq <= 0) continue;
           const md = menu.find((m) => m.dishId === it.dishId)!;
           itemRows.push({
             dishId: it.dishId,
-            personsCount: pin ? pin.persons : (it.personsCount != null ? Number(it.personsCount) : mealPersons),
+            personsCount: it.personsCount != null ? Number(it.personsCount) : mealPersons,
             orderedQty: Math.round(oq * 1000) / 1000,
-            unit: pin && rule ? (rule.unit || md.unit) : (it.unit || md.unit),
+            unit: it.unit || md.unit,
           });
         }
       } else if (meal.quantity != null) {

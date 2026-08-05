@@ -23,7 +23,6 @@ export type Module =
   | "FOOD_DASHBOARD" | "FOOD_ALL_ORDERS" | "FOOD_PLACE_ORDER" | "FOOD_KITCHEN_SUMMARY"
   | "FOOD_DISPATCH" | "FOOD_CONFIRM_DELIVERY" | "FOOD_WASTE_TRACKING" | "FOOD_REPORTS"
   | "FOOD_SETTINGS" | "FOOD_RECEIVE_UPDATE" | "FOOD_DELIVERY_TRACKING" | "FOOD_ORG"
-  | "FOOD_ORDER_LOCK"
   // Audit & Inspection module (FRD v1.2.2). Coarse page gates; fine-grained
   // audit-type/org-node truth is server-side (audit_role_grants).
   // AUDIT_LOG above is the unrelated host audit log.
@@ -40,10 +39,6 @@ const FOOD_MODULES: Module[] = [
   "FOOD_DASHBOARD","FOOD_ALL_ORDERS","FOOD_PLACE_ORDER","FOOD_KITCHEN_SUMMARY",
   "FOOD_DISPATCH","FOOD_CONFIRM_DELIVERY","FOOD_WASTE_TRACKING","FOOD_REPORTS",
   "FOOD_SETTINGS","FOOD_RECEIVE_UPDATE","FOOD_DELIVERY_TRACKING","FOOD_ORG",
-  // Pin a pre-placement order quantity so it is read-only to everyone else.
-  // Keep in sync with the backend copy — deliberately NOT granted to UNIT_LEAD
-  // or CLUSTER_MANAGER even though both hold FOOD_PLACE_ORDER.
-  "FOOD_ORDER_LOCK",
 ];
 
 /** All Audit & Inspection modules, for the everything-granted roles. */

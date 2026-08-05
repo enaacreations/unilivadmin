@@ -24,7 +24,7 @@ export type Module =
   | "FOOD_RECEIVE_UPDATE" | "FOOD_DELIVERY_TRACKING" | "FOOD_DASHBOARD"
   | "FOOD_ALL_ORDERS" | "FOOD_PLACE_ORDER" | "FOOD_KITCHEN_SUMMARY"
   | "FOOD_DISPATCH" | "FOOD_CONFIRM_DELIVERY" | "FOOD_WASTE_TRACKING"
-  | "FOOD_REPORTS" | "FOOD_SETTINGS" | "FOOD_ORG" | "FOOD_ORDER_LOCK"
+  | "FOOD_REPORTS" | "FOOD_SETTINGS" | "FOOD_ORG"
   // Audit & Inspection module (PRD v1.0). Coarse endpoint gates; fine-grained
   // audit-type/org-node truth lives in audit_role_grants (resolveAuditAccess).
   // AUDIT_LOG above is the unrelated host audit log.
@@ -45,12 +45,6 @@ const FOOD_MODULES: Module[] = [
   "FOOD_ALL_ORDERS", "FOOD_PLACE_ORDER", "FOOD_KITCHEN_SUMMARY",
   "FOOD_DISPATCH", "FOOD_CONFIRM_DELIVERY", "FOOD_WASTE_TRACKING",
   "FOOD_REPORTS", "FOOD_SETTINGS", "FOOD_ORG",
-  // Pin a pre-placement order quantity so it is read-only to everyone else.
-  // Deliberately NOT granted to UNIT_LEAD or CLUSTER_MANAGER even though both
-  // hold FOOD_PLACE_ORDER — otherwise a unit lead could lock against itself.
-  // Only the everything-granted roles below pick this up: SUPER_ADMIN and
-  // OPS_EXCELLENCE get FULL, AUDIT_READONLY gets VIEW (sees locks, can't set).
-  "FOOD_ORDER_LOCK",
 ];
 
 /** All Audit & Inspection modules, for the everything-granted roles. */
