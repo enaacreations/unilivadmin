@@ -200,6 +200,13 @@ export interface Dish {
   brands: string[];
   preparations: string[];
   photoUrl: string | null; isActive: boolean;
+  /**
+   * Pin this dish's people count at order time. When set, the order panel shows
+   * a fixed count instead of a stepper — as a main and as anyone's side — and
+   * the server re-derives the quantity at placement.
+   */
+  isQtyLocked?: boolean;
+  lockedPersons?: number | null;
   ingredients?: DishIngredientRow[];
   /** Dishes configured as possible accompaniments. Present on list + detail. */
   sideDishIds?: string[];
@@ -307,6 +314,17 @@ export interface MealWindow { id: string; brand: FoodBrand; propertyId: string |
 export interface FoodCutoffConfig { id: string; brand: string; propertyId: string | null; cutoffTime: string; isActive: boolean }
 export interface Cutoff { mealType: MealType; cutoffTime: string | null; serviceTime: string | null; cutoffAt: string | null; isPastCutoff: boolean }
 export interface FoodDefaults { defaultCutoff: string; wasteWindowMinutes: number }
+/**
+ * The two "Variety & safety rules" switches on the Menu Rules tab. Both default
+ * to true server-side when unset, so a missing row behaves as the rules did when
+ * they were hard-coded.
+ */
+export interface MenuRuleSettings {
+  /** Reject a rotation plate whose dishes share an ingredient (server-enforced). */
+  ingredientClashBlocks: boolean;
+  /** Show the "used Tue" hint while picking. Never blocks a save. */
+  flagRepeatsWithin3Days: boolean;
+}
 export interface AnalyticsData {
   period: string; range: { from: string; to: string };
   wastageTrend: { date: string; wasted: number }[];
@@ -396,6 +414,9 @@ export interface OrderPreviewItem {
   qtyPerResident: number; defaultPersons: number; defaultOrderedQty: number;
   /** Side served with another dish on the same plate — grouped under its parent in the UI. */
   parentDishId?: string | null;
+  /** Dish-level quantity pin — these rows render read-only in the order panel. */
+  isQtyLocked?: boolean;
+  lockedPersons?: number | null;
 }
 export interface OrderPreviewMeal { mealType: MealType; label: string; items: OrderPreviewItem[] }
 
@@ -442,6 +463,8 @@ export const foodKeys = {
   dish: (id: string) => ["food", "dish", id] as const,
   ingredients: (p: Record<string, unknown> = {}) => ["food", "ingredients", p] as const,
   compositionRules: (p: Record<string, unknown> = {}) => ["food", "composition-rules", p] as const,
+  /** Shared by the Menu Rules editor, the plate composer and the rotation board. */
+  menuRuleSettings: () => ["food", "menu-rule-settings"] as const,
   rotationValidate: (p: Record<string, unknown>) => ["food", "rotation-validate", p] as const,
   rotation: (p: Record<string, unknown>) => ["food", "menu-rotation", p] as const,
   rules: (p: Record<string, unknown>) => ["food", "rules", p] as const,
@@ -764,6 +787,12 @@ export const foodApi = {
   foodDefaults: () => apiFetch<Envelope<FoodDefaults>>(`/food/system-config/food-defaults`).then((r) => r.data),
   updateFoodDefaults: (b: { defaultCutoff?: string; wasteWindowMinutes?: number }) =>
     apiFetch<Envelope<FoodDefaults>>(`/food/system-config/food-defaults`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+
+  // Menu rule switches (system_config) — read and written by FOOD_SETTINGS holders.
+  menuRuleSettings: () =>
+    apiFetch<Envelope<MenuRuleSettings>>(`/food/system-config/menu-rules`).then((r) => r.data),
+  updateMenuRuleSettings: (b: Partial<MenuRuleSettings>) =>
+    apiFetch<Envelope<MenuRuleSettings>>(`/food/system-config/menu-rules`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
 
   // Menu (full day + share)
   fullMenu: (p: Record<string, unknown> = {}) => apiFetch<Envelope<FullMenu>>(`/food/menu/full${qs(p)}`).then((r) => r.data),

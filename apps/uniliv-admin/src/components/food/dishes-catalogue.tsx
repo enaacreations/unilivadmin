@@ -9,7 +9,7 @@
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Lock, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormModal } from "@/components/ui/form-modal";
@@ -183,6 +183,14 @@ export function DishesCatalogue() {
                   {sides > 0 && (
                     <span className="rounded-full border px-1.5 py-px text-[10px] text-accent-strong">
                       {sides} side option{sides === 1 ? "" : "s"}
+                    </span>
+                  )}
+                  {/* Surfaced on the card so a pinned dish is obvious without
+                      opening the drawer — it constrains every unit lead. */}
+                  {d.isQtyLocked && d.lockedPersons != null && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-accent/50 bg-accent/5 px-1.5 py-px text-[10px] text-accent-strong">
+                      <Lock className="h-2.5 w-2.5" />
+                      Fixed {d.lockedPersons} ppl
                     </span>
                   )}
                   <span className={`text-[10px] ${uses ? "text-muted-foreground" : "text-warning"}`}>

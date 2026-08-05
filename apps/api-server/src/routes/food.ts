@@ -67,6 +67,7 @@ import {
   autoFillMenu,
   detectSharedIngredients,
   buildCompositionVerdict,
+  isIngredientClashRuleOn,
   getWasteEditWindowMs,
 } from "../lib/food-service.js";
 import { notifyOrderEvent } from "../lib/notification-service.js";
@@ -531,7 +532,10 @@ foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create")
         orderId: order!.id,
         dishId: it.dishId,
         unit: it.unit as never,
-        personsCount: residents,
+        // computeOrderItems already resolved this: the meal headcount, or a
+        // quantity-locked dish's own pinned count. Using `residents` here would
+        // throw that away and unpin the dish on insert.
+        personsCount: it.personsCount,
         orderedQty: String(it.orderedQty),
         updatedAt: new Date(),
       }))).returning();
@@ -1046,7 +1050,20 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
       // left alone — that override is a statement about a dish, not about the
       // headcount, and it survives until someone edits it directly.
       const existing = await db.select().from(foodOrderItemsTable).where(eq(foodOrderItemsTable.orderId, id));
+      // A quantity-locked dish is pinned to its own count and must never be
+      // rescaled. The personsCount check below is NOT enough on its own: when a
+      // dish's lockedPersons happens to equal prevPeople, that guard passes and
+      // the pin would be silently rewritten to the new headcount.
+      const lockedDishIds = new Set(
+        existing.length
+          ? (await db.select({ id: dishesTable.id }).from(dishesTable).where(and(
+              inArray(dishesTable.id, existing.map((it) => it.dishId)),
+              eq(dishesTable.isQtyLocked, true),
+            ))).map((r) => r.id)
+          : [],
+      );
       for (const it of existing) {
+        if (lockedDishIds.has(it.dishId)) continue;
         if (it.personsCount !== prevPeople) continue;
         const prevQty = Number(it.orderedQty ?? 0);
         const rate = it.personsCount > 0 ? prevQty / it.personsCount : 0;
@@ -1876,6 +1893,27 @@ const zIngredient = z.object({
   unit: z.string().max(64).nullish(),
 }).passthrough();
 
+/**
+ * Keeps the two quantity-lock columns consistent at the ONE write path that
+ * sets them, so every read site can trust `isQtyLocked` on its own:
+ *   flag off → `lockedPersons` forced to NULL
+ *   flag on  → a whole count of at least 1 is required
+ *
+ * `fields: null` means the body said nothing about the lock, so an update must
+ * leave both columns alone.
+ */
+function normalizeQtyLock(b: Record<string, any>):
+  | { ok: true; fields: { isQtyLocked: boolean; lockedPersons: number | null } | null }
+  | { ok: false; error: string } {
+  if (b.isQtyLocked === undefined && b.lockedPersons === undefined) return { ok: true, fields: null };
+  if (b.isQtyLocked !== true) return { ok: true, fields: { isQtyLocked: false, lockedPersons: null } };
+  const n = Number(b.lockedPersons);
+  if (!Number.isInteger(n) || n < 1) {
+    return { ok: false, error: "lockedPersons must be a whole number of at least 1 when isQtyLocked is set" };
+  }
+  return { ok: true, fields: { isQtyLocked: true, lockedPersons: n } };
+}
+
 const createDishSchema = z.object({
   name: zText,
   component: z.string().min(1).max(128),
@@ -1884,6 +1922,9 @@ const createDishSchema = z.object({
   preparations: z.array(z.string().max(128)).optional(),
   photoUrl: z.string().max(2048).nullish(),
   isActive: z.boolean().optional(),
+  /** Pin this dish's people count at order time — see dishesTable.isQtyLocked. */
+  isQtyLocked: z.boolean().optional(),
+  lockedPersons: z.coerce.number().int().min(1).nullish(),
   ingredients: z.array(zIngredient).optional(),
   /** Dishes that may be served alongside this one (see dish_side_options). */
   sideDishIds: z.array(zId).optional(),
@@ -1894,6 +1935,8 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), a
     if (!validateBody(createDishSchema, req, res)) return;
     const b = req.body || {};
     if (!b.name || !b.component || !b.unit) { res.status(400).json({ success: false, error: "name, component, unit required" }); return; }
+    const lock = normalizeQtyLock(b);
+    if (!lock.ok) { res.status(400).json({ success: false, error: lock.error }); return; }
     const [row] = await db.insert(dishesTable).values({
       id: newId(),
       name: b.name,
@@ -1902,6 +1945,8 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), a
       brands: Array.isArray(b.brands) ? b.brands : [],
       preparations: sanitizePreparations(b.preparations),
       photoUrl: b.photoUrl ?? null,
+      isQtyLocked: lock.fields?.isQtyLocked ?? false,
+      lockedPersons: lock.fields?.lockedPersons ?? null,
       isActive: b.isActive !== false,
       updatedAt: new Date(),
     }).returning();
@@ -1932,6 +1977,9 @@ const updateDishSchema = z.object({
   preparations: z.array(z.string().max(128)).optional(),
   photoUrl: z.string().max(2048).nullish(),
   isActive: z.boolean().optional(),
+  /** Pin this dish's people count at order time — see dishesTable.isQtyLocked. */
+  isQtyLocked: z.boolean().optional(),
+  lockedPersons: z.coerce.number().int().min(1).nullish(),
   ingredients: z.array(zIngredient).optional(),
   /** Dishes that may be served alongside this one (see dish_side_options). */
   sideDishIds: z.array(zId).optional(),
@@ -1941,8 +1989,16 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), 
   try {
     if (!validateBody(updateDishSchema, req, res)) return;
     const b = req.body || {};
+    const lock = normalizeQtyLock(b);
+    if (!lock.ok) { res.status(400).json({ success: false, error: lock.error }); return; }
     const u: Record<string, unknown> = { updatedAt: new Date() };
     for (const k of ["name", "component", "unit", "brands", "photoUrl", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
+    // The two lock columns move together and deliberately bypass the whitelist
+    // above — a column left out of that array silently no-ops on every update.
+    if (lock.fields) {
+      u["isQtyLocked"] = lock.fields.isQtyLocked;
+      u["lockedPersons"] = lock.fields.lockedPersons;
+    }
     if (b.preparations !== undefined) u["preparations"] = sanitizePreparations(b.preparations);
     const [row] = await db.update(dishesTable).set(u as Partial<typeof dishesTable.$inferInsert>).where(eq(dishesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -2171,6 +2227,19 @@ foodRouter.post("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "crea
     if (!b.kitchenId || !b.brand || !b.mealType || !b.dishId || b.dayOfWeek == null) {
       res.status(400).json({ success: false, error: "kitchenId, brand, mealType, dishId, dayOfWeek required" }); return;
     }
+    // Single-row add: the clash is against the plate this dish is JOINING, so
+    // merge the cell's existing dishes in before checking.
+    const cellDishes = await db.select({ dishId: foodMenuRotationTable.dishId })
+      .from(foodMenuRotationTable)
+      .where(and(
+        eq(foodMenuRotationTable.kitchenId, b.kitchenId),
+        eq(foodMenuRotationTable.brand, b.brand as never),
+        eq(foodMenuRotationTable.rotationWeek, b.rotationWeek != null ? Number(b.rotationWeek) : 1),
+        eq(foodMenuRotationTable.dayOfWeek, Number(b.dayOfWeek)),
+        eq(foodMenuRotationTable.mealType, b.mealType as never),
+      ));
+    const addClash = await ingredientClashError([...new Set([...cellDishes.map((r) => r.dishId), b.dishId])]);
+    if (addClash) { res.status(422).json({ success: false, ...addClash }); return; }
     const [row] = await db.insert(foodMenuRotationTable).values({
       id: newId(),
       kitchenId: b.kitchenId,
@@ -2239,6 +2308,32 @@ async function dishesMissingPortionRule(
 const collectDishIds = (items: Array<{ dishId: string; sideDishIds?: string[] }>): string[] =>
   [...new Set(items.flatMap((it) => [it.dishId, ...(it.sideDishIds ?? [])]).filter(Boolean))];
 
+/**
+ * The shared-ingredient rule, enforced where it actually matters.
+ *
+ * `detectSharedIngredients` has existed since the rule engine was written, but
+ * was wired only into GET /menu/validate — a read-only endpoint the admin client
+ * never calls. The real block lived in the plate composer's disabled save button,
+ * so "duplicate the week" (28 direct slot writes) and any API caller sailed past
+ * a rule the UI advertised as always enforced. This closes that.
+ *
+ * Returns a 422 payload to send, or null when the plate is acceptable — either
+ * because nothing clashes or because the rule is switched off in Service Set.
+ */
+async function ingredientClashError(
+  dishIds: string[],
+): Promise<{ error: string; details: Record<string, unknown> } | null> {
+  if (dishIds.length < 2) return null;
+  if (!(await isIngredientClashRuleOn())) return null;
+  const shared = await detectSharedIngredients(dishIds);
+  if (!shared.length) return null;
+  const names = shared.map((s) => s.name).join(", ");
+  return {
+    error: `Two or more dishes on this plate share an ingredient (${names}). Swap one of them, or turn off the shared-ingredient rule under Menu Rules.`,
+    details: { sharedIngredients: shared },
+  };
+}
+
 const bulkRotationSchema = z.object({
   kitchenId: zId,
   brand: zBrand,
@@ -2265,6 +2360,8 @@ foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", 
       });
       return;
     }
+    const bulkClash = await ingredientClashError(collectDishIds(items));
+    if (bulkClash) { res.status(422).json({ success: false, ...bulkClash }); return; }
     const now = new Date();
     const base = {
       kitchenId: b.kitchenId,
@@ -2342,6 +2439,9 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
       });
       return;
     }
+    // The plate arrives wholesale here, so the clash is checkable in one shot.
+    const clash = await ingredientClashError(collectDishIds(items));
+    if (clash) { res.status(422).json({ success: false, ...clash }); return; }
     const slotWhere = and(
       eq(foodMenuRotationTable.kitchenId, kitchenId),
       eq(foodMenuRotationTable.brand, brand as never),
@@ -2459,6 +2559,34 @@ foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "e
     if (b.sortOrder !== undefined) u["sortOrder"] = Number(b.sortOrder);
     if (b.effectiveFrom !== undefined) u["effectiveFrom"] = b.effectiveFrom ? new Date(b.effectiveFrom) : null;
     if (b.effectiveTo !== undefined) u["effectiveTo"] = b.effectiveTo ? new Date(b.effectiveTo) : null;
+
+    // Moving a row to another cell, or swapping its dish, can create a clash in
+    // the DESTINATION plate — so resolve that cell from current + pending values
+    // and check the row against its future neighbours before writing.
+    const [before] = await db.select().from(foodMenuRotationTable).where(eq(foodMenuRotationTable.id, req.params["id"]!));
+    if (!before) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    const dest = {
+      kitchenId: (u["kitchenId"] ?? before.kitchenId) as string,
+      brand: (u["brand"] ?? before.brand) as string,
+      rotationWeek: (u["rotationWeek"] ?? before.rotationWeek) as number,
+      dayOfWeek: (u["dayOfWeek"] ?? before.dayOfWeek) as number,
+      mealType: (u["mealType"] ?? before.mealType) as string,
+      dishId: (u["dishId"] ?? before.dishId) as string,
+    };
+    const neighbours = await db.select({ id: foodMenuRotationTable.id, dishId: foodMenuRotationTable.dishId })
+      .from(foodMenuRotationTable)
+      .where(and(
+        eq(foodMenuRotationTable.kitchenId, dest.kitchenId),
+        eq(foodMenuRotationTable.brand, dest.brand as never),
+        eq(foodMenuRotationTable.rotationWeek, dest.rotationWeek),
+        eq(foodMenuRotationTable.dayOfWeek, dest.dayOfWeek),
+        eq(foodMenuRotationTable.mealType, dest.mealType as never),
+      ));
+    const moveClash = await ingredientClashError([
+      ...new Set([...neighbours.filter((n) => n.id !== before.id).map((n) => n.dishId), dest.dishId]),
+    ]);
+    if (moveClash) { res.status(422).json({ success: false, ...moveClash }); return; }
+
     const [row] = await db.update(foodMenuRotationTable).set(u as Partial<typeof foodMenuRotationTable.$inferInsert>).where(eq(foodMenuRotationTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });

@@ -31,10 +31,12 @@ import { usePermissions } from "@/lib/use-permissions";
 import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, DAY_LABEL,
   type FoodLookups, type MealType, type MealWindow, type MenuRotationRow,
+  type MenuRuleSettings,
 } from "@/lib/food-api";
 import {
   DAY_SHORT, MEAL_SHORT, ROTATION_WEEKS, WEEK_DAYS,
-  allPlateDishIds, componentLabel, fillPlate, nearbyRepeats, plateKey, plateToItems, plateVerdict,
+  allPlateDishIds, cellRepeats, componentLabel, fillPlate, nearbyRepeats,
+  plateKey, plateToItems, plateVerdict, rowsToCycleCells,
   rowsToPlates, ruleFor, slotsOf,
   type PlateEntry, type PlateMap,
 } from "./menu-lib";
@@ -109,6 +111,13 @@ export function RotationBoard(
     if (!brand && brands.length) setBrand(brands[0]!.code);
   }, [brands, brand]);
 
+  // Org-wide, and the server enforces the same values — this only keeps the
+  // composer's affordances honest about what a save will actually be allowed.
+  const { data: ruleSettings } = useQuery<MenuRuleSettings>({
+    queryKey: foodKeys.menuRuleSettings(),
+    queryFn: () => foodApi.menuRuleSettings(),
+  });
+
   const params = { kitchenId, brand, rotationWeek: week };
   const { data: rows = [], isLoading } = useQuery<MenuRotationRow[]>({
     queryKey: foodKeys.rotation(params),
@@ -123,6 +132,26 @@ export function RotationBoard(
   /** Brand-level service time per meal (property overrides don't apply here). */
   const serviceTime = (meal: MealType) =>
     windows.find((w) => w.mealType === meal && !w.propertyId)?.serviceTime ?? null;
+
+  /** The two Menu Rules switches. Everything the board shows honours both. */
+  const flagRepeats = ruleSettings?.flagRepeatsWithin3Days !== false;
+  const clashBlocks = ruleSettings?.ingredientClashBlocks !== false;
+
+  // Repeats span the whole rotation cycle — week 4 Sunday sits one day before
+  // week 1 Monday — so detection needs EVERY week, not just the one on screen.
+  // Omitting rotationWeek returns all of them under its own cache key, so the
+  // four weeks share one fetch instead of refetching as you page between them.
+  const cycleParams = { kitchenId, brand };
+  const { data: cycleRows = [] } = useQuery<MenuRotationRow[]>({
+    queryKey: foodKeys.rotation(cycleParams),
+    queryFn: () => foodApi.listRotation(cycleParams),
+    enabled: !!kitchenId && !!brand && flagRepeats,
+  });
+  const cycleCells = React.useMemo(() => rowsToCycleCells(cycleRows), [cycleRows]);
+  const repeatsFor = React.useCallback(
+    (day: number, meal: MealType) => (flagRepeats ? cellRepeats(cycleCells, week, day, meal) : []),
+    [cycleCells, week, flagRepeats],
+  );
 
   const dishById = React.useMemo(() => new Map(dishes.map((d) => [d.id, d])), [dishes]);
   const plates: PlateMap = React.useMemo(() => rowsToPlates(rows), [rows]);
@@ -191,6 +220,10 @@ export function RotationBoard(
   });
 
   // ── week roll-up ───────────────────────────────────────────────────────────
+  // The header counts exactly what the cells show, applying the same two gates.
+  // `plateVerdict().ok` can't be used directly: its `ok` is false whenever a
+  // clash exists, regardless of whether that rule is switched on — which is how
+  // "21 need attention" survived over twenty-one cells reading "complete".
   const summary = React.useMemo(() => {
     let complete = 0, warning = 0, empty = 0;
     for (const meal of MEAL_TYPES) {
@@ -198,11 +231,15 @@ export function RotationBoard(
       for (const day of WEEK_DAYS) {
         const plate = plates.get(plateKey(day, meal)) ?? [];
         if (!plate.length) { empty++; continue; }
-        if (plateVerdict(plate, slots, dishById).ok) complete++; else warning++;
+        const v = plateVerdict(plate, slots, dishById);
+        const clash = clashBlocks && v.clashes.length > 0;
+        const missing = v.rows.some((r) => r.dishIds.length < r.slot.minCount);
+        if (clash || missing || repeatsFor(day, meal).length > 0) warning++;
+        else complete++;
       }
     }
     return { complete, warning, empty, total: MEAL_TYPES.length * WEEK_DAYS.length };
-  }, [plates, dishById, slotsFor]);
+  }, [plates, dishById, slotsFor, clashBlocks, repeatsFor]);
 
   const anyRule = MEAL_TYPES.some((m) => slotsFor(m).length > 0);
 
@@ -423,6 +460,8 @@ export function RotationBoard(
                     plate={plates.get(plateKey(day, meal)) ?? []}
                     slots={slots}
                     dishById={dishById}
+                    repeats={repeatsFor(day, meal)}
+                    clashBlocks={clashBlocks}
                     onOpen={() => setSel({ day, meal })}
                     onGoToRules={() => onGoToRules?.({ brand, meal })}
                   />
@@ -447,7 +486,12 @@ export function RotationBoard(
           dishes={dishes}
           dishById={dishById}
           initialPlate={plates.get(plateKey(sel.day, sel.meal)) ?? []}
-          nearby={nearbyRepeats(plates, sel.day, sel.meal)}
+          // Both switches come from Menu Rules. An empty map is how "don't flag
+          // repeats" is expressed — the composer needs no separate off-switch.
+          nearby={flagRepeats
+            ? nearbyRepeats(cycleCells, week, sel.day, sel.meal)
+            : new Map<string, string>()}
+          clashBlocks={clashBlocks}
           serviceTime={serviceTime(sel.meal)}
           isSaving={saveSlot.isPending}
           onSave={(plate) => saveSlot.mutate({ day: sel.day, meal: sel.meal, plate })}
@@ -462,13 +506,17 @@ export function RotationBoard(
 
 /** One plate on the board: what's on it, and whether it satisfies its rule. */
 function BoardCell({
-  cell, plate, slots, dishById, onOpen, onGoToRules,
+  cell, plate, slots, dishById, repeats, clashBlocks, onOpen, onGoToRules,
 }: {
   /** "Monday Lunch" — the cell's position, which its contents never state. */
   cell: string;
   plate: PlateEntry[];
   slots: ReturnType<typeof slotsOf>;
   dishById: Map<string, import("@/lib/food-api").Dish>;
+  /** Dishes here also served for this meal within 3 days, and where. */
+  repeats: Array<{ dishId: string; where: string }>;
+  /** Shared-ingredient rule. Off means the cell says nothing about clashes. */
+  clashBlocks: boolean;
   onOpen: () => void;
   onGoToRules: () => void;
 }) {
@@ -504,7 +552,9 @@ function BoardCell({
   const missing = verdict.rows
     .filter((r) => r.dishIds.length < r.slot.minCount)
     .map((r) => r.slot.slotLabel || componentLabel(r.slot.component));
-  const clash = verdict.clashes[0];
+  // Switched off means silent, not "shown but harmless" — a flag that survives
+  // its own off-switch reads as a broken toggle, which is exactly how it looked.
+  const clash = clashBlocks ? verdict.clashes[0] : undefined;
 
   // Sides render indented under the dish they accompany, so the cell reads the
   // way the plate is actually served.
@@ -515,10 +565,22 @@ function BoardCell({
   const shown = lines.slice(0, CELL_LINES);
   const extra = lines.length - shown.length;
 
-  const tone = clash ? "text-destructive" : noRule ? "text-muted-foreground" : missing.length ? "text-warning" : "text-success";
+  // A repeat is a variety problem, not a safety one, so it sits below the hard
+  // faults — but ABOVE "complete", because a cell that silently reads complete
+  // while serving the same dish three days running is how repeats went unseen.
+  const repeatLabel = repeats.length === 1
+    ? `${dishById.get(repeats[0]!.dishId)?.name ?? "A dish"} also ${repeats[0]!.where}`
+    : `${repeats.length} dishes repeat within 3 days`;
+
+  const tone = clash ? "text-destructive"
+    : noRule ? "text-muted-foreground"
+    : missing.length ? "text-warning"
+    : repeats.length ? "text-warning"
+    : "text-success";
   const status = clash ? `shares ${clash.ingredientName}`
     : noRule ? "no rule set"
     : missing.length ? `missing ${missing.join(", ")}`
+    : repeats.length ? repeatLabel
     : "complete";
 
   return (
@@ -539,11 +601,14 @@ function BoardCell({
         {extra > 0 && <span className="text-[10px] text-muted-foreground">+{extra} more</span>}
       </div>
       <div className={`mt-1.5 flex items-center gap-1 border-t pt-1 text-[10px] font-medium ${tone}`}>
-        {clash || missing.length ? <AlertTriangle className="h-2.5 w-2.5 shrink-0" /> : <CheckCircle2 className="h-2.5 w-2.5 shrink-0" />}
+        {clash || missing.length ? <AlertTriangle className="h-2.5 w-2.5 shrink-0" />
+          : repeats.length ? <CircleAlert className="h-2.5 w-2.5 shrink-0" />
+          : <CheckCircle2 className="h-2.5 w-2.5 shrink-0" />}
         <span className="truncate">
           {clash ? `Shares ${clash.ingredientName}`
             : noRule ? `${allPlateDishIds(plate).length} dishes`
             : missing.length ? `Missing ${missing[0]}`
+            : repeats.length ? repeatLabel
             : "Complete"}
         </span>
       </div>

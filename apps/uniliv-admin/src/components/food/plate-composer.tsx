@@ -41,6 +41,7 @@ const PICKER_PREVIEW = 6;
 export function PlateComposer({
   open, onOpenChange, day, meal, week, brand, brandName, slots, ruleMissing,
   dishes, dishById, initialPlate, nearby, serviceTime, onSave, isSaving, onGoToRules,
+  clashBlocks = true,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -60,6 +61,13 @@ export function PlateComposer({
   isSaving: boolean;
   /** Jumps to the Menu Rules tab so a missing rule can be fixed without hunting. */
   onGoToRules?: () => void;
+  /**
+   * The shared-ingredient rule from Menu Rules. When off, clashes are not
+   * surfaced anywhere in this drawer and the save is not blocked — matching the
+   * server, which also stops rejecting them. Off means silent, not "shown but
+   * harmless": a warning that survives its own off-switch reads as a bug.
+   */
+  clashBlocks?: boolean;
 }) {
   const [draft, setDraft] = React.useState<PlateEntry[]>(initialPlate);
   const [search, setSearch] = React.useState<Record<string, string>>({});
@@ -88,7 +96,25 @@ export function PlateComposer({
         : [...e.sideDishIds, sideId],
     }));
 
-  const blocked = verdict.clashes.length > 0;
+  const blocked = clashBlocks && verdict.clashes.length > 0;
+
+  /**
+   * Dishes on THIS plate that also run within 3 days, with where.
+   *
+   * Derived from the live draft, not the saved cell, so it responds as you add
+   * and remove. `nearby` already arrives empty when the repeat rule is switched
+   * off, so this needs no separate gate — off stays silent here too.
+   */
+  const plateRepeats = React.useMemo(
+    () => [...new Set(allPlateDishIds(draft))]
+      .filter((id) => nearby.has(id))
+      .map((id) => ({
+        dishId: id,
+        where: nearby.get(id)!,
+        name: dishById.get(id)?.name ?? "A dish",
+      })),
+    [draft, nearby, dishById],
+  );
   const short = verdict.total - verdict.met;
   const saveLabel = blocked ? "Resolve the clash to save"
     : verdict.ok ? "Save plate"
@@ -189,7 +215,7 @@ export function PlateComposer({
             const need = slot.maxCount && slot.maxCount !== slot.minCount
               ? `needs ${slot.minCount}–${slot.maxCount}` : `needs ${slot.minCount}`;
 
-            const all = canAdd ? candidatesForSlot(slot, brand, onPlate, dishById, dishes, nearby) : [];
+            const all = canAdd ? candidatesForSlot(slot, brand, onPlate, dishById, dishes, nearby, clashBlocks) : [];
             const q = (search[slotId] ?? "").trim().toLowerCase();
             const matched = q ? all.filter((c) => c.dish.name.toLowerCase().includes(q)) : all;
             // With no query we preview six and let "Show all N" reveal the rest,
@@ -255,7 +281,9 @@ export function PlateComposer({
                                   used.set(g.ingredientId, g.ingredientName ?? "an ingredient");
                                 }
                               }
-                              const hit = on ? undefined : (sd.ingredients ?? []).find((g) => used.has(g.ingredientId));
+                              const hit = (on || !clashBlocks)
+                                ? undefined
+                                : (sd.ingredients ?? []).find((g) => used.has(g.ingredientId));
                               return (
                                 <button
                                   key={sd.id} type="button" disabled={!!hit}
@@ -375,6 +403,30 @@ export function PlateComposer({
               ))}
             </div>
           )}
+
+          {/* The board cell can only afford a few words, so the repeat reads as a
+              tiny marker there. Here there is room to name each dish and say
+              exactly where else it runs — and it sits alongside a clash rather
+              than being outranked by one, since the drawer has the space. */}
+          {plateRepeats.length > 0 && (
+            <div className="rounded-xl bg-warning-soft px-3.5 py-3">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-warning">
+                <CircleAlert className="h-3.5 w-3.5" />
+                {plateRepeats.length === 1
+                  ? "1 dish repeats within 3 days"
+                  : `${plateRepeats.length} dishes repeat within 3 days`}
+              </p>
+              {plateRepeats.map((r) => (
+                <p key={r.dishId} className="text-xs leading-relaxed text-warning">
+                  {r.name} is also served {r.where}.
+                </p>
+              ))}
+              <p className="mt-1 text-[11px] leading-relaxed text-warning/80">
+                Repeats are only flagged, never blocked — save it if the kitchen wants it.
+              </p>
+            </div>
+          )}
+
         </div>
 
         {/* ── footer ─────────────────────────────────────────────────────── */}

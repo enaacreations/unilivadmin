@@ -55,6 +55,11 @@ import {
   getPropertyFoodConfig,
   resolveOrderPreview,
   resolveMenu,
+  resolveRulesByDish,
+  isIngredientClashRuleOn,
+  isRepeatFlagRuleOn,
+  FOOD_RULE_INGREDIENT_CLASH_KEY,
+  FOOD_RULE_REPEAT_FLAG_KEY,
   getDefaultCutoffTime,
   getSystemConfigValue,
   getWasteEditWindowMs,
@@ -506,6 +511,76 @@ foodOpsRouter.put("/system-config/food-defaults", authenticate, async (req, res)
     const rawWindow = await getSystemConfigValue<number>(FOOD_WASTE_WINDOW_KEY, 60);
     const wasteWindowMinutes = Number.isFinite(Number(rawWindow)) && Number(rawWindow) > 0 ? Number(rawWindow) : 60;
     res.json({ success: true, data: { defaultCutoff, wasteWindowMinutes } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Menu rule switches (Service Set → Menu Rules)
+ * ────────────────────────────────────────────────────────────────────────
+ * The two "Variety & safety rules" toggles. Unlike food-defaults above these
+ * are gated on FOOD_SETTINGS rather than isSuperAdmin, so the people who edit
+ * the composition rules on the same tab can edit these too — an F&B manager
+ * owning the plate but not the rules that govern it would be an odd seam.
+ *
+ * Stored as raw JSON booleans; both default to TRUE when the row is absent, so
+ * a fresh environment behaves as it did when the rules were hard-coded.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+const menuRuleSettingsSchema = z.object({
+  ingredientClashBlocks: z.boolean().optional(),
+  flagRepeatsWithin3Days: z.boolean().optional(),
+}).passthrough();
+
+/** Read the menu rule switches. */
+foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: {
+        ingredientClashBlocks: await isIngredientClashRuleOn(),
+        flagRepeatsWithin3Days: await isRepeatFlagRuleOn(),
+      },
+    });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/** Upsert the menu rule switches. */
+foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+  try {
+    if (!validateBody(menuRuleSettingsSchema, req, res)) return;
+    const b = req.body || {};
+    const updates: Array<{ key: string; value: unknown; description: string }> = [];
+
+    if (b.ingredientClashBlocks !== undefined) {
+      updates.push({
+        key: FOOD_RULE_INGREDIENT_CLASH_KEY,
+        value: b.ingredientClashBlocks === true,
+        description: "Block saving a rotation plate whose dishes share an ingredient.",
+      });
+    }
+    if (b.flagRepeatsWithin3Days !== undefined) {
+      updates.push({
+        key: FOOD_RULE_REPEAT_FLAG_KEY,
+        value: b.flagRepeatsWithin3Days === true,
+        description: "Flag (never block) a dish already used for the same meal within 3 days.",
+      });
+    }
+    if (!updates.length) { res.status(400).json({ success: false, error: "Nothing to update" }); return; }
+
+    for (const u of updates) {
+      await db.insert(systemConfigTable)
+        .values({ id: newId(), key: u.key, value: u.value as never, description: u.description, updatedAt: new Date() })
+        .onConflictDoUpdate({ target: systemConfigTable.key, set: { value: u.value as never, updatedAt: new Date() } });
+    }
+
+    // Re-read through the getters so the client always sees the coerced truth.
+    res.json({
+      success: true,
+      data: {
+        ingredientClashBlocks: await isIngredientClashRuleOn(),
+        flagRepeatsWithin3Days: await isRepeatFlagRuleOn(),
+      },
+    });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -1397,20 +1472,41 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       // Per-item editing path, else legacy quantity path.
       let itemRows: Array<{ dishId: string; personsCount: number; orderedQty: number; unit: string }> = [];
       if (Array.isArray(meal.items) && meal.items.length) {
+        // Quantity-locked dishes are re-derived here from their pinned people
+        // count and the standing portion rule. The read-only stepper in the UI
+        // is only a hint — THIS is the control, and it applies to every caller,
+        // so a hand-crafted personsCount/orderedQty can't get past the pin.
+        // Rules are fetched only when this meal actually holds a locked dish.
+        const lockedIds = menu.filter((m) => m.isQtyLocked && m.lockedPersons != null).map((m) => m.dishId);
+        const lockedRules = lockedIds.length
+          ? await resolveRulesByDish(brand, meal.mealType, lockedIds)
+          : new Map<string, { qty: number; unit: string }>();
+
         for (const it of meal.items) {
-          const oq = Number(it.orderedQty);
-          if (!it.dishId || !allowed.has(it.dishId) || !Number.isFinite(oq) || oq <= 0) continue;
+          if (!it.dishId || !allowed.has(it.dishId)) continue;
           const md = menu.find((m) => m.dishId === it.dishId)!;
+          const pinned = md.isQtyLocked && md.lockedPersons != null;
+          const rule = pinned ? lockedRules.get(md.dishId) : undefined;
+          // A pinned dish with no active portion rule can't be re-derived. Drop
+          // it rather than fall back to the client's number and honour the lock
+          // in name only.
+          if (pinned && !rule) continue;
+          const oq = pinned ? md.lockedPersons! * rule!.qty : Number(it.orderedQty);
+          if (!Number.isFinite(oq) || oq <= 0) continue;
           itemRows.push({
             dishId: it.dishId,
-            personsCount: it.personsCount != null ? Number(it.personsCount) : mealPersons,
+            personsCount: pinned
+              ? md.lockedPersons!
+              : (it.personsCount != null ? Number(it.personsCount) : mealPersons),
             orderedQty: Math.round(oq * 1000) / 1000,
-            unit: it.unit || md.unit,
+            unit: pinned ? (rule!.unit || md.unit) : (it.unit || md.unit),
           });
         }
       } else if (meal.quantity != null) {
         const computed = await computeOrderItems(kitchenId, brand, meal.mealType, sd, Number(meal.quantity));
-        itemRows = computed.map((c) => ({ dishId: c.dishId, personsCount: mealPersons, orderedQty: c.orderedQty, unit: c.unit }));
+        // computeOrderItems has already pinned any locked dish, so carry its
+        // personsCount through instead of stamping the meal headcount on every row.
+        itemRows = computed.map((c) => ({ dishId: c.dishId, personsCount: c.personsCount, orderedQty: c.orderedQty, unit: c.unit }));
       }
       if (!itemRows.length) continue;
 

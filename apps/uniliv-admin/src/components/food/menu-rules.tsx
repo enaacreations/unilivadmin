@@ -19,7 +19,8 @@ import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
 import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, PREPARATION_LABEL,
-  type CompositionRule, type CompositionSlot, type Dish, type FoodLookups, type MealType, type MenuRotationRow,
+  type CompositionRule, type CompositionSlot, type Dish, type FoodLookups, type MealType,
+  type MenuRotationRow, type MenuRuleSettings,
 } from "@/lib/food-api";
 import {
   MEAL_SHORT, ROTATION_WEEKS, WEEK_DAYS,
@@ -71,6 +72,27 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
     queryKey: foodKeys.lookups(),
     queryFn: () => foodApi.lookups(),
     enabled: kitchenBound,
+  });
+
+  // The two rule switches. Org-wide, so no brand/meal in the key — flipping one
+  // here changes what the server accepts for every plate.
+  const { data: ruleSettings } = useQuery<MenuRuleSettings>({
+    queryKey: foodKeys.menuRuleSettings(),
+    queryFn: () => foodApi.menuRuleSettings(),
+  });
+  const saveRules = useMutation({
+    mutationFn: (b: Partial<MenuRuleSettings>) => foodApi.updateMenuRuleSettings(b),
+    onSuccess: (fresh, sent) => {
+      qc.setQueryData(foodKeys.menuRuleSettings(), fresh);
+      // Say which way it went — a switch sliding back on failure is otherwise
+      // the only feedback, and it is easy to miss.
+      const [[key, value]] = Object.entries(sent) as [[keyof MenuRuleSettings, boolean]];
+      const label = key === "ingredientClashBlocks"
+        ? "Shared-ingredient block"
+        : "3-day repeat flag";
+      toast({ title: `${label} turned ${value ? "on" : "off"}` });
+    },
+    onError: (e: any) => toast({ title: e?.message || "Could not change the rule", variant: "destructive" }),
   });
 
   // Arriving from a rotation cell that had no rule — open on the exact plate
@@ -288,26 +310,40 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
             Variety &amp; safety rules
           </p>
           <div className="flex flex-col gap-3">
-            {/* Both rows are statements of what the engine already does, not
-                settings — a toggle here would imply an off switch that the
-                server would ignore. */}
+            {/* Real settings, stored in system_config and read by the server on
+                every rotation write — not decoration. Turning the first one off
+                genuinely stops the API rejecting clashing plates. */}
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1">
                 <p className="text-sm font-medium">No two dishes may share an ingredient</p>
                 <p className="text-[11px] text-muted-foreground">
-                  Always enforced — the plate cannot be saved otherwise.
+                  {ruleSettings?.ingredientClashBlocks === false
+                    ? "Off — plates with a shared ingredient can be saved."
+                    : "Enforced on save — the server rejects a plate that clashes."}
                 </p>
               </div>
-              <Switch checked disabled aria-label="No two dishes may share an ingredient (always enforced)" />
+              <Switch
+                checked={ruleSettings?.ingredientClashBlocks ?? true}
+                disabled={!ruleSettings || saveRules.isPending}
+                onCheckedChange={(v) => saveRules.mutate({ ingredientClashBlocks: v })}
+                aria-label="Block plates whose dishes share an ingredient"
+              />
             </div>
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1">
                 <p className="text-sm">No dish repeats within 3 days</p>
                 <p className="text-[11px] text-muted-foreground">
-                  Repeats are flagged as you pick, never blocked — the kitchen decides.
+                  {ruleSettings?.flagRepeatsWithin3Days === false
+                    ? "Off — repeats are not flagged while picking."
+                    : "Repeats are flagged as you pick, never blocked — the kitchen decides."}
                 </p>
               </div>
-              <Switch checked disabled aria-label="Repeats within 3 days are flagged (always on)" />
+              <Switch
+                checked={ruleSettings?.flagRepeatsWithin3Days ?? true}
+                disabled={!ruleSettings || saveRules.isPending}
+                onCheckedChange={(v) => saveRules.mutate({ flagRepeatsWithin3Days: v })}
+                aria-label="Flag dishes repeated within 3 days"
+              />
             </div>
           </div>
         </div>

@@ -217,6 +217,12 @@ export function candidatesForSlot(
   dishes: Dish[],
   /** dishId → day label it already appears on this week (nearby-repeat hint). */
   usedNearby?: Map<string, string>,
+  /**
+   * When false (the shared-ingredient rule is switched off in Menu Rules), a
+   * clash is still annotated but no longer greys the candidate out — the
+   * information is worth keeping even when the constraint is lifted.
+   */
+  clashBlocks = true,
 ): Candidate[] {
   const used = new Map<string, string>();
   for (const id of onPlate) {
@@ -226,7 +232,9 @@ export function candidatesForSlot(
   return dishes
     .filter((d) => d.isActive && (d.brands ?? []).includes(brand) && !onPlate.includes(d.id) && dishFitsSlot(d, slot))
     .map((d) => {
-      const hit = (d.ingredients ?? []).find((i) => used.has(i.ingredientId));
+      // Rule off → the clash is not surfaced at all, not merely un-blocked. A
+      // note that outlives its own off-switch reads as a toggle that does nothing.
+      const hit = clashBlocks ? (d.ingredients ?? []).find((i) => used.has(i.ingredientId)) : undefined;
       if (hit) return { dish: d, blocked: true, note: `shares ${used.get(hit.ingredientId)}` };
       const day = usedNearby?.get(d.id);
       return { dish: d, blocked: false, note: day ? `used ${day}` : "" };
@@ -265,18 +273,95 @@ export function fillPlate(
   return next;
 }
 
-/**
- * Dishes already used for the same meal within 3 days either side, as
- * dishId → day label. Drives the soft "used Tue" hint; repeats are flagged while
- * picking, never blocked.
+/* ── Repeat detection ────────────────────────────────────────────────────────
+ *
+ * The rotation is a CIRCLE, not a line: four weeks that then start over. So the
+ * distance between two servings is measured round a 28-day cycle.
+ *
+ * The original check was `Math.abs(otherDay - day) > 3` over day-of-week numbers
+ * inside a single week, which got three things wrong at once — Sunday and Monday
+ * looked six days apart, week 1 Sunday could not see week 2 Monday, and week 4
+ * never wrapped to week 1. Measuring on the cycle fixes all three together.
  */
-export function nearbyRepeats(plates: PlateMap, day: number, meal: MealType): Map<string, string> {
+
+/** Days in one full rotation cycle, after which the menu starts over. */
+export const CYCLE_DAYS = ROTATION_WEEKS.length * 7;
+/** How close two servings of the same dish must be to count as a repeat. */
+export const REPEAT_WITHIN_DAYS = 3;
+
+/** 0-based position of (week, day) within the rotation cycle. */
+export const cycleIndex = (week: number, day: number) => (week - 1) * 7 + (day - 1);
+
+/** Days between two cycle positions, measured the short way round the circle. */
+export const cycleGap = (a: number, b: number) => {
+  const d = Math.abs(a - b) % CYCLE_DAYS;
+  return Math.min(d, CYCLE_DAYS - d);
+};
+
+/** Dish ids per cell across every rotation week, keyed `week|day|meal`. */
+export type CycleCells = Map<string, string[]>;
+export const cycleKey = (week: number, day: number, meal: MealType | string) =>
+  `${week}|${day}|${meal}`;
+
+/** Flatten rotation rows (all weeks) into per-cell dish ids. Sides count too. */
+export function rowsToCycleCells(rows: MenuRotationRow[]): CycleCells {
+  const out: CycleCells = new Map();
+  for (const r of rows) {
+    const k = cycleKey(r.rotationWeek, r.dayOfWeek, r.mealType);
+    out.set(k, [...(out.get(k) ?? []), r.dishId]);
+  }
+  return out;
+}
+
+/** "Tue" within the same week, "W2 Tue" when it lands in another one. */
+const whereLabel = (sameWeek: boolean, week: number, day: number) =>
+  sameWeek ? DAY_SHORT[day]! : `W${week} ${DAY_SHORT[day]}`;
+
+/**
+ * Dishes served for the SAME meal within REPEAT_WITHIN_DAYS of this cell,
+ * anywhere in the cycle, as dishId → where it also appears.
+ *
+ * `excludeSelf` skips the cell itself — a dish is not a repeat of itself.
+ */
+export function repeatsNearCell(
+  cells: CycleCells, week: number, day: number, meal: MealType | string,
+): Map<string, string> {
+  const here = cycleIndex(week, day);
   const out = new Map<string, string>();
-  for (const other of WEEK_DAYS) {
-    if (other === day || Math.abs(other - day) > 3) continue;
-    for (const id of allPlateDishIds(plates.get(plateKey(other, meal)) ?? [])) {
-      if (!out.has(id)) out.set(id, DAY_SHORT[other]!);
+  for (const w of ROTATION_WEEKS) {
+    for (const d of WEEK_DAYS) {
+      if (w === week && d === day) continue;
+      const gap = cycleGap(here, cycleIndex(w, d));
+      if (gap === 0 || gap > REPEAT_WITHIN_DAYS) continue;
+      for (const id of cells.get(cycleKey(w, d, meal)) ?? []) {
+        if (!out.has(id)) out.set(id, whereLabel(w === week, w, d));
+      }
     }
   }
   return out;
+}
+
+/**
+ * The subset of a cell's own dishes that also appear within the window — i.e.
+ * what the board should mark. Empty when the cell is clean.
+ */
+export function cellRepeats(
+  cells: CycleCells, week: number, day: number, meal: MealType | string,
+): Array<{ dishId: string; where: string }> {
+  const near = repeatsNearCell(cells, week, day, meal);
+  if (!near.size) return [];
+  const mine = cells.get(cycleKey(week, day, meal)) ?? [];
+  return [...new Set(mine)]
+    .filter((id) => near.has(id))
+    .map((id) => ({ dishId: id, where: near.get(id)! }));
+}
+
+/**
+ * Dishes already used for the same meal nearby, as dishId → where. Drives the
+ * soft "used Tue" hint in the picker; repeats are flagged, never blocked.
+ */
+export function nearbyRepeats(
+  cells: CycleCells, week: number, day: number, meal: MealType,
+): Map<string, string> {
+  return repeatsNearCell(cells, week, day, meal);
 }

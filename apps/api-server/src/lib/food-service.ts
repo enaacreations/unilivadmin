@@ -60,6 +60,46 @@ export async function getDefaultCutoffTime(): Promise<string> {
   return typeof v === "string" && /^\d{1,2}:\d{2}$/.test(v) ? v : "09:00";
 }
 
+/* ── Menu rule switches (Service Set → Menu Rules) ──────────────────────────
+ * Both default to ON so an environment with no rows behaves exactly as it did
+ * when the rules were hard-coded — turning a rule off has to be a deliberate,
+ * recorded act, never the consequence of a missing config row.
+ */
+
+/** Block saving a plate whose dishes share an ingredient. */
+export const FOOD_RULE_INGREDIENT_CLASH_KEY = "food_rule_ingredient_clash";
+/** Flag (never block) a dish already used for the same meal within 3 days. */
+export const FOOD_RULE_REPEAT_FLAG_KEY = "food_rule_repeat_flag";
+
+/**
+ * Boolean from system_config. `getSystemConfigValue` does an unchecked cast, and
+ * older rows in this table are sometimes a wrapped object rather than a bare
+ * scalar (see configToNumber in routes/settings.ts), so coerce rather than trust:
+ * true / "true" / 1 / { anything: true } all read as true.
+ */
+export async function getSystemConfigBool(key: string, fallback: boolean): Promise<boolean> {
+  const raw = await getSystemConfigValue<unknown>(key, fallback);
+  const v = raw !== null && typeof raw === "object" ? Object.values(raw as object)[0] : raw;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(s)) return true;
+    if (["false", "0", "no", "off"].includes(s)) return false;
+  }
+  return fallback;
+}
+
+/** Is the shared-ingredient block switched on? Defaults ON. */
+export async function isIngredientClashRuleOn(): Promise<boolean> {
+  return getSystemConfigBool(FOOD_RULE_INGREDIENT_CLASH_KEY, true);
+}
+
+/** Is the 3-day repeat hint switched on? Defaults ON. */
+export async function isRepeatFlagRuleOn(): Promise<boolean> {
+  return getSystemConfigBool(FOOD_RULE_REPEAT_FLAG_KEY, true);
+}
+
 /** Roles that always see every property regardless of scope rows. */
 const ALWAYS_GLOBAL = new Set([
   "SUPER_ADMIN",
@@ -168,6 +208,10 @@ export interface ResolvedDish {
   /** Set when this dish is a side served with another dish on the same plate
    *  (rotation rows tagged parentRotationId) — consumers group them as one item. */
   parentDishId: string | null;
+  /** Dish-level quantity pin — see dishesTable.isQtyLocked. Carried here so the
+   *  ordering UI and the placement guard both read it off the resolved menu. */
+  isQtyLocked: boolean;
+  lockedPersons: number | null;
 }
 
 /** Resolves a property's food config (brand code + serving kitchen). */
@@ -266,6 +310,8 @@ export async function resolveMenu(
       component: dishesTable.component,
       preparations: dishesTable.preparations,
       unit: dishesTable.unit,
+      isQtyLocked: dishesTable.isQtyLocked,
+      lockedPersons: dishesTable.lockedPersons,
     })
     .from(foodMenuRotationTable)
     .innerJoin(dishesTable, eq(foodMenuRotationTable.dishId, dishesTable.id))
@@ -285,6 +331,8 @@ export async function resolveMenu(
     slotLabel: r.slotLabel,
     sortOrder: r.sortOrder,
     parentDishId: r.parentRotationId ? (dishByRotationId.get(r.parentRotationId) ?? null) : null,
+    isQtyLocked: r.isQtyLocked,
+    lockedPersons: r.lockedPersons,
   }));
 }
 
@@ -292,6 +340,13 @@ export interface ComputedItem {
   dishId: string;
   unit: string;
   orderedQty: number;
+  /**
+   * People this line was priced for. Normally the meal's headcount, but a
+   * quantity-locked dish overrides it with its own pinned count — callers must
+   * persist THIS rather than the order-wide headcount, or the pin is lost the
+   * moment the row is inserted.
+   */
+  personsCount: number;
 }
 
 /** Resolves each dish's effective per-resident rule (global per brand + meal + dish). */
@@ -335,10 +390,16 @@ export async function computeOrderItems(
   for (const m of menu) {
     const rule = rules.get(m.dishId);
     if (!rule) continue;
+    // A quantity-locked dish ignores the meal headcount entirely — it is ordered
+    // for its own pinned number of people. Applying it here covers every caller
+    // of this helper (legacy POST /food/orders and the quantity-only fallback in
+    // POST /order-batches) from one place, so the two can't drift.
+    const persons = m.isQtyLocked && m.lockedPersons != null ? m.lockedPersons : mealCount;
     items.push({
       dishId: m.dishId,
       unit: rule.unit || m.unit,
-      orderedQty: Math.round(mealCount * rule.qty * 1000) / 1000,
+      orderedQty: Math.round(persons * rule.qty * 1000) / 1000,
+      personsCount: persons,
     });
   }
   return items;
@@ -357,6 +418,10 @@ export interface OrderPreviewItem {
   defaultOrderedQty: number;
   /** Side served with another dish — the ordering UI groups it under its parent. */
   parentDishId: string | null;
+  /** Dish-level quantity pin — the ordering UI renders these rows read-only and
+   *  the server re-derives them at placement. */
+  isQtyLocked: boolean;
+  lockedPersons: number | null;
 }
 
 /**
@@ -389,6 +454,8 @@ export async function resolveOrderPreview(
       defaultPersons,
       defaultOrderedQty: qpr != null ? Math.round(defaultPersons * qpr * 1000) / 1000 : 0,
       parentDishId: m.parentDishId,
+      isQtyLocked: m.isQtyLocked,
+      lockedPersons: m.lockedPersons,
     };
   });
 }

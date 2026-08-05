@@ -9,12 +9,18 @@
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Check, ChevronDown, Info, Plus, Search, X } from "lucide-react";
+import { ArrowRight, Check, ChevronsUpDown, Info, Plus, Search, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
+} from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, PREPARATIONS, PREPARATION_LABEL,
   type Dish, type Ingredient, type MealType, type PerResidentRule,
@@ -43,6 +49,10 @@ export type DishDraft = {
   brands: string[];
   preparations: string[];
   isActive: boolean;
+  /** Pin the people count at order time — see dishesTable.isQtyLocked. */
+  qtyLockOn: boolean;
+  /** Held as a string like `portions` so the field can be emptied mid-edit. */
+  lockedPersons: string;
   ingredientIds: string[];
   sidesOn: boolean;
   sideDishIds: string[];
@@ -68,6 +78,8 @@ export const draftFromDish = (
     brands: d ? (d.brands ?? []) : brands,
     preparations: d?.preparations ?? ["VEG"],
     isActive: d?.isActive ?? true,
+    qtyLockOn: d?.isQtyLocked ?? false,
+    lockedPersons: d?.lockedPersons != null ? String(d.lockedPersons) : "",
     ingredientIds: (d?.ingredients ?? []).map((i) => i.ingredientId),
     sidesOn: (d?.sideDishIds ?? []).length > 0,
     sideDishIds: d?.sideDishIds ?? [],
@@ -167,6 +179,10 @@ export function DishDrawer({
         brands: d.brands,
         preparations: d.preparations,
         isActive: d.isActive,
+        isQtyLocked: d.qtyLockOn,
+        // Sent as null when the switch is off so the server clears the count and
+        // the flag/count pair can never drift apart.
+        lockedPersons: d.qtyLockOn ? Number(d.lockedPersons) : null,
         ingredients: d.ingredientIds.map((id) => ({
           ingredientId: id,
           quantity: prevRows.get(id)?.quantity ?? null,
@@ -212,7 +228,10 @@ export function DishDrawer({
 
   const q = ingQuery.trim();
   const ql = q.toLowerCase();
-  const ingMatches = ingredients.filter((g) => g.isActive && g.name.toLowerCase().includes(ql));
+  // cmdk narrows the list itself, so only the "create" affordance reads the query.
+  // A retired ingredient still shows while it is selected — otherwise the row that
+  // is already on the dish would be the one row you cannot untick.
+  const ingOptions = ingredients.filter((g) => g.isActive || draft.ingredientIds.includes(g.id));
   const canCreateIng = !!q && !ingredients.some((g) => g.name.toLowerCase() === ql);
 
   // A dish has to be served at a meal to exist usefully: computeOrderItems skips
@@ -228,12 +247,19 @@ export function DishDrawer({
   const filledMeals = MEAL_TYPES.filter((m) =>
     brands.some((b) => isValidPortion(portionCell(b.code, m))),
   );
+  // A pinned dish with no count would save a flag the order screen can't honour,
+  // so it blocks the save rather than silently doing nothing.
+  const lockedPersonsN = Number(draft.lockedPersons);
+  const lockNeedsCount =
+    draft.qtyLockOn && (!Number.isInteger(lockedPersonsN) || lockedPersonsN < 1);
   /** Why saving is blocked, or null when the dish is good to go. */
   const blockReason = !draft.name.trim()
     ? "Give the dish a name to save it."
     : filledMeals.length === 0
       ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
-      : null;
+      : lockNeedsCount
+        ? "Set how many people this dish is ordered for, or turn off non-editable quantity."
+        : null;
 
   // Which other dish this one can now never share a plate with — the single most
   // consequential side effect of adding an ingredient, so it is stated plainly.
@@ -315,81 +341,93 @@ export function DishDrawer({
           {/* ── ingredients ────────────────────────────────────────────── */}
           <div className="mb-5">
             <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Ingredients</p>
-            <button
-              type="button" onClick={() => { setIngOpen((o) => !o); setIngQuery(""); }}
-              aria-expanded={ingOpen}
-              className={`flex h-10 w-full items-center justify-between rounded-lg border bg-card px-3 text-sm ${
-                ingOpen ? "rounded-b-none border-accent" : ""
-              }`}
-            >
-              <span className={draft.ingredientIds.length ? "" : "text-muted-foreground"}>
-                {draft.ingredientIds.length
-                  ? `${draft.ingredientIds.length} ingredient${draft.ingredientIds.length === 1 ? "" : "s"} selected`
-                  : "Select ingredients"}
-              </span>
-              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${ingOpen ? "rotate-180" : ""}`} />
-            </button>
-
-            {ingOpen && (
-              <div className="overflow-hidden rounded-b-lg border border-t-0 bg-card">
-                <div className="border-b p-2">
-                  <Input
-                    value={ingQuery} onChange={(e) => setIngQuery(e.target.value)}
-                    placeholder="Filter ingredients…" aria-label="Filter ingredients" className="h-8 text-xs"
-                  />
-                </div>
-                <div className="max-h-52 overflow-y-auto p-1">
-                  {ingMatches.map((g) => {
-                    const on = draft.ingredientIds.includes(g.id);
-                    const used = dishes.filter((x) => x.id !== draft.id && (x.ingredients ?? []).some((r) => r.ingredientId === g.id)).length;
+            <Popover open={ingOpen} onOpenChange={(o) => { setIngOpen(o); if (!o) setIngQuery(""); }}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button" role="combobox" aria-expanded={ingOpen}
+                  className="flex min-h-10 w-full flex-wrap items-center gap-1.5 rounded-lg border bg-card px-2 py-1.5 text-sm transition-colors focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+                >
+                  {draft.ingredientIds.length === 0 && (
+                    <span className="px-1 text-muted-foreground">Select ingredients</span>
+                  )}
+                  {draft.ingredientIds.map((id) => {
+                    const name = ingById.get(id)?.name ?? "Unknown";
                     return (
-                      <button
-                        key={g.id} type="button"
-                        onClick={() => patch({ ingredientIds: toggle(draft.ingredientIds, g.id) })}
-                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
-                          on ? "bg-accent/10" : "hover:bg-muted"
-                        }`}
-                      >
-                        <span className={`inline-flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded border-[1.5px] ${
-                          on ? "border-accent bg-accent text-white" : "border-border"
-                        }`}>
-                          {on && <Check className="h-2.5 w-2.5" />}
+                      <Badge key={id} variant="secondary" className="gap-1 rounded-md py-0.5 pl-2 pr-1 font-normal">
+                        {name}
+                        {/* Nested inside the trigger, so the click must not also open the popover. */}
+                        <span
+                          role="button" tabIndex={-1} aria-label={`Remove ${name}`}
+                          onPointerDown={(e) => e.preventDefault()}
+                          onClick={(e) => { e.stopPropagation(); patch({ ingredientIds: draft.ingredientIds.filter((x) => x !== id) }); }}
+                          className="rounded-sm text-muted-foreground/70 hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" />
                         </span>
-                        <span className="flex-1 text-xs">{g.name}</span>
-                        {used > 0 && <span className="text-[10px] text-muted-foreground">in {used}</span>}
-                      </button>
+                      </Badge>
                     );
                   })}
-                  {ingMatches.length === 0 && (
-                    <p className="p-2.5 text-xs text-muted-foreground">No ingredient matches.</p>
-                  )}
-                </div>
-                {canCreateIng && (
-                  <button
-                    type="button" disabled={createIngredient.isPending}
-                    onClick={() => createIngredient.mutate(q)}
-                    className="flex w-full items-center gap-2 border-t px-3 py-2 text-left text-xs text-accent-strong hover:bg-muted"
+                  <ChevronsUpDown className="ml-auto h-4 w-4 shrink-0 self-center text-muted-foreground opacity-50" />
+                </button>
+              </PopoverTrigger>
+              {/* Tailwind v4 needs the explicit var() — the bare `w-[--custom-prop]`
+                  form is v3 syntax and silently collapses the panel to its content. */}
+              <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                <Command
+                  filter={(value, search, keywords) =>
+                    [value, ...(keywords ?? [])].join(" ").toLowerCase().includes(search.toLowerCase()) ? 1 : 0
+                  }
+                >
+                  <CommandInput
+                    value={ingQuery} onValueChange={setIngQuery}
+                    placeholder="Search ingredients…"
+                  />
+                  {/* The drawer's scroll lock preventDefaults wheel/touchmove whose
+                      target sits outside it, and this popover is portalled to the
+                      body — so without this the list only scrolled by dragging its
+                      scrollbar. Stopping the events short of that document listener
+                      hands scrolling back to the list, on mouse and on touch. */}
+                  <CommandList
+                    className="max-h-56"
+                    onWheel={(e) => e.stopPropagation()}
+                    onTouchMove={(e) => e.stopPropagation()}
                   >
-                    <Plus className="h-3 w-3" /> Create “{q}”
-                  </button>
-                )}
-              </div>
-            )}
-
-            {draft.ingredientIds.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {draft.ingredientIds.map((id) => (
-                  <button
-                    key={id} type="button"
-                    onClick={() => patch({ ingredientIds: draft.ingredientIds.filter((x) => x !== id) })}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs hover:bg-muted/70"
-                  >
-                    {ingById.get(id)?.name ?? "Unknown"}
-                    <X className="h-3 w-3 text-muted-foreground" />
-                  </button>
-                ))}
-              </div>
-            )}
+                    {!canCreateIng && <CommandEmpty>No ingredient matches.</CommandEmpty>}
+                    <CommandGroup>
+                      {ingOptions.map((g) => {
+                        const on = draft.ingredientIds.includes(g.id);
+                        const used = dishes.filter((x) => x.id !== draft.id && (x.ingredients ?? []).some((r) => r.ingredientId === g.id)).length;
+                        return (
+                          <CommandItem
+                            key={g.id} value={g.name}
+                            onSelect={() => patch({ ingredientIds: toggle(draft.ingredientIds, g.id) })}
+                          >
+                            <span className={cn(
+                              "flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border",
+                              on ? "border-accent bg-accent text-white" : "border-border [&_svg]:invisible",
+                            )}>
+                              <Check className="h-3 w-3" />
+                            </span>
+                            <span className="truncate">{g.name}</span>
+                            {used > 0 && <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">in {used}</span>}
+                          </CommandItem>
+                        );
+                      })}
+                      {canCreateIng && (
+                        <CommandItem
+                          value={`__create__${q}`} keywords={[q]}
+                          disabled={createIngredient.isPending}
+                          onSelect={() => createIngredient.mutate(q)}
+                        >
+                          <Plus className="h-4 w-4 text-accent-strong" />
+                          <span className="truncate text-accent-strong">Create “{q}”</span>
+                        </CommandItem>
+                      )}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
 
             <p className={`mt-2 flex items-start gap-1.5 text-[11px] ${conflict ? "text-warning" : "text-muted-foreground"}`}>
               <Info className="mt-px h-3 w-3 shrink-0" />
@@ -527,6 +565,41 @@ export function DishDrawer({
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* A pinned dish is ordered for a fixed number of people whatever the
+              unit lead's headcount is. It is the one setting on this form that
+              changes what someone ELSE can do, so it is tinted rather than left
+              to blend into the rest of the fields. */}
+          <div className="rounded-lg border border-accent/40 bg-accent/5 px-3.5 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">Non-editable quantity</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Unit leads can’t change how many people this dish is ordered for — as a main or as a side.
+                </p>
+              </div>
+              <Switch
+                checked={draft.qtyLockOn}
+                onCheckedChange={(v) => patch({ qtyLockOn: v })}
+                aria-label="Non-editable quantity"
+              />
+            </div>
+            {draft.qtyLockOn && (
+              <div className="mt-3 flex items-center gap-2 border-t border-accent/30 pt-3">
+                <span className="shrink-0 text-[11px] text-muted-foreground">Ordered for</span>
+                <Input
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  value={draft.lockedPersons}
+                  onChange={(e) => patch({ lockedPersons: e.target.value })}
+                  aria-label="People this dish is ordered for"
+                  className="h-8 w-[86px] font-mono"
+                />
+                <span className="shrink-0 text-[11px] text-muted-foreground">people</span>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between rounded-lg border bg-card px-3.5 py-3">

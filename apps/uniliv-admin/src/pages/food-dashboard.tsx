@@ -510,13 +510,28 @@ export default function FoodDashboard() {
     setDishOverrides({});
   }, [propertyId]);
   const dishKey = (mealType: MealType, dishId: string) => `${mealType}:${dishId}`;
+  // A quantity-locked dish is pinned in Service Set: its people count is fixed
+  // for everyone, so it beats any local override. Read off the preview, which
+  // carries the flag straight from the resolved menu — and covers a dish serving
+  // as a side just as much as a main, since a side is an ordinary dish.
+  const lockedDishPersons = (mealType: MealType, dishId: string): number | null => {
+    const it = preview?.meals
+      .find((m) => m.mealType === mealType)
+      ?.items.find((d) => d.dishId === dishId);
+    return it?.isQtyLocked && it.lockedPersons != null ? it.lockedPersons : null;
+  };
   const dishPersons = (mealType: MealType, dishId: string): number =>
-    dishOverrides[dishKey(mealType, dishId)]?.persons ?? effHeadFor(mealType);
+    lockedDishPersons(mealType, dishId)
+      ?? dishOverrides[dishKey(mealType, dishId)]?.persons
+      ?? effHeadFor(mealType);
   const dishQty = (mealType: MealType, dishId: string, perResident: number, unit: string): number => {
     const raw = perResident * dishPersons(mealType, dishId);
     return isFractionalUnit(unit) ? Math.round(raw * 10) / 10 : Math.round(raw);
   };
   const setDishPersonsOverride = (mealType: MealType, dishId: string, persons: number) => {
+    // Pinned in Service Set — drop the write. Defence in depth: a pinned row
+    // renders no stepper, so getting here at all means a stale render.
+    if (lockedDishPersons(mealType, dishId) != null) return;
     setDishOverrides((q) => ({
       ...q,
       [dishKey(mealType, dishId)]: { persons: Math.max(1, persons) },
@@ -1634,7 +1649,12 @@ function OrderModePanel({
   previewMeals: Array<{
     mealType: MealType;
     label: string;
-    items: Array<{ dishId: string; dishName: string; unit: string; qtyPerResident: number; parentDishId?: string | null }>;
+    items: Array<{
+      dishId: string; dishName: string; unit: string; qtyPerResident: number;
+      parentDishId?: string | null;
+      /** Pinned in Service Set — the row renders a fixed count, not a stepper. */
+      isQtyLocked?: boolean; lockedPersons?: number | null;
+    }>;
   }>;
   selectedMeal: MealType | null;
   /** The orderable meals in tab order — drives the "Next: {meal}" CTA. */
@@ -1662,12 +1682,16 @@ function OrderModePanel({
   // unit lead can order fewer portions of the side than of the main.
   const dishRow = (
     mealType: MealType,
-    d: { dishId: string; dishName: string; unit: string; qtyPerResident: number },
+    d: {
+      dishId: string; dishName: string; unit: string; qtyPerResident: number;
+      isQtyLocked?: boolean; lockedPersons?: number | null;
+    },
     opts?: { side?: boolean },
   ) => {
     const isSide = opts?.side ?? false;
     const ppl = dishPersons(mealType, d.dishId);
     const qty = dishQty(mealType, d.dishId, d.qtyPerResident, d.unit);
+    const pinned = !!d.isQtyLocked && d.lockedPersons != null;
     return (
       <div className="flex items-center gap-2.5">
         <DishIcon name={d.dishName} meal={mealType} size={isSide ? 28 : 40} />
@@ -1694,13 +1718,27 @@ function OrderModePanel({
           </span>
         </span>
         {/* The +/- sets how many PEOPLE eat this dish — the quantity recomputes
-            live; the quantity itself is never edited. */}
-        <MiniStepper
-          value={ppl}
-          display={`${ppl} ppl`}
-          onMinus={() => setDishPersons(mealType, d.dishId, ppl - 1)}
-          onPlus={() => setDishPersons(mealType, d.dishId, ppl + 1)}
-        />
+            live; the quantity itself is never edited. A dish pinned in Service
+            Set shows the settled number instead: a disabled +/- would invite
+            tapping and explain nothing. */}
+        {pinned ? (
+          <span
+            className="flex shrink-0 items-center gap-1.5"
+            title="Fixed in Service Set — this dish is always ordered for this many people."
+          >
+            <span className="min-w-[52px] text-center font-mono text-[12.5px] font-semibold tabular-nums text-muted-foreground">
+              {ppl} ppl
+            </span>
+            <Lock className="h-[15px] w-[15px] shrink-0 text-muted-foreground" />
+          </span>
+        ) : (
+          <MiniStepper
+            value={ppl}
+            display={`${ppl} ppl`}
+            onMinus={() => setDishPersons(mealType, d.dishId, ppl - 1)}
+            onPlus={() => setDishPersons(mealType, d.dishId, ppl + 1)}
+          />
+        )}
       </div>
     );
   };

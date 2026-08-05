@@ -236,6 +236,22 @@ export const dishesTable = pgTable("dishes", {
   /** Preparation/diet tags (VEG, NON_VEG, JAIN — one or more). Replaces isVeg. */
   preparations: text("preparations").array().notNull().default(sql`'{}'::text[]`),
   photoUrl: text("photo_url"),
+  /**
+   * When set, this dish's people count is fixed at order time: the +/− stepper
+   * is read-only for everyone and `lockedPersons` is what gets ordered. Applies
+   * wherever the dish appears — as a main, or as another dish's side — because
+   * a side is an ordinary `dishes` row (see dish_side_options below).
+   *
+   * Deliberately a property of the DISH, not of a property+day: it is set once
+   * in Service Set by a FOOD_SETTINGS holder and needs no per-day state.
+   */
+  isQtyLocked: boolean("is_qty_locked").default(false).notNull(),
+  /**
+   * The pinned head count. Meaningless unless `isQtyLocked`, and normalised on
+   * write (flag off → forced to NULL) so the two can never drift and every read
+   * site can trust the boolean alone.
+   */
+  lockedPersons: integer("locked_persons"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
