@@ -20,6 +20,8 @@ import {
 } from "@workspace/db";
 import { eq, isNull, or, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
+// Shared with `seed:kitchen-managers`, the env-safe standalone entry point.
+import { seedKitchenManagers } from "./seed-kitchen-managers.js";
 
 const id = () => randomUUID();
 
@@ -700,6 +702,7 @@ async function main() {
   await seedMealWindows();
   await seedCutoffs();
   await seedKitchens();
+  await seedKitchenManagers();
   await seedBrands();
   await assignKitchenCities();
   await seedFoodSystemConfig();

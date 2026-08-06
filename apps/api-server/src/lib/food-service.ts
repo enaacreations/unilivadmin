@@ -26,6 +26,7 @@ import {
 } from "@workspace/db";
 import { and, eq, or, isNull, lte, gte, sql, inArray, desc } from "drizzle-orm";
 import type { AuthUser } from "../middlewares/auth.js";
+import { httpError } from "./authz.js";
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Admin-tunable global config (system_config). SUPER_ADMIN configures these; the
@@ -109,16 +110,21 @@ const ALWAYS_GLOBAL = new Set([
 ]);
 
 /**
- * Oversight/kitchen roles that fall back to "all properties" when no explicit
- * scope rows are configured for them (prevents lockout before scopes are set).
- * Unit Lead is intentionally excluded — it must be scoped to a property.
+ * Oversight roles that fall back to "all properties" when no explicit scope
+ * rows are configured for them (prevents lockout before scopes are set).
+ *
+ * Unit Lead is excluded — it must be scoped to a property. F&B Manager is
+ * excluded too: the model is one login per kitchen (see
+ * resolveAccessibleKitchenIds), so a manager with no scope rows is a
+ * misconfiguration, and falling open would silently hand a single kitchen's
+ * manager the whole network. Missing scope now means "sees nothing", which
+ * surfaces the mistake instead of hiding it.
  */
 const BROAD_FALLBACK = new Set([
   "ZONAL_HEAD",
   "CITY_HEAD",
   "CLUSTER_MANAGER",
   "FNB_ZONAL_HEAD",
-  "FNB_MANAGER",
   "FNB_SUPERVISOR",
 ]);
 
@@ -180,6 +186,108 @@ export function scopeOrdersCondition(propertyIds: string[] | null) {
   if (propertyIds === null) return undefined;
   if (propertyIds.length === 0) return sql`false`; // matches nothing
   return inArray(foodOrdersTable.propertyId, propertyIds);
+}
+
+/**
+ * Resolves the set of kitchen IDs a user may act on. Returns `null` for "ALL
+ * kitchens" (no restriction) — the same null-means-unrestricted convention as
+ * resolveAccessiblePropertyIds.
+ *
+ * This is the kitchen-side twin of that helper, and the two must agree: the
+ * F&B manager model is one login per kitchen, so the manager who sees a
+ * kitchen's orders is exactly the manager who may edit its menu.
+ *
+ * An explicit KITCHEN scope row counts on its own, without going through
+ * properties — a newly opened kitchen has no properties tagged to it yet, and
+ * its manager still has to be able to build the first menu.
+ */
+export async function resolveAccessibleKitchenIds(
+  user: AuthUser,
+): Promise<string[] | null> {
+  if (ALWAYS_GLOBAL.has(user.role)) return null;
+
+  const scopes = await db
+    .select()
+    .from(userScopesTable)
+    .where(eq(userScopesTable.userId, user.id));
+
+  if (scopes.some((s) => s.scopeLevel === "GLOBAL")) return null;
+
+  const ids = new Set<string>();
+  scopes
+    .filter((s) => s.scopeLevel === "KITCHEN" && s.kitchenId)
+    .forEach((s) => ids.add(s.kitchenId!));
+
+  const cityIds = scopes.filter((s) => s.scopeLevel === "CITY" && s.cityId).map((s) => s.cityId!);
+  if (cityIds.length) {
+    const rows = await db
+      .select({ id: kitchensTable.id })
+      .from(kitchensTable)
+      .where(inArray(kitchensTable.cityId, cityIds));
+    rows.forEach((k) => ids.add(k.id));
+  }
+
+  // CLUSTER is retired in favour of CITY/KITCHEN but rows may still exist.
+  const clusterIds = scopes
+    .filter((s) => s.scopeLevel === "CLUSTER" && s.clusterId)
+    .map((s) => s.clusterId!);
+  if (clusterIds.length) {
+    const rows = await db
+      .select({ id: kitchensTable.id })
+      .from(kitchensTable)
+      .where(inArray(kitchensTable.clusterId, clusterIds));
+    rows.forEach((k) => ids.add(k.id));
+  }
+
+  // Property-bound users (Unit Lead, Warden) reach the kitchen that serves them.
+  const propIds = scopes
+    .filter((s) => s.scopeLevel === "PROPERTY" && s.propertyId)
+    .map((s) => s.propertyId!);
+  if (user.propertyId) propIds.push(user.propertyId);
+  if (propIds.length) {
+    const rows = await db
+      .select({ kitchenId: propertiesTable.kitchenId })
+      .from(propertiesTable)
+      .where(inArray(propertiesTable.id, propIds));
+    rows.forEach((p) => { if (p.kitchenId) ids.add(p.kitchenId); });
+  }
+
+  if (ids.size === 0) {
+    // Mirrors resolveAccessiblePropertyIds: only fall open when there are no
+    // scope rows at all, never when rows exist but resolved to nothing.
+    if (scopes.length === 0 && !user.propertyId && BROAD_FALLBACK.has(user.role)) return null;
+    return [];
+  }
+  return [...ids];
+}
+
+/**
+ * Throws 403 unless the caller may act on `kitchenId`. A no-op for unrestricted
+ * callers.
+ *
+ * A null/absent `kitchenId` means a brand-level row that applies to EVERY
+ * kitchen, so it is refused for anyone who is kitchen-restricted — otherwise a
+ * single kitchen's manager could write a menu the whole network serves.
+ */
+export async function assertKitchenAccess(
+  user: AuthUser,
+  kitchenId: string | null | undefined,
+): Promise<void> {
+  const allowed = await resolveAccessibleKitchenIds(user);
+  if (allowed === null) return;
+  if (!kitchenId) {
+    throw httpError(403, "Pick one of your kitchens — you cannot edit the brand-wide menu");
+  }
+  if (!allowed.includes(kitchenId)) {
+    throw httpError(403, "Outside your kitchen scope");
+  }
+}
+
+/** Restricts a menu-rotation query to the caller's kitchens (undefined = all). */
+export function scopeRotationCondition(kitchenIds: string[] | null) {
+  if (kitchenIds === null) return undefined;
+  if (kitchenIds.length === 0) return sql`false`; // matches nothing
+  return inArray(foodMenuRotationTable.kitchenId, kitchenIds);
 }
 
 /** JS Date → ISO day of week (1 = Monday … 7 = Sunday). */

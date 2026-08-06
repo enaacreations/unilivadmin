@@ -9,7 +9,7 @@
  * property ids (null = all); mutations re-check the order's property against
  * that set and 403 when out of scope.
  */
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { db } from "@workspace/db";
 import {
   foodOrdersTable,
@@ -55,6 +55,9 @@ import { newId } from "../lib/id.js";
 import {
   resolveAccessiblePropertyIds,
   scopeOrdersCondition,
+  resolveAccessibleKitchenIds,
+  scopeRotationCondition,
+  assertKitchenAccess,
   resolveMenu,
   computeOrderItems,
   nextOrderNumber,
@@ -2107,7 +2110,36 @@ foodRouter.get("/menu-rotation/resolve", authenticate, async (req, res) => {
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.get("/menu-rotation", authenticate, async (req, res) => {
+/**
+ * Kitchen-scope guard for the rotation write handlers. Returns true when the
+ * request was refused, having already written the 403.
+ *
+ * Not a bare `await assertKitchenAccess(...)`: every handler in this file wraps
+ * its body in try/catch → 500, so a thrown httpError would reach the caller as
+ * "Internal server error" instead of the 403 it is.
+ */
+async function deniedKitchen(
+  req: Request,
+  res: Response,
+  kitchenId: string | null | undefined,
+): Promise<boolean> {
+  try {
+    await assertKitchenAccess(req.user!, kitchenId);
+    return false;
+  } catch (err) {
+    const e = err as { statusCode?: number; message?: string };
+    res.status(e.statusCode ?? 403).json({
+      success: false,
+      error: e.message ?? "Outside your kitchen scope",
+    });
+    return true;
+  }
+}
+
+// Gated on FOOD_SETTINGS (the Food Settings page is the only caller) and scoped
+// to the caller's kitchens — without the scope filter, omitting ?kitchenId
+// returned every kitchen's menu to anyone logged in.
+foodRouter.get("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     const kitchenId = req.query["kitchenId"] as string | undefined;
@@ -2120,7 +2152,8 @@ foodRouter.get("/menu-rotation", authenticate, async (req, res) => {
     if (rotationWeek) conds.push(eq(foodMenuRotationTable.rotationWeek, Number(rotationWeek)));
     if (dayOfWeek) conds.push(eq(foodMenuRotationTable.dayOfWeek, Number(dayOfWeek)));
     if (mealType) conds.push(eq(foodMenuRotationTable.mealType, mealType as never));
-    const where = conds.length ? and(...conds) : undefined;
+    const scope = scopeRotationCondition(await resolveAccessibleKitchenIds(req.user!));
+    const where = conds.length || scope ? and(...conds, ...(scope ? [scope] : [])) : undefined;
     const rows = await db.select({
       r: foodMenuRotationTable,
       dishName: dishesTable.name,
@@ -2158,7 +2191,9 @@ async function fetchRotationForExport(req: any): Promise<{
   if (rotationWeek) conds.push(eq(foodMenuRotationTable.rotationWeek, Number(rotationWeek)));
   if (dayOfWeek) conds.push(eq(foodMenuRotationTable.dayOfWeek, Number(dayOfWeek)));
   if (mealType) conds.push(eq(foodMenuRotationTable.mealType, mealType as never));
-  const where = conds.length ? and(...conds) : undefined;
+  // Same kitchen scoping as the list — an export must never widen it.
+  const scope = scopeRotationCondition(await resolveAccessibleKitchenIds(req.user!));
+  const where = conds.length || scope ? and(...conds, ...(scope ? [scope] : [])) : undefined;
   const rows = await db.select({
     kitchenName: kitchensTable.name, brand: foodMenuRotationTable.brand,
     rotationWeek: foodMenuRotationTable.rotationWeek, dayOfWeek: foodMenuRotationTable.dayOfWeek,
@@ -2188,7 +2223,7 @@ function rotationFilename(kitchenName: string | null, brand: string | null, ext:
 }
 
 // Export the current menu rotation (honours the same filters as the list) as CSV.
-foodRouter.get("/menu-rotation/export.csv", authenticate, async (req, res) => {
+foodRouter.get("/menu-rotation/export.csv", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
     const { rows, kitchenName, brand } = await fetchRotationForExport(req);
     const csv = toCsv({ title: "Menu Rotation", headers: ROTATION_HEADERS, rows, propertyName: kitchenName });
@@ -2199,7 +2234,7 @@ foodRouter.get("/menu-rotation/export.csv", authenticate, async (req, res) => {
 });
 
 // Export the current menu rotation as PDF.
-foodRouter.get("/menu-rotation/export.pdf", authenticate, async (req, res) => {
+foodRouter.get("/menu-rotation/export.pdf", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
     const { rows, kitchenName, brand } = await fetchRotationForExport(req);
     const pdf = await toPdf({ title: "Menu Rotation", headers: ROTATION_HEADERS, rows, propertyName: kitchenName });
@@ -2230,6 +2265,7 @@ foodRouter.post("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "crea
     if (!b.kitchenId || !b.brand || !b.mealType || !b.dishId || b.dayOfWeek == null) {
       res.status(400).json({ success: false, error: "kitchenId, brand, mealType, dishId, dayOfWeek required" }); return;
     }
+    if (await deniedKitchen(req, res, b.kitchenId)) return;
     // Single-row add: the clash is against the plate this dish is JOINING, so
     // merge the cell's existing dishes in before checking.
     const cellDishes = await db.select({ dishId: foodMenuRotationTable.dishId })
@@ -2354,6 +2390,7 @@ foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", 
     if (!b.kitchenId || !b.brand || !b.mealType || b.dayOfWeek == null || !items.length) {
       res.status(400).json({ success: false, error: "kitchenId, brand, mealType, dayOfWeek and at least one item required" }); return;
     }
+    if (await deniedKitchen(req, res, b.kitchenId)) return;
     const unpriced = await dishesMissingPortionRule(b.brand, b.mealType, collectDishIds(items));
     if (unpriced.length) {
       res.status(400).json({
@@ -2419,6 +2456,7 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
     if (!kitchenId || !brand || !mealType || rotationWeek == null || dayOfWeek == null) {
       res.status(400).json({ success: false, error: "kitchenId, brand, rotationWeek, dayOfWeek, mealType required" }); return;
     }
+    if (await deniedKitchen(req, res, kitchenId)) return;
     // Rules before rotation: with no composition rule there is nothing to build
     // the plate against, so dishes may not be added. Clearing stays allowed —
     // rotation rows that predate the rule must never become unremovable.
@@ -2576,6 +2614,10 @@ foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "e
       mealType: (u["mealType"] ?? before.mealType) as string,
       dishId: (u["dishId"] ?? before.dishId) as string,
     };
+    // Both ends: you must own the row you are editing AND the cell you move it
+    // into, or a move becomes a way to write into someone else's kitchen.
+    if (await deniedKitchen(req, res, before.kitchenId)) return;
+    if (await deniedKitchen(req, res, dest.kitchenId)) return;
     const neighbours = await db.select({ id: foodMenuRotationTable.id, dishId: foodMenuRotationTable.dishId })
       .from(foodMenuRotationTable)
       .where(and(
@@ -2598,6 +2640,10 @@ foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "e
 
 foodRouter.delete("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
   try {
+    const [before] = await db.select({ kitchenId: foodMenuRotationTable.kitchenId })
+      .from(foodMenuRotationTable).where(eq(foodMenuRotationTable.id, req.params["id"]!));
+    if (!before) { res.json({ success: true }); return; } // already gone — stay idempotent
+    if (await deniedKitchen(req, res, before.kitchenId)) return;
     await db.delete(foodMenuRotationTable).where(eq(foodMenuRotationTable.id, req.params["id"]!));
     res.json({ success: true });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
