@@ -1724,7 +1724,11 @@ function OrderModePanel({
         {pinned ? (
           <span
             className="flex shrink-0 items-center gap-1.5"
-            title="Fixed in Service Set — this dish is always ordered for this many people."
+            title={
+              ppl > 0
+                ? "Fixed in Service Set — this dish is always ordered for this many people."
+                : "Fixed in Service Set — this dish isn't ordered, and the count can't be changed here."
+            }
           >
             <span className="min-w-[52px] text-center font-mono text-[12.5px] font-semibold tabular-nums text-muted-foreground">
               {ppl} ppl

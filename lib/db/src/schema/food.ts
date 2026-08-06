@@ -248,8 +248,13 @@ export const dishesTable = pgTable("dishes", {
   isQtyLocked: boolean("is_qty_locked").default(false).notNull(),
   /**
    * The pinned head count. Meaningless unless `isQtyLocked`, and normalised on
-   * write (flag off → forced to NULL) so the two can never drift and every read
-   * site can trust the boolean alone.
+   * write (flag off → forced to NULL, flag on → forced to 0) so the two can
+   * never drift and every read site can trust the boolean alone.
+   *
+   * Service Set stopped asking for a number: locking a dish now pins it at 0 —
+   * ordered for nobody — so 0 is the only value a write produces. Rows saved
+   * before that change keep whatever positive count they hold, and keep being
+   * ordered for it, until that dish is next saved.
    */
   lockedPersons: integer("locked_persons"),
   isActive: boolean("is_active").default(true).notNull(),

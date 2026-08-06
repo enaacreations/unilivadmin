@@ -49,10 +49,9 @@ export type DishDraft = {
   brands: string[];
   preparations: string[];
   isActive: boolean;
-  /** Pin the people count at order time — see dishesTable.isQtyLocked. */
+  /** Pin the people count at order time — see dishesTable.isQtyLocked. The
+   *  count itself isn't drafted: locking pins the dish at 0. */
   qtyLockOn: boolean;
-  /** Held as a string like `portions` so the field can be emptied mid-edit. */
-  lockedPersons: string;
   ingredientIds: string[];
   sidesOn: boolean;
   sideDishIds: string[];
@@ -79,7 +78,6 @@ export const draftFromDish = (
     preparations: d?.preparations ?? ["VEG"],
     isActive: d?.isActive ?? true,
     qtyLockOn: d?.isQtyLocked ?? false,
-    lockedPersons: d?.lockedPersons != null ? String(d.lockedPersons) : "",
     ingredientIds: (d?.ingredients ?? []).map((i) => i.ingredientId),
     sidesOn: (d?.sideDishIds ?? []).length > 0,
     sideDishIds: d?.sideDishIds ?? [],
@@ -180,9 +178,9 @@ export function DishDrawer({
         preparations: d.preparations,
         isActive: d.isActive,
         isQtyLocked: d.qtyLockOn,
-        // Sent as null when the switch is off so the server clears the count and
-        // the flag/count pair can never drift apart.
-        lockedPersons: d.qtyLockOn ? Number(d.lockedPersons) : null,
+        // Null when the switch is off, 0 when it's on — the server normalises to
+        // exactly this, so the flag/count pair can never drift apart.
+        lockedPersons: d.qtyLockOn ? 0 : null,
         ingredients: d.ingredientIds.map((id) => ({
           ingredientId: id,
           quantity: prevRows.get(id)?.quantity ?? null,
@@ -247,19 +245,12 @@ export function DishDrawer({
   const filledMeals = MEAL_TYPES.filter((m) =>
     brands.some((b) => isValidPortion(portionCell(b.code, m))),
   );
-  // A pinned dish with no count would save a flag the order screen can't honour,
-  // so it blocks the save rather than silently doing nothing.
-  const lockedPersonsN = Number(draft.lockedPersons);
-  const lockNeedsCount =
-    draft.qtyLockOn && (!Number.isInteger(lockedPersonsN) || lockedPersonsN < 1);
   /** Why saving is blocked, or null when the dish is good to go. */
   const blockReason = !draft.name.trim()
     ? "Give the dish a name to save it."
     : filledMeals.length === 0
       ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
-      : lockNeedsCount
-        ? "Set how many people this dish is ordered for, or turn off non-editable quantity."
-        : null;
+      : null;
 
   // Which other dish this one can now never share a plate with — the single most
   // consequential side effect of adding an ingredient, so it is stated plainly.
@@ -567,10 +558,10 @@ export function DishDrawer({
             </div>
           </div>
 
-          {/* A pinned dish is ordered for a fixed number of people whatever the
-              unit lead's headcount is. It is the one setting on this form that
-              changes what someone ELSE can do, so it is tinted rather than left
-              to blend into the rest of the fields. */}
+          {/* A pinned dish ignores the unit lead's headcount entirely: locking it
+              saves a count of 0, so it reaches no kitchen order at all. It is the
+              one setting on this form that changes what someone ELSE can do, so
+              it is tinted rather than left to blend into the rest of the fields. */}
           <div className="rounded-lg border border-accent/40 bg-accent/5 px-3.5 py-3">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -585,21 +576,6 @@ export function DishDrawer({
                 aria-label="Non-editable quantity"
               />
             </div>
-            {draft.qtyLockOn && (
-              <div className="mt-3 flex items-center gap-2 border-t border-accent/30 pt-3">
-                <span className="shrink-0 text-[11px] text-muted-foreground">Ordered for</span>
-                <Input
-                  type="number"
-                  min={1}
-                  inputMode="numeric"
-                  value={draft.lockedPersons}
-                  onChange={(e) => patch({ lockedPersons: e.target.value })}
-                  aria-label="People this dish is ordered for"
-                  className="h-8 w-[86px] font-mono"
-                />
-                <span className="shrink-0 text-[11px] text-muted-foreground">people</span>
-              </div>
-            )}
           </div>
 
           <div className="flex items-center justify-between rounded-lg border bg-card px-3.5 py-3">

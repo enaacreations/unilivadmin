@@ -1897,21 +1897,22 @@ const zIngredient = z.object({
  * Keeps the two quantity-lock columns consistent at the ONE write path that
  * sets them, so every read site can trust `isQtyLocked` on its own:
  *   flag off → `lockedPersons` forced to NULL
- *   flag on  → a whole count of at least 1 is required
+ *   flag on  → `lockedPersons` forced to 0
  *
- * `fields: null` means the body said nothing about the lock, so an update must
- * leave both columns alone.
+ * The count is no longer caller-supplied: Service Set offers a bare toggle, and
+ * locking a dish pins it at nobody. A `lockedPersons` in the body is therefore
+ * ignored rather than rejected, so an older client that still sends a count
+ * gets the new behaviour instead of a 400.
+ *
+ * Returns null when the body said nothing about the lock, so an update leaves
+ * both columns alone.
  */
-function normalizeQtyLock(b: Record<string, any>):
-  | { ok: true; fields: { isQtyLocked: boolean; lockedPersons: number | null } | null }
-  | { ok: false; error: string } {
-  if (b.isQtyLocked === undefined && b.lockedPersons === undefined) return { ok: true, fields: null };
-  if (b.isQtyLocked !== true) return { ok: true, fields: { isQtyLocked: false, lockedPersons: null } };
-  const n = Number(b.lockedPersons);
-  if (!Number.isInteger(n) || n < 1) {
-    return { ok: false, error: "lockedPersons must be a whole number of at least 1 when isQtyLocked is set" };
-  }
-  return { ok: true, fields: { isQtyLocked: true, lockedPersons: n } };
+function normalizeQtyLock(
+  b: Record<string, any>,
+): { isQtyLocked: boolean; lockedPersons: number | null } | null {
+  if (b.isQtyLocked === undefined && b.lockedPersons === undefined) return null;
+  if (b.isQtyLocked !== true) return { isQtyLocked: false, lockedPersons: null };
+  return { isQtyLocked: true, lockedPersons: 0 };
 }
 
 const createDishSchema = z.object({
@@ -1922,9 +1923,11 @@ const createDishSchema = z.object({
   preparations: z.array(z.string().max(128)).optional(),
   photoUrl: z.string().max(2048).nullish(),
   isActive: z.boolean().optional(),
-  /** Pin this dish's people count at order time — see dishesTable.isQtyLocked. */
+  /** Pin this dish's people count at order time — see dishesTable.isQtyLocked.
+   *  normalizeQtyLock derives the count, so this only has to admit what an old
+   *  client might still send. */
   isQtyLocked: z.boolean().optional(),
-  lockedPersons: z.coerce.number().int().min(1).nullish(),
+  lockedPersons: z.coerce.number().int().min(0).nullish(),
   ingredients: z.array(zIngredient).optional(),
   /** Dishes that may be served alongside this one (see dish_side_options). */
   sideDishIds: z.array(zId).optional(),
@@ -1936,7 +1939,6 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), a
     const b = req.body || {};
     if (!b.name || !b.component || !b.unit) { res.status(400).json({ success: false, error: "name, component, unit required" }); return; }
     const lock = normalizeQtyLock(b);
-    if (!lock.ok) { res.status(400).json({ success: false, error: lock.error }); return; }
     const [row] = await db.insert(dishesTable).values({
       id: newId(),
       name: b.name,
@@ -1945,8 +1947,8 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), a
       brands: Array.isArray(b.brands) ? b.brands : [],
       preparations: sanitizePreparations(b.preparations),
       photoUrl: b.photoUrl ?? null,
-      isQtyLocked: lock.fields?.isQtyLocked ?? false,
-      lockedPersons: lock.fields?.lockedPersons ?? null,
+      isQtyLocked: lock?.isQtyLocked ?? false,
+      lockedPersons: lock?.lockedPersons ?? null,
       isActive: b.isActive !== false,
       updatedAt: new Date(),
     }).returning();
@@ -1977,9 +1979,11 @@ const updateDishSchema = z.object({
   preparations: z.array(z.string().max(128)).optional(),
   photoUrl: z.string().max(2048).nullish(),
   isActive: z.boolean().optional(),
-  /** Pin this dish's people count at order time — see dishesTable.isQtyLocked. */
+  /** Pin this dish's people count at order time — see dishesTable.isQtyLocked.
+   *  normalizeQtyLock derives the count, so this only has to admit what an old
+   *  client might still send. */
   isQtyLocked: z.boolean().optional(),
-  lockedPersons: z.coerce.number().int().min(1).nullish(),
+  lockedPersons: z.coerce.number().int().min(0).nullish(),
   ingredients: z.array(zIngredient).optional(),
   /** Dishes that may be served alongside this one (see dish_side_options). */
   sideDishIds: z.array(zId).optional(),
@@ -1990,14 +1994,13 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), 
     if (!validateBody(updateDishSchema, req, res)) return;
     const b = req.body || {};
     const lock = normalizeQtyLock(b);
-    if (!lock.ok) { res.status(400).json({ success: false, error: lock.error }); return; }
     const u: Record<string, unknown> = { updatedAt: new Date() };
     for (const k of ["name", "component", "unit", "brands", "photoUrl", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
     // The two lock columns move together and deliberately bypass the whitelist
     // above — a column left out of that array silently no-ops on every update.
-    if (lock.fields) {
-      u["isQtyLocked"] = lock.fields.isQtyLocked;
-      u["lockedPersons"] = lock.fields.lockedPersons;
+    if (lock) {
+      u["isQtyLocked"] = lock.isQtyLocked;
+      u["lockedPersons"] = lock.lockedPersons;
     }
     if (b.preparations !== undefined) u["preparations"] = sanitizePreparations(b.preparations);
     const [row] = await db.update(dishesTable).set(u as Partial<typeof dishesTable.$inferInsert>).where(eq(dishesTable.id, req.params["id"]!)).returning();

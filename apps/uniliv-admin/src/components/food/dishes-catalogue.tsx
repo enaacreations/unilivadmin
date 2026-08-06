@@ -186,11 +186,13 @@ export function DishesCatalogue() {
                     </span>
                   )}
                   {/* Surfaced on the card so a pinned dish is obvious without
-                      opening the drawer — it constrains every unit lead. */}
+                      opening the drawer — it constrains every unit lead. A
+                      positive count survives only on dishes pinned before the
+                      drawer dropped that field, so the two read differently. */}
                   {d.isQtyLocked && d.lockedPersons != null && (
                     <span className="inline-flex items-center gap-1 rounded-full border border-accent/50 bg-accent/5 px-1.5 py-px text-[10px] text-accent-strong">
                       <Lock className="h-2.5 w-2.5" />
-                      Fixed {d.lockedPersons} ppl
+                      {d.lockedPersons > 0 ? `Fixed ${d.lockedPersons} ppl` : "Non-editable"}
                     </span>
                   )}
                   <span className={`text-[10px] ${uses ? "text-muted-foreground" : "text-warning"}`}>
