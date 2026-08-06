@@ -183,11 +183,18 @@ export async function toPdf(table: ExportTable): Promise<Uint8Array> {
   drawTitle();
   drawHeader();
 
-  table.rows.forEach((row, idx) => {
+  // Layout is a per-CELL loop, so a long report is a long stretch of synchronous
+  // work on the event loop and every other request waits behind it (H11). The
+  // callers cap the row count, and this yields between pages so even a capped
+  // report never monopolises the loop for the whole render. Yielding is safe:
+  // nothing else touches `doc`, `page` or `y`, and the caller already awaits.
+  let idx = 0;
+  for (const row of table.rows) {
     if (y < margin + rowH) {
       page = doc.addPage([pageW, pageH]);
       y = pageH - margin;
       drawHeader();
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     if (idx % 2 === 0) {
       page.drawRectangle({ x: margin, y: y - rowH + 4, width: usableW, height: rowH, color: lightRow });
@@ -202,7 +209,8 @@ export async function toPdf(table: ExportTable): Promise<Uint8Array> {
       });
     });
     y -= rowH;
-  });
+    idx++;
+  }
 
   return doc.save();
 }

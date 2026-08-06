@@ -269,7 +269,10 @@ async function seedGrants() {
         eq(usersTable.isActive, true),
       ),
     );
-  const scopes = await db.select().from(userScopesTable);
+  // Live grants only. These rows are turned into audit_role_grants below, so a
+  // soft-revoked food grant (H5 revokes by flipping isActive, never by deleting)
+  // would otherwise be laundered into audit access nobody granted.
+  const scopes = await db.select().from(userScopesTable).where(eq(userScopesTable.isActive, true));
   const clusters = await db.select().from(clustersTable);
   const cities = await db.select().from(citiesTable);
 

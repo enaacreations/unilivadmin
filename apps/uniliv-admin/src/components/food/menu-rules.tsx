@@ -49,7 +49,17 @@ const countLabel = (s: CompositionSlot) =>
     : s.maxCount !== s.minCount ? `${s.minCount}–${s.maxCount}`
     : `${s.minCount}`;
 
-export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: MealType } } = {}) {
+/** `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16) — a view-only
+ *  principal reads the plate definition but cannot save, edit or generate from it. */
+export function MenuRulesEditor(
+  { canEdit = true, orgWideConfig = true, focus }:
+  { canEdit?: boolean; orgWideConfig?: boolean; focus?: { brand: string; meal: MealType } } = {},
+) {
+  // H4: the two "Variety & safety rules" switches below live in system_config
+  // under a single org-wide key, so PUT /food/system-config/menu-rules 403s any
+  // kitchen- or property-scoped caller. The composition rules on this same tab
+  // are NOT org-wide (they carry a kitchenId), so this narrows only the switches.
+  const canEditGlobalRules = canEdit && orgWideConfig;
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -73,6 +83,15 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
     queryFn: () => foodApi.lookups(),
     enabled: kitchenBound,
   });
+  // The plate DEFINITION is brand-wide (kitchenId null) — it governs what every
+  // kitchen on the brand may build — so the server refuses it for a
+  // kitchen-restricted caller (H4). `orgWideConfig` arrives from the page, which
+  // derives it from `myKitchenIds` on an always-enabled lookups query (null =
+  // unrestricted); role alone cannot tell, because an org-wide F&B manager exists
+  // and a KITCHEN-scoped KITCHEN_MANAGER / FNB_SUPERVISOR is restricted without
+  // being an FNB_MANAGER. The local `lookups` query below is a different job — it
+  // pins the GENERATE panel to an F&B manager's own kitchen — and is deliberately
+  // only enabled for that role.
 
   // The two rule switches. Org-wide, so no brand/meal in the key — flipping one
   // here changes what the server accepts for every plate.
@@ -157,6 +176,11 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
 
   const minTotal = slots.reduce((a, s) => a + s.minCount, 0);
   const addable = COURSES.filter((c) => !slots.some((s) => s.component === c));
+  // M16 — the plate is a WRITE surface. The Save button already knew that; the
+  // per-slot +/−/× buttons did not, so a view-only or kitchen-scoped principal
+  // could rearrange the plate and then find no way to save and no reason given.
+  // One gate for every control that edits the draft.
+  const canEditPlate = canEdit && orgWideConfig;
 
   if (isLoading) return <p className="py-10 text-center text-sm text-muted-foreground">Loading rules…</p>;
 
@@ -205,7 +229,15 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
       <div className="rounded-xl border bg-card px-6 py-5">
         <div className="mb-3.5 flex items-center justify-between gap-3">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">The plate</p>
-          {dirty && (
+          {/* Say why the controls are inert — for BOTH reasons they can be. */}
+          {!canEditPlate && (
+            <span className="text-xs text-muted-foreground">
+              {canEdit
+                ? "This plate applies to every kitchen on the brand — only an org-wide administrator can change it."
+                : "Read-only — you don’t have permission to change the plate."}
+            </span>
+          )}
+          {dirty && canEditPlate && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-warning">Unsaved changes</span>
               <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>Discard</Button>
@@ -241,6 +273,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
                 <Button
                   variant="outline" size="icon" className="h-6 w-6"
                   aria-label={`Fewer ${componentLabel(s.component)}`}
+                  disabled={!canEditPlate}
                   onClick={() => edit((d) => d.map((x, j) => {
                     if (j !== i) return x;
                     if (x.maxCount == null) return { ...x, minCount: Math.max(0, x.minCount - 1) };
@@ -254,6 +287,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
                 <Button
                   variant="outline" size="icon" className="h-6 w-6"
                   aria-label={`More ${componentLabel(s.component)}`}
+                  disabled={!canEditPlate}
                   onClick={() => edit((d) => d.map((x, j) => {
                     if (j !== i) return x;
                     if (x.maxCount == null) return { ...x, minCount: x.minCount + 1 };
@@ -266,6 +300,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
                 <Button
                   variant="ghost" size="icon" className="h-6 w-6"
                   aria-label={`Remove ${componentLabel(s.component)} from the plate`}
+                  disabled={!canEditPlate}
                   onClick={() => edit((d) => d.filter((_, j) => j !== i))}
                 >
                   <X className="h-2.5 w-2.5" />
@@ -280,6 +315,8 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
             </span>
           )}
 
+          {/* An "add course" box with nothing addable in it is a dead affordance. */}
+          {canEditPlate && (
           <span className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
             <Plus className="h-3.5 w-3.5" /> add course
             {addable.slice(0, 5).map((c) => (
@@ -295,6 +332,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
               </button>
             ))}
           </span>
+          )}
         </div>
 
         <p className="mt-3.5 text-xs text-muted-foreground">
@@ -324,7 +362,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
               </div>
               <Switch
                 checked={ruleSettings?.ingredientClashBlocks ?? true}
-                disabled={!ruleSettings || saveRules.isPending}
+                disabled={!canEditGlobalRules || !ruleSettings || saveRules.isPending}
                 onCheckedChange={(v) => saveRules.mutate({ ingredientClashBlocks: v })}
                 aria-label="Block plates whose dishes share an ingredient"
               />
@@ -340,7 +378,7 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
               </div>
               <Switch
                 checked={ruleSettings?.flagRepeatsWithin3Days ?? true}
-                disabled={!ruleSettings || saveRules.isPending}
+                disabled={!canEditGlobalRules || !ruleSettings || saveRules.isPending}
                 onCheckedChange={(v) => saveRules.mutate({ flagRepeatsWithin3Days: v })}
                 aria-label="Flag dishes repeated within 3 days"
               />
@@ -383,12 +421,14 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
         </div>
       </div>
 
-      <GenerateFromRule
-        brand={brand} brandName={brandName} rules={rules} dishes={dishes}
-        kitchens={kitchens} kitchenId={genKitchen} onKitchenChange={setGenKitchen}
-        canPickKitchen={!kitchenBound}
-        dirty={dirty}
-      />
+      {canEdit && (
+        <GenerateFromRule
+          brand={brand} brandName={brandName} rules={rules} dishes={dishes}
+          kitchens={kitchens} kitchenId={genKitchen} onKitchenChange={setGenKitchen}
+          canPickKitchen={!kitchenBound}
+          dirty={dirty}
+        />
+      )}
     </div>
   );
 }

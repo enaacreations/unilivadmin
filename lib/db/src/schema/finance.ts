@@ -6,6 +6,7 @@ import {
   timestamp,
   numeric,
   json,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { propertiesTable, residentsTable, ledgerEntriesTable, usersTable } from "./core";
 
@@ -92,13 +93,26 @@ export const bankStatementLinesTable = pgTable("bank_statement_lines", {
   direction: text("direction").notNull().default("CREDIT"), // CREDIT | DEBIT
   status: text("status").notNull().default("UNMATCHED"), // UNMATCHED | SUGGESTED | MATCHED | IGNORED
   matchedResidentId: text("matched_resident_id").references(() => residentsTable.id, { onDelete: "set null" }),
-  matchedLedgerEntryId: text("matched_ledger_entry_id").references(() => ledgerEntriesTable.id, { onDelete: "set null" }),
+  matchedLedgerEntryId: text("matched_ledger_entry_id"),
   matchedPaymentId: text("matched_payment_id"),
   suggestionPayload: json("suggestion_payload").$type<Record<string, unknown>>(),
   reconciledAt: timestamp("reconciled_at"),
   reconciledBy: text("reconciled_by").references(() => usersTable.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [
+  /**
+   * Named explicitly: the derived name
+   * (`bank_statement_lines_matched_ledger_entry_id_ledger_entries_id_fk`) is 65
+   * chars, so Postgres truncates it to 63 and every `push` re-emits DROP + ADD
+   * for an unchanged constraint, which destroys "push says nothing to do" as a
+   * drift signal.
+   */
+  foreignKey({
+    columns: [t.matchedLedgerEntryId],
+    foreignColumns: [ledgerEntriesTable.id],
+    name: "bank_statement_lines_matched_ledger_entry_id_fk",
+  }).onDelete("set null"),
+]);
 
 // ─── Expense management ───────────────────────────────────
 export const expenseCategoriesTable = pgTable("expense_categories", {

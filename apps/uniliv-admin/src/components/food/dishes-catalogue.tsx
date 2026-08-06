@@ -23,7 +23,13 @@ import { DishDrawer, draftFromDish, type DishDraft } from "./dish-drawer";
 import { PrepDot } from "./plate-composer";
 import { useActiveBrands, useDishCatalogue, useIngredients } from "./use-food-masters";
 
-export function DishesCatalogue() {
+/**
+ * `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16). PageGuard only
+ * checks view, and AUDIT_READONLY holds FOOD_SETTINGS:view through ALL_MODULES,
+ * so without this every create/edit/delete control here was armed for a
+ * principal whose every click 403s.
+ */
+export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canEdit?: boolean; orgWideConfig?: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const brands = useActiveBrands();
@@ -101,12 +107,14 @@ export function DishesCatalogue() {
               placeholder="Search name or ingredient" aria-label="Search dishes" className="pl-9"
             />
           </div>
-          <Button
-            className="bg-accent text-white hover:bg-accent/90"
-            onClick={() => setDraft(draftFromDish(null, brands.map((b) => b.code), []))}
-          >
-            <Plus className="mr-2 h-4 w-4" /> New dish
-          </Button>
+          {canEdit && (
+            <Button
+              className="bg-accent text-white hover:bg-accent/90"
+              onClick={() => setDraft(draftFromDish(null, brands.map((b) => b.code), []))}
+            >
+              <Plus className="mr-2 h-4 w-4" /> New dish
+            </Button>
+          )}
         </div>
       </div>
 
@@ -147,15 +155,17 @@ export function DishesCatalogue() {
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5">
-                    <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit dish" onClick={() => openEdit(d)}>
+                    <Button variant="ghost" size="icon" className="h-7 w-7" title={canEdit ? "Edit dish" : "View dish"} onClick={() => openEdit(d)}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
-                    <Button
-                      variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
-                      title="Delete dish" onClick={() => setDelTarget(d)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    {canEdit && (
+                      <Button
+                        variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                        title="Delete dish" onClick={() => setDelTarget(d)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -207,6 +217,7 @@ export function DishesCatalogue() {
 
       <DishDrawer
         open={!!draft} onOpenChange={(o) => !o && setDraft(null)}
+        canEdit={canEdit} orgWideConfig={orgWideConfig}
         draft={draft} setDraft={setDraft}
         dishes={dishes} ingredients={ingredients} brands={brands}
         onSaved={() => setDraft(null)}

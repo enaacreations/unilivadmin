@@ -454,17 +454,55 @@ async function backfillOrdersAndItems() {
   console.log(`  ✓ ${ok.rowCount} orders → kitchen, ${oi.rowCount} items → persons_count`);
 }
 
-async function migrateGeoScopes() {
-  console.log("  migrate ZONE/CLUSTER scopes → CITY/KITCHEN...");
-  // ZONE (retired) → CITY; CLUSTER (retired) → KITCHEN. Demos the new scope levels.
-  const moves: Array<[string, string]> = [
-    [`UPDATE user_scopes SET scope_level='CITY', city_id='city_bengaluru', zone_id=NULL WHERE user_id='user_food_fnbzonal' AND scope_level='ZONE'`, "fnbzonal → CITY Bengaluru"],
-    [`UPDATE user_scopes SET scope_level='CITY', city_id='city_pune', zone_id=NULL WHERE user_id='user_food_zonal' AND scope_level='ZONE'`, "zonal → CITY Pune"],
-    [`UPDATE user_scopes SET scope_level='KITCHEN', kitchen_id='kitchen_kit_blr_kmg', cluster_id=NULL WHERE user_id='user_food_cluster' AND scope_level='CLUSTER'`, "cluster → KITCHEN BLR-KMG"],
-    [`UPDATE user_scopes SET scope_level='KITCHEN', kitchen_id='kitchen_kit_del_cen', cluster_id=NULL WHERE user_id='user_food_fnbsup' AND scope_level='CLUSTER'`, "fnbsup → KITCHEN DEL-CEN"],
-  ];
-  for (const [sql] of moves) await pool.query(sql);
-  console.log(`  ✓ migrated ${moves.length} geo scopes`);
+// migrateGeoScopes() lived here. It rewrote the four seeded ZONE/CLUSTER grants
+// into CITY/KITCHEN because those two levels used to be unresolvable. C4 made
+// ZONE and CLUSTER first-class (they resolve through the geo spine
+// zones → cities → clusters → properties.cluster_id), so re-running it would
+// silently delete the only ZONE/CLUSTER coverage the seed produces and undo the
+// fix on every reseed. The grants are now seeded at their real level and kept.
+
+async function reanchorGeoScopes() {
+  console.log("  re-anchor ZONE/CITY/CLUSTER scopes to the realigned geography...");
+  // seed:food anchors these three personas at CLUSTERS[0] and its city/zone,
+  // which resolves only because its round-robin puts a property there.
+  // assignPropertyKitchensByCity() above then re-tags every property to its OWN
+  // city's cluster, which can move them all out of that zone — leaving the
+  // grants resolving zero properties and making C4 look broken when it is not.
+  // Re-point them at geography that actually holds properties. Derived from live
+  // data, never hard-coded, so it stays correct whatever the realignment did.
+  const { rows } = await pool.query<{ cluster_id: string; city_id: string; zone_id: string }>(
+    `SELECT cl.id AS cluster_id, c.id AS city_id, c.zone_id
+       FROM properties p
+       JOIN clusters cl ON cl.id = p.cluster_id
+       JOIN cities   c  ON c.id  = cl.city_id
+      WHERE c.zone_id IS NOT NULL
+      GROUP BY cl.id, c.id, c.zone_id
+      ORDER BY count(p.id) DESC, cl.id
+      LIMIT 1`,
+  );
+  const a = rows[0];
+  if (!a) {
+    console.log("  ! no property resolves through the geo spine — leaving scopes as seeded");
+    return;
+  }
+  // Only ever re-point the seed's OWN grants. Without the user filter this
+  // silently re-anchors every admin-created ZONE/CITY/CLUSTER grant on a shared
+  // dev/e2e box — which is the same silent lockout C4 exists to prevent — and
+  // can collapse two of one user's grants onto the same geo id, which
+  // uq_user_scopes_grant_* then rejects mid-seed. seed:food owns `user_food_*`;
+  // KITCHEN_MANAGERs get their CITY grant from the same place.
+  const owned = await pool.query<{ id: string }>(
+    `SELECT id FROM users WHERE id LIKE 'user_food_%' OR role = 'KITCHEN_MANAGER'`,
+  );
+  const ids = owned.rows.map((r) => r.id);
+  if (!ids.length) { console.log("  ! no seeded scope owners found — leaving scopes as seeded"); return; }
+  // `AND is_active` on all three: re-pointing a revoked grant would silently
+  // resurrect it against a different geo (same rule the raw query in seed-food.ts
+  // already applies).
+  const z = await pool.query(`UPDATE user_scopes SET zone_id=$1 WHERE scope_level='ZONE' AND is_active AND user_id = ANY($2)`, [a.zone_id, ids]);
+  const c = await pool.query(`UPDATE user_scopes SET city_id=$1 WHERE scope_level='CITY' AND is_active AND user_id = ANY($2)`, [a.city_id, ids]);
+  const cl = await pool.query(`UPDATE user_scopes SET cluster_id=$1 WHERE scope_level='CLUSTER' AND is_active AND user_id = ANY($2)`, [a.cluster_id, ids]);
+  console.log(`  ✓ ${z.rowCount} ZONE → ${a.zone_id}, ${c.rowCount} CITY → ${a.city_id}, ${cl.rowCount} CLUSTER → ${a.cluster_id}`);
 }
 
 async function seedIngredients() {
@@ -718,7 +756,7 @@ async function main() {
   await seedCompositionRules();
   await seedKitchenMenus();
   await backfillOrdersAndItems();
-  await migrateGeoScopes();
+  await reanchorGeoScopes();
   await groupDispatchTrip();
   console.log("✅ Supplemental food data seeded");
   await pool.end();

@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -114,9 +115,16 @@ function ChipGroup({
 
 export function DishDrawer({
   open, onOpenChange, draft, setDraft, dishes, ingredients, brands, onSaved,
+  canEdit = true, orgWideConfig = true,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
+  /** Mirrors the server's FOOD_SETTINGS:edit gate (M16). */
+  canEdit?: boolean;
+  /** The portion grid writes per_resident_rules, which is BRAND-WIDE — the table
+   *  has no property or kitchen column, so the server admits only an org-wide
+   *  caller (H4). A restricted one reads the portions but cannot change them. */
+  orgWideConfig?: boolean;
   draft: DishDraft | null;
   setDraft: (d: DishDraft | null) => void;
   dishes: Dish[];
@@ -130,7 +138,11 @@ export function DishDrawer({
   const [ingQuery, setIngQuery] = React.useState("");
   const [sideSearch, setSideSearch] = React.useState("");
 
-  React.useEffect(() => { if (open) { setIngOpen(false); setIngQuery(""); setSideSearch(""); } }, [open]);
+  const [dropConfirmOpen, setDropConfirmOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) { setIngOpen(false); setIngQuery(""); setSideSearch(""); setDropConfirmOpen(false); }
+  }, [open]);
 
   const patch = (p: Partial<DishDraft>) => draft && setDraft({ ...draft, ...p });
   const ingById = React.useMemo(() => new Map(ingredients.map((i) => [i.id, i])), [ingredients]);
@@ -145,6 +157,12 @@ export function DishDrawer({
 
   /** Creates / updates / deletes the per-resident rules to match the grid. */
   const syncPortions = async (dishId: string, d: DishDraft) => {
+    // Invariant: never fire a write the caller is not allowed to make. Every
+    // /food/rules write is refused for a scope-restricted caller
+    // (deniedGlobalConfig), and the grid is read-only for them — but the unit
+    // lives on the DISH, so changing it would still re-write every rule's unit
+    // and 403 an otherwise-valid dish save. Skip the whole sync instead.
+    if (!orgWideConfig) return;
     const existing = new Map(savedRules.map((r) => [`${r.brand}|${r.mealType}`, r]));
     const jobs: Promise<unknown>[] = [];
     for (const b of brands) {
@@ -188,11 +206,20 @@ export function DishDrawer({
         })),
         sideDishIds: d.sidesOn ? d.sideDishIds : [],
       };
-      const saved = d.id
-        ? await foodApi.updateDish(d.id, body)
-        : { dish: await foodApi.createDish(body), rotationSidesRemoved: 0 };
-      await syncPortions(saved.dish.id, d);
-      return saved;
+      // Portions FIRST for an existing dish. DELETE /rules/:id now 409s when the
+      // dish is still on a live rotation slot (M12), and with updateDish running
+      // first that refusal arrived AFTER the name/unit/ingredient edits had
+      // committed — "Could not save the dish" for a dish that was in fact saved,
+      // with the drawer still showing a draft the server no longer agreed with.
+      // Nothing is applied before the refusable step now. A NEW dish has no id
+      // and no rules to drop, so it keeps the create-then-sync order.
+      if (d.id) {
+        await syncPortions(d.id, d);
+        return await foodApi.updateDish(d.id, body);
+      }
+      const dish = await foodApi.createDish(body);
+      await syncPortions(dish.id, d);
+      return { dish, rotationSidesRemoved: 0 };
     },
     onSuccess: ({ dish, rotationSidesRemoved }) => {
       toast({ title: draft?.id ? `${dish.name} updated` : `${dish.name} added` });
@@ -209,7 +236,15 @@ export function DishDrawer({
       qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
       onSaved();
     },
-    onError: (e: any) => toast({ title: e?.message || "Could not save the dish", variant: "destructive" }),
+    onError: (e: any) => toast({
+      title: e?.message || "Could not save the dish",
+      // The portion-rule delete now reports where the dish is still planned;
+      // that explanation is the whole point of the guard, so surface it.
+      description: typeof e?.details === "string" ? e.details
+        : Array.isArray(e?.details) ? e.details.join(" · ")
+        : undefined,
+      variant: "destructive",
+    }),
   });
 
   const createIngredient = useMutation({
@@ -245,12 +280,35 @@ export function DishDrawer({
   const filledMeals = MEAL_TYPES.filter((m) =>
     brands.some((b) => isValidPortion(portionCell(b.code, m))),
   );
+  // Clearing a portion cell DELETES that rule, and computeOrderItems then skips
+  // the dish silently: the menu keeps advertising it while every future order
+  // drops it. That is far too consequential to happen as a side effect of
+  // blanking a field, so the drops are named and confirmed before the save
+  // runs. Mirrors syncPortions' own rule exactly — blank cell, existing rule.
+  // syncPortions is a no-op for a restricted caller, so nothing can be dropped
+  // — asking them to confirm a drop that will not happen would be a lie.
+  const droppedRules = orgWideConfig ? savedRules.filter(
+    (r) => brands.some((b) => b.code === r.brand) && !portionCell(r.brand, r.mealType as MealType),
+  ) : [];
+  const brandName = (code: string) => brands.find((b) => b.code === code)?.name ?? code;
+  const dropSummary = droppedRules
+    .map((r) => `${brandName(r.brand)} ${MEAL_SHORT[r.mealType as MealType] ?? r.mealType}`)
+    .join(", ");
+
   /** Why saving is blocked, or null when the dish is good to go. */
   const blockReason = !draft.name.trim()
     ? "Give the dish a name to save it."
-    : filledMeals.length === 0
+    : orgWideConfig && filledMeals.length === 0
       ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
       : null;
+  // B3 — the portion requirement may only be asked of a caller who can satisfy
+  // it. Dishes themselves carry no scope (POST /dishes is FOOD_SETTINGS:create,
+  // unscoped), but per_resident_rules is brand-wide and refused for a
+  // kitchen-scoped caller, whose grid is therefore disabled. Gating Save on a
+  // filled grid left every kitchen-scoped F&B manager — 11 of 12 in the live DB
+  // — unable to create ANY dish. So they save the dish and an org-wide
+  // administrator supplies the portion; state that plainly rather than block.
+  const portionPending = !orgWideConfig && filledMeals.length === 0;
 
   // Which other dish this one can now never share a plate with — the single most
   // consequential side effect of adding an ingredient, so it is stated plainly.
@@ -497,7 +555,8 @@ export function DishDrawer({
                 Portion per resident{" "}
                 <span className="normal-case tracking-normal">· in {draft.unit.toLowerCase()}</span>
               </p>
-              {brands.length === 2 && (
+              {/* Writes the grid, so it follows exactly the same gate as the cells. */}
+              {canEdit && orgWideConfig && brands.length === 2 && (
                 <button
                   type="button"
                   onClick={() => patch({
@@ -511,7 +570,9 @@ export function DishDrawer({
             </div>
             <p className="mb-2 text-[11px] text-muted-foreground">
               Leave blank if the dish isn’t served at that meal for that brand.
-              Fill at least one meal — a dish with no portion can’t be ordered.
+              {orgWideConfig
+                ? " Fill at least one meal — a dish with no portion can’t be ordered."
+                : " Portions apply to every property on the brand, so only an org-wide administrator can set them."}
             </p>
             <div className="overflow-hidden rounded-lg border bg-card">
               <div
@@ -543,6 +604,7 @@ export function DishDrawer({
                         },
                       })}
                       placeholder="—" inputMode="decimal"
+                      disabled={!canEdit || !orgWideConfig}
                       aria-label={`${b.name} ${MEAL_LABEL[m]} portion`}
                       // Flagged, not blocked: syncPortions silently skips a cell
                       // that isn't a positive number, so say so at the cell.
@@ -594,17 +656,46 @@ export function DishDrawer({
           {blockReason && (
             <p className="mb-2 text-[11px] text-muted-foreground">{blockReason}</p>
           )}
+          {/* Saves fine, but the dish is inert until the portion exists — and
+              nobody would guess that from a successful save. */}
+          {canEdit && !blockReason && portionPending && (
+            <p className="mb-2 text-[11px] text-warning">
+              This dish will be saved without a portion, so it can’t be ordered or added to the
+              rotation yet — ask an org-wide administrator to set its portion per resident.
+            </p>
+          )}
           <div className="flex items-center gap-2">
-            <Button
-              className="flex-1 bg-accent text-white hover:bg-accent/90"
-              disabled={!!blockReason || save.isPending}
-              onClick={() => save.mutate()}
-            >
-              {save.isPending ? "Saving…" : "Save dish"}
+            {canEdit && (
+              <Button
+                className="flex-1 bg-accent text-white hover:bg-accent/90"
+                disabled={!!blockReason || save.isPending}
+                onClick={() => (droppedRules.length ? setDropConfirmOpen(true) : save.mutate())}
+              >
+                {save.isPending ? "Saving…" : "Save dish"}
+              </Button>
+            )}
+            <Button variant="outline" className={canEdit ? "" : "flex-1"} onClick={() => onOpenChange(false)}>
+              {canEdit ? "Cancel" : "Close"}
             </Button>
-            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           </div>
         </div>
+
+        <ConfirmDialog
+          open={dropConfirmOpen}
+          onOpenChange={setDropConfirmOpen}
+          title={`Stop serving ${draft.name.trim() || "this dish"} at ${droppedRules.length} slot${droppedRules.length === 1 ? "" : "s"}?`}
+          description={
+            `You cleared the portion for ${dropSummary}. Saving removes ${draft.name.trim() || "this dish"} `
+            + "from every future order for those slots — the menu will still list it, but the kitchen "
+            + "will never be told to cook it. Re-enter a portion instead if you only meant to change the amount. "
+            // The server refuses this outright while the dish is still planned,
+            // so say so rather than let the user confirm something that 409s.
+            + "If it is still on a menu rotation slot the save will be refused — take it off the rotation first."
+          }
+          confirmLabel="Stop serving it"
+          isConfirming={save.isPending}
+          onConfirm={() => { setDropConfirmOpen(false); save.mutate(); }}
+        />
       </SheetContent>
     </Sheet>
   );

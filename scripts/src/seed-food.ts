@@ -291,9 +291,18 @@ const FOOD_USERS: SeedUser[] = [
  * the seed is a separate package and cannot import from api-server).
  * ──────────────────────────────────────────────────────────────────────────── */
 
-/** JS Date → ISO day of week (1 = Monday … 7 = Sunday). */
+/** IST is a fixed offset; no DST (mirrors api-server lib/tz.ts). */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60000;
+
+/**
+ * Instant → ISO day of week of its IST date (1 = Monday … 7 = Sunday).
+ *
+ * Read in IST, not through the host getters, for the same reason the server does:
+ * the day a plate belongs to must not change with the seeding machine's TZ, or the
+ * seeded orders carry dishes the server would never resolve for that service date.
+ */
 function isoDayOfWeek(date: Date): number {
-  const d = date.getDay();
+  const d = new Date(date.getTime() + IST_OFFSET_MS).getUTCDay();
   return d === 0 ? 7 : d;
 }
 
@@ -328,6 +337,54 @@ function computeItemsForOrder(
       orderedQty: Math.round(quantity * rule.qty * 1000) / 1000,
     };
   });
+}
+
+/**
+ * Fail the seed when any scoped user resolves to zero properties.
+ *
+ * Replicates the server's expansion (food-service.ts resolveAccessiblePropertyIds)
+ * in one SQL statement across BOTH live spines: zone → city → cluster →
+ * properties.cluster_id, and city → kitchen → properties.kitchen_id. A grant
+ * that expands to nothing produces 200 OK with an empty array at runtime — the
+ * silent lockout that put four seeded personas out of the module for a release
+ * without anyone noticing. The seed is the only place it can be caught.
+ *
+ * LEFT JOIN on user_scopes, not JOIN: a user with NO scope rows at all is the
+ * biggest lockout there is, and an inner join drops that user from the result
+ * instead of reporting them. `users.property_id` is counted for the same reason
+ * — the resolver seeds its set with it before reading any grant, so ignoring it
+ * here would fail a property-bound user who is in fact fine. (The deploy-side
+ * twin of this check is scripts/src/backfill-user-scopes.ts.)
+ */
+async function assertScopesResolve(userIds: string[]): Promise<void> {
+  if (!userIds.length) return;
+  const { rows } = await pool.query<{ email: string; role: string; n: string }>(
+    `SELECT u.email, u.role, count(p.id) AS n
+       FROM users u
+       LEFT JOIN user_scopes s ON s.user_id = u.id AND s.is_active
+       LEFT JOIN properties p ON
+            (p.id = u.property_id)
+         OR (s.scope_level = 'GLOBAL')
+         OR (s.scope_level = 'PROPERTY' AND p.id = s.property_id)
+         OR (s.scope_level = 'KITCHEN'  AND p.kitchen_id = s.kitchen_id)
+         OR (s.scope_level = 'CLUSTER'  AND p.cluster_id = s.cluster_id)
+         OR (s.scope_level = 'CITY'     AND (
+                p.kitchen_id IN (SELECT k.id FROM kitchens k WHERE k.city_id = s.city_id)
+             OR p.cluster_id IN (SELECT c.id FROM clusters c WHERE c.city_id = s.city_id)))
+         OR (s.scope_level = 'ZONE'     AND (
+                p.kitchen_id IN (SELECT k.id FROM kitchens k JOIN cities ci ON ci.id = k.city_id WHERE ci.zone_id = s.zone_id)
+             OR p.cluster_id IN (SELECT c.id FROM clusters c JOIN cities ci ON ci.id = c.city_id WHERE ci.zone_id = s.zone_id)))
+      WHERE u.id = ANY($1)
+      GROUP BY u.id, u.email, u.role
+     HAVING count(p.id) = 0`,
+    [userIds],
+  );
+  if (rows.length) {
+    console.error("\n❌ these seeded users resolve to ZERO properties — they would see nothing:");
+    for (const r of rows) console.error(`     ${r.email} (${r.role})`);
+    throw new Error("seeded scope grants do not resolve — fix the geo anchors above");
+  }
+  console.log(`  ✓ every seeded grant resolves to at least one property`);
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -400,9 +457,34 @@ async function main() {
   const scopeRows: ScopeRow[] = [];
   const addScope = (row: Omit<ScopeRow, "id">) => scopeRows.push({ id: id(), ...row });
 
-  const firstZone = ZONES[0]!.id;       // zone_north
-  const firstCity = CITIES[0]!.id;      // city_delhi
-  const firstCluster = CLUSTERS[0]!.id; // cluster_delhi_central
+  // Scope anchors are derived from the cluster the FIRST property was just given
+  // by the round-robin above (i = 0 → CLUSTERS[0]), never hard-coded independently
+  // of it. The resolver expands a grant down the geo spine (zone → city → cluster →
+  // property), so an anchor with no property beneath it seeds a head who logs in
+  // and sees nothing — walking up from a real property is what keeps every seeded
+  // ZONE/CITY/CLUSTER persona non-empty whatever the main seed created.
+  const anchorCluster = CLUSTERS[0]!;
+  const anchorCity = CITIES.find((c) => c.id === anchorCluster.cityId)!;
+  const firstZone = anchorCity.zoneId;    // zone_north
+  const firstCity = anchorCity.id;        // city_delhi
+  const firstCluster = anchorCluster.id;  // cluster_delhi_central
+
+  // B3 — the F&B manager persona is KITCHEN-scoped, matching production (11 of
+  // the 12 live FNB_MANAGER accounts are). Seeding it GLOBAL made every local
+  // walkthrough take the org-wide path, so the org-wide-only config surfaces
+  // (dish portions, meal toggles, the two menu-rule switches — all brand-wide
+  // by construction) were never once exercised as a scoped caller sees them.
+  // The anchor is the kitchen with the MOST properties behind it, for the same
+  // reason the geo anchors above walk up from a real property: a KITCHEN grant
+  // resolves through properties.kitchen_id, so a kitchen with none seeds a
+  // manager who logs in and sees nothing (and trips assertScopesResolve).
+  // Kitchens come from seed:food-extra, so fall back to GLOBAL when there is
+  // none yet rather than seeding a manager who resolves to nothing.
+  const { rows: anchorKitchenRows } = await pool.query<{ id: string }>(
+    `SELECT k.id FROM kitchens k JOIN properties p ON p.kitchen_id = k.id
+      WHERE k.is_active GROUP BY k.id ORDER BY count(p.id) DESC, k.id LIMIT 1`,
+  );
+  const anchorKitchenId = anchorKitchenRows[0]?.id ?? null;
 
   for (const u of FOOD_USERS) {
     switch (u.role) {
@@ -431,8 +513,9 @@ async function main() {
         addScope({ userId: u.id, scopeLevel: "ZONE", zoneId: firstZone });
         break;
       case "FNB_MANAGER":
-        // F&B manager — global kitchen oversight.
-        addScope({ userId: u.id, scopeLevel: "GLOBAL" });
+        // F&B manager — one manager, one kitchen (see the B3 note above).
+        if (anchorKitchenId) addScope({ userId: u.id, scopeLevel: "KITCHEN", kitchenId: anchorKitchenId });
+        else addScope({ userId: u.id, scopeLevel: "GLOBAL" });
         break;
       case "FNB_SUPERVISOR":
         // F&B supervisor — bound to a single cluster's kitchen.
@@ -442,6 +525,31 @@ async function main() {
   }
   await db.insert(userScopesTable).values(scopeRows);
   console.log(`  ✓ ${scopeRows.length} user scopes`);
+
+  // 4b. KITCHEN_MANAGER scopes ──────────────────────────────────────────────
+  // Kitchen managers are created by the base `seed` (seed.ts), not here, so they
+  // are not in FOOD_USERS — but they are scope-resolved like every other food
+  // role, and nothing falls open any more. Without a grant the whole Kitchen &
+  // Menu module returns zero rows and the Menu Planning property picker never
+  // populates, which reads exactly like "no data" (the C4e silent lockout).
+  // Grant the anchor CITY: that is the level whose expansion is verified below.
+  const kitchenManagers = await db
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(eq(usersTable.role, "KITCHEN_MANAGER"));
+  if (kitchenManagers.length) {
+    await db.delete(userScopesTable).where(inArray(userScopesTable.userId, kitchenManagers.map((u) => u.id)));
+    await db.insert(userScopesTable).values(
+      kitchenManagers.map((u) => ({ id: id(), userId: u.id, scopeLevel: "CITY" as const, cityId: firstCity })),
+    );
+    console.log(`  ✓ ${kitchenManagers.length} kitchen-manager scope(s) → city ${firstCity}`);
+  }
+
+  // 4c. Assert every seeded grant resolves to at least one property ─────────
+  // A grant that expands to nothing is indistinguishable from a deliberate
+  // lockout at runtime — 200 OK, zero rows, no error. Catching it here is the
+  // only place the seed can tell the difference.
+  await assertScopesResolve([...seededUserIds, ...kitchenManagers.map((u) => u.id)]);
 
   // 5. Dishes (upsert by stable id) ─────────────────────────────────────────
   await db

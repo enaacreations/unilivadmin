@@ -5,7 +5,10 @@ import {
   numeric,
   boolean,
   timestamp,
+  uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { residentsTable, propertiesTable } from "./core";
 
 export const walletTransactionTypeEnum = pgEnum("wallet_transaction_type", [
@@ -44,6 +47,11 @@ export const walletTransactionsTable = pgTable("wallet_transactions", {
   balanceAfter: numeric("balance_after").notNull(),
   description: text("description").notNull(),
   referenceId: text("reference_id"),
+  /**
+   * Namespace for `referenceId` (e.g. RAZORPAY_PAYMENT). Without it the webhook
+   * replay guard compares bare provider ids across event types and two ids for
+   * one settlement cannot dedupe against each other.
+   */
   referenceType: text("reference_type"),
   reversalOf: text("reversal_of"),
   recordedBy: text("recorded_by").notNull(),
@@ -52,7 +60,29 @@ export const walletTransactionsTable = pgTable("wallet_transactions", {
     onDelete: "restrict",
   }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => ({
+  /**
+   * The webhook idempotency guard, enforced by the database rather than by a
+   * SELECT-then-INSERT that two concurrent Razorpay deliveries both pass. Partial
+   * because most ledger rows (manual top-ups, adjustments) carry no reference.
+   * Paired on referenceType being NULL so the untyped legacy idempotency keys
+   * (wallet.ts topup/adjust) are covered too — Postgres treats NULLs as distinct,
+   * so a single two-column index would let those through.
+   */
+  referenceUniq: uniqueIndex("uq_wallet_transactions_reference")
+    .on(t.referenceType, t.referenceId)
+    .where(sql`reference_id is not null and reference_type is not null`),
+  referenceUniqUntyped: uniqueIndex("uq_wallet_transactions_reference_untyped")
+    .on(t.referenceId)
+    .where(sql`reference_id is not null and reference_type is null`),
+  /**
+   * Every read of this table is per-wallet: the history endpoint, and the
+   * per-link accounting SUM the top-up webhook now runs on EVERY Razorpay
+   * delivery (webhooks.ts linkAccounting, which aggregates over wallet_id +
+   * notes). Both seq-scanned the whole ledger without this.
+   */
+  walletNotesIdx: index("wallet_transactions_wallet_id_notes_idx").on(t.walletId, t.notes),
+}));
 
 export const walletConfigTable = pgTable("wallet_config", {
   id: text("id").primaryKey(),

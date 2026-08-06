@@ -22,7 +22,9 @@ const ING_UNITS = ["G", "KG", "ML", "LITRE", "PCS", "PLATE", "SERVING"];
 
 type IngDraft = { id: string | null; name: string; unit: string; isActive: boolean };
 
-export function IngredientsGrid() {
+/** `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16) — see
+ *  DishesCatalogue for why a view-only principal reaches this tab at all. */
+export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { data: ingredients = [], isLoading } = useIngredients();
@@ -85,12 +87,14 @@ export function IngredientsGrid() {
               placeholder="Search ingredients" aria-label="Search ingredients" className="pl-9"
             />
           </div>
-          <Button
-            className="bg-accent text-white hover:bg-accent/90"
-            onClick={() => setDraft({ id: null, name: "", unit: "KG", isActive: true })}
-          >
-            <Plus className="mr-2 h-4 w-4" /> Add ingredient
-          </Button>
+          {canEdit && (
+            <Button
+              className="bg-accent text-white hover:bg-accent/90"
+              onClick={() => setDraft({ id: null, name: "", unit: "KG", isActive: true })}
+            >
+              <Plus className="mr-2 h-4 w-4" /> Add ingredient
+            </Button>
+          )}
         </div>
       </div>
 
@@ -116,20 +120,22 @@ export function IngredientsGrid() {
                 <span className={`whitespace-nowrap text-[11px] ${uses ? "text-muted-foreground" : "text-warning"}`}>
                   {uses ? `in ${uses} dish${uses === 1 ? "" : "es"}` : "unused"}
                 </span>
-                <div className="flex shrink-0 items-center gap-0.5">
-                  <Button
-                    variant="ghost" size="icon" className="h-7 w-7" title="Edit ingredient"
-                    onClick={() => setDraft({ id: r.id, name: r.name, unit: r.unit, isActive: r.isActive })}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
-                    title="Delete ingredient" onClick={() => setDelTarget(r)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                {canEdit && (
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <Button
+                      variant="ghost" size="icon" className="h-7 w-7" title="Edit ingredient"
+                      onClick={() => setDraft({ id: r.id, name: r.name, unit: r.unit, isActive: r.isActive })}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                      title="Delete ingredient" onClick={() => setDelTarget(r)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
               </div>
             );
           })}

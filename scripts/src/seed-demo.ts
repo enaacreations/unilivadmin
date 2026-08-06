@@ -544,6 +544,9 @@ async function main() {
       paymentRows.push({
         id: `demo_pay_${res.id}_${ym}`,
         residentId: res.id,
+        // Property the money was collected AT (M10) — snapshotted at payment
+        // time, so a later transfer cannot re-attribute the collection.
+        propertyId: res.propId,
         amount: String(res.rent),
         mode: PAY_MODES[(ledgerRows.length) % PAY_MODES.length]!,
         status: payStatus,

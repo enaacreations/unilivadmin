@@ -245,15 +245,15 @@ and the Food Overview place-order UI.
 ### D2. Waste `POST /orders/:id/waste` (FOOD_WASTE_TRACKING:edit)
 | ID | Title | Steps | Expected |
 |---|---|---|---|
-| D2-01 | Record waste after window | DELIVERED order past `wasteEditableUntil`, `items:[{itemId, wastedQty}]` | `200`; item `wastedQty` set; "Waste recorded" event |
-| D2-02 | Waste before window opens | now < `wasteEditableUntil` | `422 "Waste can be logged once the meal is over — the window hasn't opened yet"` |
+| D2-01 | Record waste inside the window | DELIVERED order, now ≤ `wasteEditableUntil`, `items:[{itemId, wastedQty}]` | `200`; item `wastedQty` set; "Waste recorded" event |
+| D2-02 | Waste after the window closes | now > `wasteEditableUntil` (the CLOSING bound = deliveredAt + window) | `422 "The wastage window for this order has closed — it can only be logged within the hour after delivery"` |
 | D2-03 | Waste on non-DELIVERED | | `422 "Waste can only be recorded for DELIVERED orders"` |
-| D2-04 | Waste exceeds cap | `wastedQty > receivedQty` (cap = receivedQty, or orderedQty if null) | `400 "wastedQty for <id> cannot exceed received (<cap>)"` |
+| D2-04 | Waste exceeds cap | `wastedQty > receivedQty + additional food` (cap = receivedQty, or orderedQty if null, plus any Additional Food for that dish) | `400 "wastedQty for <id> cannot exceed what was received, including additional food (<cap>)"` |
 | D2-05 | Negative waste | `wastedQty=-1` | `400` (same message; `<0` rejected) |
 | D2-06 | Zero waste | `wastedQty=0` | `200`; UI "Zero waste recorded" |
 | D2-07 | Unknown item | bad itemId | `400 "Unknown itemId <id>"` |
 | D2-08 | Waste window config | change `food_waste_edit_window_minutes` via system-config, confirm delivery | `wasteEditableUntil` reflects new window |
-| D2-09 | Waste-pending surfacing | DELIVERED order past window with a null `wastedQty` item | Appears in `GET /waste-pending` and dashboard pendingActions |
+| D2-09 | Waste-pending surfacing | DELIVERED order still INSIDE the window with a null `wastedQty` item | Appears in `GET /waste-pending` and dashboard pendingActions; drops off once `wasteEditableUntil` passes (nothing can be logged after) |
 
 ---
 

@@ -22,6 +22,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { PropertyOptions } from "@/components/property-options";
+import { FoodQueryError } from "@/components/food/query-error";
 import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command";
@@ -44,10 +45,11 @@ import { useConfetti } from "@/components/ui/confetti";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import {
-  foodApi, foodKeys, orderPeople, MEAL_TYPES, BRANDS, MEAL_LABEL, ORDER_STATUS_PILL, orderStatusPill, shortMeal,
+  foodApi, foodKeys, orderPeople, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, orderStatusPill, shortMeal,
   type FoodOrder, type FoodBrand, type MealType,
   type Dispatch, type DispatchStatus, type DispatchDetailOrder,
 } from "@/lib/food-api";
+import { useActiveBrands } from "@/components/food/use-food-masters";
 
 const ALL = "ALL";
 
@@ -65,10 +67,21 @@ type QueueOrder = FoodOrder & {
 const DISPATCH_TRANSITIONS: Record<string, DispatchStatus[]> = {
   LOADING: ["IN_TRANSIT", "CANCELLED" as DispatchStatus],
   IN_TRANSIT: ["DELIVERED", "PARTIAL", "CANCELLED" as DispatchStatus],
-  PARTIAL: ["DELIVERED", "IN_TRANSIT"],
+  // Keep in lockstep with DISPATCH_TRANSITIONS in lib/db/src/schema/food.ts:
+  // PARTIAL is a running trip and cancel is the only way to return its
+  // still-undelivered meals to the kitchen. Omitting CANCELLED here hid the
+  // button on exactly the trips that need it.
+  PARTIAL: ["DELIVERED", "IN_TRANSIT", "CANCELLED" as DispatchStatus],
   DELIVERED: [],
   CANCELLED: [],
 };
+
+/**
+ * Trip statuses that hold a vehicle. Mirrors ACTIVE_TRIP_STATUSES on the server
+ * (food-ops.ts): a PARTIAL trip is still out with undelivered meals aboard, so
+ * its van is still busy and the trip is still active.
+ */
+const ACTIVE_TRIP_STATUSES: readonly string[] = ["LOADING", "IN_TRANSIT", "PARTIAL"];
 
 const DISPATCH_STATUS_META: Record<
   string,
@@ -108,8 +121,18 @@ export default function FoodDispatch() {
   const { propertyId: storeProperty, setPropertyId: setGlobalProperty } = useAppStore();
   // F&B managers run one kitchen — the trip drawer's kitchen field (an override
   // on top of the van's auto-derived kitchen) is hidden for them.
-  const { role } = usePermissions();
+  const { role, can } = usePermissions();
   const kitchenBound = role === "FNB_MANAGER";
+  // Every trip mutation here is FOOD_DISPATCH edit server-side (food-ops.ts
+  // POST/PATCH /dispatches). PageGuard only checks view, so leadership and
+  // audit roles reach this page read-only — mirror the server and show them a
+  // board instead of a fully-armed trip builder where each action 403s.
+  const canDispatch = can("FOOD_DISPATCH", "edit");
+  // Certifying RECEIPT is a different grant from running the trip (C3): the FNB
+  // roles that live on this page hold FOOD_DISPATCH:VE with
+  // FOOD_CONFIRM_DELIVERY:VIEW, so marking a stop delivered 403s for them. Gate
+  // the control rather than let them click it and be told no.
+  const canCertify = can("FOOD_CONFIRM_DELIVERY", "edit");
 
   const [tab, setTab] = React.useState<"queue" | "transit" | "trips">("queue");
   const [propertyId, setPropertyId] = React.useState<string>(storeProperty ?? ALL);
@@ -121,6 +144,10 @@ export default function FoodDispatch() {
     setGlobalProperty(v === ALL ? null : v);
   };
   const [brand, setBrand] = React.useState<FoodBrand | typeof ALL>(ALL);
+  // L10 — the live brand master, not the hardcoded two-brand fallback: a brand
+  // added in the Brands tab was absent from this filter, so its trips could not
+  // be isolated at all.
+  const brandOptions = useActiveBrands();
   const [meal, setMeal] = React.useState<MealType | typeof ALL>(ALL);
   const [date, setDate] = React.useState("");
 
@@ -167,8 +194,8 @@ export default function FoodDispatch() {
     queryFn: () => foodApi.listKitchens(),
   });
 
-  // ── Vehicles already on an active (LOADING/IN_TRANSIT) trip — to disable in
-  //    the vehicle picker. Refetch alongside trip mutations via invalidation.
+  // ── Vehicles already on an ACTIVE trip — to disable in the vehicle picker.
+  //    Refetch alongside trip mutations via invalidation.
   const { data: activeVehicleIds = [] } = useQuery({
     queryKey: foodKeys.activeVehicles(),
     queryFn: () => foodApi.getActiveVehicles(),
@@ -187,28 +214,35 @@ export default function FoodDispatch() {
     serviceDate: date || undefined,
   };
 
-  const acceptedParams = { ...filterParams, status: "ACCEPTED", limit: 100 };
-  const dispatchedParams = { ...filterParams, status: "DISPATCHED", limit: 100 };
+  const acceptedParams = { ...filterParams, status: "ACCEPTED" };
+  const dispatchedParams = { ...filterParams, status: "DISPATCHED" };
 
-  const { data: acceptedRes, isLoading: loadingAccepted } = useQuery({
+  // The server clamps `limit` to 100, so page the whole set — "Load all" below
+  // fills the van from this array and must not silently stop at one page.
+  const {
+    data: acceptedRes, isLoading: loadingAccepted, isError: queueError, refetch: refetchQueue,
+  } = useQuery({
     queryKey: foodKeys.orders(acceptedParams),
-    queryFn: () => foodApi.listOrders(acceptedParams),
+    queryFn: () => foodApi.listAllOrders(acceptedParams),
   });
 
   // Dispatchable board = ACCEPTED only. Once the kitchen accepts an order it's
   // ready to load — the server enforces ACCEPTED → DISPATCHED, so PLACED orders
   // (not yet accepted) don't belong on the queue.
   const dispatchable = React.useMemo<QueueOrder[]>(
-    () => acceptedRes?.data ?? [],
+    () => acceptedRes?.orders ?? [],
     [acceptedRes],
   );
   const loadingQueue = loadingAccepted;
+  /** More ready orders exist than the paging bound fetched. */
+  const queueTruncated = acceptedRes?.truncated ?? false;
+  const queueTotal = acceptedRes?.total ?? dispatchable.length;
 
   const { data: dispatchedRes, isLoading: loadingDispatched } = useQuery({
     queryKey: foodKeys.orders(dispatchedParams),
-    queryFn: () => foodApi.listOrders(dispatchedParams),
+    queryFn: () => foodApi.listAllOrders(dispatchedParams),
   });
-  const dispatched = dispatchedRes?.data ?? [];
+  const dispatched = dispatchedRes?.orders ?? [];
 
   // ── Recent trips ──────────────────────────────────────────────────────────
   const { data: trips = [], isLoading: loadingTrips } = useQuery({
@@ -369,7 +403,8 @@ export default function FoodDispatch() {
   const awaiting = dispatchable.length;
   const inTransit = dispatched.length;
   const residentsWaiting = dispatchable.reduce((s, o) => s + orderPeople(o), 0);
-  const activeTrips = trips.filter((t) => t.status === "LOADING" || t.status === "IN_TRANSIT").length;
+  // Same set as the server's busy-vehicle check — a PARTIAL trip is still out.
+  const activeTrips = trips.filter((t) => ACTIVE_TRIP_STATUSES.includes(t.status)).length;
 
   const segTabs = [
     { k: "queue" as const, label: `Queue (${awaiting})` },
@@ -426,7 +461,7 @@ export default function FoodDispatch() {
           <SelectTrigger className="w-40"><SelectValue placeholder="Brand" /></SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL}>All Brands</SelectItem>
-            {BRANDS.map((b) => (<SelectItem key={b} value={b}>{b}</SelectItem>))}
+            {brandOptions.map((b) => (<SelectItem key={b.code} value={b.code}>{b.name}</SelectItem>))}
           </SelectContent>
         </Select>
         <Select value={meal} onValueChange={(v) => setMeal(v as MealType | typeof ALL)}>
@@ -467,7 +502,9 @@ export default function FoodDispatch() {
 
       {/* ── QUEUE: dispatchable orders (ACCEPTED) ─────────────────────────── */}
       {tab === "queue" && (
-        loadingQueue ? (
+        queueError ? (
+          <FoodQueryError label="the dispatch queue" onRetry={() => refetchQueue()} />
+        ) : loadingQueue ? (
           <RowsSkeleton />
         ) : dispatchable.length === 0 ? (
           <LocalEmpty
@@ -477,7 +514,18 @@ export default function FoodDispatch() {
           />
         ) : (
           <>
-            {/* THE VAN — the trip you're loading. Tap orders below to load it. */}
+            {/* More ready orders exist than this board holds — "Load all" fills
+                the van from the listed subset only, so say so up front. */}
+            {queueTruncated && (
+              <div className="rounded-[12px] border border-warning/40 bg-warning-soft px-4 py-3 text-[13px] text-warning">
+                Showing {dispatchable.length} of {queueTotal} ready orders. Loading the van covers
+                only what is listed here — send this trip, then refresh for the rest.
+              </div>
+            )}
+
+            {/* THE VAN — the trip you're loading. Tap orders below to load it.
+                Read-only principals never see it: they cannot create a trip. */}
+            {canDispatch && (
             <section
               className={cn(
                 "sticky top-2 z-20 rounded-[16px] border-2 p-4 transition-colors",
@@ -577,28 +625,33 @@ export default function FoodDispatch() {
                 </>
               )}
             </section>
+            )}
 
             {/* READY TO LOAD — tap a card to add it to the van */}
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">
-                {dispatchable.length} ready · tap to load into the van.
+                {dispatchable.length} ready{canDispatch ? " · tap to load into the van." : " for dispatch."}
               </p>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="shrink-0 text-muted-foreground"
-                onClick={() =>
-                  setSelected(allTargetsLoaded ? new Set() : new Set(loadAllTargets.map((o) => o.id)))
-                }
-              >
-                {allTargetsLoaded ? "Empty the van" : "Load all"}
-              </Button>
+              {canDispatch && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0 text-muted-foreground"
+                  onClick={() =>
+                    setSelected(allTargetsLoaded ? new Set() : new Set(loadAllTargets.map((o) => o.id)))
+                  }
+                >
+                  {allTargetsLoaded ? "Empty the van" : "Load all"}
+                </Button>
+              )}
             </div>
             <BoundedScroll size="page" className="-mt-1">
               <div className="flex flex-col gap-2.5 px-0.5 py-0.5">
                 {dispatchable.map((o) => {
                   const isLoaded = selected.has(o.id);
-                  const loadable = canLoad(o);
+                  // Without dispatch edit there is no van to load into, so the
+                  // card is a read-only row rather than a button that 403s.
+                  const loadable = canDispatch && canLoad(o);
                   const ready = readyLine(o);
                   return (
                     <button
@@ -608,24 +661,32 @@ export default function FoodDispatch() {
                       onClick={() => toggleSelect(o.id, !isLoaded)}
                       aria-pressed={isLoaded}
                       aria-label={`${isLoaded ? "Unload" : "Load"} ${o.orderNumber}`}
-                      title={loadable ? undefined : `This van is loading from ${vanKitchenName ?? "another kitchen"} — send it off first`}
+                      title={
+                        !canDispatch ? undefined
+                        : loadable ? undefined
+                        : `This van is loading from ${vanKitchenName ?? "another kitchen"} — send it off first`
+                      }
                       className={cn(
                         "flex w-full items-center gap-3 rounded-[14px] border p-3.5 text-left transition-colors",
                         isLoaded
                           ? "border-accent bg-accent/5"
                           : loadable
                             ? "border-border bg-card hover:border-accent/40"
-                            : "cursor-not-allowed border-dashed border-border bg-card opacity-45",
+                            : canDispatch
+                              ? "cursor-not-allowed border-dashed border-border bg-card opacity-45"
+                              : "cursor-default border-border bg-card",
                       )}
                     >
-                      <span
-                        className={cn(
-                          "flex h-8 w-8 flex-none items-center justify-center rounded-full transition-colors",
-                          isLoaded ? "bg-accent text-white" : "border-2 border-dashed border-border text-muted-foreground",
-                        )}
-                      >
-                        {isLoaded ? <Check className="h-4 w-4" strokeWidth={3} /> : <Plus className="h-4 w-4" />}
-                      </span>
+                      {canDispatch && (
+                        <span
+                          className={cn(
+                            "flex h-8 w-8 flex-none items-center justify-center rounded-full transition-colors",
+                            isLoaded ? "bg-accent text-white" : "border-2 border-dashed border-border text-muted-foreground",
+                          )}
+                        >
+                          {isLoaded ? <Check className="h-4 w-4" strokeWidth={3} /> : <Plus className="h-4 w-4" />}
+                        </span>
+                      )}
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[15px] font-semibold">
                           {o.propertyName || propName(o.propertyId)}
@@ -668,6 +729,7 @@ export default function FoodDispatch() {
                 <TripRow
                   key={t.id}
                   trip={t}
+                  canDispatch={canDispatch}
                   onOpen={() => setOpenTripId(t.id)}
                   onDepart={() => departTrip.mutate(t.id)}
                   departing={departTrip.isPending && departTrip.variables === t.id}
@@ -720,8 +782,9 @@ export default function FoodDispatch() {
         )
       )}
 
-      {/* ── Create trip drawer (bottom sheet) ─────────────────────────────── */}
-      <Drawer open={tripOpen} onOpenChange={setTripOpen}>
+      {/* ── Create trip drawer (bottom sheet) — creating a trip is a write, so
+             it never opens for a view-only principal. ──────────────────────── */}
+      <Drawer open={tripOpen && canDispatch} onOpenChange={setTripOpen}>
         <DrawerContent>
           <div className="mx-auto w-full max-w-2xl">
             <DrawerHeader>
@@ -910,6 +973,8 @@ export default function FoodDispatch() {
       {/* ── Trip detail sheet (side) ──────────────────────────────────────── */}
       <TripDetailSheet
         tripId={openTripId}
+        canDispatch={canDispatch}
+        canCertify={canCertify}
         onClose={() => setOpenTripId(null)}
         propName={propName}
         partnerName={partnerName}
@@ -932,9 +997,10 @@ function StatTile({ label, value }: { label: string; value: number }) {
 
 /* ── Trip summary row (prototype trip card) ─────────────────────────────── */
 function TripRow({
-  trip, onOpen, onDepart, departing,
+  trip, canDispatch, onOpen, onDepart, departing,
 }: {
   trip: Dispatch;
+  canDispatch: boolean;
   onOpen: () => void;
   onDepart: () => void;
   departing: boolean;
@@ -970,7 +1036,7 @@ function TripRow({
       <span className={cn("flex-none rounded-full px-[9px] py-[3px] text-[11px] font-bold", pill.cls)}>
         {pill.label}
       </span>
-      {trip.status === "LOADING" && (
+      {trip.status === "LOADING" && canDispatch && (
         <button
           type="button"
           disabled={departing}
@@ -987,9 +1053,13 @@ function TripRow({
 
 /* ── Trip detail sheet (loads full dispatch) ────────────────────────────── */
 function TripDetailSheet({
-  tripId, onClose, propName, partnerName,
+  tripId, canDispatch, canCertify, onClose, propName, partnerName,
 }: {
   tripId: string | null;
+  canDispatch: boolean;
+  /** FOOD_CONFIRM_DELIVERY:edit — running the trip and certifying receipt are
+   *  different grants (C3), and the FNB roles on this page hold only the first. */
+  canCertify: boolean;
   onClose: () => void;
   propName: (id?: string | null) => string;
   partnerName: (id?: string | null) => string;
@@ -1029,12 +1099,45 @@ function TripDetailSheet({
   const transition = useMutation({
     mutationFn: ({ id, status }: { id: string; status: DispatchStatus }) =>
       foodApi.updateDispatchStatus(id, status),
-    onSuccess: (_d, vars) => { toast({ title: `Trip marked ${DISPATCH_STATUS_META[vars.status]?.label ?? vars.status}`, variant: "success" }); invalidate(); },
+    onSuccess: (d, vars) => {
+      const label = DISPATCH_STATUS_META[vars.status]?.label ?? vars.status;
+      const waiting = d?.ordersAwaitingConfirmation ?? 0;
+      const closed = d?.ordersDelivered ?? 0;
+      const outOfScope = d?.ordersOutOfScope ?? 0;
+      // Completing the TRIP does not close its orders for a caller who cannot
+      // certify receipt (C3). Saying so is the whole point — an unqualified
+      // "Trip marked Delivered" reads as "all 12 stops are closed" when in fact
+      // all 12 are still waiting on their unit leads.
+      const scopeNote = outOfScope > 0 ? ` ${outOfScope} stop${outOfScope === 1 ? "" : "s"} outside your scope were not touched.` : "";
+      if (waiting > 0) {
+        toast({
+          title: `Trip marked ${label}`,
+          description: `${closed} of ${closed + waiting} stops closed — the rest are waiting on the receiving property to confirm delivery.${scopeNote}`,
+          variant: "warning",
+        });
+      } else {
+        toast({ title: `Trip marked ${label}`, description: scopeNote.trim() || undefined, variant: "success" });
+      }
+      invalidate();
+    },
     onError: onErr,
   });
   const cancel = useMutation({
     mutationFn: (id: string) => foodApi.cancelDispatch(id),
-    onSuccess: () => { toast({ title: "Trip cancelled" }); invalidate(); },
+    // The cancel is a split, not a clean abort: already-delivered stops keep this
+    // trip and only the rest go back to the kitchen. Report both, since the
+    // manifest count on screen still includes the delivered ones. A 403 (a stop
+    // outside your scope) or 409 (someone else moved the trip) arrives via onErr
+    // carrying the server's own sentence.
+    onSuccess: (d) => {
+      const kept = d.deliveredCount ?? 0;
+      toast({
+        title: "Trip cancelled",
+        description: `${d.revertedCount} order(s) returned to the kitchen`
+          + (kept ? `, ${kept} already delivered and left as delivered.` : "."),
+      });
+      invalidate();
+    },
     onError: onErr,
   });
   const setDelivered = useMutation({
@@ -1045,7 +1148,9 @@ function TripDetailSheet({
   });
 
   const busy = depart.isPending || transition.isPending || cancel.isPending || setDelivered.isPending;
-  const nextStates = detail ? (DISPATCH_TRANSITIONS[detail.status] ?? []) : [];
+  // Every transition below is FOOD_DISPATCH edit server-side — a view-only
+  // principal gets the manifest and the timeline, and no action buttons.
+  const nextStates = detail && canDispatch ? (DISPATCH_TRANSITIONS[detail.status] ?? []) : [];
 
   // Dispatch one of the legal transitions through the right method.
   const go = (status: DispatchStatus | "CANCELLED") => {
@@ -1067,7 +1172,17 @@ function TripDetailSheet({
             {detail ? (
               <span className="flex items-center gap-2">
                 <DispatchStatusPill status={detail.status} />
-                <span>{detail.orders?.length ?? detail.orderCount ?? 0} orders on this trip</span>
+                {/* M22: the manifest is filtered to the stops this caller can
+                    reach, so the count has to say so — otherwise a partial sheet
+                    reads as the complete trip. */}
+                {(detail.ordersOutOfScope ?? 0) > 0 ? (
+                  <span>
+                    {detail.orders?.length ?? 0} of {(detail.orders?.length ?? 0) + detail.ordersOutOfScope!} stops
+                    {" "}({detail.ordersOutOfScope} outside your scope)
+                  </span>
+                ) : (
+                  <span>{detail.orders?.length ?? detail.orderCount ?? 0} orders on this trip</span>
+                )}
               </span>
             ) : (
               "Loading trip details"
@@ -1119,7 +1234,11 @@ function TripDetailSheet({
                 {/* State-aware status control: only legal next states are offered. */}
                 <div className="space-y-2">
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Trip actions</Label>
-                  {nextStates.length === 0 ? (
+                  {!canDispatch ? (
+                    <p className="text-sm text-muted-foreground">
+                      Your role can follow this trip but not change it.
+                    </p>
+                  ) : nextStates.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
                       This trip is {DISPATCH_STATUS_META[detail.status]?.label.toLowerCase() ?? "closed"} — no further actions.
                     </p>
@@ -1140,8 +1259,19 @@ function TripDetailSheet({
                     <h4 className="text-sm font-medium flex items-center gap-1.5">
                       <Boxes className="w-4 h-4 text-muted-foreground" /> Orders on this trip
                     </h4>
-                    <Badge variant="secondary">{detail.orders?.length ?? 0}</Badge>
+                    <Badge variant="secondary">
+                      {detail.orders?.length ?? 0}
+                      {(detail.ordersOutOfScope ?? 0) > 0 ? ` / ${(detail.orders?.length ?? 0) + detail.ordersOutOfScope!}` : ""}
+                    </Badge>
                   </div>
+                  {/* C3 — running the trip and certifying receipt are different
+                      grants. Explain the greyed checkboxes rather than leaving
+                      them looking broken. */}
+                  {canDispatch && !canCertify && (
+                    <p className="text-xs text-muted-foreground">
+                      The receiving property confirms delivery — you can follow each stop here but not tick it off.
+                    </p>
+                  )}
                   {!detail.orders || detail.orders.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No orders attached to this trip.</p>
                   ) : (
@@ -1164,7 +1294,7 @@ function TripDetailSheet({
                               order={o}
                               propName={propName}
                               tripCancelled={detail.status === "CANCELLED"}
-                              disabled={busy}
+                              disabled={busy || !canDispatch || !canCertify}
                               onToggle={(delivered) =>
                                 setDelivered.mutate({ id: detail.id, orderId: o.id, delivered })
                               }

@@ -90,18 +90,18 @@ export const plateToItems = (plate: PlateEntry[]) =>
 /**
  * The rule that governs one (brand, meal).
  *
- * Kitchen-specific rules exist in the schema but are disabled in the UI, so the
- * brand-default (kitchenId === null) wins and a kitchen-scoped rule is only used
- * when no default exists — the same precedence `resolveCompositionRule` applies
- * server-side.
+ * Must match `resolveCompositionRule` (food-service.ts) exactly, or the board
+ * validates a plate against a rule the server never applies: a kitchen-specific
+ * rule OVERRIDES the brand default, and when no kitchen is in play only the
+ * brand default (kitchenId === null) is eligible at all — the server's query
+ * filters kitchen-scoped rules out entirely in that case.
  */
 export function ruleFor(
   rules: CompositionRule[], brand: string, meal: MealType, kitchenId?: string | null,
 ): CompositionRule | null {
   const forMeal = rules.filter((r) => r.brand === brand && r.mealType === meal && r.isActive !== false);
-  return forMeal.find((r) => !r.kitchenId)
-    ?? (kitchenId ? forMeal.find((r) => r.kitchenId === kitchenId) : undefined)
-    ?? forMeal[0]
+  return (kitchenId ? forMeal.find((r) => r.kitchenId === kitchenId) : undefined)
+    ?? forMeal.find((r) => !r.kitchenId)
     ?? null;
 }
 

@@ -11,8 +11,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { BoundedScroll } from "@/components/ui/bounded-scroll";
-import { ChevronLeft, ChevronRight, Send, Copy, Truck, Search } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Send, Copy, Truck, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { usePermissions } from "@/lib/use-permissions";
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from "recharts";
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -31,23 +32,50 @@ const fmtDate = (d: Date) => d.toISOString().slice(0, 10);
 export default function MenuPlanning() {
   const { toast } = useToast();
   const qc = useQueryClient();
+  // generate-indent is double-gated server-side (MENU_PLANNING:edit AND
+  // INDENTS:create), so a MENU_PLANNING holder without the indent grant would
+  // otherwise get an armed button that always 403s.
+  const { can } = usePermissions();
+  const canRaiseIndent = can("INDENTS", "create");
+  // M16 — every write on this page goes through MENU_PLANNING create/edit
+  // (kitchen.ts menuPlansRouter + productionRouter). PageGuard only checks
+  // view, and AUDIT_READONLY holds MENU_PLANNING:view through ALL_MODULES, so
+  // without these the whole page — grid cells, Copy, Publish, the production
+  // forms — was armed for a principal whose every click 403s.
+  const canEditPlan = can("MENU_PLANNING", "edit");
+  const canCreatePlan = can("MENU_PLANNING", "create");
+  const [indenting, setIndenting] = React.useState(false);
   const [propertyId, setPropertyId] = React.useState<string>("");
   const [weekStart, setWeekStart] = React.useState<Date>(mondayOf(new Date()));
   const [pickerCell, setPickerCell] = React.useState<{ day: number; slot: string } | null>(null);
   const [recipeSearch, setRecipeSearch] = React.useState("");
 
-  const { data: propsRes } = useQuery({ queryKey: ["properties"], queryFn: () => apiFetch<any>("/properties") });
+  // Every query on this page is enabled on propertyId, so a failed property
+  // fetch renders the whole page permanently blank. GET /properties carries
+  // `authorizeAny(["PROPERTIES", "MENU_PLANNING"], "view")` (properties.ts) for
+  // exactly this reason: the page's own personas — kitchen managers and F&B
+  // managers — hold MENU_PLANNING and no PROPERTIES cell. The list is still
+  // narrowed by resolveAccessiblePropertyIds, so a caller with no scope grant
+  // gets an empty array rather than a 403. Surface BOTH outcomes rather than
+  // swallow them into an empty week grid.
+  const { data: propsRes, isError: propsError, error: propsErr, refetch: refetchProps } = useQuery({
+    queryKey: ["properties"],
+    queryFn: () => apiFetch<any>("/properties"),
+  });
   const properties = propsRes?.data || [];
   React.useEffect(() => { if (!propertyId && properties.length) setPropertyId(properties[0].id); }, [properties, propertyId]);
 
   const planKey = ["menu-by-week", propertyId, fmtDate(weekStart)];
-  const { data: planRes } = useQuery({
+  const { data: planRes, isError: planError, refetch: refetchPlan } = useQuery({
     queryKey: planKey,
     queryFn: () => apiFetch<any>(`/menu-plans/by-week?propertyId=${propertyId}&weekStart=${weekStart.toISOString()}`),
     enabled: !!propertyId,
   });
   const plan = planRes?.data;
   const slots: Record<string, string> = (plan?.slots as any) || {};
+  // Filling a cell PUTs an existing plan but POSTs the first one, so the grid
+  // needs whichever grant that week's write will actually use.
+  const canSetSlot = plan ? canEditPlan : canCreatePlan;
 
   const { data: recipesRes } = useQuery({ queryKey: ["recipes", "all"], queryFn: () => apiFetch<any>("/recipes?limit=200") });
   const recipes = recipesRes?.data || [];
@@ -87,10 +115,15 @@ export default function MenuPlanning() {
 
   const onGenerateIndent = async () => {
     if (!plan) { toast({ title: "No plan for this week", variant: "destructive" }); return; }
+    // In flight → disabled: the server is idempotent per (plan, week) and now
+    // returns the EXISTING draft rather than minting a second one, so the copy
+    // says "ready" — three clicks no longer means three procurement documents.
+    setIndenting(true);
     try {
       const res = await apiFetch<any>(`/menu-plans/${plan.id}/generate-indent`, { method: "POST", body: JSON.stringify({}) });
-      toast({ title: `Indent ${res.data.indentNumber} created`, description: "Open Procurement → Indents to review." });
+      toast({ title: `Indent ${res.data.indentNumber} ready`, description: "Open Procurement → Indents to review." });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
+    finally { setIndenting(false); }
   };
 
   const recipeName = (id: string) => recipes.find((r: any) => r.id === id)?.name || "—";
@@ -105,6 +138,16 @@ export default function MenuPlanning() {
     <div className="space-y-6">
       <PageHeader title="Menu Planning" subtitle="Weekly menu, daily production, and analytics" />
 
+      {propsError ? (
+        <div className="flex flex-col items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-6 py-10 text-center">
+          <AlertTriangle className="h-5 w-5 text-destructive" />
+          <p className="text-sm text-destructive">Could not load properties.</p>
+          <p className="max-w-md text-[13px] text-muted-foreground">
+            {(propsErr as any)?.message || "The property list is required before a week can be planned."}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => refetchProps()}>Retry</Button>
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-3">
         <div className="min-w-[200px]">
           <Select value={propertyId} onValueChange={setPropertyId}>
@@ -112,7 +155,17 @@ export default function MenuPlanning() {
             <SelectContent>{properties.map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
           </Select>
         </div>
+        {properties.length === 0 && (
+          // Empty is not the same as broken: the list is scoped, so an empty
+          // array means this account has no property in its scope. Say so —
+          // "no properties" alone reads as "the org has none" and sends the
+          // kitchen manager to the wrong person.
+          <p className="text-sm text-muted-foreground">
+            No properties in your scope — ask an admin to grant you one on Food → Organization → Access.
+          </p>
+        )}
       </div>
+      )}
 
       <Tabs defaultValue="week">
         <TabsList>
@@ -130,11 +183,27 @@ export default function MenuPlanning() {
               {plan && <Badge variant={plan.status === "PUBLISHED" ? "default" : "outline"}>{plan.status}</Badge>}
             </div>
             <div className="flex gap-2">
-              <Button variant="outline" onClick={onCopyLast}><Copy className="h-4 w-4 mr-2" />Copy Last Week</Button>
-              <Button variant="outline" onClick={onGenerateIndent}><Truck className="h-4 w-4 mr-2" />Generate Indent</Button>
-              <Button onClick={onPublish}><Send className="h-4 w-4 mr-2" />Publish Menu</Button>
+              {canCreatePlan && (
+                <Button variant="outline" onClick={onCopyLast}><Copy className="h-4 w-4 mr-2" />Copy Last Week</Button>
+              )}
+              {/* generate-indent is double-gated: MENU_PLANNING:edit AND INDENTS:create. */}
+              {canEditPlan && canRaiseIndent && (
+                <Button variant="outline" disabled={indenting} onClick={onGenerateIndent}><Truck className="h-4 w-4 mr-2" />{indenting ? "Generating…" : "Generate Indent"}</Button>
+              )}
+              {canEditPlan && (
+                <Button onClick={onPublish}><Send className="h-4 w-4 mr-2" />Publish Menu</Button>
+              )}
             </div>
           </div>
+
+          {/* A failed plan fetch would otherwise render as an untouched week. */}
+          {planError && (
+            <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span className="flex-1">Could not load this week&rsquo;s plan — the grid below may not reflect what is saved.</span>
+              <Button variant="outline" size="sm" onClick={() => refetchPlan()}>Retry</Button>
+            </div>
+          )}
 
           <Card>
             <CardContent className="p-0 overflow-x-auto">
@@ -159,8 +228,13 @@ export default function MenuPlanning() {
                         const rid = slots[key];
                         return (
                           <td key={di} className="p-2 align-top">
-                            <button type="button" onClick={() => { setPickerCell({ day: di, slot: s }); setRecipeSearch(""); }} className="w-full text-left p-2 rounded-md border border-dashed border-border hover:border-primary hover:bg-primary/5 transition-colors text-sm min-h-[60px]">
-                              {rid ? <span className="font-medium">{recipeName(rid)}</span> : <span className="text-muted-foreground">Click to add</span>}
+                            <button
+                              type="button" disabled={!canSetSlot}
+                              onClick={() => { setPickerCell({ day: di, slot: s }); setRecipeSearch(""); }}
+                              className="w-full text-left p-2 rounded-md border border-dashed border-border transition-colors text-sm min-h-[60px] enabled:hover:border-primary enabled:hover:bg-primary/5 disabled:cursor-default"
+                            >
+                              {rid ? <span className="font-medium">{recipeName(rid)}</span>
+                                : <span className="text-muted-foreground">{canSetSlot ? "Click to add" : "—"}</span>}
                             </button>
                           </td>
                         );
@@ -173,7 +247,7 @@ export default function MenuPlanning() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="production"><DailyProductionTab propertyId={propertyId} recipes={recipes} slots={slots} /></TabsContent>
+        <TabsContent value="production"><DailyProductionTab propertyId={propertyId} recipes={recipes} slots={slots} canEdit={canEditPlan} /></TabsContent>
         <TabsContent value="analytics"><KitchenAnalyticsTab propertyId={propertyId} /></TabsContent>
       </Tabs>
 
@@ -200,7 +274,8 @@ export default function MenuPlanning() {
   );
 }
 
-function DailyProductionTab({ propertyId, recipes, slots }: { propertyId: string; recipes: any[]; slots: Record<string, string> }) {
+/** `canEdit` mirrors POST /daily-production's MENU_PLANNING:edit gate (M16). */
+function DailyProductionTab({ propertyId, recipes, slots, canEdit }: { propertyId: string; recipes: any[]; slots: Record<string, string>; canEdit: boolean }) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const today = new Date();
@@ -238,7 +313,7 @@ function DailyProductionTab({ propertyId, recipes, slots }: { propertyId: string
                   <div><span className="text-xs text-muted-foreground">{ts.slot}</span><div className="font-medium">{r?.name || "Not planned"}</div></div>
                   {dispatched && <Badge>Dispatched · {dispatched.quantity}</Badge>}
                 </div>
-                {!dispatched && r && (
+                {!dispatched && r && canEdit && (
                   <div className="flex gap-2 mt-2">
                     <Input type="number" placeholder="Qty served" className="h-8" id={`q-${ts.slot}`} />
                     <Button size="sm" onClick={() => {
@@ -266,7 +341,7 @@ function DailyProductionTab({ propertyId, recipes, slots }: { propertyId: string
                 </div>
               </BoundedScroll>
             )}
-            <AddRow onAdd={(item, quantity, unit, reason) => update("wastage", [...wastage, { item, quantity: Number(quantity), unit, reason, at: new Date().toISOString() }])} fields={["Item", "Qty", "Unit", "Reason"]} />
+            {canEdit && <AddRow onAdd={(item, quantity, unit, reason) => update("wastage", [...wastage, { item, quantity: Number(quantity), unit, reason, at: new Date().toISOString() }])} fields={["Item", "Qty", "Unit", "Reason"]} />}
           </CardContent>
         </Card>
         <Card>
@@ -279,7 +354,7 @@ function DailyProductionTab({ propertyId, recipes, slots }: { propertyId: string
                 </div>
               </BoundedScroll>
             )}
-            <AddRow onAdd={(item, quantity, unit, expiry) => update("receivings", [...receivings, { item, quantity: Number(quantity), unit, expiry, at: new Date().toISOString() }])} fields={["Item", "Qty", "Unit", "Expiry"]} />
+            {canEdit && <AddRow onAdd={(item, quantity, unit, expiry) => update("receivings", [...receivings, { item, quantity: Number(quantity), unit, expiry, at: new Date().toISOString() }])} fields={["Item", "Qty", "Unit", "Expiry"]} />}
           </CardContent>
         </Card>
       </div>

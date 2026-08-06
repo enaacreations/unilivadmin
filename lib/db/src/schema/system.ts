@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, json, integer, pgEnum, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, json, integer, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { usersTable, propertiesTable } from "./core";
 
 /** Channels the outbound dispatch service can send through (Persona st.17/18/22/23). */
@@ -97,7 +97,11 @@ export const notificationOutboxTable = pgTable("notification_outbox", {
   scheduledFor: timestamp("scheduled_for"),
   sentAt: timestamp("sent_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => [
+  // Drains the notification outbox: sweepPendingOutbox + notify-service reconcile
+  // both scan PENDING rows past a created_at cutoff, oldest first, once a minute.
+  index("notification_outbox_status_created_at_idx").on(table.status, table.createdAt),
+]);
 
 /** Browser web-push subscriptions for real push instead of polling (Persona st.17). */
 export const pushSubscriptionsTable = pgTable("push_subscriptions", {
@@ -137,10 +141,27 @@ export const notificationSuppressionsTable = pgTable(
     /** HARD_BOUNCE | COMPLAINT | UNSUBSCRIBED | INVALID */
     reason: text("reason").notNull(),
     detail: text("detail"),
+    /**
+     * A row blocks delivery only while `is_active AND (expires_at IS NULL OR
+     * expires_at > now())`. Without these two a single transient bounce silences
+     * an address forever, with no way back other than a manual DELETE that also
+     * destroys the bounce history. `isActive` is the operator's clear switch;
+     * `expiresAt` is a self-lapsing TTL (null = holds until cleared).
+     */
+    isActive: boolean("is_active").default(true).notNull(),
+    expiresAt: timestamp("expires_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => ({
-    uniqChannelAddress: unique("notification_suppressions_channel_address_uq").on(t.channel, t.address),
+    /**
+     * A unique INDEX, not a table constraint: drizzle-kit cannot round-trip a
+     * named `unique()` constraint here, so every `push` DROPped and re-ADDed it —
+     * a window with no suppression uniqueness on each deploy, and a permanent
+     * false positive in the "push says nothing to do" drift signal. An index is
+     * an equally valid ON CONFLICT target for `recordSuppression`
+     * (lib/notify-core/src/suppression.ts) and diffs cleanly.
+     */
+    uniqChannelAddress: uniqueIndex("notification_suppressions_channel_address_uq").on(t.channel, t.address),
   }),
 );
 

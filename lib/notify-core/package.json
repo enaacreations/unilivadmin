@@ -15,9 +15,11 @@
     "@workspace/db": "workspace:*",
     "bullmq": "^5",
     "drizzle-orm": "catalog:",
-    "ioredis": "^5"
+    "ioredis": "^5",
+    "nodemailer": "^9.0.4"
   },
   "devDependencies": {
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "@types/nodemailer": "^8.0.1"
   }
 }

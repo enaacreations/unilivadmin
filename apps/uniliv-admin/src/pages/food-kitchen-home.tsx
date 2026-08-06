@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { MealIcon, DishIcon } from "@/components/meal-icon";
+import { FoodQueryError } from "@/components/food/query-error";
 import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 import {
@@ -376,26 +377,21 @@ export default function FoodKitchenHome() {
 
   // The live pipeline for the day. serviceDate is the exact-day filter the
   // server supports; the status list matches the operational clamp for F&B.
-  // The server caps `limit` at 100, so page through until meta.total is
-  // covered — otherwise a big day silently truncates and "Accept all" would
-  // celebrate while unfetched PLACED orders remain. Bounded at 5 pages as a
-  // runaway stop (500 live orders in one day means something else is wrong).
-  const ordersParams = { serviceDate: date, status: "PLACED,ACCEPTED,DISPATCHED", limit: 100 };
-  const { data: orders = [], isLoading: ordersLoading } = useQuery({
+  // The server caps `limit` at 100, so listAllOrders pages through until
+  // meta.total is covered — otherwise a big day silently truncates and "Accept
+  // all" would celebrate while unfetched PLACED orders remain. Bounded at 5
+  // pages (500 live orders in one day means something else is wrong).
+  const ordersParams = { serviceDate: date, status: "PLACED,ACCEPTED,DISPATCHED" };
+  const {
+    data: ordersPage, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders,
+  } = useQuery({
     queryKey: foodKeys.orders(ordersParams),
-    queryFn: async () => {
-      const all: FoodOrder[] = [];
-      for (let page = 1; page <= 5; page++) {
-        const res = await foodApi.listOrders({ ...ordersParams, page });
-        const batch = res.data ?? [];
-        all.push(...batch);
-        const total = res.meta?.total ?? all.length;
-        if (batch.length === 0 || all.length >= total) break;
-      }
-      return all;
-    },
+    queryFn: () => foodApi.listAllOrders(ordersParams),
     refetchInterval: 60_000,
   });
+  const orders: FoodOrder[] = ordersPage?.orders ?? [];
+  const ordersTruncated = ordersPage?.truncated ?? false;
+  const ordersTotal = ordersPage?.total ?? orders.length;
 
   const { data: lookups } = useQuery({ queryKey: foodKeys.lookups(), queryFn: () => foodApi.lookups() });
   const agencies = lookups?.agencies ?? [];
@@ -464,7 +460,11 @@ export default function FoodKitchenHome() {
     // the user carries it through cook and send before moving on.
     await invalidate();
     setBusy(null);
-    if (fail === 0) {
+    if (fail === 0 && ordersTruncated) {
+      // The board holds only part of the day, so this ran on a subset — report
+      // that plainly instead of celebrating a complete run.
+      toast({ title: `${ok} order${ok === 1 ? "" : "s"} accepted`, description: `This board shows ${orders.length} of ${ordersTotal} live orders — repeat to work through the rest.`, variant: "warning" });
+    } else if (fail === 0) {
       fire();
       toast({ title: `${label} accepted`, description: `${ok} order${ok === 1 ? "" : "s"} moved to the kitchen queue.`, variant: "success" });
     } else {
@@ -599,8 +599,19 @@ export default function FoodKitchenHome() {
         </p>
       </div>
 
+      {/* More live orders exist than this board holds — the Accept/Dispatch
+          actions therefore cover a subset, so say it before they are used. */}
+      {ordersTruncated && (
+        <div className="rounded-[12px] border border-warning/40 bg-warning-soft px-4 py-3 text-[13px] text-warning">
+          Showing {orders.length} of {ordersTotal} live orders for this day. Accept and dispatch
+          apply only to what is listed here — repeat to work through the rest.
+        </div>
+      )}
+
       {/* Hero: what needs the kitchen's attention for the selected day */}
-      {ordersLoading ? (
+      {ordersError ? (
+        <FoodQueryError label="the day's orders" onRetry={() => refetchOrders()} />
+      ) : ordersLoading ? (
         <Skeleton className="h-24 w-full rounded-[14px]" />
       ) : totalPlaced > 0 ? (
         <section className="rounded-[14px] bg-brand-gradient p-[2px]">

@@ -9,6 +9,7 @@ import { db } from "@workspace/db";
 import {
   propertiesTable,
   citiesTable,
+  clustersTable,
   kitchensTable,
   kitchenPincodesTable,
   foodBrandsTable,
@@ -24,9 +25,11 @@ import {
   ingredientsTable,
   systemConfigTable,
 } from "@workspace/db";
-import { and, eq, or, isNull, lte, gte, sql, inArray, desc } from "drizzle-orm";
+import { and, eq, or, isNull, lte, gte, sql, inArray, notInArray, desc } from "drizzle-orm";
 import type { AuthUser } from "../middlewares/auth.js";
 import { httpError } from "./authz.js";
+import { atIst, istDayYmd, istParts } from "./tz.js";
+import { logger } from "./logger.js";
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Admin-tunable global config (system_config). SUPER_ADMIN configures these; the
@@ -110,23 +113,73 @@ const ALWAYS_GLOBAL = new Set([
 ]);
 
 /**
- * Oversight roles that fall back to "all properties" when no explicit scope
- * rows are configured for them (prevents lockout before scopes are set).
+ * Geo grants are strictly ADDITIVE: a scope row can only ever widen what a user
+ * sees. The invariant that follows — and the one this file now enforces — is
+ * that revoking a grant can never escalate. Any role outside ALWAYS_GLOBAL with
+ * no scope rows and no home property sees nothing, whatever its title.
  *
- * Unit Lead is excluded — it must be scoped to a property. F&B Manager is
- * excluded too: the model is one login per kitchen (see
- * resolveAccessibleKitchenIds), so a manager with no scope rows is a
- * misconfiguration, and falling open would silently hand a single kitchen's
- * manager the whole network. Missing scope now means "sees nothing", which
- * surfaces the mistake instead of hiding it.
+ * This replaces a BROAD_FALLBACK set (ZONAL_HEAD, CITY_HEAD, CLUSTER_MANAGER,
+ * FNB_ZONAL_HEAD, FNB_SUPERVISOR) that fell open to every property when the user
+ * had no scope rows, on a "prevent lockout before scopes are configured"
+ * rationale. It inverted the control: revoking a head's last grant promoted them
+ * from one zone to the whole network. Soft revocation (user_scopes.isActive) now
+ * tells "never configured" apart from "deliberately revoked", but neither may
+ * grant anything — missing scope surfaces the misconfiguration instead of hiding
+ * it behind org-wide access.
+ *
+ * Two real geo spines reach a property and BOTH are authoritative:
+ *   • F&B spine — zone → city → kitchen → properties.kitchenId
+ *   • org spine — zone → city → cluster → properties.clusterId
+ * Properties carry the two columns independently and they disagree in live data,
+ * so every grant expands down both spines and the results are unioned: a city
+ * head who owns a city owns every property in it, however that property happens
+ * to be wired. (audit-access.ts walks the org spine alone; the food module needs
+ * the kitchen spine too, because a kitchen serves properties outside its cluster.)
  */
-const BROAD_FALLBACK = new Set([
-  "ZONAL_HEAD",
-  "CITY_HEAD",
-  "CLUSTER_MANAGER",
-  "FNB_ZONAL_HEAD",
-  "FNB_SUPERVISOR",
-]);
+
+type ScopeRow = typeof userScopesTable.$inferSelect;
+
+/**
+ * A user's live grants. Revocation is a soft flag (user_scopes.isActive), so the
+ * filter belongs here, in the one place both resolvers read grants from — a
+ * revoked row that still resolves is the same escalation as falling open.
+ */
+async function activeScopesFor(userId: string): Promise<ScopeRow[]> {
+  return db
+    .select()
+    .from(userScopesTable)
+    .where(and(eq(userScopesTable.userId, userId), eq(userScopesTable.isActive, true)));
+}
+
+/** The geo-id column each scope level narrows on. */
+const scopeTargets = (
+  scopes: ScopeRow[],
+  level: string,
+  col: "zoneId" | "cityId" | "kitchenId" | "clusterId" | "propertyId",
+): string[] => scopes.filter((s) => s.scopeLevel === level && s[col]).map((s) => s[col]!);
+
+/**
+ * ZONE fans out to its cities; from there both spines run in parallel.
+ *
+ * Deactivated nodes are not traversed, here or in the cluster/kitchen walks
+ * below. POST /scopes refuses to MINT a grant on an inactive zone/city/cluster/
+ * kitchen (food.ts scopeTargetIsLive), so resolve-time has to apply the same
+ * rule or a node retired from the org spine keeps handing out access that no
+ * admin can see, re-create, or reason about. A DIRECT grant is governed by its
+ * own row instead — revoking it flips user_scopes.isActive (activeScopesFor).
+ */
+async function expandZonesToCities(scopes: ScopeRow[]): Promise<Set<string>> {
+  const cityIds = new Set(scopeTargets(scopes, "CITY", "cityId"));
+  const zoneIds = scopeTargets(scopes, "ZONE", "zoneId");
+  if (zoneIds.length) {
+    const rows = await db
+      .select({ id: citiesTable.id })
+      .from(citiesTable)
+      .where(and(inArray(citiesTable.zoneId, zoneIds), eq(citiesTable.isActive, true)));
+    rows.forEach((c) => cityIds.add(c.id));
+  }
+  return cityIds;
+}
 
 /**
  * Resolves the set of property IDs a user may access.
@@ -137,48 +190,55 @@ export async function resolveAccessiblePropertyIds(
 ): Promise<string[] | null> {
   if (ALWAYS_GLOBAL.has(user.role)) return null;
 
-  const scopes = await db
-    .select()
-    .from(userScopesTable)
-    .where(eq(userScopesTable.userId, user.id));
+  const scopes = await activeScopesFor(user.id);
 
   if (scopes.some((s) => s.scopeLevel === "GLOBAL")) return null;
 
   const ids = new Set<string>();
   if (user.propertyId) ids.add(user.propertyId);
+  scopeTargets(scopes, "PROPERTY", "propertyId").forEach((p) => ids.add(p));
 
-  // Collect scope target ids by level. Hierarchy: City → Kitchen → Property.
-  const cityIds = scopes.filter((s) => s.scopeLevel === "CITY" && s.cityId).map((s) => s.cityId!);
-  const kitchenIds = scopes.filter((s) => s.scopeLevel === "KITCHEN" && s.kitchenId).map((s) => s.kitchenId!);
-  scopes
-    .filter((s) => s.scopeLevel === "PROPERTY" && s.propertyId)
-    .forEach((s) => ids.add(s.propertyId!));
+  const cityIds = await expandZonesToCities(scopes);
 
-  // City → its kitchens → their properties.
-  const allKitchenIds = [...kitchenIds];
-  if (cityIds.length) {
-    const kitchens = await db
-      .select({ id: kitchensTable.id })
-      .from(kitchensTable)
-      .where(inArray(kitchensTable.cityId, cityIds));
-    allKitchenIds.push(...kitchens.map((k) => k.id));
+  // Org spine: (zone →) city → clusters → properties.clusterId.
+  const clusterIds = new Set(scopeTargets(scopes, "CLUSTER", "clusterId"));
+  if (cityIds.size) {
+    const rows = await db
+      .select({ id: clustersTable.id })
+      .from(clustersTable)
+      .where(and(inArray(clustersTable.cityId, [...cityIds]), eq(clustersTable.isActive, true)));
+    rows.forEach((c) => clusterIds.add(c.id));
   }
-  if (allKitchenIds.length) {
+  if (clusterIds.size) {
     const props = await db
       .select({ id: propertiesTable.id })
       .from(propertiesTable)
-      .where(inArray(propertiesTable.kitchenId, allKitchenIds));
+      .where(inArray(propertiesTable.clusterId, [...clusterIds]));
     props.forEach((p) => ids.add(p.id));
   }
 
-  if (ids.size === 0) {
-    // Only fall back to "all properties" when there are genuinely no scope rows
-    // at all. If scope rows exist but resolved to an empty set (e.g. malformed
-    // rows with a null geo id), the user must see nothing rather than everything.
-    if (scopes.length === 0 && !user.propertyId && BROAD_FALLBACK.has(user.role)) return null;
-    return []; // restricted/misconfigured role with nothing assigned → sees nothing
+  // F&B spine: (zone →) city → kitchens → properties.kitchenId.
+  const kitchenIds = new Set(scopeTargets(scopes, "KITCHEN", "kitchenId"));
+  if (cityIds.size) {
+    const kitchens = await db
+      .select({ id: kitchensTable.id })
+      .from(kitchensTable)
+      .where(and(inArray(kitchensTable.cityId, [...cityIds]), eq(kitchensTable.isActive, true)));
+    kitchens.forEach((k) => kitchenIds.add(k.id));
   }
-  return [...ids];
+  if (kitchenIds.size) {
+    const props = await db
+      .select({ id: propertiesTable.id })
+      .from(propertiesTable)
+      .where(inArray(propertiesTable.kitchenId, [...kitchenIds]));
+    props.forEach((p) => ids.add(p.id));
+  }
+
+  // Scope rows that resolve to nothing (a null geo id, a cluster with no
+  // properties tagged to it) must still mean "sees nothing", never "sees
+  // everything" — the fail-closed control that keeps a misconfigured grant from
+  // silently widening into org-wide access.
+  return ids.size === 0 ? [] : [...ids];
 }
 
 /** Builds a drizzle condition restricting food_orders to accessible properties. */
@@ -200,49 +260,54 @@ export function scopeOrdersCondition(propertyIds: string[] | null) {
  * An explicit KITCHEN scope row counts on its own, without going through
  * properties — a newly opened kitchen has no properties tagged to it yet, and
  * its manager still has to be able to build the first menu.
+ *
+ * It walks the same two spines from the same grants as its property-side twin
+ * (see the block comment above ALWAYS_GLOBAL's neighbours): a kitchen carries
+ * BOTH a cityId and a clusterId and either may be null, so a ZONE or CITY grant
+ * has to reach kitchens through both columns. Resolving one level here that the
+ * property resolver ignored is what let a CLUSTER-scoped F&B manager rewrite the
+ * menu of every kitchen in a cluster while seeing none of the resulting orders.
  */
 export async function resolveAccessibleKitchenIds(
   user: AuthUser,
 ): Promise<string[] | null> {
   if (ALWAYS_GLOBAL.has(user.role)) return null;
 
-  const scopes = await db
-    .select()
-    .from(userScopesTable)
-    .where(eq(userScopesTable.userId, user.id));
+  const scopes = await activeScopesFor(user.id);
 
   if (scopes.some((s) => s.scopeLevel === "GLOBAL")) return null;
 
   const ids = new Set<string>();
-  scopes
-    .filter((s) => s.scopeLevel === "KITCHEN" && s.kitchenId)
-    .forEach((s) => ids.add(s.kitchenId!));
+  scopeTargets(scopes, "KITCHEN", "kitchenId").forEach((k) => ids.add(k));
 
-  const cityIds = scopes.filter((s) => s.scopeLevel === "CITY" && s.cityId).map((s) => s.cityId!);
-  if (cityIds.length) {
+  const cityIds = await expandZonesToCities(scopes);
+  if (cityIds.size) {
     const rows = await db
       .select({ id: kitchensTable.id })
       .from(kitchensTable)
-      .where(inArray(kitchensTable.cityId, cityIds));
+      .where(and(inArray(kitchensTable.cityId, [...cityIds]), eq(kitchensTable.isActive, true)));
     rows.forEach((k) => ids.add(k.id));
   }
 
-  // CLUSTER is retired in favour of CITY/KITCHEN but rows may still exist.
-  const clusterIds = scopes
-    .filter((s) => s.scopeLevel === "CLUSTER" && s.clusterId)
-    .map((s) => s.clusterId!);
-  if (clusterIds.length) {
+  // Org spine: (zone →) city → clusters → kitchens.clusterId.
+  const clusterIds = new Set(scopeTargets(scopes, "CLUSTER", "clusterId"));
+  if (cityIds.size) {
+    const rows = await db
+      .select({ id: clustersTable.id })
+      .from(clustersTable)
+      .where(and(inArray(clustersTable.cityId, [...cityIds]), eq(clustersTable.isActive, true)));
+    rows.forEach((c) => clusterIds.add(c.id));
+  }
+  if (clusterIds.size) {
     const rows = await db
       .select({ id: kitchensTable.id })
       .from(kitchensTable)
-      .where(inArray(kitchensTable.clusterId, clusterIds));
+      .where(and(inArray(kitchensTable.clusterId, [...clusterIds]), eq(kitchensTable.isActive, true)));
     rows.forEach((k) => ids.add(k.id));
   }
 
   // Property-bound users (Unit Lead, Warden) reach the kitchen that serves them.
-  const propIds = scopes
-    .filter((s) => s.scopeLevel === "PROPERTY" && s.propertyId)
-    .map((s) => s.propertyId!);
+  const propIds = scopeTargets(scopes, "PROPERTY", "propertyId");
   if (user.propertyId) propIds.push(user.propertyId);
   if (propIds.length) {
     const rows = await db
@@ -252,13 +317,9 @@ export async function resolveAccessibleKitchenIds(
     rows.forEach((p) => { if (p.kitchenId) ids.add(p.kitchenId); });
   }
 
-  if (ids.size === 0) {
-    // Mirrors resolveAccessiblePropertyIds: only fall open when there are no
-    // scope rows at all, never when rows exist but resolved to nothing.
-    if (scopes.length === 0 && !user.propertyId && BROAD_FALLBACK.has(user.role)) return null;
-    return [];
-  }
-  return [...ids];
+  // Same fail-closed rule as resolveAccessiblePropertyIds: grants that resolve
+  // to nothing mean nothing. Never fall open, or revoking a grant escalates.
+  return ids.size === 0 ? [] : [...ids];
 }
 
 /**
@@ -283,26 +344,202 @@ export async function assertKitchenAccess(
   }
 }
 
-/** Restricts a menu-rotation query to the caller's kitchens (undefined = all). */
-export function scopeRotationCondition(kitchenIds: string[] | null) {
+/* ── Menu-rotation scoping: READING a brand-wide row is not WRITING one ─────
+ *
+ * food_menu_rotation.kitchenId is nullable, and a NULL means "brand-wide
+ * template — applies to no kitchen until it is copied down to one" (see
+ * scripts/seed-food-extra.ts, which materialises the per-kitchen rows).
+ * resolveMenu only ever matches an exact kitchenId, so a NULL row can never be
+ * served to a resident; it is reference data the rotation board shows.
+ *
+ * The two directions therefore have OPPOSITE requirements, and a single helper
+ * cannot satisfy both:
+ *   read  — a kitchen-scoped user must SEE the brand-wide templates their own
+ *           menu is derived from. A SQL IN-list never matches NULL, so the
+ *           strict filter blanked the rotation board entirely for them: on the
+ *           dev DB all 385 rotation rows are brand-wide, and a KITCHEN-scoped
+ *           FNB_MANAGER (11 of the 12 seeded) resolved 0 of them.
+ *   write — a kitchen-scoped user must NOT touch a brand-wide row, or one
+ *           kitchen's manager rewrites the menu the whole network serves. This
+ *           is the same invariant assertKitchenAccess above enforces on the
+ *           single-row path, and it is why the strict IN-list must survive on
+ *           every mutating query.
+ */
+
+/**
+ * Restricts a menu-rotation READ to the caller's kitchens PLUS the brand-wide
+ * templates (kitchenId IS NULL), which belong to no kitchen and are visible to
+ * everyone who may see any menu at all. `null` kitchenIds = unrestricted.
+ */
+export function scopeRotationReadCondition(kitchenIds: string[] | null) {
+  if (kitchenIds === null) return undefined;
+  // Fail closed: an empty scope set is "sees nothing", never "sees the
+  // templates" — same rule the resolvers above apply to an unresolvable grant.
+  if (kitchenIds.length === 0) return sql`false`; // matches nothing
+  return or(
+    isNull(foodMenuRotationTable.kitchenId),
+    inArray(foodMenuRotationTable.kitchenId, kitchenIds),
+  );
+}
+
+/**
+ * Restricts a menu-rotation WRITE (update/delete/prune) to rows the caller owns
+ * outright. Brand-wide rows (kitchenId IS NULL) are excluded on purpose — the
+ * IN-list not matching NULL is the guard, not an accident. `null` = unrestricted.
+ */
+export function scopeRotationWriteCondition(kitchenIds: string[] | null) {
   if (kitchenIds === null) return undefined;
   if (kitchenIds.length === 0) return sql`false`; // matches nothing
   return inArray(foodMenuRotationTable.kitchenId, kitchenIds);
 }
 
-/** JS Date → ISO day of week (1 = Monday … 7 = Sunday). */
+/* ── Retiring a dish is a network-wide write, not a catalogue edit ───────────
+ *
+ * `dishes` is an ORG-WIDE master with no kitchen column, and resolveMenu joins
+ * it on isActive (see activeDish there), so flipping one dish to isActive=false
+ * empties that slot on EVERY kitchen's plate at once — including kitchens the
+ * caller has no scope over. PUT /dishes/:id carries isActive in its update
+ * whitelist and DELETE /dishes/:id is the same soft-deactivate, so both had to
+ * be guarded or the guard is decoration.
+ *
+ * The rule is deliberately NARROW, because a kitchen-scoped F&B manager is
+ * allowed to CREATE a dish (the B3 decision) and it would be incoherent to let
+ * them mint one they can never correct:
+ *   • editing a dish's ATTRIBUTES (name, component, unit, brands, photo,
+ *     preparations, qty lock) stays open to a scoped manager;
+ *   • RETIRING one is refused when a rotation row they do not own still serves
+ *     it — another kitchen's row, or a brand-wide (kitchenId IS NULL) template,
+ *     which is exactly the row set scopeRotationWriteCondition above already
+ *     keeps them out of.
+ * A dish nothing outside their kitchens serves is still theirs to retire.
+ */
+
+export interface DishRetirementBlockers {
+  dishName: string;
+  /** Live rotation cells outside the caller's kitchens still serving this dish. */
+  rotationCount: number;
+  /** Display names of the OTHER kitchens that would lose it off their menu. */
+  kitchenNames: string[];
+  /** A brand-wide template (kitchenId IS NULL) — i.e. every kitchen — serves it. */
+  brandWide: boolean;
+}
+
+/**
+ * The rotation cells that still serve `dishId` and that a caller restricted to
+ * `kitchenIds` does not own. `null` kitchenIds = unrestricted caller, who owns
+ * every rotation row; returns null when nothing outside their kitchens is left.
+ *
+ * Rotation is the reference that matters: sides are stored as ordinary rotation
+ * rows (schema/food.ts parentRotationId) so they are covered here too, while
+ * per-resident rules and dish_side_options only ever narrow what an already
+ * rotating dish produces.
+ */
+export async function findDishRotationOutsideKitchens(
+  dishId: string,
+  kitchenIds: string[] | null,
+): Promise<DishRetirementBlockers | null> {
+  if (kitchenIds === null) return null;
+  // An empty scope set owns no rotation row at all, so EVERY row is outside it.
+  const outside = kitchenIds.length
+    ? or(
+        isNull(foodMenuRotationTable.kitchenId),
+        notInArray(foodMenuRotationTable.kitchenId, kitchenIds),
+      )
+    : sql`true`;
+  const rows = await db
+    .select({
+      kitchenId: foodMenuRotationTable.kitchenId,
+      kitchenName: kitchensTable.name,
+      dishName: dishesTable.name,
+    })
+    .from(foodMenuRotationTable)
+    .innerJoin(dishesTable, eq(foodMenuRotationTable.dishId, dishesTable.id))
+    .leftJoin(kitchensTable, eq(foodMenuRotationTable.kitchenId, kitchensTable.id))
+    .where(and(
+      eq(foodMenuRotationTable.dishId, dishId),
+      eq(foodMenuRotationTable.isActive, true),
+      // Only cells that can still resolve matter — an expired seasonal window has
+      // nothing left to lose. Same rule findPortionRuleUsage applies below.
+      or(isNull(foodMenuRotationTable.effectiveTo), gte(foodMenuRotationTable.effectiveTo, new Date())),
+      outside,
+    ));
+  if (!rows.length) return null;
+  return {
+    dishName: rows[0]!.dishName,
+    rotationCount: rows.length,
+    kitchenNames: [...new Set(rows.map((r) => r.kitchenName).filter((n): n is string => !!n))],
+    brandWide: rows.some((r) => r.kitchenId === null),
+  };
+}
+
+/**
+ * Throws 403 unless the caller may withdraw `dishId` from the catalogue. A no-op
+ * for unrestricted callers and for a dish no out-of-scope rotation still serves.
+ * The message names the kitchens that would lose the dish — a refusal that does
+ * not say whose menu is in the way is one the manager cannot act on.
+ */
+export async function assertMayRetireDish(user: AuthUser, dishId: string): Promise<void> {
+  const blockers = await findDishRotationOutsideKitchens(
+    dishId,
+    await resolveAccessibleKitchenIds(user),
+  );
+  if (!blockers) return;
+  const shown = blockers.kitchenNames.slice(0, 4);
+  const rest = blockers.kitchenNames.length - shown.length;
+  const affected = [
+    ...shown,
+    ...(rest > 0 ? [`${rest} more kitchen${rest === 1 ? "" : "s"}`] : []),
+    ...(blockers.brandWide ? ["the brand-wide menu every kitchen is built from"] : []),
+  ].join(", ");
+  const slots = `${blockers.rotationCount} menu rotation slot${blockers.rotationCount === 1 ? "" : "s"}`;
+  // The affected kitchens belong in the TOP-LEVEL message, not only in details:
+  // api-fetch.ts surfaces `error` as the thrown Error and most toasts show that
+  // alone, and a refusal that does not say whose menu is in the way is one the
+  // manager cannot act on.
+  throw httpError(
+    403,
+    `"${blockers.dishName}" is still on ${slots} outside your kitchens — ${affected}`,
+    `Dishes are an organisation-wide master with no kitchen of their own, so retiring one takes it off the plate everywhere. Take it off those rotations first, or ask an org-wide admin to retire the dish.`,
+  );
+}
+
+/**
+ * The UTC-midnight instant of an instant's IST calendar day — the anchor every
+ * calendar helper below counts from.
+ *
+ * A serviceDate reaching this module is an IST day-start instant (18:30 UTC on
+ * the PREVIOUS calendar day, see ymdToIstDayStart), so reading it with the host
+ * getters made the menu resolve to the wrong weekday on any box whose TZ was not
+ * Asia/Kolkata. Which plate is served must not depend on an env var.
+ */
+function istCalendarDayUtc(date: Date): Date {
+  const p = istParts(date);
+  return new Date(Date.UTC(p.y, p.m - 1, p.d));
+}
+
+/** Instant → ISO day of week of its IST date (1 = Monday … 7 = Sunday). */
 export function isoDayOfWeek(date: Date): number {
-  const d = date.getDay(); // 0 = Sun … 6 = Sat
+  const d = istCalendarDayUtc(date).getUTCDay(); // 0 = Sun … 6 = Sat
   return d === 0 ? 7 : d;
 }
 
-/** ISO week number (1–53) for rotation cycling. */
-export function isoWeekNumber(date: Date): number {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-  const dayNum = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+/*
+ * isoWeekNumber() lived here and is deliberately gone. It resets to 1 every
+ * January, so using it as the rotation cycle's phase made the menu jump an
+ * arbitrary number of weeks on 1 January (L11). Nothing may reintroduce it for
+ * that purpose — istWeekIndex below is the counter, and leaving a plausible-
+ * looking ISO-week helper exported next to it was an invitation to reach for the
+ * wrong one. Reach for date-fns if a display-only ISO week number is ever needed.
+ */
+
+/**
+ * Continuous Monday-week index of an instant's IST date, counting from Monday
+ * 1970-01-05 (= 0). Never resets, which is the whole point: it is the counter a
+ * rotation cycle's phase is measured with.
+ */
+export function istWeekIndex(date: Date): number {
+  const days = Math.floor(istCalendarDayUtc(date).getTime() / 86400000);
+  return Math.floor((days - 4) / 7); // 1970-01-01 was a Thursday; day 4 is the Monday
 }
 
 export interface ResolvedDish {
@@ -397,14 +634,31 @@ export async function resolveMenu(
     or(isNull(foodMenuRotationTable.effectiveFrom), lte(foodMenuRotationTable.effectiveFrom, serviceDate)),
     or(isNull(foodMenuRotationTable.effectiveTo), gte(foodMenuRotationTable.effectiveTo, serviceDate)),
   );
+  // Both queries below join dishes on isActive: a soft-deleted dish is gone from
+  // the catalogue, so it must be gone from the plate too. Keeping the predicate on
+  // the week probe as well as the row fetch preserves the invariant above — a week
+  // whose only rows point at deleted dishes is not a week the cycle may land on.
+  const activeDish = eq(dishesTable.isActive, true);
   const weeksRows = await db
-    .selectDistinct({ w: foodMenuRotationTable.rotationWeek })
+    .selectDistinct({ w: foodMenuRotationTable.rotationWeek, from: foodMenuRotationTable.effectiveFrom })
     .from(foodMenuRotationTable)
-    .where(cellWhere);
-  const weeks = weeksRows.map((r) => r.w).sort((a, b) => a - b);
+    .innerJoin(dishesTable, eq(foodMenuRotationTable.dishId, dishesTable.id))
+    .where(and(cellWhere, activeDish));
+  const weeks = [...new Set(weeksRows.map((r) => r.w))].sort((a, b) => a - b);
   const numWeeks = weeks.length || 1;
+
+  // Cycle phase counts whole weeks since the cell's own start, NOT the ISO week
+  // number: that counter resets on 1 January, so a 3-week rotation skipped a week
+  // and a 4-week rotation repeated one every new year. Anchored on the earliest
+  // effectiveFrom in the cell (the epoch Monday when the cell has no seasonal
+  // window at all) the phase advances by exactly one every week, for ever.
+  const anchor = weeksRows.reduce<Date | null>(
+    (min, r) => (r.from && (!min || r.from < min) ? r.from : min),
+    null,
+  );
+  const phase = istWeekIndex(serviceDate) - (anchor ? istWeekIndex(anchor) : 0);
   const rotationWeek = weeks.length
-    ? weeks[(isoWeekNumber(serviceDate) - 1) % numWeeks]!
+    ? weeks[((phase % numWeeks) + numWeeks) % numWeeks]!
     : 1;
 
   const rows = await db
@@ -423,7 +677,7 @@ export async function resolveMenu(
     })
     .from(foodMenuRotationTable)
     .innerJoin(dishesTable, eq(foodMenuRotationTable.dishId, dishesTable.id))
-    .where(and(cellWhere, eq(foodMenuRotationTable.rotationWeek, rotationWeek)))
+    .where(and(cellWhere, activeDish, eq(foodMenuRotationTable.rotationWeek, rotationWeek)))
     .orderBy(foodMenuRotationTable.sortOrder);
 
   // A side's parent row lives in the same resolved cell, so the id → dishId map
@@ -495,9 +749,10 @@ export async function computeOrderItems(
   if (menu.length === 0) return [];
   const rules = await resolveRulesByDish(brand, mealType, menu.map((m) => m.dishId));
   const items: ComputedItem[] = [];
+  const unpriced: string[] = [];
   for (const m of menu) {
     const rule = rules.get(m.dishId);
-    if (!rule) continue;
+    if (!rule) { unpriced.push(m.dishName); continue; }
     // A quantity-locked dish ignores the meal headcount entirely — it is ordered
     // for its own pinned number of people. Applying it here covers every caller
     // of this helper (legacy POST /food/orders and the quantity-only fallback in
@@ -510,7 +765,64 @@ export async function computeOrderItems(
       personsCount: persons,
     });
   }
+  // A menu dish with no active portion rule is dropped from the order: the
+  // property still sees it advertised while the kitchen is never told to cook it.
+  // The rotation write path refuses to create that state (dishesMissingPortionRule
+  // in routes/food.ts), but deleting the rule afterwards still reaches it, so the
+  // drop is at least recorded instead of happening in silence.
+  if (unpriced.length) {
+    logger.warn(
+      { kitchenId, brand, mealType, serviceDate: istDayYmd(serviceDate), dishes: unpriced },
+      "food: menu dishes dropped from order — no active per-resident portion rule",
+    );
+  }
   return items;
+}
+
+export interface PortionRuleUsage {
+  dishId: string;
+  dishName: string;
+  /** Live rotation cells still serving this dish for the rule's brand + meal. */
+  rotationCount: number;
+  /** Kitchens whose menu would start dropping the dish. */
+  kitchenIds: string[];
+}
+
+/**
+ * The rotation cells that still serve `dishId` for this (brand, mealType) and
+ * would therefore silently drop it the moment its per-resident rule is deleted.
+ * Returns null when nothing serves it — i.e. the rule is free to delete.
+ *
+ * The delete-path twin of dishesMissingPortionRule (routes/food.ts), which guards
+ * the rotation write path against the same end state: a dish on the menu that no
+ * order can ever carry.
+ */
+export async function findPortionRuleUsage(
+  brand: string,
+  mealType: string,
+  dishId: string,
+): Promise<PortionRuleUsage | null> {
+  const rows = await db
+    .select({ kitchenId: foodMenuRotationTable.kitchenId, dishName: dishesTable.name })
+    .from(foodMenuRotationTable)
+    .innerJoin(dishesTable, eq(foodMenuRotationTable.dishId, dishesTable.id))
+    .where(and(
+      eq(foodMenuRotationTable.dishId, dishId),
+      eq(foodMenuRotationTable.brand, brand as any),
+      eq(foodMenuRotationTable.mealType, mealType as any),
+      eq(foodMenuRotationTable.isActive, true),
+      eq(dishesTable.isActive, true),
+      // Only cells that can still resolve matter — an expired seasonal window
+      // has nothing left to lose.
+      or(isNull(foodMenuRotationTable.effectiveTo), gte(foodMenuRotationTable.effectiveTo, new Date())),
+    ));
+  if (!rows.length) return null;
+  return {
+    dishId,
+    dishName: rows[0]!.dishName,
+    rotationCount: rows.length,
+    kitchenIds: [...new Set(rows.map((r) => r.kitchenId).filter((k): k is string => !!k))],
+  };
 }
 
 export interface OrderPreviewItem {
@@ -785,8 +1097,10 @@ export async function resolveExpectedDeliveryAt(
   if (!w?.serviceTime) return null;
   const [h, m] = w.serviceTime.split(":").map(Number);
   if (h == null || isNaN(h)) return null;
-  const d = new Date(serviceDate);
-  d.setHours(h, m || 0, 0, 0);
+  // serviceTime is an IST wall-clock time, so anchor it with atIst rather than
+  // Date#setHours — the delivery SLA a property is measured against cannot move
+  // by five and a half hours because the host clock is set to UTC.
+  const d = atIst(istDayYmd(serviceDate), `${h}:${m || 0}`);
   return new Date(d.getTime() + (w.leadTimeMinutes ?? 0) * 60000);
 }
 

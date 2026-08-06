@@ -38,6 +38,11 @@ FROM base AS api-build
 # Skip pino-pretty worker bundles — they embed absolute build paths that break
 # when the runtime image copies dist/ to a different WORKDIR (/app).
 ENV API_BUNDLE_TARGET=production
+# Invariant: the api runtime stage below copies ONLY dist/ — no node_modules. A
+# dependency left as a runtime import is therefore ERR_MODULE_NOT_FOUND on first
+# use (this is how SES email and SNS webhooks shipped broken). strict makes the
+# bundle verifier fail the image build instead of merely warning.
+ENV API_BUNDLE_VERIFY=strict
 RUN pnpm --filter @workspace/api-server run build
 
 # ─────────────────────────────────────────────────────────────────────────────

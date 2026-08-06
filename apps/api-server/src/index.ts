@@ -11,6 +11,7 @@ import {
   runAuditAutoClose,
 } from "./lib/audit-jobs.js";
 import { runReportWorker } from "./lib/audit-report-service.js";
+import { sweepPendingOutbox } from "@workspace/notify-core";
 import { RUN_SCHEDULERS } from "./config/env.js";
 
 const rawPort = process.env["PORT"];
@@ -75,7 +76,27 @@ const server: Server = app.listen(port, "0.0.0.0", (err?: Error) => {
     const auditInterval = setInterval(auditJobs, 5 * 60 * 1000);
     auditJobs();
 
-    scheduledTimers.push(slaInterval, financeInterval, auditInterval);
+    // Notification outbox drain (H3). Request-path inline delivery is bounded-retry
+    // and deliberately NOT terminal — a send that exhausts its attempts stays
+    // PENDING so it can be retried later. Without a drain that is a different
+    // permanent non-delivery, so the api gets its own: the shipped compose file
+    // has no notify-service worker, and REDIS_URL may be unset. The sweep charges
+    // each pass against MAX_DELIVERY_ATTEMPTS and marks the row FAILED once that
+    // budget is spent, so this cannot become a perpetual retry loop.
+    // RUN_SCHEDULERS defaults ON (config/env.ts), so this runs by default; the
+    // in-flight latch stops a slow pass from overlapping the next tick, and the
+    // sweep's atomic per-row claim covers the multi-instance case. Never throws;
+    // returns the number of rows it acted on.
+    let outboxSweeping = false;
+    const outboxInterval = setInterval(() => {
+      if (outboxSweeping) return;
+      outboxSweeping = true;
+      void sweepPendingOutbox()
+        .then((n) => { if (n) logger.info({ n }, "notification outbox swept"); })
+        .finally(() => { outboxSweeping = false; });
+    }, 60_000);
+
+    scheduledTimers.push(slaInterval, financeInterval, auditInterval, outboxInterval);
   }
 });
 

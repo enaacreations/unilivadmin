@@ -40,7 +40,7 @@ const VIEW: Record<Permission, boolean> = { view: true, create: false, edit: fal
 const VE = FULL;
 
 /** All food-ops modules, for roles (SUPER_ADMIN / AUDIT_READONLY) granted everything. */
-const FOOD_MODULES: Module[] = [
+export const FOOD_MODULES: Module[] = [
   "FOOD_RECEIVE_UPDATE", "FOOD_DELIVERY_TRACKING", "FOOD_DASHBOARD",
   "FOOD_ALL_ORDERS", "FOOD_PLACE_ORDER", "FOOD_KITCHEN_SUMMARY",
   "FOOD_DISPATCH", "FOOD_CONFIRM_DELIVERY", "FOOD_WASTE_TRACKING",
@@ -48,47 +48,88 @@ const FOOD_MODULES: Module[] = [
 ];
 
 /** All Audit & Inspection modules, for the everything-granted roles. */
-const AUDIT_MODULES: Module[] = [
+export const AUDIT_MODULES: Module[] = [
   "AUDIT_DASHBOARD", "AUDIT_REGISTER", "AUDIT_EXECUTION",
   "AUDIT_REVIEW", "AUDIT_REPORTS", "AUDIT_SCHEDULES",
   "AUDIT_TEMPLATES", "AUDIT_ADMIN",
 ];
 
+/**
+ * Every module in the system. The three everything-granted roles (SUPER_ADMIN,
+ * AUDIT_READONLY, OPS_EXCELLENCE) are built from this one list instead of three
+ * hand-copied ones, so a module added to the `Module` union cannot end up
+ * silently missing from an admin role. Mirrors the frontend copy in
+ * apps/uniliv-admin/src/lib/permissions.ts — permissions-sync.test.ts locks the
+ * two together.
+ */
+export const ALL_MODULES: Module[] = [
+  "DASHBOARD","EXECUTIVE_DASHBOARD","PROPERTIES","RESIDENTS","COMPLAINTS","LAUNDRY","COMMUNICATIONS",
+  "EMPLOYEES","RECRUITMENT","LND","VENDORS","INDENTS","PURCHASE_ORDERS","GRN","INVENTORY",
+  "RECIPES","MENU_PLANNING","SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
+  "BILLING_CYCLES","REMINDERS","BANKING","EXPENSES",
+  "FACILITY","ELECTRICITY","RESIDENT_ATTENDANCE","IOT",
+  "USERS","SETTINGS","AUDIT_LOG",
+  ...FOOD_MODULES,
+  ...AUDIT_MODULES,
+];
+
 type RoleMatrix = Partial<Record<Module, Partial<Record<Permission, boolean>>>>;
 
 export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
-  SUPER_ADMIN: Object.fromEntries(([
-    "DASHBOARD","EXECUTIVE_DASHBOARD","PROPERTIES","RESIDENTS","COMPLAINTS","LAUNDRY","COMMUNICATIONS",
-    "EMPLOYEES","RECRUITMENT","LND","VENDORS","INDENTS","PURCHASE_ORDERS","GRN","INVENTORY",
-    "RECIPES","MENU_PLANNING","SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
-    "BILLING_CYCLES","REMINDERS","BANKING","EXPENSES",
-    "FACILITY","ELECTRICITY","RESIDENT_ATTENDANCE","IOT",
-    "USERS","SETTINGS","AUDIT_LOG",
-    ...FOOD_MODULES,
-    ...AUDIT_MODULES,
-  ] as Module[]).map(m => [m, FULL])) as RoleMatrix,
+  // Break-glass parity role: deliberately holds BOTH FOOD_DISPATCH:edit and
+  // FOOD_CONFIRM_DELIVERY:edit. Every operational role keeps those two apart
+  // (see the separation-of-duties note on the kitchen roles below).
+  SUPER_ADMIN: Object.fromEntries(ALL_MODULES.map(m => [m, FULL])) as RoleMatrix,
   HR_MANAGER: { DASHBOARD: VIEW, EMPLOYEES: FULL, RECRUITMENT: FULL, LND: FULL, USERS: FULL, SETTINGS: VIEW },
   OPERATIONS_MANAGER: { DASHBOARD: VIEW, PROPERTIES: FULL, RESIDENTS: FULL, COMPLAINTS: FULL, LAUNDRY: FULL, COMMUNICATIONS: FULL, FACILITY: FULL, ELECTRICITY: FULL, RESIDENT_ATTENDANCE: FULL, IOT: FULL, WALLET: VIEW },
   PROCUREMENT_MANAGER: { DASHBOARD: VIEW, VENDORS: FULL, INDENTS: FULL, PURCHASE_ORDERS: FULL, GRN: FULL, INVENTORY: FULL },
-  KITCHEN_MANAGER: { DASHBOARD: VIEW, RECIPES: FULL, MENU_PLANNING: FULL, INVENTORY: VIEW },
+  // M15: Menu Planning seeds its property picker from GET /properties, which
+  // this role must reach — but through `authorizeAny(["PROPERTIES",
+  // "MENU_PLANNING"], "view")` on that ONE list handler (properties.ts), NOT a
+  // PROPERTIES cell here. The whole cell would also have unlocked
+  // /properties/assignable-unit-leads, which has no scoping and returns the
+  // name, email and role of every unit lead in the org.
+  // INDENTS is create-only on purpose: POST /menu-plans/:id/generate-indent
+  // mints a procurement document, so the grant must be explicit rather than ride
+  // in on MENU_PLANNING:edit — but the indent register itself is org-wide and
+  // unscoped, so no view/edit/delete here.
+  KITCHEN_MANAGER: {
+    DASHBOARD: VIEW, RECIPES: FULL, MENU_PLANNING: FULL, INVENTORY: VIEW,
+    INDENTS: { view: false, create: true, edit: false, delete: false },
+  },
   PROJECTS_MANAGER: { DASHBOARD: VIEW, PROPERTY_LEADS: FULL, LEDGER: VIEW, PAYMENTS: VIEW, INDENTS: VIEW, PURCHASE_ORDERS: VIEW },
   PROPERTY_ACQUISITION: { DASHBOARD: VIEW, PROPERTY_LEADS: FULL },
   FINANCE: { DASHBOARD: VIEW, EXECUTIVE_DASHBOARD: VIEW, RESIDENTS: VIEW, LEDGER: FULL, PAYMENTS: FULL, WALLET: FULL, BILLING_CYCLES: FULL, REMINDERS: FULL, BANKING: FULL, EXPENSES: FULL, INDENTS: VIEW, PURCHASE_ORDERS: VIEW },
   SALES_EXECUTIVE: { DASHBOARD: VIEW, SALES_LEADS: FULL, SALES_DASHBOARD: VIEW, PROPERTY_LEADS: VIEW },
   WARDEN: { DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: FULL, COMPLAINTS: FULL, LAUNDRY: FULL, COMMUNICATIONS: { view: true, create: true, edit: false, delete: false }, RESIDENT_ATTENDANCE: FULL, FACILITY: VIEW, ELECTRICITY: VIEW, IOT: VIEW, WALLET: VIEW },
   VENDOR_RESTRICTED: { DASHBOARD: VIEW },
-  AUDIT_READONLY: Object.fromEntries(([
-    "DASHBOARD","EXECUTIVE_DASHBOARD","PROPERTIES","RESIDENTS","COMPLAINTS","LAUNDRY","COMMUNICATIONS",
-    "EMPLOYEES","RECRUITMENT","LND","VENDORS","INDENTS","PURCHASE_ORDERS","GRN","INVENTORY",
-    "RECIPES","MENU_PLANNING","SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
-    "BILLING_CYCLES","REMINDERS","BANKING","EXPENSES",
-    "FACILITY","ELECTRICITY","RESIDENT_ATTENDANCE","IOT",
-    "USERS","SETTINGS","AUDIT_LOG",
-    ...FOOD_MODULES,
-    ...AUDIT_MODULES,
-  ] as Module[]).map(m => [m, VIEW])) as RoleMatrix,
+  AUDIT_READONLY: Object.fromEntries(ALL_MODULES.map(m => [m, VIEW])) as RoleMatrix,
 
   // ── Food Ordering & Kitchen Operations roles (PRD §5 authoritative matrix) ──
+  //
+  // SEPARATION OF DUTIES (C3) — the party that SHIPS must never be the party
+  // that CERTIFIES RECEIPT. Concretely: no operational role may hold
+  // FOOD_DISPATCH:edit and FOOD_CONFIRM_DELIVERY:edit at the same time.
+  //   receiving side  — UNIT_LEAD, CLUSTER_MANAGER: confirm-delivery V·E, and
+  //                     dispatch either absent (UNIT_LEAD) or view-only.
+  //   shipping side   — FNB_SUPERVISOR / FNB_MANAGER / FNB_ZONAL_HEAD: dispatch
+  //                     V·E, confirm-delivery VIEW only.
+  //   oversight       — CITY_HEAD / ZONAL_HEAD / SVP: view-only on both.
+  // Only SUPER_ADMIN and OPS_EXCELLENCE hold both edits (break-glass parity).
+  // Do NOT widen FOOD_CONFIRM_DELIVERY for a kitchen role to clear a 403 — a
+  // 403 there means a dispatch path is trying to certify its own receipt, and
+  // the route is what has to change. permissions-sync.test.ts asserts this.
+  //
+  // FOOD_ORG deliberately has NO operational holder — only SUPER_ADMIN /
+  // OPS_EXCELLENCE (FULL) and AUDIT_READONLY (VIEW). That is the documented
+  // intent, not an omission: FOOD_MODULE_TEST_CASES.md §0.3 states it outright
+  // ("granted **only** to …") and negative case M-05 asserts CLUSTER_MANAGER
+  // gets 403 on /zones, /agencies and /scopes. The module gates the org spine
+  // itself — zones, cities, clusters, agencies, and the user_scopes grants that
+  // every other food scope resolves from. FOOD_ORG:edit is what mints a scope
+  // row, so any holder can widen its own access; it stays a platform-admin
+  // module. Grant a geo scope instead of this cell.
+  //
   // Ops users
   UNIT_LEAD: {
     // Food-focused field role (product decision 08-Jul-2026): the launcher/nav
@@ -128,16 +169,20 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
   },
   // B3-24: OPS_EXCELLENCE has FULL super-admin parity across every module (incl.
   // USERS / SETTINGS / AUDIT_LOG / FINANCE), per explicit product decision.
-  OPS_EXCELLENCE: Object.fromEntries(([
-    "DASHBOARD","EXECUTIVE_DASHBOARD","PROPERTIES","RESIDENTS","COMPLAINTS","LAUNDRY","COMMUNICATIONS",
-    "EMPLOYEES","RECRUITMENT","LND","VENDORS","INDENTS","PURCHASE_ORDERS","GRN","INVENTORY",
-    "RECIPES","MENU_PLANNING","SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
-    "BILLING_CYCLES","REMINDERS","BANKING","EXPENSES",
-    "FACILITY","ELECTRICITY","RESIDENT_ATTENDANCE","IOT",
-    "USERS","SETTINGS","AUDIT_LOG",
-    ...FOOD_MODULES,
-    ...AUDIT_MODULES,
-  ] as Module[]).map(m => [m, FULL])) as RoleMatrix,
+  // Like SUPER_ADMIN this is the one other role allowed to hold dispatch-edit
+  // and confirm-delivery-edit together; it is break-glass, not an operator seat.
+  OPS_EXCELLENCE: Object.fromEntries(ALL_MODULES.map(m => [m, FULL])) as RoleMatrix,
+  // SVP holds strictly LESS food access than ZONAL_HEAD below it. That is
+  // intent, not drift: FOOD_MODULE_TEST_CASES.md §0.3 spells this seat out as
+  // "dispatch VIEW, kitchen-summary VIEW, place/confirm/waste VIEW, reports
+  // VIEW; **no FOOD_ALL_ORDERS**" — an executive summary viewer, never an
+  // order-level operator (FOOD_ALL_ORDERS is the row-level register, which
+  // ZONAL_HEAD/CITY_HEAD hold V·E because they work individual orders).
+  // The other apparent gap, FOOD_RECEIVE_UPDATE, confers nothing either way:
+  // it and FOOD_DELIVERY_TRACKING are PRD placeholders that gate zero routes
+  // and zero screens (no references outside this file on either side), so
+  // widening them would buy no capability. Do not close either gap by copying
+  // ZONAL_HEAD's row.
   SENIOR_VICE_PRESIDENT: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: VIEW, FOOD_DISPATCH: VIEW, FOOD_CONFIRM_DELIVERY: VIEW,
@@ -145,7 +190,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     // Audit & Inspection: executive oversight viewer — UL + CM global, no CX (C-2).
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
   },
-  // Kitchen users
+  // Kitchen users — the SHIPPING side of the separation of duties noted above:
+  // FOOD_DISPATCH V·E with FOOD_CONFIRM_DELIVERY VIEW is deliberate, not an
+  // oversight. These roles load and send the trip; the receiving property
+  // certifies what actually arrived.
   FNB_SUPERVISOR: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: VE, FOOD_DISPATCH: VE, FOOD_CONFIRM_DELIVERY: VIEW,
@@ -157,12 +205,27 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
     // F&B managers own the food operating configuration (dishes, rotation,
     // cutoffs, quantity rules) — includes Masters, which shares this gate.
+    //
+    // B3 — the ORG-WIDE exception, and it is only three-quarters true. Four
+    // config surfaces have no property or kitchen column at all, so they are
+    // brand-wide by construction and only an org-wide caller may WRITE them
+    // (food.ts / food-ops.ts deniedGlobalConfig): per_resident_rules (portions),
+    // food_meal_config (which meals exist), and the two system_config menu-rule
+    // switches. A kitchen-scoped F&B manager still creates and edits the DISH —
+    // dish writes carry no scope guard — and an org-wide administrator supplies
+    // the portion; the dish drawer says so rather than blocking the save.
+    // Keep this in sync with the same block in apps/uniliv-admin/src/lib/permissions.ts.
     FOOD_SETTINGS: VE,
     // Kitchen & Menu lives inside the Food module (13-Jul): recipe and menu
     // management belongs to F&B managers (kitchen managers / ops excellence
     // already hold it); unit leads deliberately have no grant here. Keep in
     // sync with the frontend copy.
     RECIPES: VE, MENU_PLANNING: VE,
+    // M15: same rationale as KITCHEN_MANAGER — GET /properties is reached
+    // through the MENU_PLANNING gate (authorizeAny on that one list handler),
+    // not through a PROPERTIES cell, so the unscoped unit-lead roster stays shut.
+    // INDENTS is create-only, for generate-indent.
+    INDENTS: { view: false, create: true, edit: false, delete: false },
   },
   FNB_ZONAL_HEAD: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,

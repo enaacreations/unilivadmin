@@ -19,7 +19,8 @@ import {
   toPaise,
   RazorpayNotConfiguredError,
 } from "../lib/razorpay.js";
-import { enqueueDelivery, processDelivery, queueEnabled } from "@workspace/notify-core";
+import { enqueueDelivery, processDeliveryInline, queueEnabled } from "@workspace/notify-core";
+import { logger } from "../lib/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ad-hoc outbound message helper.
@@ -48,12 +49,22 @@ async function sendAdHoc(
       entityId: opts.entityId ?? null,
       status: "PENDING",
     });
+    // Same shape as notification-service's notify() (H3b/H3d): enqueueDelivery
+    // only RETURNS false when REDIS_URL is unset — an unreachable Redis throws,
+    // and that throw used to fall into the catch below and discard the send
+    // silently. And processDelivery's default ctx is isLastAttempt:true, which
+    // marked a transient failure terminally FAILED with nothing anywhere to
+    // reset it; processDeliveryInline retries and leaves the row PENDING for the
+    // outbox sweep. Payment-link SMS/email is exactly the traffic this lost.
+    let queued = false;
     if (queueEnabled()) {
-      const queued = await enqueueDelivery(id);
-      if (!queued) await processDelivery(id);
-    } else {
-      await processDelivery(id);
+      try {
+        queued = await enqueueDelivery(id);
+      } catch (err) {
+        logger.warn({ err, outboxId: id }, "notification enqueue failed — delivering inline");
+      }
     }
+    if (!queued) await processDeliveryInline(id);
   } catch {
     // swallow — a delivery failure must never break the API request
   }
@@ -422,7 +433,15 @@ router.post("/:id/payment-link", authenticate, authorize("RESIDENTS", "edit"), a
       description: `Dues payment — ${resident.name}`,
       customer: { name: resident.name, contact: resident.phone, email: resident.email },
       expireBySeconds: 7 * 24 * 60 * 60, // 7 days
-      notes: { kind: "RESIDENT_DUES", residentId, propertyId: resident.propertyId },
+      // acceptPartial is deliberately NOT set: settleResidentDues treats one
+      // dues link as exactly ONE collection (one SUCCESS payment row, one pass
+      // of the ledger auto-settle loop). Turning partial payment on here would
+      // break that invariant — the top-up path, which does accept partial, has
+      // to reconcile instalments against a link cap to stay correct.
+      // linkRef mirrors the wallet top-up link: our own correlation token,
+      // copied by Razorpay onto every payment made against this link, and the
+      // key settleResidentDues dedupes the two event shapes on.
+      notes: { kind: "RESIDENT_DUES", residentId, propertyId: resident.propertyId, linkRef: newId() },
     });
 
     const smsText = `Hi, pay your dues of ₹${amount} for ${resident.name}: ${link.shortUrl} (valid 7 days)`;
@@ -472,6 +491,9 @@ router.post("/:id/payments", authenticate, authorize("RESIDENTS", "edit"), async
     const [row] = await db.insert(paymentsTable).values({
       id: newId(),
       residentId: req.params["id"]!,
+      // Property the money was collected AT (M10) — snapshotted so a later
+      // transfer cannot re-attribute this collection to another property.
+      propertyId: resident.propertyId,
       amount: body.amount.toString(),
       mode: body.mode,
       status: body.status || "PENDING",

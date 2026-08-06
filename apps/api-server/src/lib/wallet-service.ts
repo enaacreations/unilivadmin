@@ -27,6 +27,61 @@ export interface WalletTxMeta {
   reversalOf?: string | null;
 }
 
+// ── Money rounding ─────────────────────────────────────────────────────────
+// Invariant: nothing but a 2-decimal value is ever written to a money column.
+// Balances are JS floats persisted into unbounded `numeric` columns, so an
+// un-rounded intermediate (0.1 + 0.2) would be stored verbatim and leak into
+// staff-facing text such as the checkout refund instruction. Every computed
+// amount/balance goes through this at the point of write.
+export function roundMoney(value: number): number {
+  return (Math.sign(value) * Math.round((Math.abs(value) + Number.EPSILON) * 100)) / 100;
+}
+
+// ── Unique-violation detection ─────────────────────────────────────────────
+// Every idempotency guard on a money path is a SELECT-then-INSERT plus a unique
+// index; the index is what holds under concurrency, so each writer has to
+// recognise its violation and translate it into "already applied". Lives here
+// so the webhook and the wallet router share one definition of that check.
+export function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } } | null;
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
+
+// ── Transaction direction ──────────────────────────────────────────────────
+// Invariant: direction is a property of the type, never inferred from an ad-hoc
+// membership list at the call site. `REFUND_WITHDRAWAL` is a DEBIT (checkout
+// hands cash back and drains the wallet) — treating it as a credit made the
+// reversal path debit a second time. `REVERSAL` is deliberately null: its sign
+// is that of the transaction it reverses, so callers must resolve it from the
+// original row's type instead.
+export type WalletTxnDirection = "CREDIT" | "DEBIT";
+
+export type CreditTxnType = "TOPUP" | "ADJUSTMENT_CREDIT" | "REVERSAL";
+
+export type DebitTxnType =
+  | "PAYMENT"
+  | "PARTIAL_PAYMENT"
+  | "ADJUSTMENT_DEBIT"
+  | "REFUND_WITHDRAWAL"
+  | "REVERSAL";
+
+export type WalletTxnType = CreditTxnType | DebitTxnType;
+
+export const WALLET_TXN_DIRECTION: Record<WalletTxnType, WalletTxnDirection | null> = {
+  TOPUP: "CREDIT",
+  ADJUSTMENT_CREDIT: "CREDIT",
+  PAYMENT: "DEBIT",
+  PARTIAL_PAYMENT: "DEBIT",
+  ADJUSTMENT_DEBIT: "DEBIT",
+  REFUND_WITHDRAWAL: "DEBIT",
+  REVERSAL: null,
+};
+
+/** Direction a stored transaction type moves money; null for REVERSAL (see above). */
+export function txnDirection(type: string): WalletTxnDirection | null {
+  return WALLET_TXN_DIRECTION[type as WalletTxnType] ?? null;
+}
+
 // ── Lazy wallet creation (outside a transaction is fine for reads) ─────────
 export async function getOrCreateWallet(residentId: string) {
   const [existing] = await db
@@ -54,16 +109,14 @@ export async function getWalletConfig(propertyId: string) {
   };
 }
 
-// ── Atomic credit (TOPUP / ADJUSTMENT_CREDIT / REFUND_WITHDRAWAL / REVERSAL)
+// ── Atomic credit (TOPUP / ADJUSTMENT_CREDIT / REVERSAL) ───────────────────
 // Must be called inside a db.transaction().
+// The union is CreditTxnType so a debit-only type (REFUND_WITHDRAWAL) cannot be
+// credited by mistake — the compiler enforces the direction map above.
 export async function creditWallet(
   walletId: string,
   amount: number,
-  type:
-    | "TOPUP"
-    | "ADJUSTMENT_CREDIT"
-    | "REFUND_WITHDRAWAL"
-    | "REVERSAL",
+  type: CreditTxnType,
   meta: WalletTxMeta,
   tx: TxClient
 ) {
@@ -74,8 +127,9 @@ export async function creditWallet(
     .for("update");
   if (!wallet) throw new Error("Wallet not found");
 
-  const balanceBefore = Number(wallet.balance);
-  const balanceAfter = balanceBefore + amount;
+  const creditAmount = roundMoney(amount);
+  const balanceBefore = roundMoney(Number(wallet.balance));
+  const balanceAfter = roundMoney(balanceBefore + creditAmount);
 
   await tx
     .update(walletsTable)
@@ -89,7 +143,7 @@ export async function creditWallet(
       walletId,
       residentId: wallet.residentId,
       type,
-      amount: String(amount),
+      amount: String(creditAmount),
       balanceBefore: String(balanceBefore),
       balanceAfter: String(balanceAfter),
       description: meta.description,
@@ -111,12 +165,7 @@ export async function creditWallet(
 export async function debitWallet(
   walletId: string,
   amount: number,
-  type:
-    | "PAYMENT"
-    | "PARTIAL_PAYMENT"
-    | "ADJUSTMENT_DEBIT"
-    | "REFUND_WITHDRAWAL"
-    | "REVERSAL",
+  type: DebitTxnType,
   meta: WalletTxMeta,
   config: { minimumBalance: number },
   tx: TxClient
@@ -128,8 +177,9 @@ export async function debitWallet(
     .for("update");
   if (!wallet) throw new Error("Wallet not found");
 
-  const balanceBefore = Number(wallet.balance);
-  const balanceAfter = balanceBefore - amount;
+  const debitAmount = roundMoney(amount);
+  const balanceBefore = roundMoney(Number(wallet.balance));
+  const balanceAfter = roundMoney(balanceBefore - debitAmount);
 
   if (balanceAfter < config.minimumBalance) {
     const err: Error & {
@@ -139,9 +189,9 @@ export async function debitWallet(
     err.statusCode = 422;
     err.details = {
       currentBalance: balanceBefore,
-      requestedDebit: amount,
+      requestedDebit: debitAmount,
       minimumBalance: config.minimumBalance,
-      maxAllowedDebit: balanceBefore - config.minimumBalance,
+      maxAllowedDebit: roundMoney(balanceBefore - config.minimumBalance),
     };
     throw err;
   }
@@ -158,7 +208,7 @@ export async function debitWallet(
       walletId,
       residentId: wallet.residentId,
       type,
-      amount: String(amount),
+      amount: String(debitAmount),
       balanceBefore: String(balanceBefore),
       balanceAfter: String(balanceAfter),
       description: meta.description,

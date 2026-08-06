@@ -15,6 +15,8 @@ executiveRouter.get("/kpis", async (_req, res) => {
     const occupancy = beds.total ? Math.round((residents.count / beds.total) * 1000) / 10 : 0;
 
     const start = new Date(); start.setDate(1); start.setHours(0, 0, 0, 0);
+    // Org-wide totals: no property dimension, so nothing to attribute and no
+    // disagreement with the property-scoped collections readers (M10).
     const [revenue] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric), 0)::float` }).from(paymentsTable).where(and(eq(paymentsTable.status, "SUCCESS"), gte(paymentsTable.createdAt, start)));
     const [outstanding] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric), 0)::float` }).from(paymentsTable).where(eq(paymentsTable.status, "PENDING"));
     const [openCmp] = await db.select({ count: sql<number>`count(*)::int` }).from(complaintsTable).where(sql`status NOT IN ('RESOLVED', 'CLOSED')`);
@@ -116,7 +118,11 @@ executiveRouter.get("/top-overdue", async (_req, res) => {
   try {
     const rows = await db.select({
       id: paymentsTable.id, residentId: paymentsTable.residentId, amount: paymentsTable.amount, dueDate: paymentsTable.createdAt,
-      residentName: residentsTable.name, propertyId: residentsTable.propertyId,
+      residentName: residentsTable.name,
+      // An unpaid charge is chased where the resident lives NOW, so this stays
+      // on residents.propertyId. Collected money is the other way round — it is
+      // attributed to payments.property_id, the property it was taken at (M10).
+      propertyId: residentsTable.propertyId,
     })
       .from(paymentsTable)
       .leftJoin(residentsTable, eq(paymentsTable.residentId, residentsTable.id))

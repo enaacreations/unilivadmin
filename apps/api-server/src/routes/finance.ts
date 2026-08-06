@@ -517,6 +517,19 @@ financeRouter.post("/bank-lines/:id/confirm", authenticate, authorize("BANKING",
     const useResident = residentId || line.matchedResidentId;
     const preselectedEntry: string | null = ledgerEntryId || line.matchedLedgerEntryId || null;
     if (!useResident) { res.status(400).json({ success: false, error: "residentId required" }); return; }
+    // Property the money was collected AT (M10), snapshotted on the payment row
+    // so a later inter-property transfer cannot re-attribute this collection.
+    const [payResident] = await db
+      .select({ propertyId: residentsTable.propertyId })
+      .from(residentsTable)
+      .where(eq(residentsTable.id, useResident));
+    // payments.property_id is NOT NULL, so an unknown residentId (it can come
+    // straight from the request body) must be refused here rather than reaching
+    // the insert as a null and surfacing as a 500.
+    if (!payResident) {
+      res.status(404).json({ success: false, error: "Resident not found" });
+      return;
+    }
 
     // Wrap payment-insert + ledger-update + import-counter update in one transaction.
     // The chosen ledger entry is locked FOR UPDATE and re-verified unpaid inside the tx so two
@@ -545,6 +558,7 @@ financeRouter.post("/bank-lines/:id/confirm", authenticate, authorize("BANKING",
       const [payment] = await tx.insert(paymentsTable).values({
         id: newId(),
         residentId: useResident,
+        propertyId: payResident.propertyId,
         amount: line.amount.toString(),
         mode: "BANK_TRANSFER",
         status: "SUCCESS",

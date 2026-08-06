@@ -23,11 +23,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PropertyOptions } from "@/components/property-options";
+import { FoodQueryError } from "@/components/food/query-error";
 import {
   foodApi,
   foodKeys,
   MEAL_TYPES,
-  BRANDS,
   MEAL_LABEL,
   shortMeal,
   fmtQty,
@@ -40,6 +40,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { MealIcon } from "@/components/meal-icon";
 import { usePermissions } from "@/lib/use-permissions";
+import { useActiveBrands } from "@/components/food/use-food-masters";
 import { cn } from "@/lib/utils";
 
 const ALL = "ALL";
@@ -62,6 +63,13 @@ export default function FoodKitchenSummary() {
   // gated on FOOD_ALL_ORDERS. F&B roles run the kitchen board without that grant,
   // so for them the order number is plain text, not a link to a Forbidden page.
   const canReadOrders = can("FOOD_ALL_ORDERS", "view");
+  // M16 — accepting an order is FOOD_KITCHEN_SUMMARY:edit server-side
+  // (food-ops.ts POST /orders/:id/accept), but this page only ever checked
+  // view. SENIOR_VICE_PRESIDENT and AUDIT_READONLY hold the view grant, reach
+  // the page from the nav, and got a fully armed bulk Accept whose every call
+  // 403s — swallowed by the fail++ counters into "0 accepted, N failed".
+  // Same gate as the sibling board in food-kitchen-home.tsx.
+  const canAccept = can("FOOD_KITCHEN_SUMMARY", "edit");
 
   const [date, setDate] = React.useState(() => format(new Date(), "yyyy-MM-dd"));
   const [brand, setBrand] = React.useState<string>(ALL);
@@ -74,6 +82,10 @@ export default function FoodKitchenSummary() {
     queryFn: () => foodApi.lookups(),
   });
   const properties = lookups?.properties ?? [];
+  // L10 — the live brand master, not the hardcoded two-brand fallback: a brand
+  // added in the Brands tab was missing from this filter, so its rows could not
+  // be isolated at all.
+  const brandOptions = useActiveBrands();
   const propName = (id?: string | null) =>
     id ? properties.find((p) => p.id === id)?.name || "—" : "—";
 
@@ -90,6 +102,8 @@ export default function FoodKitchenSummary() {
     data: summary,
     isLoading: summaryLoading,
     isFetching: summaryFetching,
+    isError: summaryError,
+    refetch: refetchSummary,
   } = useQuery<KitchenSummary>({
     queryKey: foodKeys.kitchenSummary(summaryParams),
     queryFn: () => foodApi.kitchenSummary(summaryParams),
@@ -110,13 +124,23 @@ export default function FoodKitchenSummary() {
     brand: brand === ALL ? undefined : brand,
     mealType: mealType === ALL ? undefined : mealType,
     propertyId: propertyId === ALL ? undefined : propertyId,
-    limit: 200,
   };
-  const { data: ordersRes, isLoading: ordersLoading } = useQuery({
+  // The server clamps `limit` to 100, so page the whole set — the Accept
+  // actions below act on this array and must not celebrate a truncated one.
+  const {
+    data: ordersRes,
+    isLoading: ordersLoading,
+    isError: ordersError,
+    refetch: refetchOrders,
+  } = useQuery({
     queryKey: foodKeys.orders(ordersParams),
-    queryFn: () => foodApi.listOrders(ordersParams),
+    queryFn: () => foodApi.listAllOrders(ordersParams),
   });
-  const openOrders = ordersRes?.data ?? [];
+  const openOrders = ordersRes?.orders ?? [];
+  /** True when the paging bound stopped short of meta.total — more orders exist
+   *  than this board holds, so no bulk action here covers "this meal". */
+  const ordersTruncated = ordersRes?.truncated ?? false;
+  const ordersTotal = ordersRes?.total ?? openOrders.length;
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["food", "kitchen-summary"] });
@@ -157,7 +181,9 @@ export default function FoodKitchenSummary() {
   /** "Accept" for one meal — accepts every PLACED order of that meal. */
   const acceptMealOrders = async (meal: MealType) => {
     const pending = openOrders.filter((o) => o.mealType === meal && o.status === "PLACED");
-    if (pending.length === 0 || acceptingMeal || bulkAccepting) return;
+    // The gate lives on the controls; repeat it here so no future caller can
+    // fire a run whose every request 403s into the fail++ counter below.
+    if (!canAccept || pending.length === 0 || acceptingMeal || bulkAccepting) return;
     setAcceptingMeal(meal);
     let ok = 0;
     let fail = 0;
@@ -171,7 +197,15 @@ export default function FoodKitchenSummary() {
     }
     setAcceptingMeal(null);
     invalidate();
-    if (fail === 0) {
+    if (fail === 0 && ordersTruncated) {
+      // The board holds only part of the day, so this accepted a subset. Say so
+      // — and don't mark the meal started or fire confetti over a partial run.
+      toast({
+        title: `${shortMeal(meal)}: ${ok} order${ok === 1 ? "" : "s"} accepted`,
+        description: `This board shows ${openOrders.length} of ${ordersTotal} open orders — refresh and repeat to accept the rest.`,
+        variant: "warning",
+      });
+    } else if (fail === 0) {
       markStarted([meal]);
       fire();
       toast({
@@ -189,7 +223,7 @@ export default function FoodKitchenSummary() {
 
   const acceptAll = async () => {
     const pending = openOrders.filter((o) => o.status === "PLACED");
-    if (pending.length === 0) return;
+    if (!canAccept || pending.length === 0) return;
     const affectedMeals = [...new Set(pending.map((o) => o.mealType))];
     setBulkAccepting(true);
     let ok = 0;
@@ -204,7 +238,13 @@ export default function FoodKitchenSummary() {
     }
     setBulkAccepting(false);
     invalidate();
-    if (fail === 0) {
+    if (fail === 0 && ordersTruncated) {
+      toast({
+        title: `${ok} order${ok === 1 ? "" : "s"} accepted`,
+        description: `This board shows ${openOrders.length} of ${ordersTotal} open orders — refresh and repeat to accept the rest.`,
+        variant: "warning",
+      });
+    } else if (fail === 0) {
       markStarted(affectedMeals);
       fire();
       toast({
@@ -278,8 +318,8 @@ export default function FoodKitchenSummary() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL}>All Brands</SelectItem>
-            {BRANDS.map((b) => (
-              <SelectItem key={b} value={b}>{b}</SelectItem>
+            {brandOptions.map((b) => (
+              <SelectItem key={b.code} value={b.code}>{b.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -305,8 +345,19 @@ export default function FoodKitchenSummary() {
         </Select>
       </div>
 
+      {/* More open orders exist than this board holds — every bulk action below
+          therefore covers a subset, so say it before it is used. */}
+      {ordersTruncated && (
+        <div className="rounded-[12px] border border-warning/40 bg-warning-soft px-4 py-3 text-[13px] text-warning">
+          Showing {openOrders.length} of {ordersTotal} open orders.
+          {canAccept && " Accept actions apply only to what is listed here — refresh and repeat to work through the rest."}
+        </div>
+      )}
+
       {/* Prep plan — one card per meal */}
-      {summaryLoading ? (
+      {summaryError ? (
+        <FoodQueryError label="the prep plan" onRetry={() => refetchSummary()} />
+      ) : summaryLoading ? (
         <div className="flex flex-col gap-[18px]">
           {[0, 1].map((i) => (
             <div key={i} className="overflow-hidden rounded-[14px] border border-border bg-card">
@@ -345,6 +396,7 @@ export default function FoodKitchenSummary() {
               started={startedMeals.has(meal.mealType)}
               starting={acceptingMeal === meal.mealType}
               busy={acceptingMeal !== null || bulkAccepting}
+              canAccept={canAccept}
               onAccept={() => acceptMealOrders(meal.mealType)}
             />
           ))}
@@ -355,12 +407,15 @@ export default function FoodKitchenSummary() {
       <OpenOrdersPanel
         orders={openOrders}
         isLoading={ordersLoading}
+        isError={ordersError}
+        onRetry={() => refetchOrders()}
         propName={propName}
         onStep={(o) => stepOne.mutate(o)}
         steppingId={stepOne.isPending ? (stepOne.variables as FoodOrder).id : null}
         onAcceptAll={acceptAll}
         bulkAccepting={bulkAccepting}
         mealBusy={acceptingMeal !== null}
+        canAccept={canAccept}
         canOpenOrder={canReadOrders}
         onOpenOrder={(id) => setLocation(`/food/orders/${id}`)}
       />
@@ -376,6 +431,7 @@ function MealPrepCard({
   started,
   starting,
   busy,
+  canAccept,
   onAccept,
 }: {
   mealType: MealType;
@@ -384,6 +440,7 @@ function MealPrepCard({
   started: boolean;
   starting: boolean;
   busy: boolean;
+  canAccept: boolean;
   onAccept: () => void;
 }) {
   const [openDishId, setOpenDishId] = React.useState<string | null>(null);
@@ -426,6 +483,11 @@ function MealPrepCard({
           <span className="inline-flex h-11 items-center gap-1.5 rounded-[12px] bg-success-soft px-4 text-sm font-bold text-success">
             <Check className="h-4 w-4" strokeWidth={3} />
             Accepted
+          </span>
+        ) : !canAccept ? (
+          // Read-only principal: keep the STATE visible, drop the action.
+          <span className="inline-flex h-11 items-center rounded-[12px] bg-muted px-4 text-sm font-semibold text-muted-foreground">
+            Awaiting acceptance
           </span>
         ) : (
           <button
@@ -510,23 +572,29 @@ function MealPrepCard({
 function OpenOrdersPanel({
   orders,
   isLoading,
+  isError,
+  onRetry,
   propName,
   onStep,
   steppingId,
   onAcceptAll,
   bulkAccepting,
   mealBusy,
+  canAccept,
   canOpenOrder,
   onOpenOrder,
 }: {
   orders: FoodOrder[];
   isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
   propName: (id?: string | null) => string;
   onStep: (o: FoodOrder) => void;
   steppingId: string | null;
   onAcceptAll: () => void;
   bulkAccepting: boolean;
   mealBusy: boolean;
+  canAccept: boolean;
   canOpenOrder: boolean;
   onOpenOrder: (id: string) => void;
 }) {
@@ -539,26 +607,31 @@ function OpenOrdersPanel({
             <ListChecks className="h-4 w-4 text-primary" /> Open orders to accept
           </h2>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
-            New orders contributing to this cook plan — accept each one to confirm it
-            for the kitchen.
+            {canAccept
+              ? "New orders contributing to this cook plan — accept each one to confirm it for the kitchen."
+              : "New orders contributing to this cook plan, waiting for the kitchen to accept them."}
           </p>
         </div>
-        <button
-          type="button"
-          className="inline-flex h-10 items-center gap-2 rounded-[12px] bg-accent px-4 text-sm font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-          onClick={onAcceptAll}
-          disabled={bulkAccepting || mealBusy || isLoading || placedCount === 0}
-        >
-          {bulkAccepting ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Check className="h-4 w-4" strokeWidth={3} />
-          )}
-          Accept all{placedCount > 0 ? ` (${placedCount})` : ""}
-        </button>
+        {canAccept && (
+          <button
+            type="button"
+            className="inline-flex h-10 items-center gap-2 rounded-[12px] bg-accent px-4 text-sm font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={onAcceptAll}
+            disabled={bulkAccepting || mealBusy || isLoading || placedCount === 0}
+          >
+            {bulkAccepting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Check className="h-4 w-4" strokeWidth={3} />
+            )}
+            Accept all{placedCount > 0 ? ` (${placedCount})` : ""}
+          </button>
+        )}
       </div>
       <div className="p-4">
-        {isLoading ? (
+        {isError ? (
+          <FoodQueryError label="the open orders" onRetry={onRetry} />
+        ) : isLoading ? (
           <div className="space-y-2">
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className="h-12 w-full" />
@@ -622,7 +695,14 @@ function OpenOrdersPanel({
                       {fmtQty(o.totalQuantity)}
                     </td>
                     <td className="p-3 text-right align-middle">
-                      {o.status === "PLACED" ? (
+                      {o.status !== "PLACED" ? (
+                        <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-success">
+                          <Check className="h-3.5 w-3.5" strokeWidth={3} />
+                          Accepted
+                        </span>
+                      ) : !canAccept ? (
+                        <span className="text-[13px] text-muted-foreground">Awaiting acceptance</span>
+                      ) : (
                         <Button
                           size="sm"
                           variant="outline"
@@ -636,11 +716,6 @@ function OpenOrdersPanel({
                           )}
                           Accept
                         </Button>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-success">
-                          <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                          Accepted
-                        </span>
                       )}
                     </td>
                   </tr>

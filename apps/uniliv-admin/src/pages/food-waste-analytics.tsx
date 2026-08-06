@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, BarChart, Bar, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from "recharts";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
@@ -37,6 +37,8 @@ const PRIMARY = "var(--primary)";
 const WARNING = "var(--warning)";
 const DESTRUCTIVE = "var(--destructive)";
 const INFO = "var(--info)";
+/** One colour per UNIT on the waste trend — KG and PLATE are separate series. */
+const TREND_COLORS = [WARNING, INFO, PRIMARY, DESTRUCTIVE, ACCENT];
 
 // Per-meal bar colours for the meal-type breakdown.
 const MEAL_COLOR: Record<string, string> = {
@@ -137,21 +139,46 @@ export default function FoodWasteAnalytics() {
   }, [isError, error, toast]);
 
   const summary = data?.summary;
+  const summaryUnits = summary?.byUnit ?? [];
+  /** True only when NO unit recorded any waste — a single `totalWasted === 0`
+   *  test against a shape that no longer has one rendered the whole-page empty
+   *  card underneath charts that were showing real waste. */
+  const noWasteAtAll = summaryUnits.every((u) => u.totalWasted === 0);
   const byProperty = data?.byProperty ?? [];
   const byDish = data?.byDish ?? [];
   const byMealType = data?.byMealType ?? [];
   const byMenu = data?.byMenu ?? [];
   const trend = data?.trend ?? [];
 
+  // Every dimension is grouped by (name, UNIT) server-side (M7), so a property
+  // or dish wasted in two units arrives as two rows. The unit goes INTO the
+  // label — otherwise the chart shows two identically-named bars and the
+  // "top 10" slice covers as few as five real properties.
+  const withUnit = (name: string, unit: string | null) => (unit ? `${name} (${unit})` : name);
   // Top-N horizontal bar series (reversed so the largest sits at the top).
   const propertyChart = byProperty.slice(0, 10).map((p) => ({
-    name: p.name, wasted: p.wastedQty, wastePct: p.wastePct, city: p.city, cluster: p.cluster,
+    name: withUnit(p.name, p.unit), wasted: p.wastedQty, wastePct: p.wastePct, city: p.city, cluster: p.cluster,
   })).reverse();
-  const dishChart = byDish.slice(0, 10).map((d) => ({ name: d.name, wasted: d.wastedQty })).reverse();
+  const dishChart = byDish.slice(0, 10).map((d) => ({ name: withUnit(d.name, d.unit), wasted: d.wastedQty })).reverse();
   const mealChart = byMealType.map((m) => ({
-    name: MEAL_LABEL[m.mealType] ?? m.mealType, mealType: m.mealType, wasted: m.wastedQty,
+    name: withUnit(MEAL_LABEL[m.mealType] ?? m.mealType, m.unit), mealType: m.mealType, wasted: m.wastedQty,
   }));
-  const menuChart = byMenu.slice(0, 10).map((m) => ({ name: m.brand, wasted: m.wastedQty }));
+  const menuChart = byMenu.slice(0, 10).map((m) => ({ name: withUnit(m.brand, m.unit), wasted: m.wastedQty }));
+
+  // The trend is also per (period, unit), so plotting it raw made the line
+  // zig-zag between two units on the same X tick. Pivot to one row per period
+  // with a column per unit, and draw one series each — the two are on different
+  // scales and must never be summed or averaged together.
+  const trendUnits = [...new Set(trend.map((t) => t.unit ?? ""))].filter(Boolean);
+  const trendChart = React.useMemo(() => {
+    const byPeriod = new Map<string, Record<string, string | number>>();
+    for (const t of trend) {
+      const row = byPeriod.get(t.period) ?? { period: t.period };
+      row[t.unit ?? ""] = Number(row[t.unit ?? ""] ?? 0) + t.wastedQty;
+      byPeriod.set(t.period, row);
+    }
+    return [...byPeriod.values()].sort((a, b) => (String(a["period"]) < String(b["period"]) ? -1 : 1));
+  }, [trend]);
 
   // Period tick formatter — handles both "yyyy-MM-dd" (day) and "yyyy-MM" (month).
   const periodTickFmt = (v: string) => {
@@ -314,18 +341,27 @@ export default function FoodWasteAnalytics() {
         </div>
       </div>
 
-      {/* Summary stat cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <StatCard
-          title="Total Wasted"
-          value={isLoading ? 0 : (summary?.totalWasted ?? 0)}
-          icon={Trash2}
-        />
-        <StatCard
-          title="Waste %"
-          value={isLoading ? "0%" : `${summary?.wastePct ?? 0}%`}
-          icon={TrendingDown}
-        />
+      {/* Summary stat cards. Totals are PER UNIT (M7) — kilograms and plates do
+          not add up, so there is one Wasted/Waste-% pair per unit rather than a
+          single number that silently mixed them. */}
+      {/* The column count follows what is actually rendered: a fixed 3-wide grid
+          split the second unit's Wasted/Waste-% pair across two rows, so the
+          per-unit pairing the M7 fix exists to show read as unrelated tiles. */}
+      <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${summaryUnits.length > 1 ? "xl:grid-cols-4" : "md:grid-cols-3"}`}>
+        {(summaryUnits.length ? summaryUnits : [null]).map((u, i) => (
+          <React.Fragment key={u?.unit ?? `empty-${i}`}>
+            <StatCard
+              title={u?.unit ? `Wasted (${u.unit})` : "Total Wasted"}
+              value={isLoading ? 0 : (u?.totalWasted ?? 0)}
+              icon={Trash2}
+            />
+            <StatCard
+              title={u?.unit ? `Waste % (${u.unit})` : "Waste %"}
+              value={isLoading ? "0%" : `${u?.wastePct ?? 0}%`}
+              icon={TrendingDown}
+            />
+          </React.Fragment>
+        ))}
         <StatCard
           title="Orders with Waste"
           value={isLoading ? 0 : (summary?.ordersWithWaste ?? 0)}
@@ -348,7 +384,7 @@ export default function FoodWasteAnalytics() {
             <ChartEmpty icon={Trash2} label="No wastage recorded in this range" />
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={trend} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+              <AreaChart data={trendChart} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                 <defs>
                   <linearGradient id="wasteTrendGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor={WARNING} stopOpacity={0.35} />
@@ -359,7 +395,14 @@ export default function FoodWasteAnalytics() {
                 <XAxis dataKey="period" tickFormatter={periodTickFmt} tick={{ fontSize: 11 }} />
                 <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                 <Tooltip labelFormatter={periodTickFmt} />
-                <Area type="monotone" dataKey="wastedQty" name="Wasted" stroke={WARNING} strokeWidth={2} fill="url(#wasteTrendGradient)" />
+                {trendUnits.length > 1 && <Legend />}
+                {trendUnits.map((u, i) => (
+                  <Area
+                    key={u} type="monotone" dataKey={u} name={u}
+                    stroke={TREND_COLORS[i % TREND_COLORS.length]!} strokeWidth={2}
+                    fill={i === 0 ? "url(#wasteTrendGradient)" : "transparent"}
+                  />
+                ))}
               </AreaChart>
             </ResponsiveContainer>
           )}
@@ -486,7 +529,7 @@ export default function FoodWasteAnalytics() {
       </div>
 
       {/* Empty-overall hint when nothing matches the current scope */}
-      {!isLoading && !isError && (summary?.totalWasted ?? 0) === 0 && (
+      {!isLoading && !isError && noWasteAtAll && (
         <Card>
           <CardContent className="py-10">
             <ChartEmpty icon={Recycle} label="No waste data for the selected filters" />

@@ -71,8 +71,13 @@ function Segmented<T extends string | number>({
   );
 }
 
+/** `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16) — a view-only
+ *  principal reads the week but cannot duplicate, auto-fill, paste or save a plate. */
 export function RotationBoard(
-  { onGoToRules }: { onGoToRules?: (focus: { brand: string; meal: MealType }) => void } = {},
+  { canEdit = true, onGoToRules }: {
+    canEdit?: boolean;
+    onGoToRules?: (focus: { brand: string; meal: MealType }) => void;
+  } = {},
 ) {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -350,9 +355,11 @@ export function RotationBoard(
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button variant="outline" disabled={busy} onClick={duplicateWeek}>
-            <Copy className="mr-2 h-3.5 w-3.5" /> Copy W{week} → W{week === 4 ? 1 : week + 1}
-          </Button>
+          {canEdit && (
+            <Button variant="outline" disabled={busy} onClick={duplicateWeek}>
+              <Copy className="mr-2 h-3.5 w-3.5" /> Copy W{week} → W{week === 4 ? 1 : week + 1}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -386,14 +393,16 @@ export function RotationBoard(
             : summary.empty ? `${summary.empty} empty`
             : "All good"}
         </span>
-        <Button
-          variant="secondary" size="sm" disabled={busy || !anyRule}
-          title={anyRule ? undefined : "Define a menu rule first"}
-          onClick={autoFillWeek}
-        >
-          <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-          {summary.empty ? `Auto-fill ${summary.empty} gap${summary.empty === 1 ? "" : "s"}` : "Top up the week"}
-        </Button>
+        {canEdit && (
+          <Button
+            variant="secondary" size="sm" disabled={busy || !anyRule}
+            title={anyRule ? undefined : "Define a menu rule first"}
+            onClick={autoFillWeek}
+          >
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+            {summary.empty ? `Auto-fill ${summary.empty} gap${summary.empty === 1 ? "" : "s"}` : "Top up the week"}
+          </Button>
+        )}
       </div>
 
       {clipboard != null && (
@@ -426,7 +435,7 @@ export function RotationBoard(
                   {DAY_SHORT[day]}
                 </p>
                 <button
-                  type="button" disabled={busy} onClick={() => onDayAction(day)}
+                  type="button" disabled={busy || !canEdit} onClick={() => onDayAction(day)}
                   title={!copying ? `Copy ${DAY_LABEL[day]}`
                     : isSource ? "Cancel copy"
                     : `Paste ${DAY_LABEL[clipboard!]} here`}
@@ -493,6 +502,7 @@ export function RotationBoard(
             : new Map<string, string>()}
           clashBlocks={clashBlocks}
           serviceTime={serviceTime(sel.meal)}
+          canEdit={canEdit}
           isSaving={saveSlot.isPending}
           onSave={(plate) => saveSlot.mutate({ day: sel.day, meal: sel.meal, plate })}
           {...(onGoToRules

@@ -24,10 +24,14 @@ import {
   getWalletConfig,
   creditWallet,
   debitWallet,
+  txnDirection,
+  roundMoney,
+  isUniqueViolation,
   writeAuditLog,
 } from "../lib/wallet-service.js";
 import { notificationOutboxTable } from "@workspace/db";
-import { enqueueDelivery, processDelivery, queueEnabled } from "@workspace/notify-core";
+import { enqueueDelivery, processDeliveryInline, queueEnabled } from "@workspace/notify-core";
+import { logger } from "../lib/logger.js";
 import {
   createPaymentLink,
   isRazorpayConfigured,
@@ -61,12 +65,22 @@ async function sendAdHoc(
       entityId: opts.entityId ?? null,
       status: "PENDING",
     });
+    // Same shape as notification-service's notify() (H3b/H3d): enqueueDelivery
+    // only RETURNS false when REDIS_URL is unset — an unreachable Redis throws,
+    // and that throw used to fall into the catch below and discard the send
+    // silently. And processDelivery's default ctx is isLastAttempt:true, which
+    // marked a transient failure terminally FAILED with nothing anywhere to
+    // reset it; processDeliveryInline retries and leaves the row PENDING for the
+    // outbox sweep. Payment-link SMS/email is exactly the traffic this lost.
+    let queued = false;
     if (queueEnabled()) {
-      const queued = await enqueueDelivery(id);
-      if (!queued) await processDelivery(id);
-    } else {
-      await processDelivery(id);
+      try {
+        queued = await enqueueDelivery(id);
+      } catch (err) {
+        logger.warn({ err, outboxId: id }, "notification enqueue failed — delivering inline");
+      }
     }
+    if (!queued) await processDeliveryInline(id);
   } catch {
     // swallow — delivery failure must never break the API request
   }
@@ -80,8 +94,18 @@ async function sendAdHoc(
 // (namespaced with referenceType="IDEMPOTENCY") so a replayed request can be
 // detected inside the locked transaction and the original result returned
 // instead of applying the operation twice. No schema/migration is introduced.
+//
+// Scoping invariant: the replay lookup is per-wallet, but
+// uq_wallet_transactions_reference is a GLOBAL unique on (reference_type,
+// reference_id). Storing the bare key would let two residents' requests share
+// one key — passing both per-wallet pre-checks, then colliding at the INSERT.
+// So the wallet id is composed into the stored key, which makes the global index
+// per-wallet and keeps the guard and the constraint describing the same thing.
 // ─────────────────────────────────────────────────────────────────────────────
 const IDEMPOTENCY_REF_TYPE = "IDEMPOTENCY";
+
+/** The value actually stored in `referenceId` for an idempotency key. */
+const scopedIdempotencyKey = (walletId: string, key: string): string => `${walletId}:${key}`;
 
 function getIdempotencyKey(req: { headers: Record<string, unknown>; body?: any }): string | null {
   const header = req.headers["idempotency-key"];
@@ -265,18 +289,19 @@ walletRouter.post(
 
       const idempotencyKey = getIdempotencyKey(req);
 
+      const storedKey = idempotencyKey ? scopedIdempotencyKey(wallet.id, idempotencyKey) : null;
+
       const result = await db.transaction(async (tx) => {
         // Idempotency: re-apply guard inside the locked path. If a prior txn
         // for this wallet already used this key, return it unchanged.
-        if (idempotencyKey) {
+        if (storedKey) {
           const [existing] = await tx
             .select()
             .from(walletTransactionsTable)
             .where(
               and(
-                eq(walletTransactionsTable.walletId, wallet.id),
                 eq(walletTransactionsTable.referenceType, IDEMPOTENCY_REF_TYPE),
-                eq(walletTransactionsTable.referenceId, idempotencyKey)
+                eq(walletTransactionsTable.referenceId, storedKey)
               )
             );
           if (existing) return { txn: existing, balanceAfter: Number(existing.balanceAfter), replayed: true };
@@ -286,8 +311,8 @@ walletRouter.post(
           recordedBy: req.user!.id,
           propertyId: resident.propertyId,
           notes: body.notes ?? null,
-          referenceId: idempotencyKey ?? null,
-          referenceType: idempotencyKey ? IDEMPOTENCY_REF_TYPE : null,
+          referenceId: storedKey,
+          referenceType: storedKey ? IDEMPOTENCY_REF_TYPE : null,
         }, tx);
         return { ...r, replayed: false };
       });
@@ -307,6 +332,12 @@ walletRouter.post(
     } catch (err: any) {
       if (err?.statusCode === 403) {
         res.status(403).json({ success: false, error: err.message });
+        return;
+      }
+      // Lost the race with a concurrent replay of the same key: the unique index
+      // rolled this transaction back, so the top-up was applied exactly once.
+      if (isUniqueViolation(err)) {
+        res.status(409).json({ success: false, error: "This request was already applied" });
         return;
       }
       req.log.error(err);
@@ -360,7 +391,12 @@ walletRouter.post(
         customer: { name: resident.name, contact: resident.phone, email: resident.email },
         expireBySeconds: 24 * 60 * 60, // 24 hours
         acceptPartial: true,
-        notes: { kind: "WALLET_TOPUP", residentId, propertyId: resident.propertyId },
+        // linkRef is our own correlation token. Razorpay copies a link's notes
+        // onto every payment made against it, so it is the only handle that
+        // reaches a payment.captured payload (which carries no link entity) —
+        // and it is what lets the webhook tell "this link already collected
+        // ₹2,500" from "credit ₹2,500 again" when partial payment is on.
+        notes: { kind: "WALLET_TOPUP", residentId, propertyId: resident.propertyId, linkRef: newId() },
       });
 
       const smsText = `Top up your UNILIV wallet (₹${amount}): ${link.shortUrl} (valid 24h, partial payment allowed)`;
@@ -475,7 +511,9 @@ walletRouter.post(
           throw httpError(400, `Ledger entry ${alreadyPaid.id} is already paid`);
         }
 
-        const totalAmount = entries.reduce((sum, e) => sum + Number(e.amount), 0);
+        // Rounded once here so the payment row and the wallet debit (which rounds
+        // internally) agree to the paisa.
+        const totalAmount = roundMoney(entries.reduce((sum, e) => sum + Number(e.amount), 0));
 
         // Debit wallet
         const debitResult = await debitWallet(
@@ -499,6 +537,9 @@ walletRouter.post(
           .values({
             id: paymentId,
             residentId,
+            // Property the money was collected AT (M10) — snapshotted so a later
+            // transfer cannot re-attribute this collection to another property.
+            propertyId: resident.propertyId,
             amount: String(totalAmount),
             mode: "WALLET",
             status: "SUCCESS",
@@ -712,7 +753,10 @@ walletRouter.post(
           .values({
             id: newId(),
             residentId,
-            amount: String(walletAmount),
+            propertyId: resident.propertyId, // collected-at snapshot (M10)
+            // Same rounding the paired debit applies (debitWallet), so the
+            // payment row and the wallet ledger cannot disagree by a paisa.
+            amount: String(roundMoney(walletAmount)),
             mode: "WALLET_PARTIAL",
             status: "SUCCESS",
             reference: debitResult.txn.id,
@@ -726,7 +770,8 @@ walletRouter.post(
           .values({
             id: newId(),
             residentId,
-            amount: String(otherAmount),
+            propertyId: resident.propertyId, // collected-at snapshot (M10)
+            amount: String(roundMoney(otherAmount)), // 2-decimal money invariant
             mode: otherMode as any,
             status: "SUCCESS",
             reference: body.reference ?? null,
@@ -898,6 +943,7 @@ walletRouter.post(
             .values({
               id: newId(),
               residentId,
+              propertyId: resident.propertyId, // collected-at snapshot (M10)
               amount: String(entryAmt),
               mode: "WALLET",
               status: "SUCCESS",
@@ -936,7 +982,9 @@ walletRouter.post(
           .from(walletsTable)
           .where(eq(walletsTable.id, wallet.id))
           .for("update");
-        const remainingBalance = Number(afterClearing!.balance);
+        // Rounded at the point of use: this value is both debited and printed
+        // back to staff as a cash instruction, so it must never be a float artefact.
+        const remainingBalance = roundMoney(Number(afterClearing!.balance));
 
         let refundAmount = 0;
         if (remainingBalance > 0) {
@@ -1053,27 +1101,27 @@ walletRouter.post(
       const wallet = await getOrCreateWallet(residentId);
       const config = await getWalletConfig(resident.propertyId);
       const idempotencyKey = getIdempotencyKey(req);
+      const storedKey = idempotencyKey ? scopedIdempotencyKey(wallet.id, idempotencyKey) : null;
 
       const meta = {
         description: body.description,
         recordedBy: req.user!.id,
         propertyId: resident.propertyId,
         notes: body.notes ?? null,
-        referenceId: idempotencyKey ?? null,
-        referenceType: idempotencyKey ? IDEMPOTENCY_REF_TYPE : null,
+        referenceId: storedKey,
+        referenceType: storedKey ? IDEMPOTENCY_REF_TYPE : null,
       };
 
       const result = await db.transaction(async (tx) => {
         // Idempotency: replay returns the original adjustment unchanged.
-        if (idempotencyKey) {
+        if (storedKey) {
           const [existing] = await tx
             .select()
             .from(walletTransactionsTable)
             .where(
               and(
-                eq(walletTransactionsTable.walletId, wallet.id),
                 eq(walletTransactionsTable.referenceType, IDEMPOTENCY_REF_TYPE),
-                eq(walletTransactionsTable.referenceId, idempotencyKey)
+                eq(walletTransactionsTable.referenceId, storedKey)
               )
             );
           if (existing) return { txn: existing, balanceAfter: Number(existing.balanceAfter), replayed: true as const };
@@ -1103,6 +1151,11 @@ walletRouter.post(
       }
       if (err?.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
         res.status(err.statusCode).json({ success: false, error: err.message });
+        return;
+      }
+      // Concurrent replay of the same idempotency key — applied exactly once.
+      if (isUniqueViolation(err)) {
+        res.status(409).json({ success: false, error: "This request was already applied" });
         return;
       }
       req.log.error(err);
@@ -1161,8 +1214,14 @@ walletRouter.post(
         }
 
         const originalAmount = Number(original.amount);
-        // Credit types: reversing them → debit; debit types: reversing them → credit
-        const isCreditType = ["TOPUP", "ADJUSTMENT_CREDIT", "REFUND_WITHDRAWAL"].includes(original.type);
+        // Direction comes from the shared map, never from a membership list —
+        // REFUND_WITHDRAWAL reads like a credit but debits the wallet, and
+        // reversing it as a credit-reversal debited the resident a second time.
+        // Credit originals reverse as a debit; debit originals reverse as a credit.
+        const direction = txnDirection(original.type);
+        if (!direction) {
+          throw httpError(400, "Transaction type cannot be reversed");
+        }
         const meta = {
           description: body.description || `Reversal of transaction ${original.id}`,
           recordedBy: req.user!.id,
@@ -1174,19 +1233,20 @@ walletRouter.post(
         // For property-scoped callers, ensure the reversed txn is in their scope.
         assertPropertyAccess(req, original.propertyId);
 
-        if (isCreditType) {
-          // Original was a credit → reversal is a debit (allow going negative for reversals)
-          const [w] = await tx.select().from(walletsTable).where(eq(walletsTable.id, wallet.id)).for("update");
-          const balanceBefore = Number(w!.balance);
-          const balanceAfter = balanceBefore - originalAmount;
-          await tx.update(walletsTable).set({ balance: String(balanceAfter), updatedAt: new Date() }).where(eq(walletsTable.id, wallet.id));
-          const [txn] = await tx.insert(walletTransactionsTable).values({
-            id: newId(), walletId: wallet.id, residentId,
-            type: "REVERSAL", amount: String(originalAmount),
-            balanceBefore: String(balanceBefore), balanceAfter: String(balanceAfter),
-            ...meta,
-          }).returning();
-          return { txn: txn!, balanceAfter, originalAmount };
+        if (direction === "CREDIT") {
+          // Original was a credit → reversal is a debit. A reversal is allowed to
+          // push the wallet negative (the money it undoes is already gone), so the
+          // minimum-balance floor is opened rather than the write hand-rolled —
+          // that keeps every balance write going through debitWallet's rounding.
+          const r = await debitWallet(
+            wallet.id,
+            originalAmount,
+            "REVERSAL",
+            meta,
+            { minimumBalance: Number.NEGATIVE_INFINITY },
+            tx
+          );
+          return { ...r, originalAmount };
         }
         // Original was a debit → reversal is a credit
         const r = await creditWallet(wallet.id, originalAmount, "REVERSAL", meta, tx);

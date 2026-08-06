@@ -7,9 +7,11 @@
  *      (EMAIL/SMS/PUSH) and attempts delivery through a pluggable transport.
  *
  * The outbox is the durable source of truth + audit; a real provider can be
- * wired by setting SMTP_/TWILIO_ env (see `deliver`). Absent credentials we run
- * a "log" transport that records the rendered message and marks it SENT so the
- * flow is fully exercised in dev without leaking anything.
+ * wired by setting SES/SMTP_/TWILIO_ env (see `deliver`). In development only,
+ * absent credentials fall back to a "log" transport that records the rendered
+ * message so the flow is exercised without leaking anything; in any other
+ * environment an unconfigured channel fails closed and the row records FAILED —
+ * the outbox must never claim a delivery that never happened.
  */
 import { db } from "@workspace/db";
 import {
@@ -20,7 +22,8 @@ import {
 import { eq } from "drizzle-orm";
 import { newId } from "./id.js";
 import { logger } from "./logger.js";
-import { enqueueDelivery, processDelivery, queueEnabled } from "@workspace/notify-core";
+import { istParts } from "./tz.js";
+import { enqueueDelivery, processDeliveryInline, queueEnabled } from "@workspace/notify-core";
 import { emitNotification } from "./notification-events.js";
 import { pushToUser } from "./web-push.js";
 
@@ -82,20 +85,55 @@ async function enqueueAndSend(input: {
     entityId: input.entityId ?? null,
     status: "PENDING",
   });
+  // Invariant: a row that reached the outbox always gets a delivery attempt.
+  // enqueueDelivery only *returns* false when REDIS_URL is unset — an unreachable
+  // Redis (or bullmq missing from the slim bundle) THROWS, and an uncaught throw
+  // here used to disable delivery entirely for the whole deployment.
+  let queued = false;
   if (queueEnabled()) {
-    const queued = await enqueueDelivery(id);
-    if (!queued) await processDelivery(id); // safety net if the queue refused the job
-  } else {
-    await processDelivery(id); // inline fallback — single attempt, no retry
+    try {
+      queued = await enqueueDelivery(id);
+    } catch (err) {
+      logger.warn({ err, outboxId: id }, "notification enqueue failed — delivering inline");
+    }
   }
+  if (!queued) {
+    // Inline fallback: bounded retry, and never terminal — a row that still fails
+    // stays PENDING so the worker's reconciliation sweep can pick it up later.
+    try {
+      await processDeliveryInline(id);
+    } catch (err) {
+      logger.error({ err, outboxId: id, channel: input.channel }, "inline notification delivery failed");
+    }
+  }
+}
+
+/** Why a requested channel produced no outbox row at all. */
+export type UnresolvedReason = "USER_NOT_FOUND" | "NO_EMAIL" | "NO_PHONE" | "ERROR";
+
+/**
+ * What `notify` actually managed to do. External channels resolve the contact
+ * from `users`, so a recipient with no app user — or a user with no email/phone
+ * on file — is delivered to NOBODY. Callers that publish a recipient count must
+ * read `unresolved` rather than counting the rows they intended to reach.
+ */
+export interface NotifyResult {
+  /** The in-app bell row was written. */
+  inApp: boolean;
+  /** Channels an outbox row was enqueued for. */
+  queued: Channel[];
+  /** Requested channels that resolved to no deliverable contact. */
+  unresolved: Array<{ channel: Channel; reason: UnresolvedReason }>;
 }
 
 /**
  * Fan a single notification out to the bell + the requested external channels.
  * Best-effort and non-throwing: a delivery failure never breaks the caller's
- * request (it is recorded on the outbox row instead).
+ * request (it is recorded on the outbox row instead). The returned NotifyResult
+ * reports what could not be resolved so the caller can be honest about it.
  */
-export async function notify(input: NotifyInput): Promise<void> {
+export async function notify(input: NotifyInput): Promise<NotifyResult> {
+  const result: NotifyResult = { inApp: false, queued: [], unresolved: [] };
   try {
     if (!input.skipInApp) {
       const id = newId();
@@ -120,6 +158,7 @@ export async function notify(input: NotifyInput): Promise<void> {
         createdAt: createdAt.toISOString(),
       });
       void pushToUser(input.userId, { title: input.title, body: input.body ?? null, link: input.link ?? null, type: input.type });
+      result.inApp = true;
     }
 
     if (input.email || input.sms) {
@@ -127,6 +166,16 @@ export async function notify(input: NotifyInput): Promise<void> {
         .select({ email: usersTable.email, phone: usersTable.phone })
         .from(usersTable)
         .where(eq(usersTable.id, input.userId));
+
+      // Contacts come from `users` only — there is no resident/guest directory
+      // here, so an id that is not an app user reaches nobody. Say so.
+      if (!user) {
+        if (input.email) result.unresolved.push({ channel: "EMAIL", reason: "USER_NOT_FOUND" });
+        if (input.sms) result.unresolved.push({ channel: "SMS", reason: "USER_NOT_FOUND" });
+      } else {
+        if (input.email && !user.email) result.unresolved.push({ channel: "EMAIL", reason: "NO_EMAIL" });
+        if (input.sms && !user.phone) result.unresolved.push({ channel: "SMS", reason: "NO_PHONE" });
+      }
 
       if (input.email && user?.email) {
         await enqueueAndSend({
@@ -138,6 +187,7 @@ export async function notify(input: NotifyInput): Promise<void> {
           entityType: input.entityType,
           entityId: input.entityId,
         });
+        result.queued.push("EMAIL");
       }
       if (input.sms && user?.phone) {
         await enqueueAndSend({
@@ -149,11 +199,44 @@ export async function notify(input: NotifyInput): Promise<void> {
           entityType: input.entityType,
           entityId: input.entityId,
         });
+        result.queued.push("SMS");
       }
     }
   } catch (err) {
     logger.error({ err }, "notify failed");
+    if (input.email && !result.queued.includes("EMAIL")) result.unresolved.push({ channel: "EMAIL", reason: "ERROR" });
+    if (input.sms && !result.queued.includes("SMS")) result.unresolved.push({ channel: "SMS", reason: "ERROR" });
   }
+  return result;
+}
+
+/** Per-recipient outcome of a fan-out (see `notifyAll`). */
+export interface NotifyFanoutResult {
+  /** Users an in-app row or an outbox row was actually written for. */
+  reached: string[];
+  /** Users the notification could not be delivered to, with the reason. */
+  unresolved: Array<{ userId: string; reason: UnresolvedReason }>;
+}
+
+/**
+ * Fan one notification out to many users and report who it actually reached.
+ * A caller that publishes a recipient count (e.g. POST /menu/share) must report
+ * `reached.length` — the ids it started from include people with no app user or
+ * no contact on file, and those are delivered to nobody.
+ */
+export async function notifyAll(
+  userIds: string[],
+  input: Omit<NotifyInput, "userId">,
+): Promise<NotifyFanoutResult> {
+  const out: NotifyFanoutResult = { reached: [], unresolved: [] };
+  const wantsExternal = !!(input.email || input.sms);
+  for (const userId of userIds) {
+    const res = await notify({ ...input, userId });
+    const delivered = wantsExternal ? res.queued.length > 0 : res.inApp;
+    if (delivered) out.reached.push(userId);
+    else out.unresolved.push({ userId, reason: res.unresolved[0]?.reason ?? "ERROR" });
+  }
+  return out;
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -174,11 +257,24 @@ export interface OrderNotifyContext {
   driverName?: string | null;
   etaText?: string | null;
   reason?: string | null;
+  /**
+   * The order's `wasteEditableUntil` — the instant the wastage window CLOSES.
+   * Quoted verbatim in the DELIVERED message so the unit lead is told the real
+   * deadline instead of a relative hour they have to compute (pass it from the
+   * order row; omitted falls back to "within 1 hour").
+   */
+  wasteWindowEndsAt?: Date | null;
 }
 
 const link = (id: string) => `/food/orders/${id}`;
 const titleize = (s: string) =>
   s.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+
+/** IST wall-clock 'HH:MM' for an instant — host-tz independent (see lib/tz.ts). */
+function istClock(d: Date): string {
+  const p = istParts(d);
+  return `${String(p.h).padStart(2, "0")}:${String(p.min).padStart(2, "0")} IST`;
+}
 
 function itemsTable(items?: OrderNotifyContext["items"]): string {
   if (!items?.length) return "";
@@ -202,6 +298,9 @@ export async function notifyOrderEvent(
   const meal = titleize(ctx.mealType);
   const where = ctx.propertyName ? ` at ${ctx.propertyName}` : "";
   const ref = `${ctx.orderNumber} (${meal})`;
+  // Wastage must be logged WITHIN the window that closes at wasteEditableUntil
+  // (Persona-Unit-Lead.md:91) — name the instant when we know it.
+  const wasteBy = ctx.wasteWindowEndsAt ? istClock(ctx.wasteWindowEndsAt) : null;
 
   const map: Record<OrderEvent, { title: string; body: string; subject: string; text: string }> = {
     PLACED: {
@@ -235,9 +334,9 @@ export async function notifyOrderEvent(
     },
     DELIVERED: {
       title: "Order delivered",
-      body: `${ref} was delivered. Please record any wastage within 1 hour.`,
+      body: `${ref} was delivered. Please record any wastage ${wasteBy ? `by ${wasteBy}` : "within 1 hour"}.`,
       subject: `Order ${ctx.orderNumber} delivered`,
-      text: `Your ${meal} order ${ctx.orderNumber} was delivered${where}. You can record wastage for the next hour.`,
+      text: `Your ${meal} order ${ctx.orderNumber} was delivered${where}. You can record wastage ${wasteBy ? `until ${wasteBy}` : "for the next hour"}.`,
     },
     CANCELLED: {
       title: "Order cancelled",

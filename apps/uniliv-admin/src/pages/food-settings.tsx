@@ -21,7 +21,7 @@ import { TimePicker } from "@/components/ui/time-picker";
 import { NumberStepper } from "@/components/ui/number-stepper";
 import { useToast } from "@/hooks/use-toast";
 import {
-  foodApi, foodKeys, MEAL_TYPES, BRANDS, MEAL_LABEL,
+  foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL,
   type FoodLookups, type FoodBrand, type MealType, type MealConfig,
   type MealWindow, type FoodCutoffConfig, type FoodDefaults,
 } from "@/lib/food-api";
@@ -97,12 +97,22 @@ export default function FoodSettings() {
   const properties = lookups?.properties ?? [];
   const propName = (id?: string | null) =>
     id ? (properties.find((p) => p.id === id)?.name ?? "—") : "—";
-  const { role } = usePermissions();
+  const { role, can } = usePermissions();
   const isSuperAdmin = isSuperAdminRole(role);
   // Food Defaults are org-wide (default cut-off + waste edit window) — Super
   // Admin only (backend PUT mirrors this). F&B Manager manages day-to-day food
   // config but not these org-wide fallbacks.
   const canFoodDefaults = isSuperAdmin;
+  // Every other write here is FOOD_SETTINGS edit server-side; PageGuard only
+  // checks view, so read-only principals (AUDIT_READONLY) reach this page.
+  const canEdit = can("FOOD_SETTINGS", "edit");
+  // Two config surfaces here are BRAND-WIDE by construction — the per-resident
+  // portion rules (no property/kitchen column at all) and the composition rules'
+  // brand-level row. The server refuses both for a scope-restricted caller (H4),
+  // so the controls have to know: `myKitchenIds` is the authoritative signal
+  // (null = unrestricted). Undefined while the lookup is in flight, which reads
+  // as restricted — better a briefly-hidden button than one that 403s.
+  const orgWideConfig = lookups != null && lookups.myKitchenIds == null;
 
   // Controlled so the rotation board can send you to Menu Rules when a meal has
   // no rule to build against.
@@ -135,14 +145,19 @@ export default function FoodSettings() {
         {/* The four menu-building tabs mount lazily — the rotation board and the
             plate composer each pull the whole dish catalogue, which is wasted
             work on a visit to, say, Meal Types. */}
-        <TabsContent value="dishes"><DishesCatalogue /></TabsContent>
-        <TabsContent value="ingredients"><IngredientsGrid /></TabsContent>
+        {/* canEdit reaches EVERY tab, not just the two that happened to take it
+            (M16): each of these four writes through a FOOD_SETTINGS:edit
+            endpoint, and AUDIT_READONLY holds FOOD_SETTINGS:view through
+            ALL_MODULES — so without it that role got an armed New dish / Delete
+            / Duplicate week / plate save, each of which 403s at the server. */}
+        <TabsContent value="dishes"><DishesCatalogue canEdit={canEdit} orgWideConfig={orgWideConfig} /></TabsContent>
+        <TabsContent value="ingredients"><IngredientsGrid canEdit={canEdit} /></TabsContent>
         <TabsContent value="rotation">
-          <RotationBoard onGoToRules={(f) => { setRulesFocus(f); setTab("composition"); }} />
+          <RotationBoard canEdit={canEdit} onGoToRules={(f) => { setRulesFocus(f); setTab("composition"); }} />
         </TabsContent>
-        <TabsContent value="composition"><MenuRulesEditor focus={rulesFocus} /></TabsContent>
-        <TabsContent value="meals"><MealTypesTab /></TabsContent>
-        <TabsContent value="cutoffs"><CutoffWindowsTab properties={properties} propName={propName} /></TabsContent>
+        <TabsContent value="composition"><MenuRulesEditor canEdit={canEdit} orgWideConfig={orgWideConfig} focus={rulesFocus} /></TabsContent>
+        <TabsContent value="meals"><MealTypesTab canEdit={canEdit} orgWideConfig={orgWideConfig} /></TabsContent>
+        <TabsContent value="cutoffs"><CutoffWindowsTab properties={properties} propName={propName} canEdit={canEdit} /></TabsContent>
         {canFoodDefaults && (
           <TabsContent value="food-defaults"><FoodDefaultsTab /></TabsContent>
         )}
@@ -156,7 +171,12 @@ export default function FoodSettings() {
 // ════════════════════════════════════════════════════════════════════════════
 type MealConfigForm = { displayLabel: string; sortOrder: number; isEnabled: boolean };
 
-function MealTypesTab() {
+function MealTypesTab({ canEdit, orgWideConfig }: { canEdit: boolean; orgWideConfig: boolean }) {
+  // H4: food_meal_config is an org-wide singleton — switching BREAKFAST off here
+  // takes it off the ordering screen for every property on every brand — so
+  // PUT /food/meal-config/:mealType now 403s a kitchen- or property-scoped
+  // caller. Fold that into the edit gate rather than firing a request that fails.
+  canEdit = canEdit && orgWideConfig;
   const qc = useQueryClient();
   const { toast } = useToast();
   const [editing, setEditing] = React.useState<MealConfig | null>(null);
@@ -212,7 +232,7 @@ function MealTypesTab() {
           <Switch
             checked={row.original.isEnabled}
             onCheckedChange={() => toggleMut.mutate(row.original)}
-            disabled={toggleMut.isPending}
+            disabled={toggleMut.isPending || !canEdit}
           />
           <span className={`text-xs font-medium ${row.original.isEnabled ? "text-success" : "text-muted-foreground"}`}>
             {row.original.isEnabled ? "Enabled" : "Disabled"}
@@ -220,13 +240,18 @@ function MealTypesTab() {
         </div>
       ),
     },
-    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} /> },
+    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={canEdit ? () => openEdit(row.original) : undefined} /> },
   ];
 
   return (
     <div className="space-y-4">
       <SectionHeader
-        title="Meal Types" description="Customise the label, ordering and availability of each meal slot. Meal types are fixed; only their presentation can be edited."
+        title="Meal Types"
+        description={
+          orgWideConfig
+            ? "Customise the label, ordering and availability of each meal slot. Meal types are fixed; only their presentation can be edited."
+            : "Meal slots apply to every property in the organisation, so only an org-wide administrator can change them. Read-only here."
+        }
       />
       <DataTable columns={cols as any} data={rows} isLoading={isLoading} />
 
@@ -273,11 +298,21 @@ const emptyWindow: WindowForm = {
 
 // Single cut-off time per brand (applies to ALL meals; optional per-property override).
 type CutoffForm = { brand: FoodBrand; cutoffTime: string; propertyId: string };
-function CutoffConfigPanel({ properties, propName }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string }) {
+function CutoffConfigPanel({ properties, propName, canEdit }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string; canEdit: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const brandOptions = useActiveBrands();
   const { data: rows = [], isLoading } = useQuery<FoodCutoffConfig[]>({ queryKey: foodKeys.cutoffConfig(), queryFn: () => foodApi.listCutoffConfig() });
+  // resolveCutoff falls back to the org default and can never return null, so
+  // "no rows" means "the default is in force", not "orders never close". Read
+  // it here (GET is open to any authenticated food user) and state the value —
+  // the editable Food Defaults tab is Super Admin only, but everyone subject to
+  // the cut-off needs to see what it is.
+  const { data: defaults } = useQuery<FoodDefaults>({
+    queryKey: ["food", "system-config", "food-defaults"],
+    queryFn: () => foodApi.foodDefaults(),
+  });
+  const defaultCutoff = defaults?.defaultCutoff ?? "09:00";
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["food", "cutoff-config"] }); qc.invalidateQueries({ queryKey: ["food", "cutoffs"] }); };
 
   const [open, setOpen] = React.useState(false);
@@ -309,11 +344,17 @@ function CutoffConfigPanel({ properties, propName }: { properties: FoodLookups["
           <CardTitle className="text-base flex items-center gap-2"><Clock className="h-4 w-4" /> Cut-off time</CardTitle>
           <CardDescription className="text-xs">One cut-off applies to <span className="font-medium">all meals</span> that day. Set a default per brand; optionally override per property.</CardDescription>
         </div>
-        <Button size="sm" onClick={openAdd}><Plus className="h-4 w-4 mr-1" /> Add cut-off</Button>
+        {canEdit && <Button size="sm" onClick={openAdd}><Plus className="h-4 w-4 mr-1" /> Add cut-off</Button>}
       </CardHeader>
       <CardContent>
+        {/* The value in force when nothing below matches — always something. */}
+        <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Globe className="h-3.5 w-3.5" />
+          Organisation default: <span className="font-mono text-foreground">{defaultCutoff}</span>
+          <span>— used whenever no brand or property cut-off below applies.</span>
+        </p>
         {isLoading ? <p className="py-4 text-sm text-muted-foreground">Loading…</p>
-          : rows.length === 0 ? <p className="py-4 text-sm text-muted-foreground">No cut-off set — orders never close. Add one.</p>
+          : rows.length === 0 ? <p className="py-4 text-sm text-muted-foreground">No brand or property cut-off configured — every order closes at the organisation default of <span className="font-mono text-foreground">{defaultCutoff}</span>. Add one to override it.</p>
           : (
             <BoundedScroll size="lg">
               <div className="space-y-1 pr-3">
@@ -324,8 +365,12 @@ function CutoffConfigPanel({ properties, propName }: { properties: FoodLookups["
                       ? <span className="text-sm inline-flex items-center gap-1"><Building2 className="h-3.5 w-3.5 text-muted-foreground" />{propName(c.propertyId)}</span>
                       : <Badge variant="secondary" className="text-[10px]"><Globe className="h-3 w-3 mr-1" /> GLOBAL</Badge>}
                     <span className="ml-auto font-mono text-sm inline-flex items-center gap-1"><Clock className="h-3.5 w-3.5 text-muted-foreground" />{c.cutoffTime}</span>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(c)}><Pencil className="h-3.5 w-3.5" /></Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(c)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                    {canEdit && (
+                      <>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(c)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDelTarget(c)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
@@ -366,9 +411,13 @@ function CutoffConfigPanel({ properties, propName }: { properties: FoodLookups["
   );
 }
 
-function CutoffWindowsTab({ properties, propName }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string }) {
+function CutoffWindowsTab({ properties, propName, canEdit }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string; canEdit: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  // The live brand master, not the two-brand dev fallback: a service time is
+  // what stamps expectedDeliveryAt, so a brand missing from this list can never
+  // be given one and drops out of on-time reporting entirely.
+  const brandOptions = useActiveBrands();
   const [brand, setBrand] = React.useState("ALL");
   const [modalOpen, setModalOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<MealWindow | null>(null);
@@ -403,7 +452,11 @@ function CutoffWindowsTab({ properties, propName }: { properties: FoodLookups["p
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
 
-  const openCreate = () => { setEditing(null); setForm(emptyWindow); setModalOpen(true); };
+  const openCreate = () => {
+    setEditing(null);
+    setForm({ ...emptyWindow, brand: (brandOptions[0]?.code as FoodBrand) ?? emptyWindow.brand });
+    setModalOpen(true);
+  };
   const openEdit = (w: MealWindow) => {
     setEditing(w);
     setForm({
@@ -425,16 +478,16 @@ function CutoffWindowsTab({ properties, propName }: { properties: FoodLookups["p
     { accessorKey: "propertyId", header: "Scope", cell: ({ row }: any) => row.original.propertyId
         ? <span className="text-sm inline-flex items-center gap-1"><Building2 className="h-3.5 w-3.5 text-muted-foreground" />{propName(row.original.propertyId)}</span>
         : <Badge variant="secondary" className="text-[10px]"><Globe className="h-3 w-3 mr-1" /> GLOBAL</Badge> },
-    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={() => openEdit(row.original)} onDelete={() => setDelTarget(row.original)} /> },
+    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={canEdit ? () => openEdit(row.original) : undefined} onDelete={canEdit ? () => setDelTarget(row.original) : undefined} /> },
   ];
 
   return (
     <div className="space-y-6">
-      <CutoffConfigPanel properties={properties} propName={propName} />
+      <CutoffConfigPanel properties={properties} propName={propName} canEdit={canEdit} />
 
       <SectionHeader
         title="Service Times" description="Per-meal service/delivery time + lead time (used for ETAs & delay analytics). The cut-off above applies to all meals."
-        action={<Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Service Time</Button>}
+        action={canEdit ? <Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Service Time</Button> : undefined}
       />
 
       <div className="flex flex-wrap items-center gap-3">
@@ -442,7 +495,7 @@ function CutoffWindowsTab({ properties, propName }: { properties: FoodLookups["p
           <SelectTrigger className="w-40"><SelectValue placeholder="Brand" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All Brands</SelectItem>
-            {BRANDS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+            {brandOptions.map((b) => <SelectItem key={b.code} value={b.code}>{b.name}</SelectItem>)}
           </SelectContent>
         </Select>
       </div>
@@ -456,7 +509,7 @@ function CutoffWindowsTab({ properties, propName }: { properties: FoodLookups["p
               <Label>Brand</Label>
               <Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v as FoodBrand })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{BRANDS.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}</SelectContent>
+                <SelectContent>{brandOptions.map((b) => <SelectItem key={b.code} value={b.code}>{b.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div>

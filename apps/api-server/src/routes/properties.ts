@@ -4,7 +4,7 @@ import { propertiesTable, residentsTable, usersTable, foodCutoffsTable, property
 import { eq, sql, ilike, or, and, inArray, asc } from "drizzle-orm";
 import { putObject, getObjectUrl, deleteObject, isStorageConfigured } from "@workspace/storage";
 import { authenticate } from "../middlewares/auth.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 import { pick, assertPropertyAccess } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -202,7 +202,15 @@ async function heroImageUrlMap(propertyIds: string[]): Promise<Record<string, st
   return out;
 }
 
-router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+// M15: Menu Planning's own personas (KITCHEN_MANAGER, FNB_MANAGER) need this
+// list to seed their property picker, and they legitimately hold no PROPERTIES
+// grant. authorizeAny widens exactly this one list handler — the page-nav vs
+// data-access decoupling the helper's doc comment describes — instead of giving
+// those roles the whole PROPERTIES cell, which would also have unlocked the
+// unscoped staff roster at /assignable-unit-leads below. The handler's own
+// resolveAccessiblePropertyIds narrowing is unchanged and still applies, so a
+// property-bound caller keeps seeing only their own.
+router.get("/", authenticate, authorizeAny(["PROPERTIES", "MENU_PLANNING"], "view"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;

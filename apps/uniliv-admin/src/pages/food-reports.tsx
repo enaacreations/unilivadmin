@@ -23,10 +23,11 @@ import { usePermissions } from "@/lib/use-permissions";
 import { isSuperAdminRole } from "@/lib/permissions";
 import { apiDownload } from "@/lib/api-fetch";
 import {
-  foodApi, foodKeys, BRANDS,
+  foodApi, foodKeys,
   type ReportsData, type AnalyticsData, type FoodLookups,
-  type OnTimeReport, type OnTimeTolerance, type VarianceByDayData, type MealType,
+  type OnTimeReport, type OnTimeTolerance, type VarianceByDayData, type VarianceByDayRow, type MealType,
 } from "@/lib/food-api";
+import { useActiveBrands } from "@/components/food/use-food-masters";
 
 // Period presets — drive both the analytics `period` param and the from/to window.
 type PeriodKey = "week" | "month" | "quarter" | "year";
@@ -102,6 +103,10 @@ export default function FoodReports() {
   const [to, setTo] = React.useState(today);
   const [propertyId, setPropertyId] = React.useState<string>("ALL");
   const [brand, setBrand] = React.useState<string>("ALL");
+  // L10 — the live brand master, not the hardcoded two-brand fallback: a brand
+  // added in the Brands tab was missing from this filter, so it could never be
+  // reported on separately.
+  const brandOptions = useActiveBrands();
   const [period, setPeriod] = React.useState<PeriodKey>("month");
   const [downloading, setDownloading] = React.useState(false);
 
@@ -192,7 +197,30 @@ export default function FoodReports() {
     queryKey: foodKeys.reportsVarianceByDay(varianceByDayParams),
     queryFn: () => foodApi.reportsVarianceByDay(varianceByDayParams),
   });
-  const varianceByDayRows = varianceByDay?.rows ?? [];
+  // /reports/variance-by-day returns one row per (date, UNIT) — a day with both
+  // KG and PLATE lines emits two. Every consumer below is day-based (last 7 days,
+  // a bar keyed on date, a consecutive-day streak), so collapse first or "7 rows"
+  // silently becomes "3 days" and React sees duplicate keys.
+  //
+  // Summing across units would be the M7 defect again (kilograms + plates), so
+  // this keeps the DOMINANT unit for each day — the one with the most waste —
+  // and reports that unit alongside. Waste % is a ratio, so it stays meaningful.
+  const varianceByDayRows = React.useMemo(() => {
+    const byDate = new Map<string, VarianceByDayRow[]>();
+    for (const r of varianceByDay?.rows ?? []) byDate.set(r.date, [...(byDate.get(r.date) ?? []), r]);
+    return [...byDate.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([date, rows]) => {
+        const dominant = rows.reduce((best, r) => (r.wasted > best.wasted ? r : best), rows[0]!);
+        return {
+          ...dominant,
+          date,
+          // Variance is day-wide only when every line shares one unit; with a
+          // mixed day the dominant unit's variance is the honest answer.
+          units: rows.length,
+        };
+      });
+  }, [varianceByDay]);
 
   const ordersPerDay = data?.ordersPerDay ?? [];
   const residentTrend = data?.residentTrend ?? [];
@@ -401,8 +429,8 @@ export default function FoodReports() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All Brands</SelectItem>
-            {BRANDS.map((b) => (
-              <SelectItem key={b} value={b}>{b}</SelectItem>
+            {brandOptions.map((b) => (
+              <SelectItem key={b.code} value={b.code}>{b.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -512,9 +540,15 @@ export default function FoodReports() {
             )}
           </div>
           {!analyticsLoading && summary && (
+            /* One clause PER UNIT — kilograms and plates do not add up, so the
+               server stopped reporting a single total (M7) and this stopped
+               rendering "0 wasted · 0%" over a screen full of real waste. */
             <p className="mt-3 text-[11px] text-muted-foreground">
-              In range: {summary.totalWasted ?? 0} wasted · {summary.wastePct ?? 0}% ·{" "}
-              {summary.delayedOrders ?? 0}/{summary.deliveredOrders ?? 0} delayed
+              In range:{" "}
+              {(summary.byUnit ?? []).length === 0
+                ? "no waste recorded"
+                : summary.byUnit.map((u) => `${u.wasted} ${u.unit ?? ""} wasted · ${u.wastePct}%`).join(" · ")}{" "}
+              · {summary.delayedOrders ?? 0}/{summary.deliveredOrders ?? 0} delayed
             </p>
           )}
         </div>
