@@ -9,6 +9,7 @@
     "seed:food": "tsx ./src/seed-food.ts",
     "seed:food-extra": "tsx ./src/seed-food-extra.ts",
     "seed:kitchen-managers": "tsx ./src/seed-kitchen-managers.ts",
+    "clear:food-orders": "tsx ./src/clear-food-orders.ts",
     "seed:demo": "tsx ./src/seed-demo.ts",
     "seed:audit": "tsx ./src/seed-audit.ts",
     "scrape:uniliv": "tsx ./src/scrape-uniliv.ts",
