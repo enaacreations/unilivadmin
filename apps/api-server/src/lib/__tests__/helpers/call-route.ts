@@ -13,9 +13,34 @@ export interface RouteResult {
   body: any;
 }
 
+/**
+ * Optional request-logger stand-in. Some handlers' only observable output on a
+ * rejected request is the log line (the SES/SNS verification split), so a test
+ * has to be able to read it — otherwise the assertion degrades to "it returned
+ * a status", which is precisely what could not tell a forgery from a broken
+ * deployment in the first place.
+ */
+export interface CapturedLog {
+  error: Array<unknown[]>;
+  warn: Array<unknown[]>;
+  info: Array<unknown[]>;
+  debug: Array<unknown[]>;
+}
+
+export function newCapturedLog(): CapturedLog {
+  return { error: [], warn: [], info: [], debug: [] };
+}
+
 export function callRoute(
   router: Router,
-  opts: { method: string; url: string; body?: unknown; user?: unknown },
+  opts: {
+    method: string;
+    url: string;
+    body?: unknown;
+    user?: unknown;
+    headers?: Record<string, string>;
+    log?: CapturedLog;
+  },
 ): Promise<RouteResult> {
   return new Promise((resolve, reject) => {
     const req: any = {
@@ -26,11 +51,18 @@ export function callRoute(
       body: opts.body ?? {},
       query: {},
       params: {},
-      headers: {},
+      headers: opts.headers ?? {},
       // Set directly rather than through `authenticate`, which the caller mocks
       // out — this helper is for handler behaviour, not for the auth chain.
       user: opts.user,
-      log: { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
+      log: opts.log
+        ? {
+            error: (...a: unknown[]) => opts.log!.error.push(a),
+            warn: (...a: unknown[]) => opts.log!.warn.push(a),
+            info: (...a: unknown[]) => opts.log!.info.push(a),
+            debug: (...a: unknown[]) => opts.log!.debug.push(a),
+          }
+        : { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
     };
     const res: any = {
       statusCode: 200,

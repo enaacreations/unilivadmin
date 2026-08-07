@@ -224,6 +224,57 @@ export async function debitWallet(
   return { txn: txn!, balanceAfter, balanceBefore };
 }
 
+// ── Reversal ──────────────────────────────────────────────────────────────
+// Invariant: a reversal moves the ORIGINAL amount in the OPPOSITE direction to
+// the original transaction, and that direction comes from WALLET_TXN_DIRECTION —
+// never from a membership list at the call site. `REFUND_WITHDRAWAL` reads like
+// a credit but drains the wallet, and reversing it as a credit-reversal debited
+// the resident a second time (C2). Lives here, not in the route handler, so the
+// arithmetic is testable without HTTP and so a second caller cannot re-derive it.
+export async function reverseTransaction(
+  walletId: string,
+  original: { id: string; type: string; amount: string | number },
+  meta: Omit<WalletTxMeta, "reversalOf">,
+  tx: TxClient
+) {
+  // A reversal has no direction of its own (its sign is borrowed from the row it
+  // reverses), so reversing one is undefined rather than merely disallowed.
+  if (original.type === "REVERSAL") {
+    throw badRequest("A reversal transaction cannot be reversed");
+  }
+  const direction = txnDirection(original.type);
+  if (!direction) throw badRequest("Transaction type cannot be reversed");
+
+  const originalAmount = Number(original.amount);
+  const reversalMeta: WalletTxMeta = { ...meta, reversalOf: original.id };
+
+  if (direction === "CREDIT") {
+    // Original was a credit → the reversal is a debit. A reversal is allowed to
+    // push the wallet negative (the money it undoes is already gone), so the
+    // minimum-balance floor is opened rather than the write hand-rolled — that
+    // keeps every balance write going through debitWallet's rounding.
+    const r = await debitWallet(
+      walletId,
+      originalAmount,
+      "REVERSAL",
+      reversalMeta,
+      { minimumBalance: Number.NEGATIVE_INFINITY },
+      tx
+    );
+    return { ...r, originalAmount, direction };
+  }
+  // Original was a debit → the reversal is a credit.
+  const r = await creditWallet(walletId, originalAmount, "REVERSAL", reversalMeta, tx);
+  return { ...r, originalAmount, direction };
+}
+
+/** 400 in the shape routes/wallet.ts's catch already understands. */
+function badRequest(message: string): Error & { statusCode: number } {
+  const err = new Error(message) as Error & { statusCode: number };
+  err.statusCode = 400;
+  return err;
+}
+
 // ── Audit log (fire-and-forget; never throws) ─────────────────────────────
 export async function writeAuditLog(
   userId: string,

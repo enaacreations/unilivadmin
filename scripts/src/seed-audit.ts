@@ -41,6 +41,7 @@ import {
 } from "@workspace/db";
 import { randomUUID } from "crypto";
 import { SEED_TEMPLATES, type SeedQuestion } from "./data/audit-question-bank";
+import { assertSeedTarget } from "./seed-guard.js";
 
 const id = () => randomUUID();
 
@@ -490,6 +491,7 @@ async function seedCxUser() {
 }
 
 async function main() {
+  await assertSeedTarget("seed:audit");
   await seedConfig();
   await seedBankAndTemplates();
   await seedCxUser();

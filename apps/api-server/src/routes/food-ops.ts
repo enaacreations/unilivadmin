@@ -1013,7 +1013,12 @@ foodOpsRouter.post("/kitchens", authenticate, authorize("FOOD_ORG", "create"), a
     }).returning();
     auditConfig(req, "FOOD_CONFIG_CREATED", "food_kitchen", row!.id, { after: row });
     res.status(201).json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) {
+    // Same invariant as POST /brands: kitchens.code is unique and operator-typed,
+    // so a collision is caller input and answers 409, not a generic 500.
+    if (isUniqueViolation(err)) { res.status(409).json({ success: false, error: "Kitchen code already exists" }); return; }
+    req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" });
+  }
 });
 
 const updateKitchenSchema = z.object({
@@ -1050,7 +1055,11 @@ foodOpsRouter.put("/kitchens/:id", authenticate, authorizeAny(["FOOD_ORG", "FOOD
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     auditConfig(req, "FOOD_CONFIG_UPDATED", "food_kitchen", row.id, { before, after: row });
     res.json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) {
+    // `code` is editable here, so this PUT can collide exactly like the POST.
+    if (isUniqueViolation(err)) { res.status(409).json({ success: false, error: "Kitchen code already exists" }); return; }
+    req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" });
+  }
 });
 
 // HIGH: soft-deleting a kitchen takes out every property it serves — an org-wide
@@ -1137,8 +1146,14 @@ foodOpsRouter.post("/brands", authenticate, authorize("FOOD_ORG", "create"), asy
     auditConfig(req, "FOOD_CONFIG_CREATED", "food_brand", row!.id, { after: row });
     res.status(201).json({ success: true, data: row });
   } catch (err) {
-    const dup = String((err as Error)?.message || "").toLowerCase().includes("unique");
-    req.log.error(err); res.status(dup ? 409 : 500).json({ success: false, error: dup ? "Brand code already exists" : "Internal server error" });
+    // INVARIANT: a duplicate the DB rejected answers 409 naming the collision,
+    // never a 500. This site tested err.message for the word "unique", which can
+    // NEVER fire — drizzle rewrites the message to "Failed query: …" and the pg
+    // detail (code/constraint) survives only on err.cause, exactly as the note on
+    // runWithSeqRetry above records. So every duplicate brand code answered
+    // "Internal server error". isUniqueViolation reads the cause chain.
+    if (isUniqueViolation(err)) { res.status(409).json({ success: false, error: "Brand code already exists" }); return; }
+    req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
@@ -3032,6 +3047,40 @@ function homePeriodRange(
   return { from, to, prevFrom: new Date(from.getTime() - span - 1), prevTo: new Date(from.getTime() - 1), bucket: "day" };
 }
 
+/* ── Waste percentage: two metrics, two names, never one label ────────────────
+ * INVARIANT: no surface in this module emits a bare "waste %". Every waste
+ * percentage — response field or export column header — names its denominator,
+ * because the two denominators legitimately disagree on the same product.
+ *
+ *   wastePctOfReceived = wasted / receivedQty
+ *     "Of the food that ACTUALLY ARRIVED, how much went in the bin."
+ *     Kitchen / portioning efficiency. Owned by the cross-property waste
+ *     analytics (/waste-analytics, /waste-analytics/export), which exists to
+ *     rank properties and dishes on how well they consume what they are given.
+ *
+ *   wastePctOfOrdered = wasted / orderedQty
+ *     "Of what the property ASKED FOR, how much went in the bin."
+ *     Demand-forecast / over-ordering accuracy. Owned by /analytics,
+ *     /home-analytics and the `report=waste` export.
+ *
+ * The ordered denominator is ALWAYS restricted to DELIVERED orders, matching
+ * the numerator: an order still in flight has wasted nothing, so counting its
+ * demand would only ever drag the number down as new orders are placed.
+ *
+ * Do NOT "unify" these. They differ exactly when received ≠ ordered — the
+ * delivery variance this module exists to report — so collapsing them would
+ * destroy one of the two signals rather than reconcile them. Label them apart.
+ * The agreed UI/column labels are "Waste % (of received)" and
+ * "Waste % (of ordered)"; nothing may render either as plain "Waste %".
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** wasted / received, guarded against /0; one-decimal percentage. See above. */
+const wastePctOfReceived = (wasted: unknown, received: unknown) =>
+  Number(received) > 0 ? Math.round((Number(wasted) / Number(received)) * 1000) / 10 : 0;
+/** wasted / ordered (ordered restricted to DELIVERED), /0-guarded. See above. */
+const wastePctOfOrdered = (wasted: unknown, ordered: unknown) =>
+  Number(ordered) > 0 ? Math.round((Number(wasted) / Number(ordered)) * 1000) / 10 : 0;
+
 foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
@@ -3073,7 +3122,8 @@ foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"),
     const topWasteItems = nonZero.slice(0, topCount).map((d) => ({
       dishId: d.dishId, dishName: d.dishName, unit: d.unit,
       wasted: Math.round(Number(d.wasted) * 1000) / 1000, ordered: Math.round(Number(d.ordered) * 1000) / 1000,
-      wastePct: Number(d.ordered) > 0 ? Math.round((Number(d.wasted) / Number(d.ordered)) * 1000) / 10 : 0,
+      // `where` is DELIVERED-only, so `ordered` here is already ordered-on-delivered.
+      wastePctOfOrdered: wastePctOfOrdered(d.wasted, d.ordered),
     }));
 
     // Delays: delivered later than expectedDeliveryAt. (M8: IST day bucket.)
@@ -3111,7 +3161,9 @@ foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"),
             unit: r.unit,
             wasted: Math.round(Number(r.wasted) * 1000) / 1000,
             ordered: Math.round(Number(r.ordered) * 1000) / 1000,
-            wastePct: Number(r.ordered) > 0 ? Math.round((Number(r.wasted) / Number(r.ordered)) * 1000) / 10 : 0,
+            // Ordered basis (`where` is DELIVERED-only) — reproducible from the
+            // `wasted`/`ordered` printed beside it.
+            wastePctOfOrdered: wastePctOfOrdered(r.wasted, r.ordered),
           })),
           delayedOrders: delaySummary?.delayed ?? 0,
           deliveredOrders: delaySummary?.total ?? 0,
@@ -3134,8 +3186,8 @@ foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"),
  * real city/cluster come through properties.clusterId → clusters → cities).
  *
  * Dimensions:
- *   summary     — totals + wastePct (wasted/received) + ordersWithWaste count
- *   byProperty  — top properties by wasted qty (with property wastePct)
+ *   summary     — totals + wastePctOfReceived + ordersWithWaste count
+ *   byProperty  — top properties by wasted qty (with property wastePctOfReceived)
  *   byDish      — top dishes by wasted qty
  *   byMealType  — wasted qty per meal
  *   byMenu      — wasted qty per brand (brand is the menu dimension; orders carry
@@ -3149,9 +3201,9 @@ foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"),
 
 /** Number → numeric(…,3) rounding shared by the waste-analytics responses. */
 const wr3 = (n: unknown) => Math.round(Number(n ?? 0) * 1000) / 1000;
-/** wastePct = wasted/received, guarded against /0; one-decimal percentage. */
-const wastePctOf = (wasted: unknown, received: unknown) =>
-  Number(received) > 0 ? Math.round((Number(wasted) / Number(received)) * 1000) / 10 : 0;
+// Waste percentages on this surface use `wastePctOfReceived` (declared with its
+// counterpart above /analytics). This is the efficiency surface: the question is
+// "of what arrived, how much was binned", not "of what was ordered".
 
 /**
  * Resolve the shared scope + filter conditions for the waste-analytics endpoints.
@@ -3339,7 +3391,7 @@ foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "v
             totalWasted: wr3(r.wasted),
             totalReceived: wr3(r.received),
             totalOrdered: wr3(r.ordered),
-            wastePct: wastePctOf(r.wasted, r.received),
+            wastePctOfReceived: wastePctOfReceived(r.wasted, r.received),
           })),
           ordersWithWaste: Number(withWasteRow?.n ?? 0),
         },
@@ -3350,7 +3402,9 @@ foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "v
           cluster: r.cluster ?? null,
           unit: r.unit,
           wastedQty: wr3(r.wasted),
-          wastePct: wastePctOf(r.wasted, r.received),
+          // Carried alongside so the percentage is reproducible from its own operands.
+          receivedQty: wr3(r.received),
+          wastePctOfReceived: wastePctOfReceived(r.wasted, r.received),
         })),
         byDish: byDishRows.map((r) => ({
           dishId: r.dishId,
@@ -3413,8 +3467,11 @@ async function buildWasteWidgetTable(widget: string, req: any): Promise<{
       .orderBy(desc(sql`sum(${foodOrderItemsTable.wastedQty})`))
       .limit(EXPORT_ROW_CAP + 1);
     return {
-      title: "Food Waste by Property", headers: ["Property", "City", "Cluster", "Unit", "Wasted", "Waste %"],
-      rows: rows.map((r) => [r.name ?? "—", r.city ?? "", r.cluster ?? "", r.unit, wr3(r.wasted), `${wastePctOf(r.wasted, r.received)}%`]),
+      // The column names its denominator: this file and the `report=waste` file
+      // both carried a column called "Waste %" computed two different ways.
+      title: "Food Waste by Property",
+      headers: ["Property", "City", "Cluster", "Unit", "Wasted", "Received", "Waste % (of received)"],
+      rows: rows.map((r) => [r.name ?? "—", r.city ?? "", r.cluster ?? "", r.unit, wr3(r.wasted), wr3(r.received), `${wastePctOfReceived(r.wasted, r.received)}%`]),
       fileBase: "food-waste-by-property",
       dateRange,
     };
@@ -3622,7 +3679,9 @@ foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "vi
     const topWasteItems = nonZero.slice(0, topCount).map((d) => ({
       dishId: d.dishId, dishName: d.dishName, unit: d.unit,
       wasted: Math.round(Number(d.wasted) * 1000) / 1000, ordered: Math.round(Number(d.ordered) * 1000) / 1000,
-      wastePct: Number(d.ordered) > 0 ? Math.round((Number(d.wasted) / Number(d.ordered)) * 1000) / 10 : 0,
+      // `whereDelivered`, so `ordered` is already ordered-on-delivered — same
+      // basis as the identically-named field on /analytics.
+      wastePctOfOrdered: wastePctOfOrdered(d.wasted, d.ordered),
     }));
 
     // ── Food-order delays per day (M8: IST day bucket) ────────────────────────
@@ -3740,10 +3799,14 @@ foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "vi
           byUnit: wasteSummary.map((r) => ({
             unit: r.unit,
             totalWasted: Math.round(Number(r.wasted) * 1000) / 1000,
+            // Demand across every LIVE order — the "people ordered for" figure.
             totalOrdered: Math.round(Number(r.ordered) * 1000) / 1000,
-            // Waste as a share of what was DELIVERED — dividing by the demand on
-            // orders still in flight would report a number that only falls.
-            wastePct: Number(r.orderedDelivered) > 0 ? Math.round((Number(r.wasted) / Number(r.orderedDelivered)) * 1000) / 10 : 0,
+            // The percentage's actual denominator, shipped so the number is
+            // reproducible: dividing by totalOrdered above would not give it,
+            // because that includes orders still in flight (which have wasted
+            // nothing, so the ratio would only ever fall as orders are placed).
+            totalOrderedDelivered: Math.round(Number(r.orderedDelivered) * 1000) / 1000,
+            wastePctOfOrdered: wastePctOfOrdered(r.wasted, r.orderedDelivered),
           })),
           delayedOrders: delaySummary?.delayed ?? 0,
           deliveredOrders: delaySummary?.total ?? 0,
@@ -4201,17 +4264,14 @@ async function fetchOrdersForExport(req: any): Promise<{
 }
 const ORDER_HEADERS = ["Order ID", "Property", "Unit Lead", "Brand", "Meal", "Residents", "Staff", "Total", "Quantity (by unit)", "Status", "Service Date", "Delivered At"];
 
-/** Build "food-orders-{property?}-{date}.{ext}" filename. */
-function ordersFilename(propertyName: string | null, ext: string): string {
-  const prop = propertyName ? `-${sanitizeForFilename(propertyName)}` : "";
-  return `food-orders${prop}-${fileDateStamp()}.${ext}`;
-}
-
-// NOTE: these literal `.csv/.pdf/.xls` routes are registered BEFORE the unified
-// `/reports/export.:fmt` route below, so Express matches them first. To keep the
-// O20 `?report=` contract working on these paths too, each delegates to the same
-// buildReportTable() pipeline. With no `?report=` (or report=orders) the output
-// is byte-identical to the original orders export, so existing callers are unaffected.
+// H2/#11: this is the ONE handler behind every /reports/export URL. There used
+// to be four literal `.csv/.pdf/.xls`/extensionless registrations sitting in
+// front of the wildcard `/reports/export.:fmt`, which Express therefore never
+// reached — the same "an extension variant quietly takes a different code path"
+// shape that made H2 serve the wrong dataset. INVARIANT: one dataset, one
+// handler; every path below delegates here and none of them owns any behaviour.
+// `fmt` is a narrowed literal by the time it arrives, never the raw path
+// segment — see the allowlist at the registration.
 async function serveReportExport(req: any, res: any, fmt: "csv" | "pdf" | "xls"): Promise<void> {
   const report = String(req.query["report"] ?? "orders").toLowerCase();
   if (!EXPORT_REPORTS.has(report)) {
@@ -4219,9 +4279,9 @@ async function serveReportExport(req: any, res: any, fmt: "csv" | "pdf" | "xls")
   }
   const t = await buildReportTable(report, req);
   const table = { title: t.title, headers: t.headers, rows: t.rows, propertyName: t.propertyName, dateRange: t.dateRange };
-  const filename = report === "orders"
-    ? ordersFilename(t.propertyName, fmt)          // preserve the original orders filename
-    : reportFilename(t.fileBase, t.propertyName, fmt);
+  // `orders` carries fileBase "food-orders", so this reproduces the historical
+  // "food-orders-{property?}-{date}.{ext}" name without a second code path.
+  const filename = reportFilename(t.fileBase, t.propertyName, fmt);
   if (fmt === "csv") {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
@@ -4248,38 +4308,49 @@ function sendExportTooLarge(res: any, err: unknown): boolean {
   return false;
 }
 
-// The extensionless `/reports/export` is kept registered: it is the default-CSV
-// URL external scripts and bookmarks were built against, and dropping it turned
-// them into a bare 404 with no explanation.
-foodOpsRouter.get("/reports/export", authenticate, requireRoles("SUPER_ADMIN", "OPS_EXCELLENCE"), async (req, res) => {
-  try { await serveReportExport(req, res, "csv"); }
-  catch (err) { if (sendExportTooLarge(res, err)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
-});
-
-foodOpsRouter.get("/reports/export.csv", authenticate, requireRoles("SUPER_ADMIN", "OPS_EXCELLENCE"), async (req, res) => {
-  try { await serveReportExport(req, res, "csv"); }
-  catch (err) { if (sendExportTooLarge(res, err)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
-});
-
-foodOpsRouter.get("/reports/export.pdf", authenticate, requireRoles("SUPER_ADMIN", "OPS_EXCELLENCE"), async (req, res) => {
-  try { await serveReportExport(req, res, "pdf"); }
-  catch (err) { if (sendExportTooLarge(res, err)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
-});
-
-foodOpsRouter.get("/reports/export.xls", authenticate, requireRoles("SUPER_ADMIN", "OPS_EXCELLENCE"), async (req, res) => {
-  try { await serveReportExport(req, res, "xls"); }
-  catch (err) { if (sendExportTooLarge(res, err)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
-});
-
 /* ════════════════════════════════════════════════════════════════════════
- * Unified report export (O20) — GET /food/reports/export.:fmt
+ * Unified report export (O20) — GET /food/reports/export[.fmt]
  *
  * One endpoint serves every report widget. `?report=` selects which dataset to
  * render (orders | variance | waste | ontime); fmt (csv|pdf|xls) selects the
  * encoder. Scoping (resolveAccessiblePropertyIds + ?propertyId/?brand) and the
  * from/to filters mirror the per-report JSON endpoints, so an export reflects
  * exactly what the on-screen widget shows. `orders` reuses fetchOrdersForExport.
+ *
+ * #11: there are exactly TWO registrations and they are different PATHS, not
+ * extension variants of one another — nothing here can shadow anything. Adding
+ * a format is one entry in EXPORT_FORMATS; there is no literal route in front
+ * of the wildcard that would silently keep serving the old set.
  * ════════════════════════════════════════════════════════════════════════ */
+
+/** Allowlist of export extensions → the encoder literal. A `:fmt` that reached
+ *  a filename or a Content-Type unvalidated is a header-injection shape, so the
+ *  raw path segment is only ever used as a Map key: what leaves this table is
+ *  one of three compile-time literals, never caller-controlled text. */
+const EXPORT_FORMATS = new Map<string, "csv" | "pdf" | "xls">([
+  ["csv", "csv"], ["pdf", "pdf"], ["xls", "xls"],
+]);
+
+/** Shared error tail for both registrations: over-cap → 422, anything else → 500. */
+async function runReportExport(req: any, res: any, fmt: "csv" | "pdf" | "xls"): Promise<void> {
+  try { await serveReportExport(req, res, fmt); }
+  catch (err) { if (sendExportTooLarge(res, err)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+}
+
+// The extensionless `/reports/export` is kept registered: it is the default-CSV
+// URL external scripts and bookmarks were built against, and dropping it turned
+// them into a bare 404 with no explanation.
+foodOpsRouter.get("/reports/export", authenticate, requireRoles("SUPER_ADMIN", "OPS_EXCELLENCE"), async (req, res) => {
+  await runReportExport(req, res, "csv");
+});
+
+foodOpsRouter.get("/reports/export.:fmt", authenticate, requireRoles("SUPER_ADMIN", "OPS_EXCELLENCE"), async (req, res) => {
+  const fmt = EXPORT_FORMATS.get(String(req.params["fmt"] ?? "").toLowerCase());
+  if (!fmt) {
+    res.status(400).json({ success: false, error: "fmt must be csv, pdf or xls" }); return;
+  }
+  await runReportExport(req, res, fmt);
+});
 
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
 
@@ -4372,11 +4443,13 @@ async function buildReportTable(report: string, req: any): Promise<{
     const topCount = Math.max(1, Math.ceil(nonZero.length * 0.2));
     const rows = nonZero.slice(0, topCount).map((d) => {
       const wasted = r3(Number(d.wasted)); const ordered = r3(Number(d.ordered));
-      const pct = ordered > 0 ? Math.round((Number(d.wasted) / Number(d.ordered)) * 1000) / 10 : 0;
-      return [d.dishName ?? "—", d.unit ?? "", ordered, wasted, `${pct}%`];
+      // reportExportScope pins DELIVERED, so `ordered` is ordered-on-delivered.
+      return [d.dishName ?? "—", d.unit ?? "", ordered, wasted, `${wastePctOfOrdered(d.wasted, d.ordered)}%`];
     });
     return {
-      title: "Top Waste Items", headers: ["Dish", "Unit", "Ordered", "Wasted", "Waste %"],
+      // The column names its denominator — see the waste-percentage block above
+      // /analytics. The waste-analytics file's column is "of received".
+      title: "Top Waste Items", headers: ["Dish", "Unit", "Ordered", "Wasted", "Waste % (of ordered)"],
       rows, propertyName, dateRange, fileBase: "food-waste",
     };
   }
@@ -4418,44 +4491,6 @@ function reportFilename(fileBase: string, propertyName: string | null, ext: stri
 }
 
 const EXPORT_REPORTS = new Set(["orders", "variance", "waste", "ontime"]);
-
-foodOpsRouter.get("/reports/export.:fmt", authenticate, requireRoles("SUPER_ADMIN", "OPS_EXCELLENCE"), async (req, res) => {
-  try {
-    const fmt = String(req.params["fmt"] ?? "").toLowerCase();
-    if (!["csv", "pdf", "xls"].includes(fmt)) {
-      res.status(400).json({ success: false, error: "fmt must be csv, pdf or xls" }); return;
-    }
-    const report = String(req.query["report"] ?? "orders").toLowerCase();
-    if (!EXPORT_REPORTS.has(report)) {
-      res.status(400).json({ success: false, error: "report must be one of orders, variance, waste, ontime" }); return;
-    }
-    const t = await buildReportTable(report, req);
-    const table = { title: t.title, headers: t.headers, rows: t.rows, propertyName: t.propertyName, dateRange: t.dateRange };
-    const filename = reportFilename(t.fileBase, t.propertyName, fmt);
-
-    if (fmt === "csv") {
-      res.setHeader("Content-Type", "text/csv; charset=utf-8");
-      res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
-      res.send(toCsv(table));
-    } else if (fmt === "pdf") {
-      if (table.rows.length > PDF_ROW_CAP) throw new ExportTooLargeError(PDF_ROW_CAP, "PDF");
-      const pdf = await toPdf(table);
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
-      res.send(Buffer.from(pdf));
-    } else {
-      res.setHeader("Content-Type", "application/vnd.ms-excel");
-      res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
-      res.send(toXls(table));
-    }
-  } catch (err) {
-    if ((err as Error)?.message === "INVALID_REPORT") {
-      res.status(400).json({ success: false, error: "Invalid report" }); return;
-    }
-    if (sendExportTooLarge(res, err)) return;
-    req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" });
-  }
-});
 
 /* ════════════════════════════════════════════════════════════════════════
  * Unit-Lead home insights — property, guests, revenue (Persona st.42–48)

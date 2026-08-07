@@ -1,17 +1,21 @@
 # Food module fix — final verification status
 
-**Branch:** `dev-food-module-fix` — **still zero commits**; everything is uncommitted working-tree
-state (`git log dev..HEAD` is empty). 81 tracked files changed vs `dev` (+9333 / −2181), plus 20
-untracked new files.
+**Branch:** `dev-food-module-fix`. The fix work is **committed as `2b4c40f`** ("fix(food): close 48
+defects from the end-to-end module analysis", 85 files). On top of it sits an uncommitted follow-up
+round (this document's latest revision) plus **unrelated AUDIT work that is deliberately
+uncommitted** — 17 files (`audit-*.ts`, `audits/*.tsx`, `schema/audit.ts`, `layout.tsx`, `nav.ts`,
+`apps.tsx`, `AUDIT_PRD_GAP_ANALYSIS.md`). Keep those two apart when committing.
 **Baseline:** `FOOD_MODULE_ANALYSIS.md`, 52 numbered defects (C1–C6, H1–H12, M1–M22, L1–L12).
-**Method:** four rounds of fixes, each followed by independent re-verification. This document
-records the state after the final round, in which every check below was executed rather than read.
+**Method:** four rounds of fixes, each followed by independent re-verification, then a **fifth
+follow-up round** that closed the open list below. Every check in this document was executed rather
+than read.
 
 ---
 
 ## Verdict
 
-**Merge, with the follow-up list below tracked as real work.**
+**Merge.** The follow-up list is now down to a single item, and that item belongs to the audit
+commit rather than this one.
 
 The four merge blockers named in earlier rounds are closed and were re-proved end to end this
 round, not merely re-read:
@@ -32,16 +36,25 @@ round, not merely re-read:
   `docker/Dockerfile`.
 - **B1/B2/B3, H4, M22** — all verified in code this round (details in the table).
 
-Runtime state is genuinely healthy: `pnpm run typecheck` is clean across all 5 projects with **zero
-TS suppressions**, **279 API tests** and **14 web tests** pass, the API boots from its built bundle
-and serves all nine required food endpoints with **zero 500s and zero error-level log lines**, the
-variance CSV export returns the variance dataset, `push` is convergent, all four deploy scripts are
-idempotent, the two-step seed produces an orderable menu, and the frontend builds.
+Runtime state is genuinely healthy: `pnpm run typecheck` is clean across all 5 projects, **340 API
+tests** and **28 web tests** pass, the API boots from its built bundle and serves every required
+food endpoint with **zero 500s and zero error-level log lines**, the variance CSV export returns the
+variance dataset, `push` is convergent, all four deploy scripts are idempotent, the two-step seed
+produces an orderable menu, and the frontend builds.
 
-What keeps this from being "done" rather than "shippable" is the follow-up list: it is shorter and
-much less severe than in previous rounds, but it is not empty, and two of its entries (the
-`verifySns` bare catch, and the still-absent zones/clusters UI) are the kind of thing that is
-easiest to fix now and hardest to notice later.
+The follow-up round closed **ten of the eleven** items previously listed as open, including the two
+called out last round as easiest-to-fix-now (the `verifySns` bare catch and the absent zones/clusters
+UI). The eleventh (`scopeCrumbs` dead code) lives in `nav.ts`, which belongs to the audit commit.
+
+It also found and fixed **one new defect that the previous round's checks could not see**: creating a
+brand or kitchen with an existing `code` returned `500 Internal server error`. `POST /brands` did
+have duplicate handling, but it tested `err.message` for the word "unique" — text drizzle throws away
+when it rewrites the message to `Failed query: …`, leaving `code`/`constraint` only on `err.cause`.
+The guard had never fired. `POST /kitchens` had none at all. This is the same lesson as the
+`sns-validator` episode: **the detector, not the guard, was broken**, and only a live duplicate
+request exposed it. Both now answer 409, `PUT /kitchens/:id` (where `code` is editable) with them,
+and `food-config-duplicates.test.ts` reproduces the 500 against the old code before asserting the
+409 — verified by reverting the fix and watching the test fail.
 
 ---
 
@@ -49,21 +62,31 @@ easiest to fix now and hardest to notice later.
 
 | # | Check | Result |
 |---|-------|--------|
-| 1 | `pnpm run typecheck` (5 projects) | ✅ **clean.** Zero `@ts-ignore` / `@ts-expect-error` / `@ts-nocheck` in `apps/**/src`, `lib/**/src`, `scripts/src`. |
-| 2 | `pnpm --filter @workspace/api-server run test` | ✅ **279 passed / 12 files** (baseline was 194; +85). No test deleted or skipped. |
-| 3 | `pnpm --filter @workspace/uniliv-admin run test` | ✅ **14 passed / 1 file** (`food-api.test.ts`). |
-| 4 | Build + boot from `dist/`, log in, hit 10 endpoints | ✅ **all 200, zero 500s.** Details below. |
-| 5 | Dynamic imports left in `dist/index.mjs` | ✅ **3, all allowlisted.** Details below. |
-| 6 | `pnpm --filter @workspace/db run push` ×2 | ✅ **both `No changes detected`.** Also convergent after a real DDL change (see B0). |
+| 1 | `pnpm run typecheck` (5 projects) | ✅ **clean.** Zero `@ts-ignore` / `@ts-nocheck` anywhere. See the suppression note below — the only `@ts-expect-error` are negative type assertions. |
+| 2 | `pnpm --filter @workspace/api-server run test` | ✅ **340 passed / 15 files** (baseline 279 / 12; +61 across 3 new files). No test deleted or skipped. |
+| 3 | `pnpm --filter @workspace/uniliv-admin run test` | ✅ **28 passed / 2 files** (baseline 14 / 1; `wallet-direction.test.ts` added). |
+| 4 | Build + boot from `dist/`, log in, hit every food endpoint + all export formats | ✅ **zero 500s, zero error-level log lines.** Details below. |
+| 5 | Dynamic imports left in `dist/index.mjs` | ✅ **5, all allowlisted**; `Bundle verification passed — the image needs no node_modules`. |
+| 6 | `pnpm --filter @workspace/db run push` ×2 | ✅ **both `No changes detected`** — and again ×2 after the seeds ran. |
 | 7 | Four deploy scripts ×2 | ✅ **all exit 0, second run mutates nothing.** Perturbation tests below. |
-| 8 | `seed:food` → `seed:food-extra` → resolve a menu | ✅ **3080 per-kitchen rotation rows; menu resolves non-empty for all three meals.** |
+| 8 | `seed:food` ×2 → `seed:food-extra` ×2 → resolve a menu | ✅ **both idempotent**; 3080 per-kitchen rows; **ORDERABLE 5/5 properties**; menu resolves 6 / 9 / 3 / 8 dishes. |
 | 9 | Frontend production build | ✅ **exit 0**, 4217 modules, `dist/public` emitted. Warnings only (chunk >500 kB, sourcemap noise) — pre-existing. |
+| 10 | The 17 audit files untouched | ✅ **all 17 mtimes predate the round.** Only 10 files were written, none of them audit files. |
 
-### 4 — API smoke test (built bundle, `RUN_SCHEDULERS=false`, port 8123)
+**On TS suppressions, stated precisely.** There are zero `@ts-ignore` and zero `@ts-nocheck`. There
+are six `@ts-expect-error` directives, all in `wallet-service.test.ts`, and they are the *inverse* of
+a suppression: they assert the compiler **rejects** `const x: CreditTxnType = "REFUND_WITHDRAWAL"`.
+Widen `CreditTxnType` and the directive becomes unused, which **fails** `pnpm run typecheck`. On
+`as any`: 20 remain in the food-owned server files, **net zero added or removed by any uncommitted
+work** (verified against `2b4c40f`); 18 are the `[] as any[]` drizzle condition-array idiom and one
+is a dynamic-import shape cast in `verifySns`.
+
+### 4 — API smoke test (built bundle, `RUN_SCHEDULERS=false`, free port)
 
 Login is two-step: `POST /api/auth/login` returns a **random per-challenge `devOtp`** (observed
-`719876`, then `934712` — it is not `000000`), redeemed at `POST /api/auth/verify-otp` with the
-field name **`code`** (not `otp`).
+`840339`, then `379907` — it is not `000000`), redeemed at `POST /api/auth/verify-otp` with the
+field name **`code`**, which returns an **`accessToken` in the body** (the `Set-Cookie` is only the
+refresh token — the cookie jar alone gets you a 401). Authenticate with `Authorization: Bearer`.
 
 | Endpoint | Status |
 |---|---|
@@ -73,12 +96,29 @@ field name **`code`** (not `otp`).
 | `/api/food/kitchen-summary` | 200 |
 | `/api/food/analytics` | 200 |
 | `/api/food/hierarchy` | 200 |
-| `/api/food/my-properties` | 200 |
-| `/api/food/next-orders` | 200 |
-| `/api/food/dispatches` | 200 |
-| `/api/food/reports/export.csv?report=variance` | 200 |
+| `/api/food/zones` · `/clusters` · `/cities` | 200 |
+| `/api/food/reports/variance` | 200 |
+| `/api/food/waste-analytics` · `/home-analytics` | 200 |
+| `/api/food/my-properties` · `/next-orders` · `/dispatches` | 200 |
 
-Zero `level:50`/`level:60` lines in the server log across the whole run.
+Export formats, every one of them:
+
+| URL | Status |
+|---|---|
+| `/reports/export.csv` · `.pdf` · `.xls` · extensionless — `report=variance` | 200 (`text/csv`, `application/pdf`, `application/vnd.ms-excel`, `text/csv`) |
+| `/reports/export.json` · `.exe` · `.tar` | **400** `fmt must be csv, pdf or xls` |
+| `/reports/export.csv?report=consumption` | **400** `report must be one of orders, variance, waste, ontime` |
+| `/waste-analytics/export.csv` | 200 |
+| `/waste-analytics/export.zip` | **400** `fmt must be csv, xlsx or pdf` |
+
+Zero `level:50`/`level:60` lines in the server log across the whole run — including the two
+duplicate-code requests, which now return 409 without logging a server fault.
+
+**Response field names match the web types exactly**, checked key-by-key against the shapes declared
+in `food-api.ts`: `/analytics` and `/home-analytics` carry `wastePctOfOrdered`, `/waste-analytics`
+carries `wastePctOfReceived` + `receivedQty`, `/home-analytics` carries `totalOrderedDelivered`, and
+**no surface still emits a bare `wastePct`** (the deprecated aliases were removed once the web app
+read the explicit fields).
 
 **The variance CSV is genuinely the variance dataset** (H2's shadowing is gone). Line 1 is a title
 banner, so the column header is line 4:
@@ -100,6 +140,13 @@ returns **400** with the valid list (not a 500 — L6's fix working).
 Two previously-open findings closed themselves visibly here: the per-unit grouping in the variance
 rows (M7), and the orders export's Quantity column, now `19.8 KG + 8.1 LITRE + 135 PCS` rather than
 a meaningless cross-unit scalar (open item 24 in the previous revision).
+
+**New this round — duplicate master-data codes.** `POST /food/brands` and `POST /food/kitchens` with
+an existing `code` returned **500 Internal server error** against the committed build. Both now
+return **409** (`Brand code already exists` / `Kitchen code already exists`), as does
+`PUT /kitchens/:id`, where `code` is editable. Creating a genuinely new brand still returns 201, and
+a non-23505 failure still returns a logged 500. Zones, cities and clusters have **no** unique on
+`code`, so they are not siblings on this invariant.
 
 ### 5 — Dynamic imports remaining in the bundle
 
@@ -132,6 +179,11 @@ One incidental finding worth keeping: while a scratch table (`_verify_payments_b
 `public`, `push` raised a data-loss banner offering to drop it. That is the runbook's abort rule
 working exactly as documented — and a reminder that **any** unmanaged table in `public` will trip it.
 
+Re-run this round on the committed build: all four exit 0 twice, second run a no-op
+(`nothing to backfill` · `every scope-dependent account resolves` · 18 checks clean ·
+`nothing to migrate`). `push` was then run twice **more** after the seeds — still `No changes
+detected`, so the round did not disturb the convergence the branch fought for.
+
 ### 8 — Seed pair
 
 `seed:food` alone leaves `food_menu_rotation.kitchen_id` NULL on all 385 rows (brand-level
@@ -141,23 +193,38 @@ templates), and `resolveMenu` requires an exact non-null kitchen match — so `s
 ```
 GET /api/food/menu-rotation/resolve?propertyId=…&mealType=LUNCH&date=2026-08-07
 → 9 dishes: Mix Vegetable (SABZI/KG), Dal Tadka (DAL/LITRE), …
-BREAKFAST → 6 dishes · LUNCH → 9 · DINNER → 8
+BREAKFAST → 6 · LUNCH → 9 · SNACKS → 3 · DINNER → 8
 ```
 
-This is the documented two-step pair, not a bug — but `seed:food`'s own output still does not say
-so (see follow-up 8).
+This is the documented two-step pair, not a bug — **and `seed:food` now says so itself**. It ends
+with an orderability report that names the state it leaves behind and the command that fixes it:
+
+```
+⚠  NOT ORDERABLE — no property resolves a menu for 2026-08-07 (IST). …
+     menu rows:  385 brand-level templates (kitchen_id IS NULL, served to nobody)
+                 0 per-kitchen rows (the only kind resolveMenu matches)
+   This is the EXPECTED half-way state — it is not a bug in resolveMenu.
+   NEXT COMMAND — run this now, the environment is not usable until you do:
+     pnpm --filter @workspace/scripts run seed:food-extra
+```
+
+`seed:food-extra` then reports `✅ ORDERABLE — 5 of 5 properties resolve a menu`. Both seeds were run
+**twice**: exit 0 each time, and the second `seed:food-extra` is a clean no-op (`0 new, 0 restored,
+6 kept, 0 revoked`; `no unassigned dispatched orders`). This closes follow-up 8 — the false CRITICAL
+it caused a reviewer last round can no longer happen.
 
 ---
 
 ## Findings table — final status
 
-**Counts: 48 FIXED · 4 PARTIAL · 0 NOT_FIXED** (of 52). All 6 regressions introduced by earlier fix
-rounds (B0–B5) are closed; B6 remains a recorded product decision.
+**Counts: 52 FIXED · 0 PARTIAL · 0 NOT_FIXED** (of 52) — L12, the last PARTIAL, closed this round.
+All 6 regressions introduced by earlier fix rounds (B0–B5) are closed; B6 remains a recorded product
+decision.
 
 | # | Finding | Status | Note |
 |---|---------|--------|------|
 | C1 | Razorpay webhook credits the same money twice | **FIXED** | Link cap persisted and clamped; dues no longer keyed on `linkId`; legacy `RAZORPAY` namespace migrated by script. Now covered by 29 tests in `webhook-idempotency.test.ts` (instalments, legacy links, unattributable money). |
-| C2 | Reversing a checkout refund debits the wallet twice | **FIXED** | `WALLET_TXN_DIRECTION`; `CreditTxnType` makes the original mistake a compile error; frontend derives sign from the row delta. *No direct unit test — see follow-up 5.* |
+| C2 | Reversing a checkout refund debits the wallet twice | **FIXED** | `WALLET_TXN_DIRECTION`; `CreditTxnType` makes the original mistake a compile error; frontend derives sign from the row delta. **Now directly covered on both sides:** `wallet-service.test.ts` (API) and `wallet-direction.test.ts` (web), each asserting the map is *total* over the transaction-type enum — mechanically, not against a copied list — so a new type fails the test instead of silently defaulting. |
 | C3 | Dispatch marks orders DELIVERED with no receivedQty | **FIXED** | `canConfirmDelivery` + `mayCertify`; matrix keeps `FOOD_DISPATCH` and `FOOD_CONFIRM_DELIVERY` apart. The `Unconfirmed` column in the variance export is this rule surfacing. |
 | C4 | ZONE/CLUSTER unresolvable; revoke grants org-wide access | **FIXED** | Resolver handles all five levels, honours soft revoke. The deploy consequence is B4, now closed. |
 | C5 | Any FOOD_SETTINGS holder can re-point a property | **FIXED** | `assign-cluster` now checks the property (`isAccessible`), that the destination cluster is live (`scopeTargetIsLive`), **and** that a scoped caller may reach it (`deniedClusterScope`). |
@@ -207,7 +274,7 @@ rounds (B0–B5) are closed; B6 remains a recorded product decision.
 | L9 | Cut-offs empty state states the opposite of behaviour | **FIXED** | Names the org default, rendered unconditionally. |
 | L10 | Service Times uses the hardcoded two-brand constant | **FIXED** | `BRANDS` constant deleted; all boards read live brands. |
 | L11 | Rotation-cycle phase jumps at the year boundary | **FIXED** | `istWeekIndex` + anchored phase. |
-| L12 | Assorted validation and consistency gaps | **PARTIAL** | `roundMoney` applied everywhere including `wallet.ts:757,772`. **Residual:** money columns still carry no precision/scale (`schema/wallet.ts` `numeric` with no `(12,2)`), so the invariant is enforced only in application code. |
+| L12 | Assorted validation and consistency gaps | **FIXED** | `roundMoney` applied everywhere including `wallet.ts:757,772`. The residual is closed: every money column now uses `MONEY_NUMERIC = { precision: 12, scale: 2 }` (`schema/wallet.ts:20`), so the 2-decimal invariant is enforced by the database, not only by application code. `push` converges on it. |
 
 ### Regressions introduced by earlier fix rounds
 
@@ -245,17 +312,26 @@ New this round: `docker/Dockerfile` sets `API_BUNDLE_VERIFY=strict` in the api b
 DEPLOYMENT.md §3 documents `API_BUNDLE_VERIFY=strict pnpm --filter @workspace/api-server run build`
 as the equivalent pre-deploy assertion outside Docker.
 
+**Corrected in the follow-up round:** DEPLOYMENT.md §"(Optional) seed reference + demo data" ran the
+three seeds without `-- --yes`. Inside `docker compose run --rm tools` with `.env.docker`,
+`NODE_ENV=production`, so `assertSeedTarget` refuses and **the documented deploy stopped**. The
+commands now carry `-- --yes`, with a sentence explaining that seeds refuse a non-development target
+unless the operator says so — seeding production should be an act someone performed, not one that
+happened. (The unix-socket DSN is correctly classified as *local*; `NODE_ENV` is what trips the
+guard.) The seed ordering is now documented there as a hard prerequisite too, and `seed-demo.ts`'s
+header records that it aborts on a fresh DB with an FK error on `kitchen_pincodes` until the food
+seeds have run.
+
 ---
 
 ## Before you merge — checklist
 
 Everything previously listed as blocking is done. What remains is process, not code:
 
-- [ ] **Split the commit by path.** This is now the single largest risk in the change. There are
-      **zero commits** on the branch and unrelated audit work is interleaved in the same working
-      tree — `audit-*.ts`, `audits/*.tsx`, `schema/audit.ts`, `components/layout.tsx`, `lib/nav.ts`,
-      `apps.tsx`, `AUDIT_PRD_GAP_ANALYSIS.md`. It is separable file-by-file; separate it before
-      committing, or the food fix and the audit work become one unrevertable change.
+- [x] **Split the commit by path.** Done for the food work: `2b4c40f` carries 85 files and **no**
+      audit file. The 17 audit files remain uncommitted and untouched by subsequent rounds (their
+      mtimes were re-checked at the end of the follow-up round). Keep them out of the next commit
+      too — the follow-up round's own changes are still uncommitted alongside them.
 - [ ] **Record the B6 product decision** next to `permissions.ts` — report export is now
       SUPER_ADMIN / OPS_EXCELLENCE only.
 - [ ] **Run the deploy sequence against a restored production snapshot**, not just the dev DB. Every
@@ -269,55 +345,42 @@ Everything previously listed as blocking is done. What remains is process, not c
 
 ## Still open (follow-up scope)
 
-Honest and complete. Nothing here blocks merge; the ordering is by how much it would cost to
-discover later.
+**One item, and it is not this commit's.**
 
-**Observability / correctness-adjacent**
+1. `scopeCrumbs` (`nav.ts:48`) is dead code — and it ships with the **AUDIT** commit, not this one.
+   `nav.ts` is one of the 17 deliberately-uncommitted audit files, so it was explicitly out of scope
+   for the follow-up round and remains untouched. Flagged for whoever commits the audit work.
 
-1. **`verifySns`'s bare `catch` cannot distinguish a forged signature from a broken deployment**
-   (`webhooks.ts:50-66`). A missing module, an unreachable `SigningCertURL`, and a genuinely forged
-   envelope all return the same 403 with no log line. This is exactly what made H3c invisible for
-   three rounds — the bug was fixed but the *detector* was not. I confirmed the limitation during
-   this round's smoke test: a bogus SNS envelope returned 403, which is correct, but that response
-   is identical to the one the broken build produced. Conclusive proof had to come from bundle
-   contents instead. **Log the caught error and distinguish infrastructure failure from rejection.**
-2. `wastePct` is computed against two different denominators depending on surface — `wasted/received`
-   via `wastePctOf` (`food-ops.ts:3153,3342,3353,3417`) but `wasted/ordered` at `:3076`, `:3114`,
-   `:3625`. The comment at `:3137` documents the first as intentional; either way two numbers labelled
-   "waste %" disagree. Pick one, or label them differently.
-3. `POST /orders` answers 500 on a nameless 23505 (`food.ts`) where its batch sibling handles it.
+### Closed in the follow-up round
 
-**Money**
+The other ten items are done. Recorded here rather than deleted, because several were closed in a
+way worth knowing about:
 
-4. `wallet_transactions.amount` / `balance` are `numeric` with no precision/scale (`schema/wallet.ts`).
-   The 2-decimal invariant lives only in `roundMoney`; the database would accept anything. (L12 residual.)
-5. **No unit test for `wallet-service.ts`.** The webhook settlement paths are now well covered (29
-   tests), but `roundMoney`, `WALLET_TXN_DIRECTION` and the C2 reversal direction — the defect that
-   double-debited a wallet — have **zero** direct coverage on either side (`grep roundMoney` over both
-   `__tests__` trees returns nothing). This is the highest-value test still missing.
+| Was | Item | How it closed |
+|---|---|---|
+| 1 | `verifySns`'s bare `catch` conflates forgery with a broken deployment | `verifySns` now returns a discriminated result (`INFRASTRUCTURE` vs `REJECTED`, with the error) and the caller logs `err` / `kind` / `reason` / `messageId` / `topicArn` while still returning a bare 403 to the caller. Covered by `ses-webhook-verification.test.ts`, which reads the captured log — a black-box status assertion could not have told the two apart, which was the whole point. |
+| 2 | Two different `wastePct` denominators, one label | Split into `wastePctOfReceived` (kitchen efficiency, `/waste-analytics`) and `wastePctOfOrdered` (demand forecasting, `/analytics`, `/home-analytics`), with the invariant documented on both sides. The web types, all three pages and the `Food waste %` card now name their denominator; the deprecated `wastePct` aliases are deleted from the server. `/home-analytics` also ships `totalOrderedDelivered` — the percentage's real denominator — and `/waste-analytics` ships `receivedQty`, so both ratios are reproducible from the payload. |
+| 3 | `POST /orders` 500s on a nameless 23505 | **Was stale.** Verified live: the duplicate POST returns 409 in the same `{success,error}` shape as its batch sibling, and the nameless-23505 branch (`violatedConstraint` + `liveOrderExists`) shipped in `2b4c40f` itself at `food.ts:850-858`. Replaced by the master-data `code` defect described above, which was real. |
+| 4 | Money columns had no precision/scale | `MONEY_NUMERIC = { precision: 12, scale: 2 }` on every wallet money column. L12 is now FIXED rather than PARTIAL. |
+| 5 | No unit test for `wallet-service.ts` | `wallet-service.test.ts` (API) and `wallet-direction.test.ts` (web). Both assert the direction map is **total over the transaction-type enum** mechanically — the API side against the pg enum, the web side against the generated `WalletTransactionDtoType` — so a new type fails a test instead of silently defaulting to DEBIT. The web map is typed `Record<string, …>`, so the compiler could never have caught it. Precedence is pinned too: balance delta beats the type map, `REFUND_WITHDRAWAL` is a DEBIT, `REVERSAL` falls back to DEBIT without balances. |
+| 6 | Zones / clusters had no UI | `food-organization.tsx` now has a **Zones & Clusters** tab wired to `createZone` / `updateCluster` / etc., plus a spine view that surfaces orphans ("Clusters pointing at a missing city"). The org spine no longer requires a script. |
+| 7 | The `unconfirmed` split shipped only in the export | `food-reports.tsx` calls `foodApi.reportsVariance` and renders it: an `Unconfirmed` column, a per-unit breakdown, and a callout naming how many delivered orders were never counted. The C3 signal is visible in the product. |
+| 8 | `seed:food` leaves the module unorderable and does not say so | Both seeds end with an ORDERABLE / NOT ORDERABLE report; `seed:food`'s names `seed:food-extra` as the next command. Quoted in §8 above. |
+| 9 | Seeds hard-DELETE `user_scopes` | Closed, and **wider than recorded**: there were four hard-DELETE sites (`seed-kitchen-managers.ts`, `seed-food.ts` ×2, `seed-food-extra.ts`), not two, plus a fifth related site — `reanchorGeoScopes`' in-place UPDATE, which became a 23505 abort once revocation went soft. The deferred `assertScopesResolve` `is_active` gap is closed too, and was demonstrated to be a real false-pass rather than a theoretical one. |
+| 11 | `/reports/export.:fmt` shadowed by four explicit registrations | Collapsed: there are now exactly **two** registrations — the extensionless default-CSV route and `/reports/export.:fmt` — behind one handler. Proved at runtime: `.json`, `.exe` and `.tar` all reach the param route and return 400 with the valid list. |
 
-**Product surface**
+### Residual notes (not defects)
 
-6. **Zones, clusters and property→cluster wiring still have no UI** (`food-organization.tsx` has four
-   tabs: Hierarchy, Brands, Agencies, Access — no create affordance for zones or clusters). The API
-   supports all of it and the seed creates 2 zones / 9 clusters, so the org spine can only be
-   changed by a script. This is the largest remaining product gap in the module.
-7. `/reports/variance`'s `unconfirmed` split ships only in the export — no page calls
-   `foodApi.reportsVariance`, so the C3 signal is invisible in the UI.
-8. `seed:food` alone leaves the module unable to serve an order and does not say so. One line of
-   output pointing at `seed:food-extra` would have saved a reviewer a false CRITICAL last round.
-
-**Tooling / hygiene**
-
-9. `scripts/src/seed-kitchen-managers.ts:80` and `seed-food.ts` hard-DELETE `user_scopes` rows while
-   H5 made revocation a soft `isActive` flag. Harmless for seeds (they re-create what they delete),
-   but pointed at a live database they would erase revocation history.
-10. `scopeCrumbs` (`nav.ts:48`) is dead code — and it will ship with the **audit** commit, not this
-    one. Flagged for whoever splits the tree.
-11. `/reports/export.:fmt` (`food-ops.ts:4422`) is still shadowed by the four explicit
-    `.csv`/`.pdf`/`.xls`/extensionless registrations above it. Harmless now (all five carry the same
-    guard and the shadowing is documented at `:4211`), but it is the exact shape H2 started from and
-    a future format would silently take the wrong branch.
+- **Four constraint helpers now exist** — `isUniqueViolation` in `wallet-service.ts` (exported),
+  `food.ts` (local) and `food-ops.ts` (local, with a `...names` parameter), plus `violatesCheck` in
+  `food.ts`. They differ **intentionally**: `food-ops` treats a nameless 23505 as a match, `food.ts`
+  must not, or its order-number-vs-duplicate-order distinction breaks. Unifying them is a judgement
+  call, not a bug; a shared version would need the name-list parameter *and* a documented answer for
+  the nameless case.
+- `food.ts:878` still ORs a message-based `includes("unique")` test alongside `isUniqueViolation`.
+  Harmless — the working check runs first — but it is dead weight of exactly the kind that produced
+  the 500 fixed this round. Delete it when that line is next touched.
+- **B6 is still an unrecorded product decision** (see the checklist above), not a defect.
 
 ---
 
@@ -331,8 +394,17 @@ Three things about this verification worth carrying forward:
   All perturbations were restored and the restoration verified against a snapshot.
 - **Black-box tests cannot see through a bare `catch`.** The `sns-validator` fix could not be proved
   by calling the webhook, because the broken and fixed builds return the same 403. It was proved by
-  bundle contents plus booting from a directory with no `node_modules` above it. Follow-up 1 exists
-  so the next person does not need that trick.
-- **`push` convergence is a usable drift signal now, and it is load-bearing.** Two consecutive
-  `No changes detected` runs, and a third after a real `SET NOT NULL`. But any unmanaged table in
-  `public` will trip the data-loss banner — as my own scratch table did.
+  bundle contents plus booting from a directory with no `node_modules` above it. That is now fixed at
+  the source — `verifySns` classifies and logs — so the next person does not need the trick.
+- **`push` convergence is a usable drift signal now, and it is load-bearing.** Four consecutive
+  `No changes detected` runs across the follow-up round, including two after the seeds rewrote data.
+  But any unmanaged table in `public` will trip the data-loss banner — as my own scratch table did.
+- **A guard that was never exercised is indistinguishable from no guard.** The duplicate-`code` 500
+  found this round sat behind a `catch` block that *looked* correct: it tested the error message for
+  the word "unique". Nobody had ever POSTed a duplicate. The message-based test could not fire
+  because drizzle rewrites the message and moves `code`/`constraint` onto `err.cause` — a fact
+  already written down in a comment **twelve lines above the working helper in the same file**.
+  Reading the code would not have caught this; sending the request did. The new test therefore
+  reproduces the failure before asserting the fix, and it was verified by reverting the fix and
+  watching it fail with `expected 500 to be 409`. **A regression test that has never been seen red
+  has not been shown to test anything.**

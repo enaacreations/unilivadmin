@@ -4,7 +4,8 @@ import { withQuery } from "@/lib/nav-helpers";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format, subDays } from "date-fns";
 import {
-  ArrowRight, Check, Clock, Download, Settings2, Timer, Trash2, Trophy, Users,
+  AlertTriangle, ArrowRight, Check, Clock, Download, Scale, Settings2, Timer,
+  Trash2, Trophy, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,9 +26,11 @@ import { apiDownload } from "@/lib/api-fetch";
 import {
   foodApi, foodKeys,
   type ReportsData, type AnalyticsData, type FoodLookups,
-  type OnTimeReport, type OnTimeTolerance, type VarianceByDayData, type VarianceByDayRow, type MealType,
+  type OnTimeReport, type OnTimeTolerance, type VarianceByDayData, type VarianceByDayRow,
+  type VarianceData, type MealType,
 } from "@/lib/food-api";
 import { useActiveBrands } from "@/components/food/use-food-masters";
+import { FoodQueryError } from "@/components/food/query-error";
 
 // Period presets — drive both the analytics `period` param and the from/to window.
 type PeriodKey = "week" | "month" | "quarter" | "year";
@@ -91,6 +94,25 @@ function BarsEmpty({ icon: Icon, label }: { icon: React.ElementType; label: stri
   );
 }
 
+/**
+ * Failed-fetch state for a chart card.
+ *
+ * Invariant: a failed query must never render as "no data" — both cards below
+ * fell through to BarsEmpty on an error, so a 403 or a dropped request read as
+ * a week with no residents fed and no waste.
+ */
+function BarsError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-center">
+      <AlertTriangle className="h-5 w-5 text-destructive" />
+      <p className="text-xs text-destructive">Could not load this chart.</p>
+      <button type="button" onClick={onRetry} className="text-xs font-semibold text-accent underline">
+        Retry
+      </button>
+    </div>
+  );
+}
+
 export default function FoodReports() {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -130,7 +152,7 @@ export default function FoodReports() {
   const propName = (id?: string | null) =>
     id ? (properties.find((p) => p.id === id)?.name || "—") : "—";
 
-  const { data, isLoading, isError, error } = useQuery<ReportsData>({
+  const { data, isLoading, isError, error, refetch } = useQuery<ReportsData>({
     queryKey: foodKeys.reports(filters),
     queryFn: () => foodApi.reports(filters),
   });
@@ -153,7 +175,7 @@ export default function FoodReports() {
   if (brand !== "ALL") onTimeParams.brand = brand;
 
   const {
-    data: onTime, isLoading: onTimeLoading,
+    data: onTime, isLoading: onTimeLoading, isError: onTimeError, refetch: refetchOnTime,
   } = useQuery<OnTimeReport>({
     queryKey: foodKeys.reportsOnTime(onTimeParams),
     queryFn: () => foodApi.reportsOnTime(onTimeParams),
@@ -193,6 +215,7 @@ export default function FoodReports() {
 
   const {
     data: varianceByDay, isLoading: varianceByDayLoading,
+    isError: varianceByDayError, refetch: refetchVarianceByDay,
   } = useQuery<VarianceByDayData>({
     queryKey: foodKeys.reportsVarianceByDay(varianceByDayParams),
     queryFn: () => foodApi.reportsVarianceByDay(varianceByDayParams),
@@ -204,7 +227,8 @@ export default function FoodReports() {
   //
   // Summing across units would be the M7 defect again (kilograms + plates), so
   // this keeps the DOMINANT unit for each day — the one with the most waste —
-  // and reports that unit alongside. Waste % is a ratio, so it stays meaningful.
+  // and reports that unit alongside. Waste % (of ordered) is a ratio, so it
+  // stays meaningful — the denominator is the same unit as the numerator.
   const varianceByDayRows = React.useMemo(() => {
     const byDate = new Map<string, VarianceByDayRow[]>();
     for (const r of varianceByDay?.rows ?? []) byDate.set(r.date, [...(byDate.get(r.date) ?? []), r]);
@@ -221,6 +245,31 @@ export default function FoodReports() {
         };
       });
   }, [varianceByDay]);
+
+  // C3 — ordered-vs-delivered variance, meal × unit, WITH the unconfirmed split.
+  // The endpoint holds uncounted lines out of ordered/received and reports them
+  // separately; until now that split shipped only in the CSV export, so the one
+  // control that tells "the kitchen under-delivered" apart from "nobody was
+  // authorised to count it" was invisible in the product.
+  // Note: /reports/variance scopes by date + property only — there is no brand
+  // filter server-side, which the card says out loud rather than implying one.
+  const varianceParams: Record<string, string> = { from, to, period };
+  if (propertyId !== "ALL") varianceParams.propertyId = propertyId;
+
+  const {
+    data: variance, isLoading: varianceLoading, isError: varianceError, refetch: refetchVariance,
+  } = useQuery<VarianceData>({
+    queryKey: foodKeys.reportsVariance(varianceParams),
+    queryFn: () => foodApi.reportsVariance(varianceParams),
+  });
+  const mealLabel = (m: string) => MEAL_FILTERS.find((f) => f.key === m)?.label ?? m;
+  const num = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
+  // A meal the server had nothing to report on comes back as a single all-zero
+  // row so all four meals stay on the table; keep them, but only when there is
+  // something else to compare them against.
+  const varianceRows = variance?.rows ?? [];
+  const varianceHasData = varianceRows.some((r) => r.ordered || r.received || r.unconfirmed || r.wasted);
+  const unconfirmedByUnit = (variance?.totalsByUnit ?? []).filter((t) => t.unconfirmed > 0);
 
   const ordersPerDay = data?.ordersPerDay ?? [];
   const residentTrend = data?.residentTrend ?? [];
@@ -298,6 +347,7 @@ export default function FoodReports() {
     },
   ];
   const milestonesLoading = varianceByDayLoading || onTimeLoading;
+  const milestonesFailed = varianceByDayError || onTimeError;
 
   React.useEffect(() => {
     if (isError) {
@@ -446,7 +496,9 @@ export default function FoodReports() {
           <h3 className="font-display text-[15px] font-bold tracking-[-0.012em]">People fed daily</h3>
           <p className="mb-3.5 mt-0.5 text-xs text-muted-foreground">Last 7 days</p>
           <div className="flex h-[90px] items-end gap-2">
-            {isLoading ? (
+            {isError ? (
+              <BarsError onRetry={() => refetch()} />
+            ) : isLoading ? (
               <BarsSkeleton />
             ) : peopleBars.length === 0 ? (
               <BarsEmpty icon={Users} label="No resident data in this range" />
@@ -484,7 +536,11 @@ export default function FoodReports() {
         <div className="rounded-[14px] border border-border bg-card p-[18px]">
           <div className="flex items-start justify-between gap-2">
             <div>
-              <h3 className="font-display text-[15px] font-bold tracking-[-0.012em]">Food waste %</h3>
+              {/* Named denominator, not a bare "waste %": these bars are
+                  wasted/ordered (the variance endpoint restricts ordered to
+                  confirmed lines), which is a different metric from the
+                  of-received number on the waste-analytics page. */}
+              <h3 className="font-display text-[15px] font-bold tracking-[-0.012em]">Food waste % (of ordered)</h3>
               <p className="mt-0.5 text-xs text-muted-foreground">Last 7 days · goal under 3%</p>
             </div>
           </div>
@@ -507,7 +563,9 @@ export default function FoodReports() {
             ))}
           </div>
           <div className="flex h-[90px] items-end gap-2">
-            {varianceByDayLoading ? (
+            {varianceByDayError ? (
+              <BarsError onRetry={() => refetchVarianceByDay()} />
+            ) : varianceByDayLoading ? (
               <BarsSkeleton />
             ) : wasteBars.length === 0 ? (
               <BarsEmpty icon={Trash2} label="No waste data in this range" />
@@ -547,7 +605,7 @@ export default function FoodReports() {
               In range:{" "}
               {(summary.byUnit ?? []).length === 0
                 ? "no waste recorded"
-                : summary.byUnit.map((u) => `${u.wasted} ${u.unit ?? ""} wasted · ${u.wastePct}%`).join(" · ")}{" "}
+                : summary.byUnit.map((u) => `${u.wasted} ${u.unit ?? ""} wasted · ${u.wastePctOfOrdered}% of ordered`).join(" · ")}{" "}
               · {summary.delayedOrders ?? 0}/{summary.deliveredOrders ?? 0} delayed
             </p>
           )}
@@ -559,7 +617,11 @@ export default function FoodReports() {
         <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-full bg-muted text-accent">
           <Timer className="h-4 w-4" />
         </span>
-        {onTimeLoading ? (
+        {/* "0.0%" is a claim about delivery performance; a failed fetch is not
+            evidence for it. Say the number is unknown instead. */}
+        {onTimeError ? (
+          <span className="font-mono text-xl font-bold text-muted-foreground">—</span>
+        ) : onTimeLoading ? (
           <Skeleton className="h-7 w-20" />
         ) : (
           <span className="font-mono text-xl font-bold tabular-nums">
@@ -569,7 +631,12 @@ export default function FoodReports() {
         <div className="min-w-0">
           <div className="text-sm font-semibold">On-time deliveries</div>
           <div className="text-xs text-muted-foreground">
-            {onTimeLoading
+            {onTimeError ? (
+              <>
+                Could not load on-time deliveries.{" "}
+                <button type="button" onClick={() => refetchOnTime()} className="font-semibold text-accent underline">Retry</button>
+              </>
+            ) : onTimeLoading
               ? "Loading…"
               : `${onTimeCount} on-time · ${onTime?.lateCount ?? 0} late of ${totalDelivered} delivered · within ${onTime?.toleranceMinutes ?? tolerance?.minutes ?? 45} min`}
           </div>
@@ -624,11 +691,133 @@ export default function FoodReports() {
         )}
       </section>
 
+      {/* C3 — Ordered vs delivered, with the unconfirmed split made visible */}
+      <section className="rounded-[14px] border border-border bg-card p-[18px]">
+        <div className="flex items-start gap-2">
+          <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-full bg-muted text-accent">
+            <Scale className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="font-display text-[15px] font-bold tracking-[-0.012em]">Ordered vs delivered</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Delivered orders in range, per meal and unit. Shortfall counts only what someone actually
+              counted at handover.
+              {brand !== "ALL" && " This table is not brand-filtered — the report scopes by date and property only."}
+            </p>
+          </div>
+        </div>
+
+        {/* A failed fetch must not render as "nothing to reconcile". */}
+        {varianceError ? (
+          <div className="mt-3.5">
+            <FoodQueryError label="the ordered-vs-delivered report" onRetry={() => refetchVariance()} />
+          </div>
+        ) : varianceLoading ? (
+          <div className="mt-3.5 space-y-2">
+            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-7 w-full rounded-md" />)}
+          </div>
+        ) : !varianceHasData ? (
+          <p className="mt-3.5 rounded-md border border-dashed py-6 text-center text-xs text-muted-foreground">
+            No delivered orders in this range.
+          </p>
+        ) : (
+          <>
+            {/* The C3 control itself: an order delivered by a dispatcher who did
+                not hold FOOD_CONFIRM_DELIVERY has no receivedQty. Reporting that
+                as a zero receipt invented a 100% shortfall against a kitchen that
+                delivered in full, so it is quarantined into its own column — and
+                named here, because a number in a column nobody can explain is not
+                a control. */}
+            {(variance?.unconfirmedOrders ?? 0) > 0 && (
+              <div className="mt-3.5 flex items-start gap-2 rounded-md border border-warning/50 bg-warning/5 px-3 py-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                <div className="min-w-0 space-y-0.5">
+                  <p className="text-sm font-semibold">
+                    {variance!.unconfirmedOrders} delivered order{variance!.unconfirmedOrders === 1 ? " was" : "s were"} never counted
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Marked delivered without a confirm-delivery count, so no received quantity exists.
+                    {unconfirmedByUnit.length > 0 && (
+                      <> Their{" "}
+                        <span className="font-mono tabular-nums">
+                          {unconfirmedByUnit.map((t) => `${num(t.unconfirmed)} ${t.unit ?? ""}`.trim()).join(" · ")}
+                        </span>{" "}
+                        is held out of the shortfall below</>
+                    )}
+                    {unconfirmedByUnit.length === 0 && " Those lines are held out of the shortfall below"}
+                    {" "}— it is a missing count, not missing food.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-3.5 overflow-x-auto">
+              <table className="w-full min-w-[520px] text-left text-xs">
+                <thead className="text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="py-1.5 pr-2 font-medium">Meal</th>
+                    <th className="py-1.5 pr-2 font-medium">Unit</th>
+                    <th className="py-1.5 pr-2 text-right font-medium">Ordered</th>
+                    <th className="py-1.5 pr-2 text-right font-medium">Received</th>
+                    <th className="py-1.5 pr-2 text-right font-medium">Shortfall</th>
+                    <th className="py-1.5 text-right font-medium">Unconfirmed</th>
+                  </tr>
+                </thead>
+                <tbody className="font-mono tabular-nums">
+                  {varianceRows.map((r, i) => (
+                    <tr key={`${r.mealType}-${r.unit ?? "none"}-${i}`} className="border-b border-border/60 last:border-0">
+                      <td className="py-1.5 pr-2 font-sans">{mealLabel(r.mealType)}</td>
+                      <td className="py-1.5 pr-2 font-sans text-muted-foreground">{r.unit ?? "—"}</td>
+                      <td className="py-1.5 pr-2 text-right">{num(r.ordered)}</td>
+                      <td className="py-1.5 pr-2 text-right">{num(r.received)}</td>
+                      <td className={`py-1.5 pr-2 text-right ${r.variance > 0 ? "font-bold text-destructive" : ""}`}>
+                        {num(r.variance)}
+                      </td>
+                      <td className={`py-1.5 text-right ${r.unconfirmed > 0 ? "font-bold text-warning" : "text-muted-foreground"}`}>
+                        {r.unconfirmed > 0
+                          ? `${num(r.unconfirmed)}${r.unconfirmedOrders ? ` (${r.unconfirmedOrders})` : ""}`
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                {/* Totals PER UNIT — kilograms and plates do not add up (M7), so
+                    there is deliberately no single grand total. */}
+                {(variance?.totalsByUnit ?? []).length > 0 && (
+                  <tfoot className="font-mono tabular-nums">
+                    {variance!.totalsByUnit.map((t) => (
+                      <tr key={t.unit ?? "none"} className="border-t border-border">
+                        <td className="py-1.5 pr-2 font-sans font-semibold" colSpan={2}>Total · {t.unit ?? "—"}</td>
+                        <td className="py-1.5 pr-2 text-right font-semibold">{num(t.ordered)}</td>
+                        <td className="py-1.5 pr-2 text-right font-semibold">{num(t.received)}</td>
+                        <td className={`py-1.5 pr-2 text-right font-semibold ${t.variance > 0 ? "text-destructive" : ""}`}>{num(t.variance)}</td>
+                        <td className={`py-1.5 text-right font-semibold ${t.unconfirmed > 0 ? "text-warning" : "text-muted-foreground"}`}>
+                          {t.unconfirmed > 0 ? num(t.unconfirmed) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </>
+        )}
+      </section>
+
       {/* Milestones */}
       <section className="rounded-[14px] border border-border bg-card p-[18px]">
         <h3 className="mb-3.5 font-display text-[15px] font-bold tracking-[-0.012em]">
           Your milestones
         </h3>
+        {/* Every milestone is derived from the variance and on-time feeds. With
+            either one failed they all read "0 of N" — an award withheld on
+            evidence that was never fetched. */}
+        {milestonesFailed ? (
+          <FoodQueryError
+            label="your milestones"
+            onRetry={() => { if (varianceByDayError) refetchVarianceByDay(); if (onTimeError) refetchOnTime(); }}
+          />
+        ) : (
         <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fit,minmax(240px,1fr))]">
           {milestonesLoading
             ? [0, 1, 2].map((i) => (
@@ -666,6 +855,7 @@ export default function FoodReports() {
                 </div>
               ))}
         </div>
+        )}
       </section>
 
       {/* View orders deep link (keeps the property scope in the query string) */}

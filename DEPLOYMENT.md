@@ -150,10 +150,25 @@ Required reference data (OTP limits, meal cut-off windows, kitchens) plus a
 demo admin + sample orders:
 
 ```bash
-docker compose run --rm tools "pnpm --filter @workspace/scripts run seed && \
-  pnpm --filter @workspace/scripts run seed:food && \
-  pnpm --filter @workspace/scripts run seed:food-extra"
+docker compose run --rm tools "pnpm --filter @workspace/scripts run seed -- --yes && \
+  pnpm --filter @workspace/scripts run seed:food -- --yes && \
+  pnpm --filter @workspace/scripts run seed:food-extra -- --yes"
 ```
+
+> **Why `-- --yes`:** every seed truncates and rewrites the tables it owns, so it
+> refuses any target that is not both a local connection *and*
+> `NODE_ENV=development`/`test` unless the operator overrides it. `.env.docker`
+> sets `NODE_ENV=production`, so these runs are refused without the flag — the
+> unix-socket DSN itself is correctly classified as local; it is `NODE_ENV` that
+> trips the guard. The flag exists so that seeding a production database is an
+> act someone performed rather than one that happened.
+
+> Run the two food seeds **in order**: `seed:food` alone leaves every
+> `food_menu_rotation` row brand-level (no `kitchen_id`), and menu resolution
+> requires an exact kitchen match — so no order can be placed until
+> `seed:food-extra` materialises the per-kitchen rows. `seed:food` ends by
+> printing an **ORDERABLE / NOT ORDERABLE** report and naming `seed:food-extra`
+> as the next command; treat NOT ORDERABLE after both seeds as a failure.
 
 > For a clean production DB you may skip the base `seed` and instead create your
 > own admin user, but you **should** run `seed:food-extra` (it seeds

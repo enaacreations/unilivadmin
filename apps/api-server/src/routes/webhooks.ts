@@ -47,8 +47,44 @@ const SKIP_VERIFY = IS_DEVELOPMENT && process.env["SES_WEBHOOK_SKIP_VERIFY"] ===
 // gate above. Only real development warns and proceeds, for local testing.
 const EXPECTED_TOPIC_ARN = process.env["SES_SNS_TOPIC_ARN"];
 
-async function verifySns(envelope: unknown): Promise<boolean> {
-  if (SKIP_VERIFY) return true;
+/**
+ * Outcome of SNS signature verification. `REJECTED` means the envelope itself is
+ * bad (403). `INFRASTRUCTURE` means *we* are broken — the validator module did
+ * not load, or its certificate fetch failed — and must never be answered like a
+ * forged signature: collapsing the two into one silent `false` is exactly what
+ * kept the unbundled-sns-validator defect invisible for three rounds, because a
+ * broken build and an attacker produced byte-identical 403s.
+ */
+type SnsVerification =
+  | { ok: true }
+  | { ok: false; kind: "REJECTED" | "INFRASTRUCTURE"; reason: string; err: unknown };
+
+/**
+ * Envelope-level rejections sns-validator raises. These are the ONLY failures
+ * attributable to the caller; anything else (a cert that could not be fetched, a
+ * PEM that would not parse, a module that would not load) is our deployment
+ * failing and is reported as such. Defaulting the unknown case to
+ * INFRASTRUCTURE is deliberate: a wrong 403 hides a broken deployment, a wrong
+ * 503 merely makes SNS retry.
+ *
+ * Known overlap: `SigningCertURL` is caller-supplied (constrained to an
+ * https sns.<region>.amazonaws.com/*.pem URL), so a forged envelope naming a
+ * .pem that 404s also lands in the INFRASTRUCTURE branch. That is the safe way
+ * round — nothing is processed either way — and the logged `signingCertHost`
+ * plus `topicArn` are what tell "our egress is broken" from "someone pointed us
+ * at a dead AWS URL".
+ */
+const SNS_REJECTION_PATTERNS = [
+  /missing required keys/i,
+  /certificate is located on an invalid domain/i,
+  /signature version .* is not supported/i,
+  /message signature is invalid/i,
+];
+
+async function verifySns(envelope: unknown): Promise<SnsVerification> {
+  if (SKIP_VERIFY) return { ok: true };
+
+  let validator: { validate: (hash: unknown, cb: (err: unknown) => void) => void };
   try {
     // Literal specifier on purpose: the api runtime image is a single esbuild
     // bundle with no node_modules, and esbuild cannot follow a VARIABLE
@@ -58,13 +94,33 @@ async function verifySns(envelope: unknown): Promise<boolean> {
     // type declarations are supplied by src/types/sns-validator.d.ts.
     const mod = (await import("sns-validator")) as any;
     const Validator = mod.default || mod;
-    const validator = new Validator();
+    validator = new Validator();
+  } catch (err) {
+    // Module missing from the bundle, or its export shape changed. Nothing about
+    // the request caused this.
+    return { ok: false, kind: "INFRASTRUCTURE", reason: "sns-validator failed to load", err };
+  }
+
+  try {
     await new Promise<void>((resolve, reject) =>
       validator.validate(envelope, (err: unknown) => (err ? reject(err) : resolve())),
     );
-    return true;
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const kind = SNS_REJECTION_PATTERNS.some((p) => p.test(message))
+      ? ("REJECTED" as const)
+      : ("INFRASTRUCTURE" as const);
+    return { ok: false, kind, reason: message, err };
+  }
+}
+
+/** Host of the envelope's SigningCertURL — the field a cert-fetch failure is about. */
+function signingCertHost(envelope: any): string | null {
+  try {
+    return new URL(String(envelope?.SigningCertURL)).host;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -119,7 +175,28 @@ router.post("/webhooks/ses", textBody({ type: () => true }), async (req: Request
       return;
     }
 
-    if (!(await verifySns(envelope))) {
+    const verification = await verifySns(envelope);
+    if (!verification.ok) {
+      // Log the discriminating detail (never the response body — the caller gets
+      // no internals) so a broken deployment is distinguishable from a forgery
+      // in the logs, which black-box probing of this endpoint cannot do.
+      const context = {
+        err: verification.err,
+        kind: verification.kind,
+        reason: verification.reason,
+        messageId: envelope.MessageId ?? null,
+        topicArn: envelope.TopicArn ?? null,
+        signingCertHost: signingCertHost(envelope),
+      };
+      if (verification.kind === "INFRASTRUCTURE") {
+        // Loud, and a 5xx: treating our own breakage as "attacker sent a bad
+        // signature" is how this class of bug hides. 503 also makes SNS retry,
+        // so a real bounce is not dropped while the deployment is repaired.
+        req.log.error(context, "SES/SNS signature verification unavailable (deployment fault)");
+        res.status(503).json({ success: false, error: "Signature verification unavailable" });
+        return;
+      }
+      req.log.warn(context, "SES/SNS webhook rejected: signature verification failed");
       res.status(403).json({ success: false, error: "Invalid SNS signature" });
       return;
     }
@@ -665,6 +742,15 @@ router.post("/webhooks/razorpay", rawBody({ type: () => true }), async (req: Req
 
     const signature = req.headers["x-razorpay-signature"] as string | undefined;
     if (!verifyWebhookSignature(raw, signature)) {
+      // Same invariant as the SES/SNS path above: a rejected webhook must leave a
+      // log line saying WHY, or a misconfigured proxy that strips the signature
+      // header is indistinguishable from a forgery. No infrastructure branch is
+      // needed here — the check is a local HMAC with no module load and no
+      // network, and the unconfigured-secret case returns 200 above.
+      req.log.warn(
+        { hasSignature: !!signature, bodyBytes: raw.length },
+        "Razorpay webhook rejected: signature mismatch",
+      );
       res.status(403).json({ success: false, error: "Invalid signature" });
       return;
     }

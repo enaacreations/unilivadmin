@@ -358,14 +358,29 @@ export interface MenuRuleSettings {
   /** Show the "used Tue" hint while picking. Never blocks a save. */
   flagRepeatsWithin3Days: boolean;
 }
+/* ── Waste percentage: two metrics, two names, never one label ────────────────
+ * INVARIANT (mirrors the server's, apps/api-server/src/routes/food-ops.ts):
+ * no surface renders a bare "Waste %". The two denominators are different
+ * metrics on purpose and legitimately disagree on the same product:
+ *
+ *   wastePctOfReceived = wasted / received — of the food that ACTUALLY ARRIVED,
+ *     how much went in the bin. Kitchen efficiency. Served by /waste-analytics.
+ *   wastePctOfOrdered  = wasted / ordered (DELIVERED only) — of what the property
+ *     ASKED FOR, how much went in the bin. Demand forecasting. Served by
+ *     /analytics and /home-analytics.
+ *
+ * They differ exactly when received ≠ ordered — the delivery variance this
+ * module exists to report — so labelling both "Waste %" destroys one signal.
+ * Render them as "Waste % (of received)" / "Waste % (of ordered)".
+ * ───────────────────────────────────────────────────────────────────────── */
 /** Waste totals for ONE unit. There is no cross-unit total — kilograms and
  *  plates do not add up, and reporting their sum was the M7 defect. */
-export interface WasteByUnit { unit: string | null; wasted: number; ordered: number; wastePct: number }
+export interface WasteByUnit { unit: string | null; wasted: number; ordered: number; wastePctOfOrdered: number }
 export interface AnalyticsData {
   period: string; range: { from: string; to: string };
   /** One point per (date, unit) — collapse or pivot before charting. */
   wastageTrend: { date: string; unit: string | null; wasted: number }[];
-  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePct: number }[];
+  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePctOfOrdered: number }[];
   delays: { date: string; delayed: number; total: number }[];
   summary: { byUnit: WasteByUnit[]; delayedOrders: number; deliveredOrders: number };
 }
@@ -374,14 +389,16 @@ export type WasteGranularity = "day" | "month";
 // Every dimension below carries `unit` in its grouping key (M7), so a property
 // or dish wasted in two units appears twice — label with the unit, or pin one
 // unit, before charting or slicing a "top 10".
+/** RECEIVED basis throughout — every percentage here is kitchen efficiency and
+ *  must be labelled "Waste % (of received)". See the invariant note above. */
 export interface WasteAnalyticsData {
   range: { from: string; to: string };
   granularity: WasteGranularity;
   summary: {
-    byUnit: { unit: string | null; totalWasted: number; totalReceived: number; totalOrdered: number; wastePct: number }[];
+    byUnit: { unit: string | null; totalWasted: number; totalReceived: number; totalOrdered: number; wastePctOfReceived: number }[];
     ordersWithWaste: number;
   };
-  byProperty: { propertyId: string; name: string; city: string | null; cluster: string | null; unit: string | null; wastedQty: number; wastePct: number }[];
+  byProperty: { propertyId: string; name: string; city: string | null; cluster: string | null; unit: string | null; wastedQty: number; receivedQty: number; wastePctOfReceived: number }[];
   byDish: { dishId: string | null; name: string; unit: string | null; wastedQty: number }[];
   byMealType: { mealType: MealType; unit: string | null; wastedQty: number }[];
   byMenu: { brand: string; unit: string | null; wastedQty: number }[];
@@ -398,7 +415,7 @@ export interface HomeAnalytics {
   peopleComparison: { current: number; prior: number; currentLabel: string; priorLabel: string };
   /** One point per (date, unit) — collapse or pivot before charting. */
   wastageTrend: { date: string; unit: string | null; wasted: number }[];
-  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePct: number }[];
+  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePctOfOrdered: number }[];
   orderDelays: { date: string; delayed: number; total: number }[];
   activeResidentTrend: { date: string; residents: number }[];
   occupancy: { totalBeds: number; activeGuests: number; occupancyPct: number; monthlyCollections: number };
@@ -406,7 +423,11 @@ export interface HomeAnalytics {
   renewals: { current: number; prior: number } | null;     // proxy: lease term completes in the period
   summary: {
     totalPeopleOrdered: number;
-    byUnit: { unit: string | null; totalWasted: number; totalOrdered: number; wastePct: number }[];
+    /** `totalOrderedDelivered`, NOT `totalOrdered`, is the percentage's denominator:
+     *  totalOrdered spans every live order, and an order still in flight has wasted
+     *  nothing. Rendering wasted + totalOrdered beside the percentage shows three
+     *  numbers where the third cannot be derived from the first two. */
+    byUnit: { unit: string | null; totalWasted: number; totalOrdered: number; totalOrderedDelivered: number; wastePctOfOrdered: number }[];
     delayedOrders: number; deliveredOrders: number; activeResidents: number;
   };
 }
@@ -799,13 +820,27 @@ export const foodApi = {
     apiFetch<Envelope<{ agencyId: string; kitchenIds: string[] }>>(`/food/agencies/${agencyId}/kitchens`, { method: "PUT", body: JSON.stringify({ kitchenIds }) }).then((r) => r.data),
   getKitchenAgencies: (kitchenId: string) => apiFetch<Envelope<KitchenAgencyLink[]>>(`/food/kitchens/${kitchenId}/agencies`).then((r) => r.data),
 
+  // ─── Org spine: zone → city → cluster → properties.clusterId ───────────────
+  // Every one of these rows is load-bearing for access, not a reporting tag:
+  // resolveAccessiblePropertyIds walks exactly this chain (skipping any node
+  // whose isActive is false), so an edit here is an access change. The delete
+  // endpoints hard-delete and answer 409 with a `details` string naming what is
+  // still attached — surface it rather than a generic failure.
   listZones: () => apiFetch<Envelope<Zone[]>>(`/food/zones`).then((r) => r.data),
   createZone: (b: Record<string, unknown>) => apiFetch<Envelope<Zone>>(`/food/zones`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateZone: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Zone>>(`/food/zones/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteZone: (id: string) => apiFetch<Envelope<unknown>>(`/food/zones/${id}`, { method: "DELETE" }),
   listCities: (zoneId?: string) => apiFetch<Envelope<City[]>>(`/food/cities${qs({ zoneId })}`).then((r) => r.data),
   createCity: (b: Record<string, unknown>) => apiFetch<Envelope<City>>(`/food/cities`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateCity: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<City>>(`/food/cities/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteCity: (id: string) => apiFetch<Envelope<unknown>>(`/food/cities/${id}`, { method: "DELETE" }),
   listClusters: (cityId?: string) => apiFetch<Envelope<Cluster[]>>(`/food/clusters${qs({ cityId })}`).then((r) => r.data),
   createCluster: (b: Record<string, unknown>) => apiFetch<Envelope<Cluster>>(`/food/clusters`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
-  assignCluster: (propertyId: string, clusterId: string) => apiFetch<Envelope<unknown>>(`/food/properties/${propertyId}/assign-cluster`, { method: "POST", body: JSON.stringify({ clusterId }) }),
+  updateCluster: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Cluster>>(`/food/clusters/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteCluster: (id: string) => apiFetch<Envelope<unknown>>(`/food/clusters/${id}`, { method: "DELETE" }),
+  // `clusterId` is nullable only for org-wide callers — the server refuses to
+  // strand a property for a scoped one. No UI offers the clear.
+  assignCluster: (propertyId: string, clusterId: string | null) => apiFetch<Envelope<unknown>>(`/food/properties/${propertyId}/assign-cluster`, { method: "POST", body: JSON.stringify({ clusterId }) }),
 
   /** Live grants only; pass includeRevoked to see the revocation history too. */
   listScopes: (userId?: string, includeRevoked?: boolean) =>

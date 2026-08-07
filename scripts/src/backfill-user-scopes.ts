@@ -103,8 +103,8 @@ type Candidate = {
  * those predicates would count access the app refuses to grant and report a
  * lockout as healthy — the false pass this whole check exists to prevent.
  *
- * (seed-food.ts's `assertScopesResolve` is the same idea with an INNER JOIN, so
- * it cannot see a user with no scope rows at all — the actual lockout.)
+ * (seed-food.ts's `assertScopesResolve` is the seed-side twin and must stay in
+ * step with this statement, is_active predicates included.)
  */
 const RESOLVE_SQL = `
   SELECT u.id, u.email, u.role::text AS role, count(DISTINCT p.id)::int AS n

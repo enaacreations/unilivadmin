@@ -36,6 +36,7 @@ import {
 } from "@workspace/db";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
+import { assertSeedTarget } from "./seed-guard.js";
 
 const id = () => randomUUID();
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
@@ -43,6 +44,8 @@ const daysFromNow = (n: number) => new Date(Date.now() + n * 86_400_000);
 
 async function main() {
   console.log("🌱 Seeding database with 50+ rows per table...");
+  // This script TRUNCATEs 60+ tables including `users`. Name the target first.
+  await assertSeedTarget("seed");
 
   // ─── TRUNCATE ALL TABLES (reverse FK order) ───────────────────────────────
   // This makes the script safe to re-run: clean state every time.

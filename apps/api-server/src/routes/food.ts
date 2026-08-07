@@ -82,7 +82,10 @@ import {
   findPortionRuleUsage,
 } from "../lib/food-service.js";
 import { notifyOrderEvent } from "../lib/notification-service.js";
-import { toCsv, toPdf, fileDateStamp, sanitizeForFilename } from "../lib/export-service.js";
+import {
+  toCsv, toPdf, toMenuRotationPdf, fileDateStamp, sanitizeForFilename,
+  type RotationExportRow,
+} from "../lib/export-service.js";
 // Shared order cut-off enforcement (single source of truth lives in food-ops.ts,
 // alongside resolveCutoff()/atTime()) so /orders and /order-batches stay consistent.
 import { checkOrderCutoff, createDispatchForOrders, reconcileDispatchForOrder, residentsCapForProperty, type TxClient } from "./food-ops.js";
@@ -201,6 +204,24 @@ function isUniqueViolation(err: unknown): boolean {
 function violatedConstraint(err: unknown): string | null {
   const e = err as { constraint?: string; cause?: { constraint?: string } } | null;
   return e?.constraint ?? e?.cause?.constraint ?? null;
+}
+
+/**
+ * Postgres check_violation, narrowed to a NAMED constraint.
+ *
+ * The sibling of isUniqueViolation for the CHECK constraints this module added
+ * (non-negative headcounts and quantities). Deliberately name-matched rather
+ * than matching bare 23514: a check violation is only a caller error on the
+ * columns the caller supplies directly, and mapping every 23514 to a friendly
+ * 4xx would convert a genuine bug — a computed quantity that came out negative —
+ * into a message that reads like the user's fault and never gets investigated.
+ * Anything not named here keeps falling through to fail()'s logged 500.
+ */
+function violatesCheck(err: unknown, ...names: string[]): boolean {
+  const e = err as { code?: string; cause?: { code?: string } } | null;
+  if ((e?.code ?? e?.cause?.code) !== "23514") return false;
+  const c = violatedConstraint(err);
+  return c != null && names.includes(c);
 }
 
 /** True if the order's property is within the caller's accessible set (null = all). */
@@ -2801,6 +2822,10 @@ const ROTATION_PDF_ROW_CAP = 5000;
  */
 async function fetchRotationForExport(req: any): Promise<{
   rows: (string | number | null | undefined)[][];
+  /** The same result set unflattened. The PDF renders a day×meal calendar and
+   *  needs the numeric day and week to place a cell, which the display rows have
+   *  already turned into "Monday"/"W1". CSV and XLS keep using `rows`. */
+  raw: RotationExportRow[];
   kitchenName: string | null;
   brand: string | null;
 }> {
@@ -2851,7 +2876,7 @@ async function fetchRotationForExport(req: any): Promise<{
   ]);
   const kitchenNames = new Set(rows.map((r) => r.kitchenName ?? "").filter(Boolean));
   const kitchenName = kitchenId && kitchenNames.size ? [...kitchenNames][0] : (kitchenNames.size === 1 ? [...kitchenNames][0] : null);
-  return { rows: mapped, kitchenName, brand: brand ?? null };
+  return { rows: mapped, raw: rows, kitchenName, brand: brand ?? null };
 }
 
 function rotationFilename(kitchenName: string | null, brand: string | null, ext: string): string {
@@ -2873,17 +2898,20 @@ foodRouter.get("/menu-rotation/export.csv", authenticate, authorize("FOOD_SETTIN
   } catch (err) { fail(req, res, err); }
 });
 
-// Export the current menu rotation as PDF.
+// Export the current menu rotation as PDF — a week-per-page day x meal calendar
+// (toMenuRotationPdf), not the flat one-row-per-dish table the CSV uses. The
+// table form repeated the kitchen, brand, week and day on all ~450 lines of a
+// single cycle, so "what do we cook on Tuesday" meant reading the whole file.
 foodRouter.get("/menu-rotation/export.pdf", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
-    const { rows, kitchenName, brand } = await fetchRotationForExport(req);
-    // Tighter than the CSV cap: toPdf lays out every cell (H11).
+    const { rows, raw, kitchenName, brand } = await fetchRotationForExport(req);
+    // Tighter than the CSV cap: the calendar lays out every cell (H11).
     if (rows.length > ROTATION_PDF_ROW_CAP) {
       throw new HandlerAbort(422, {
         error: `This export is too large to render as PDF (over ${ROTATION_PDF_ROW_CAP.toLocaleString("en-IN")} rows). Narrow the filters, or download it as CSV.`,
       });
     }
-    const pdf = await toPdf({ title: "Menu Rotation", headers: ROTATION_HEADERS, rows, propertyName: kitchenName });
+    const pdf = await toMenuRotationPdf(raw);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=${rotationFilename(kitchenName, brand, "pdf")}`);
     res.send(Buffer.from(pdf));
@@ -3565,10 +3593,19 @@ const createRuleSchema = z.object({
   brand: zBrand,
   mealType: zMealType,
   dishId: zId,
-  qtyPerResident: z.coerce.number(),
+  // Bounded like every other quantity in this file (preparedQty, the order
+  // headcounts): per_resident_rules_qty_non_negative now REJECTS a negative, so
+  // unbounded this reached the CHECK and came back as an opaque 500. A negative
+  // portion is not a smaller order, it is a nonsense one — and Infinity would
+  // land in the numeric column as the literal "Infinity".
+  qtyPerResident: z.coerce.number().min(0).finite(),
   unit: z.enum(MEASUREMENT_UNITS),
   isActive: z.boolean().optional(),
 }).passthrough();
+
+/** The 422 both /rules writers answer when the CHECK rejects a negative portion.
+ *  Shares one wording so the dish drawer treats create and edit identically. */
+const RULE_QTY_NEGATIVE_ERROR = "Portion per resident cannot be negative.";
 
 foodRouter.post("/rules", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
   try {
@@ -3602,6 +3639,9 @@ foodRouter.post("/rules", authenticate, authorize("FOOD_SETTINGS", "create"), as
     // uq_per_resident_rule / _global is the DB backstop for the dedupe SELECT
     // above; report the same 409 rather than a 500.
     if (isUniqueViolation(err)) { res.status(409).json({ success: false, error: "A rule already exists for this brand, meal and dish" }); return; }
+    // …and the CHECK is the backstop for the schema bound above. The value is
+    // wholly caller-supplied, so a violation is the caller's to fix, not a bug.
+    if (violatesCheck(err, "per_resident_rules_qty_non_negative")) { res.status(422).json({ success: false, error: RULE_QTY_NEGATIVE_ERROR }); return; }
     fail(req, res, err);
   }
 });
@@ -3612,7 +3652,9 @@ const updateRuleSchema = z.object({
   dishId: zId.optional(),
   unit: z.enum(MEASUREMENT_UNITS).optional(),
   isActive: z.boolean().optional(),
-  qtyPerResident: z.coerce.number().optional(),
+  // Same bound as createRuleSchema — the edit path writes the same column and
+  // the same CHECK, and it is the one the dish drawer actually calls.
+  qtyPerResident: z.coerce.number().min(0).finite().optional(),
 }).passthrough();
 
 foodRouter.put("/rules/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
@@ -3645,6 +3687,7 @@ foodRouter.put("/rules/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), a
     // PUT has no duplicate pre-check of its own (POST does), so this mapping is
     // the only thing standing between a re-keyed rule and a 500.
     if (isUniqueViolation(err)) { res.status(409).json({ success: false, error: "A rule already exists for this brand, meal and dish" }); return; }
+    if (violatesCheck(err, "per_resident_rules_qty_non_negative")) { res.status(422).json({ success: false, error: RULE_QTY_NEGATIVE_ERROR }); return; }
     fail(req, res, err);
   }
 });

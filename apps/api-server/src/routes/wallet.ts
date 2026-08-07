@@ -24,7 +24,7 @@ import {
   getWalletConfig,
   creditWallet,
   debitWallet,
-  txnDirection,
+  reverseTransaction,
   roundMoney,
   isUniqueViolation,
   writeAuditLog,
@@ -1198,10 +1198,6 @@ walletRouter.post(
         if (original.residentId !== residentId) {
           throw httpError(400, "Transaction does not belong to this resident");
         }
-        // A reversal cannot itself be reversed.
-        if (original.type === "REVERSAL") {
-          throw httpError(400, "A reversal transaction cannot be reversed");
-        }
 
         // Idempotency / double-reversal guard: refuse if this transaction has
         // already been reversed (unlimited-money-creation fix).
@@ -1213,44 +1209,23 @@ walletRouter.post(
           throw httpError(409, "Transaction has already been reversed");
         }
 
-        const originalAmount = Number(original.amount);
-        // Direction comes from the shared map, never from a membership list —
-        // REFUND_WITHDRAWAL reads like a credit but debits the wallet, and
-        // reversing it as a credit-reversal debited the resident a second time.
-        // Credit originals reverse as a debit; debit originals reverse as a credit.
-        const direction = txnDirection(original.type);
-        if (!direction) {
-          throw httpError(400, "Transaction type cannot be reversed");
-        }
-        const meta = {
-          description: body.description || `Reversal of transaction ${original.id}`,
-          recordedBy: req.user!.id,
-          propertyId: original.propertyId ?? null,
-          notes: body.notes ?? null,
-          reversalOf: original.id,
-        };
-
         // For property-scoped callers, ensure the reversed txn is in their scope.
         assertPropertyAccess(req, original.propertyId);
 
-        if (direction === "CREDIT") {
-          // Original was a credit → reversal is a debit. A reversal is allowed to
-          // push the wallet negative (the money it undoes is already gone), so the
-          // minimum-balance floor is opened rather than the write hand-rolled —
-          // that keeps every balance write going through debitWallet's rounding.
-          const r = await debitWallet(
-            wallet.id,
-            originalAmount,
-            "REVERSAL",
-            meta,
-            { minimumBalance: Number.NEGATIVE_INFINITY },
-            tx
-          );
-          return { ...r, originalAmount };
-        }
-        // Original was a debit → reversal is a credit
-        const r = await creditWallet(wallet.id, originalAmount, "REVERSAL", meta, tx);
-        return { ...r, originalAmount };
+        // Direction and the credit/debit dispatch live in wallet-service so the
+        // C2 arithmetic (REFUND_WITHDRAWAL reverses as a CREDIT, not a second
+        // debit) is pinned by wallet-service.test.ts instead of only by HTTP.
+        return reverseTransaction(
+          wallet.id,
+          original,
+          {
+            description: body.description || `Reversal of transaction ${original.id}`,
+            recordedBy: req.user!.id,
+            propertyId: original.propertyId ?? null,
+            notes: body.notes ?? null,
+          },
+          tx
+        );
       });
 
       writeAuditLog(req.user!.id, "REVERSAL", "wallet", wallet.id, {

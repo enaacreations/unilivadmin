@@ -30,6 +30,7 @@ import {
   foodApi, foodKeys, MEAL_LABEL,
   type WasteAnalyticsData, type WasteGranularity, type FoodLookups, type City, type Cluster,
 } from "@/lib/food-api";
+import { FoodQueryError } from "@/components/food/query-error";
 
 // Chart palette — keyed to the design-system CSS variables (mirrors food-reports).
 const ACCENT = "var(--accent)";
@@ -127,7 +128,7 @@ export default function FoodWasteAnalytics() {
     from, to, propertyId, clusterId, cityId, brand, granularity: effectiveGranularity,
   };
 
-  const { data, isLoading, isError, error } = useQuery<WasteAnalyticsData>({
+  const { data, isLoading, isError, error, refetch } = useQuery<WasteAnalyticsData>({
     queryKey: foodKeys.wasteAnalytics(filters),
     queryFn: () => foodApi.wasteAnalytics(filters),
   });
@@ -157,7 +158,11 @@ export default function FoodWasteAnalytics() {
   const withUnit = (name: string, unit: string | null) => (unit ? `${name} (${unit})` : name);
   // Top-N horizontal bar series (reversed so the largest sits at the top).
   const propertyChart = byProperty.slice(0, 10).map((p) => ({
-    name: withUnit(p.name, p.unit), wasted: p.wastedQty, wastePct: p.wastePct, city: p.city, cluster: p.cluster,
+    // This page reads /waste-analytics — the RECEIVED basis throughout. Every
+    // percentage below must say "of received": the of-ordered number on the
+    // Unit-Lead home is a different metric and they legitimately disagree.
+    name: withUnit(p.name, p.unit), wasted: p.wastedQty, wastePct: p.wastePctOfReceived,
+    received: p.receivedQty, city: p.city, cluster: p.cluster,
   })).reverse();
   const dishChart = byDish.slice(0, 10).map((d) => ({ name: withUnit(d.name, d.unit), wasted: d.wastedQty })).reverse();
   const mealChart = byMealType.map((m) => ({
@@ -341,6 +346,15 @@ export default function FoodWasteAnalytics() {
         </div>
       </div>
 
+      {/* A failed fetch must never render as "no waste". Every card below falls
+          back to its own empty state, so one 403 or dropped request read as six
+          clean charts and a "No waste data for the selected filters" banner —
+          the same swallow-the-error-into-an-empty-state defect FoodQueryError
+          exists to close everywhere else in the module. */}
+      {isError ? (
+        <FoodQueryError label="waste analytics" onRetry={() => refetch()} />
+      ) : (<>
+
       {/* Summary stat cards. Totals are PER UNIT (M7) — kilograms and plates do
           not add up, so there is one Wasted/Waste-% pair per unit rather than a
           single number that silently mixed them. */}
@@ -356,8 +370,8 @@ export default function FoodWasteAnalytics() {
               icon={Trash2}
             />
             <StatCard
-              title={u?.unit ? `Waste % (${u.unit})` : "Waste %"}
-              value={isLoading ? "0%" : `${u?.wastePct ?? 0}%`}
+              title={u?.unit ? `Waste % (${u.unit}, of received)` : "Waste % (of received)"}
+              value={isLoading ? "0%" : `${u?.wastePctOfReceived ?? 0}%`}
               icon={TrendingDown}
             />
           </React.Fragment>
@@ -432,7 +446,7 @@ export default function FoodWasteAnalytics() {
                   <Tooltip
                     formatter={(val: any, _n: any, item: any) => [
                       `${val}`,
-                      `Wasted (${item?.payload?.wastePct ?? 0}%)`,
+                      `Wasted (${item?.payload?.wastePct ?? 0}% of ${item?.payload?.received ?? 0} received)`,
                     ]}
                   />
                   <Bar dataKey="wasted" name="Wasted" fill={DESTRUCTIVE} radius={[0, 4, 4, 0]} />
@@ -529,13 +543,14 @@ export default function FoodWasteAnalytics() {
       </div>
 
       {/* Empty-overall hint when nothing matches the current scope */}
-      {!isLoading && !isError && noWasteAtAll && (
+      {!isLoading && noWasteAtAll && (
         <Card>
           <CardContent className="py-10">
             <ChartEmpty icon={Recycle} label="No waste data for the selected filters" />
           </CardContent>
         </Card>
       )}
+      </>)}
     </div>
   );
 }

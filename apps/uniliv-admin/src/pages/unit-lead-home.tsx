@@ -174,7 +174,10 @@ export default function UnitLeadHome() {
 
   const topWasteChartData = (home?.topWasteItems ?? [])
     .slice(0, 8)
-    .map((w) => ({ name: w.dishName ?? "—", wasted: w.wasted, wastePct: w.wastePct, unit: w.unit }))
+    // This page reads /home-analytics — the ORDERED basis. The waste-analytics
+    // page's number is of-received; the two are different metrics and must not
+    // both render as a bare "Waste %".
+    .map((w) => ({ name: w.dishName ?? "—", wasted: w.wasted, wastePct: w.wastePctOfOrdered, unit: w.unit }))
     .reverse();
 
   const peopleByPropChartData = peopleByProperty.map((p) => ({ name: p.propertyName, people: p.people }));
@@ -451,7 +454,7 @@ export default function UnitLeadHome() {
                   <Tooltip
                     formatter={(val: any, _n: any, item: any) => [
                       `${val} ${item?.payload?.unit ?? ""}`.trim(),
-                      `Wasted (${item?.payload?.wastePct ?? 0}%)`,
+                      `Wasted (${item?.payload?.wastePct ?? 0}% of ordered)`,
                     ]}
                   />
                   <Bar dataKey="wasted" name="Wasted" fill={DESTRUCTIVE} radius={[0, 4, 4, 0]} />

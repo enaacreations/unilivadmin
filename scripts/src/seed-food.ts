@@ -9,7 +9,8 @@
  *   1. Geographic hierarchy: zones → cities → clusters (stable ids, upsert)
  *   2. Assigns every existing property to a cluster (deterministic round-robin)
  *   3. Food-role users (stable ids/emails, bcrypt "Admin@123", upsert)
- *   4. user_scopes for each seeded user (cleaned + reinserted per run)
+ *   4. user_scopes for each seeded user (reconciled per run — soft revoke, never
+ *      DELETE; see user-scopes.ts)
  *   5. Dish catalogue (PRD §10) — upsert by stable id
  *   6. Weekly menu rotation for both brands (PRD §10.1) — replaced each run
  *   7. Per-resident quantity rules (PRD §7.9) — replaced each run
@@ -17,6 +18,29 @@
  *   9. Sample orders spanning every lifecycle state (truncated + reseeded)
  *
  * Run:  pnpm --filter @workspace/scripts run seed:food
+ *
+ * ── WHY THIS IS ONE HALF OF A PAIR ──────────────────────────────────────────
+ * This seed alone CANNOT serve an order, by design. The rotation rows it writes
+ * are BRAND-LEVEL TEMPLATES (`food_menu_rotation.kitchen_id IS NULL`), and
+ * `resolveMenu` matches an exact non-null kitchen — so every menu resolves
+ * empty until `seed:food-extra` creates the kitchens and copies the templates
+ * down to each of them.
+ *
+ * The two are deliberately NOT merged:
+ *   • They own different data. This script owns the brand-level catalogue
+ *     (dishes, templates, per-resident rules, the geo spine, food personas) and
+ *     is safe to re-run anywhere. `seed:food-extra` owns per-kitchen material
+ *     and runs `DELETE FROM food_menu_rotation WHERE kitchen_id IS NOT NULL` —
+ *     it DISCARDS hand-edited kitchen menus, which is why it is not safe on a
+ *     live environment and why `seed:kitchen-managers` exists as a separate,
+ *     env-safe entry point (see its header).
+ *   • The order is circular. Kitchens come from `seed:food-extra`, but this
+ *     script's agency↔kitchen links and the KITCHEN-scoped F&B manager anchor
+ *     want kitchens to exist; both degrade gracefully and back-fill on a re-run.
+ *     Fusing them would mean one script that has to run twice against itself.
+ * Merging them would trade a documented second command for a seed that quietly
+ * destroys production menus. The report printed at the end of this run states,
+ * from the database rather than from a comment, which half you are in.
  */
 import { db, pool } from "@workspace/db";
 import {
@@ -32,7 +56,6 @@ import {
   zonesTable,
   citiesTable,
   clustersTable,
-  userScopesTable,
   usersTable,
   propertiesTable,
   foodOrdersTable,
@@ -42,6 +65,9 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
+import { assertSeedTarget } from "./seed-guard.js";
+import { syncUserScopes, describeScopeSync, type DesiredGrant } from "./user-scopes.js";
+import { reportOrderability } from "./orderability.js";
 
 const id = () => randomUUID();
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
@@ -355,6 +381,20 @@ function computeItemsForOrder(
  * — the resolver seeds its set with it before reading any grant, so ignoring it
  * here would fail a property-bound user who is in fact fine. (The deploy-side
  * twin of this check is scripts/src/backfill-user-scopes.ts.)
+ *
+ * EVERY is_active the resolver applies is applied here too, or this check can
+ * pass a grant the application resolves to nothing — which is the one failure
+ * it exists to catch:
+ *   • `s.is_active` — revocation is a soft flag (H5); activeScopesFor filters it.
+ *   • `ci.is_active` / `c.is_active` / `k.is_active` on every node the walk
+ *     TRAVERSES: expandZonesToCities and the cluster/kitchen expansions all
+ *     carry eq(isActive, true), because POST /scopes refuses to mint a grant on
+ *     a deactivated node and resolve-time applies the same rule.
+ *   • NOT on a DIRECTLY granted target (CLUSTER→cluster_id, KITCHEN→kitchen_id,
+ *     PROPERTY→property_id, CITY→city_id): the resolver takes those ids
+ *     straight off the grant row without an is_active lookup, because that
+ *     grant is governed by its own user_scopes.is_active. Adding a filter the
+ *     resolver does not have would make this check fail rows the app accepts.
  */
 async function assertScopesResolve(userIds: string[]): Promise<void> {
   if (!userIds.length) return;
@@ -369,11 +409,11 @@ async function assertScopesResolve(userIds: string[]): Promise<void> {
          OR (s.scope_level = 'KITCHEN'  AND p.kitchen_id = s.kitchen_id)
          OR (s.scope_level = 'CLUSTER'  AND p.cluster_id = s.cluster_id)
          OR (s.scope_level = 'CITY'     AND (
-                p.kitchen_id IN (SELECT k.id FROM kitchens k WHERE k.city_id = s.city_id)
-             OR p.cluster_id IN (SELECT c.id FROM clusters c WHERE c.city_id = s.city_id)))
+                p.kitchen_id IN (SELECT k.id FROM kitchens k WHERE k.city_id = s.city_id AND k.is_active)
+             OR p.cluster_id IN (SELECT c.id FROM clusters c WHERE c.city_id = s.city_id AND c.is_active)))
          OR (s.scope_level = 'ZONE'     AND (
-                p.kitchen_id IN (SELECT k.id FROM kitchens k JOIN cities ci ON ci.id = k.city_id WHERE ci.zone_id = s.zone_id)
-             OR p.cluster_id IN (SELECT c.id FROM clusters c JOIN cities ci ON ci.id = c.city_id WHERE ci.zone_id = s.zone_id)))
+                p.kitchen_id IN (SELECT k.id FROM kitchens k JOIN cities ci ON ci.id = k.city_id WHERE ci.zone_id = s.zone_id AND ci.is_active AND k.is_active)
+             OR p.cluster_id IN (SELECT c.id FROM clusters c JOIN cities ci ON ci.id = c.city_id WHERE ci.zone_id = s.zone_id AND ci.is_active AND c.is_active)))
       WHERE u.id = ANY($1)
       GROUP BY u.id, u.email, u.role
      HAVING count(p.id) = 0`,
@@ -393,6 +433,7 @@ async function assertScopesResolve(userIds: string[]): Promise<void> {
 
 async function main() {
   console.log("🍽️  Seeding food ordering domain (comprehensive)...");
+  await assertSeedTarget("seed:food");
 
   // 1. Geographic hierarchy: zones → cities → clusters ──────────────────────
   await db.insert(zonesTable).values(ZONES).onConflictDoNothing({ target: zonesTable.id });
@@ -449,13 +490,15 @@ async function main() {
     .set({ managerId: clusterMgrId, updatedAt: new Date() })
     .where(inArray(clustersTable.id, CLUSTERS.map((c) => c.id)));
 
-  // 4. user_scopes — clean for seeded users then reinsert ───────────────────
+  // 4. user_scopes — reconciled for seeded users ────────────────────────────
+  // Grants are RE-STATED, not deleted and re-inserted: revocation is a soft
+  // `is_active` flag (H5) and a revoked row is the record of a deliberate access
+  // decision the fail-closed resolver depends on. syncUserScopes reactivates,
+  // inserts and soft-revokes exactly as POST/DELETE /api/food/scopes do.
   const seededUserIds = FOOD_USERS.map((u) => u.id);
-  await db.delete(userScopesTable).where(inArray(userScopesTable.userId, seededUserIds));
 
-  type ScopeRow = typeof userScopesTable.$inferInsert;
-  const scopeRows: ScopeRow[] = [];
-  const addScope = (row: Omit<ScopeRow, "id">) => scopeRows.push({ id: id(), ...row });
+  const scopeRows: DesiredGrant[] = [];
+  const addScope = (row: DesiredGrant) => scopeRows.push(row);
 
   // Scope anchors are derived from the cluster the FIRST property was just given
   // by the round-robin above (i = 0 → CLUSTERS[0]), never hard-coded independently
@@ -523,8 +566,8 @@ async function main() {
         break;
     }
   }
-  await db.insert(userScopesTable).values(scopeRows);
-  console.log(`  ✓ ${scopeRows.length} user scopes`);
+  const scopeSync = await syncUserScopes(seededUserIds, scopeRows);
+  console.log(`  ✓ ${scopeRows.length} user scopes (${describeScopeSync(scopeSync)})`);
 
   // 4b. KITCHEN_MANAGER scopes ──────────────────────────────────────────────
   // Kitchen managers are created by the base `seed` (seed.ts), not here, so they
@@ -538,11 +581,12 @@ async function main() {
     .from(usersTable)
     .where(eq(usersTable.role, "KITCHEN_MANAGER"));
   if (kitchenManagers.length) {
-    await db.delete(userScopesTable).where(inArray(userScopesTable.userId, kitchenManagers.map((u) => u.id)));
-    await db.insert(userScopesTable).values(
-      kitchenManagers.map((u) => ({ id: id(), userId: u.id, scopeLevel: "CITY" as const, cityId: firstCity })),
+    // Same soft-revoke reconciliation as the block above — never DELETE.
+    const kmSync = await syncUserScopes(
+      kitchenManagers.map((u) => u.id),
+      kitchenManagers.map((u) => ({ userId: u.id, scopeLevel: "CITY" as const, cityId: firstCity })),
     );
-    console.log(`  ✓ ${kitchenManagers.length} kitchen-manager scope(s) → city ${firstCity}`);
+    console.log(`  ✓ ${kitchenManagers.length} kitchen-manager scope(s) → city ${firstCity} (${describeScopeSync(kmSync)})`);
   }
 
   // 4c. Assert every seeded grant resolves to at least one property ─────────
@@ -832,6 +876,15 @@ async function main() {
   );
 
   console.log("✅ Food domain seeded.");
+
+  // Last line of the run, on purpose: whether the environment can serve an
+  // order is the only thing the operator actually needs from this output. This
+  // script TRUNCATEs food_menu_rotation and rewrites brand-level templates
+  // only, so the answer here is normally "not yet" — and now it says so, with
+  // the command that fixes it, instead of ending on "✅ seeded".
+  await reportOrderability({
+    nextCommand: "pnpm --filter @workspace/scripts run seed:food-extra",
+  });
 }
 
 main()

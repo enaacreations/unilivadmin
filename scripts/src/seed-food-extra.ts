@@ -7,6 +7,17 @@
  * food meal config (labels incl. "High Tea / Evening Snacks"), cut-off windows,
  * kitchens, and groups existing DISPATCHED orders into a dispatch trip so the
  * trip-based dispatch UI has data.
+ *
+ * This is the SECOND half of a deliberate pair — see the "WHY THIS IS ONE HALF
+ * OF A PAIR" note in seed-food.ts for why they are not merged. It is the half
+ * that makes the module orderable, by copying the brand-level menu templates
+ * down to every kitchen, and the run ends by verifying that against the
+ * database rather than claiming it.
+ *
+ * NOT SAFE on a live environment: `DELETE FROM food_menu_rotation WHERE
+ * kitchen_id IS NOT NULL` discards hand-edited kitchen menus. Use the
+ * standalone `seed:kitchen-managers` entry point when only the per-kitchen F&B
+ * manager logins are wanted.
  */
 import { db, pool } from "@workspace/db";
 import {
@@ -17,11 +28,15 @@ import {
   kitchensTable,
   foodDispatchesTable,
   foodOrdersTable,
+  userScopesTable,
 } from "@workspace/db";
-import { eq, isNull, or, and } from "drizzle-orm";
+import { eq, isNull, or, and, inArray } from "drizzle-orm";
 import { randomUUID } from "crypto";
 // Shared with `seed:kitchen-managers`, the env-safe standalone entry point.
 import { seedKitchenManagers } from "./seed-kitchen-managers.js";
+import { assertSeedTarget } from "./seed-guard.js";
+import { syncUserScopes, describeScopeSync, type DesiredGrant } from "./user-scopes.js";
+import { reportOrderability } from "./orderability.js";
 
 const id = () => randomUUID();
 
@@ -143,21 +158,23 @@ async function assignResidentialProperties() {
   )).rows as Array<{ id: string }>;
   if (rows.length < 2) { console.log("  ✓ not enough residential properties"); return; }
   // Exactly ONE property per unit lead (the real-world persona): unit2 → top
-  // property, unit1 → the next one. Scope rows are rebuilt from scratch each
-  // run so re-seeding stays idempotent (no duplicate/clobbered rows).
+  // property, unit1 → the next one. Scope rows are RECONCILED each run (soft
+  // revoke, never DELETE — see user-scopes.ts) so re-seeding stays idempotent
+  // without erasing the record of a grant somebody deliberately withdrew.
   const leads: Array<{ u: string; primary: string; props: string[] }> = [
     { u: "user_food_unit2", primary: rows[0]!.id, props: [rows[0]!.id] },
     { u: "user_food_unit1", primary: rows[1]!.id, props: [rows[1]!.id] },
   ];
   for (const l of leads) {
     await db.update(usersTable).set({ propertyId: l.primary, updatedAt: new Date() }).where(eq(usersTable.id, l.u));
-    await pool.query(`DELETE FROM user_scopes WHERE user_id=$1 AND scope_level='PROPERTY'`, [l.u]);
-    for (const p of l.props) {
-      await pool.query(
-        `INSERT INTO user_scopes (id, user_id, scope_level, property_id, created_at) VALUES ($1,$2,'PROPERTY',$3,now())`,
-        [id(), l.u, p],
-      );
-    }
+    // PROPERTY level only: this function re-points where a unit lead lives and
+    // has no opinion about any other grant the box's admin may have made.
+    const sync = await syncUserScopes(
+      [l.u],
+      l.props.map((p) => ({ userId: l.u, scopeLevel: "PROPERTY" as const, propertyId: p })),
+      { levels: ["PROPERTY"] },
+    );
+    console.log(`    ${l.u} → ${describeScopeSync(sync)}`);
     // Existing orders/batches for this lead point at the PRIMARY property.
     await pool.query(`UPDATE food_orders SET property_id=$1 WHERE unit_lead_id=$2`, [l.primary, l.u]);
     await pool.query(`UPDATE food_order_batches SET property_id=$1 WHERE unit_lead_id=$2`, [l.primary, l.u]);
@@ -496,13 +513,36 @@ async function reanchorGeoScopes() {
   );
   const ids = owned.rows.map((r) => r.id);
   if (!ids.length) { console.log("  ! no seeded scope owners found — leaving scopes as seeded"); return; }
-  // `AND is_active` on all three: re-pointing a revoked grant would silently
-  // resurrect it against a different geo (same rule the raw query in seed-food.ts
-  // already applies).
-  const z = await pool.query(`UPDATE user_scopes SET zone_id=$1 WHERE scope_level='ZONE' AND is_active AND user_id = ANY($2)`, [a.zone_id, ids]);
-  const c = await pool.query(`UPDATE user_scopes SET city_id=$1 WHERE scope_level='CITY' AND is_active AND user_id = ANY($2)`, [a.city_id, ids]);
-  const cl = await pool.query(`UPDATE user_scopes SET cluster_id=$1 WHERE scope_level='CLUSTER' AND is_active AND user_id = ANY($2)`, [a.cluster_id, ids]);
-  console.log(`  ✓ ${z.rowCount} ZONE → ${a.zone_id}, ${c.rowCount} CITY → ${a.city_id}, ${cl.rowCount} CLUSTER → ${a.cluster_id}`);
+
+  // Re-anchoring goes through the same reconciler the rest of the seeds use,
+  // NOT a bare `UPDATE ... SET zone_id = $1`.
+  //
+  // Since revocation became a soft flag, an in-place UPDATE is unsafe: the
+  // uq_user_scopes_grant_* indexes are keyed on (user, level, geo) and ignore
+  // is_active, so moving a live grant onto a geo the user already holds as a
+  // REVOKED row is a 23505 that aborts the seed. That is not hypothetical — it
+  // is exactly the state a seed:food → seed:food-extra → seed:food cycle
+  // leaves, because the two scripts anchor on different geography by design.
+  // syncUserScopes reactivates that revoked row instead, which is also the
+  // right answer: an operator's own revocation is not resurrected silently
+  // against a DIFFERENT geo, it is restored against the one it named.
+  const live = await db
+    .select()
+    .from(userScopesTable)
+    .where(and(inArray(userScopesTable.userId, ids), eq(userScopesTable.isActive, true)));
+  const anchorFor: Record<string, Partial<DesiredGrant>> = {
+    ZONE: { zoneId: a.zone_id },
+    CITY: { cityId: a.city_id },
+    CLUSTER: { clusterId: a.cluster_id },
+  };
+  const desired = live
+    .filter((r) => r.scopeLevel in anchorFor)
+    .map((r) => ({ userId: r.userId, scopeLevel: r.scopeLevel, ...anchorFor[r.scopeLevel]! } as DesiredGrant));
+  const sync = await syncUserScopes(ids, desired, { levels: Object.keys(anchorFor) });
+  console.log(
+    `  ✓ ${desired.length} ZONE/CITY/CLUSTER grants → ${a.zone_id} / ${a.city_id} / ${a.cluster_id}` +
+      ` (${describeScopeSync(sync)})`,
+  );
 }
 
 async function seedIngredients() {
@@ -734,6 +774,7 @@ async function seedCompositionRules() {
 
 async function main() {
   console.log("Seeding Phase 1–3 supplemental data...");
+  await assertSeedTarget("seed:food-extra");
   await seedConfig();
   await backfillUsers();
   await seedMealConfig();
@@ -759,6 +800,12 @@ async function main() {
   await reanchorGeoScopes();
   await groupDispatchTrip();
   console.log("✅ Supplemental food data seeded");
+  // This is the half of the pair that is SUPPOSED to leave the module orderable
+  // (it copies the brand templates down to every kitchen). Asserting that from
+  // the database rather than from the log line is the whole point: if it says
+  // NOT ORDERABLE here, the environment is broken and nobody has to discover it
+  // by clicking through an empty menu.
+  await reportOrderability();
   await pool.end();
   process.exit(0);
 }
