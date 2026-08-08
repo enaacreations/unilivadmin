@@ -31,6 +31,7 @@ import { DishesCatalogue } from "@/components/food/dishes-catalogue";
 import { IngredientsGrid } from "@/components/food/ingredients-grid";
 import { RotationBoard } from "@/components/food/rotation-board";
 import { MenuRulesEditor } from "@/components/food/menu-rules";
+import { FoodQueryError } from "@/components/food/query-error";
 import { useActiveBrands } from "@/components/food/use-food-masters";
 
 // Small confirm-delete helper modal
@@ -90,7 +91,7 @@ const TABS: SettingsTab[] = [
 ];
 
 export default function FoodSettings() {
-  const { data: lookups } = useQuery<FoodLookups>({
+  const { data: lookups, isError: lookupsError, refetch: refetchLookups } = useQuery<FoodLookups>({
     queryKey: foodKeys.lookups(),
     queryFn: () => foodApi.lookups(),
   });
@@ -124,6 +125,16 @@ export default function FoodSettings() {
   // repeated what the sidebar already says.
   return (
     <div className="space-y-6">
+      {/* A failed lookup leaves `properties` empty, which reads as "this org has
+          no properties" in every scope picker below — so a per-property cut-off
+          would silently be saved as a global one. Say it failed. */}
+      {lookupsError && (
+        <FoodQueryError
+          label="the property list"
+          hint="Scope pickers on these tabs will be missing their properties until this loads."
+          onRetry={() => refetchLookups()}
+        />
+      )}
       <Tabs value={tab} onValueChange={setTab} className="space-y-4">
         {/* The scroll container (<main>) is padded, so a plain `top-0` pins the
             strip to its PADDING box — leaving a gap the width of that padding in
@@ -182,7 +193,7 @@ function MealTypesTab({ canEdit, orgWideConfig }: { canEdit: boolean; orgWideCon
   const [editing, setEditing] = React.useState<MealConfig | null>(null);
   const [form, setForm] = React.useState<MealConfigForm>({ displayLabel: "", sortOrder: 0, isEnabled: true });
 
-  const { data: configs = [], isLoading } = useQuery<MealConfig[]>({
+  const { data: configs = [], isLoading, isError, refetch } = useQuery<MealConfig[]>({
     queryKey: foodKeys.mealConfig(),
     queryFn: () => foodApi.mealConfig(),
   });
@@ -253,7 +264,11 @@ function MealTypesTab({ canEdit, orgWideConfig }: { canEdit: boolean; orgWideCon
             : "Meal slots apply to every property in the organisation, so only an org-wide administrator can change them. Read-only here."
         }
       />
-      <DataTable columns={cols as any} data={rows} isLoading={isLoading} />
+      {/* An empty table here reads as "this org serves no meals" — never render
+          a failed read as the configured state. */}
+      {isError
+        ? <FoodQueryError label="the meal types" onRetry={() => refetch()} />
+        : <DataTable columns={cols as any} data={rows} isLoading={isLoading} />}
 
       <FormModal open={!!editing} onOpenChange={(o) => !o && setEditing(null)} title="Edit Meal Type" onSave={submit} isSaving={saveMut.isPending} saveLabel="Save Changes">
         <div className="space-y-4">
@@ -302,17 +317,19 @@ function CutoffConfigPanel({ properties, propName, canEdit }: { properties: Food
   const qc = useQueryClient();
   const { toast } = useToast();
   const brandOptions = useActiveBrands();
-  const { data: rows = [], isLoading } = useQuery<FoodCutoffConfig[]>({ queryKey: foodKeys.cutoffConfig(), queryFn: () => foodApi.listCutoffConfig() });
+  const { data: rows = [], isLoading, isError, refetch } = useQuery<FoodCutoffConfig[]>({ queryKey: foodKeys.cutoffConfig(), queryFn: () => foodApi.listCutoffConfig() });
   // resolveCutoff falls back to the org default and can never return null, so
   // "no rows" means "the default is in force", not "orders never close". Read
   // it here (GET is open to any authenticated food user) and state the value —
   // the editable Food Defaults tab is Super Admin only, but everyone subject to
   // the cut-off needs to see what it is.
-  const { data: defaults } = useQuery<FoodDefaults>({
+  const { data: defaults, isError: defaultsError } = useQuery<FoodDefaults>({
     queryKey: ["food", "system-config", "food-defaults"],
     queryFn: () => foodApi.foodDefaults(),
   });
-  const defaultCutoff = defaults?.defaultCutoff ?? "09:00";
+  // The 09:00 fallback is a placeholder, not a reading — on a failed fetch say
+  // so rather than printing a cut-off time the org may not actually use.
+  const defaultCutoff = defaultsError ? "unknown" : (defaults?.defaultCutoff ?? "09:00");
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["food", "cutoff-config"] }); qc.invalidateQueries({ queryKey: ["food", "cutoffs"] }); };
 
   const [open, setOpen] = React.useState(false);
@@ -353,7 +370,10 @@ function CutoffConfigPanel({ properties, propName, canEdit }: { properties: Food
           Organisation default: <span className="font-mono text-foreground">{defaultCutoff}</span>
           <span>— used whenever no brand or property cut-off below applies.</span>
         </p>
-        {isLoading ? <p className="py-4 text-sm text-muted-foreground">Loading…</p>
+        {/* "No cut-off configured" is a claim about live config that decides when
+            ordering closes — never make it on the strength of a failed read. */}
+        {isError ? <FoodQueryError label="the cut-off overrides" onRetry={() => refetch()} />
+          : isLoading ? <p className="py-4 text-sm text-muted-foreground">Loading…</p>
           : rows.length === 0 ? <p className="py-4 text-sm text-muted-foreground">No brand or property cut-off configured — every order closes at the organisation default of <span className="font-mono text-foreground">{defaultCutoff}</span>. Add one to override it.</p>
           : (
             <BoundedScroll size="lg">
@@ -425,7 +445,7 @@ function CutoffWindowsTab({ properties, propName, canEdit }: { properties: FoodL
   const [form, setForm] = React.useState<WindowForm>(emptyWindow);
 
   const params: Record<string, unknown> = brand === "ALL" ? {} : { brand };
-  const { data: windows = [], isLoading } = useQuery<MealWindow[]>({
+  const { data: windows = [], isLoading, isError, refetch } = useQuery<MealWindow[]>({
     queryKey: foodKeys.mealWindows(params),
     queryFn: () => foodApi.listMealWindows(params),
   });
@@ -500,7 +520,11 @@ function CutoffWindowsTab({ properties, propName, canEdit }: { properties: FoodL
         </Select>
       </div>
 
-      <DataTable columns={cols as any} data={windows} isLoading={isLoading} />
+      {/* An empty table would say "no service times configured", which sends the
+          user to add a duplicate of one that already exists. */}
+      {isError
+        ? <FoodQueryError label="the service times" onRetry={() => refetch()} />
+        : <DataTable columns={cols as any} data={windows} isLoading={isLoading} />}
 
       <FormModal open={modalOpen} onOpenChange={setModalOpen} title={editing ? "Edit Service Time" : "Add Service Time"} onSave={submit} isSaving={saveMut.isPending} saveLabel={editing ? "Save Changes" : "Create"}>
         <div className="space-y-4">
@@ -570,7 +594,11 @@ function SectionHeader({ title, description, action }: { title: string; descript
 function FoodDefaultsTab() {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery<FoodDefaults>({
+  // Same invariant as the rotation generator: this form's Save OVERWRITES the
+  // stored org defaults, and the fields seed from 09:00/60 when `data` is
+  // absent. A failed read must not present those placeholders as the current
+  // values and let one click write them over the real ones.
+  const { data, isLoading, isError, refetch } = useQuery<FoodDefaults>({
     queryKey: ["food", "system-config", "food-defaults"],
     queryFn: () => foodApi.foodDefaults(),
   });
@@ -586,7 +614,11 @@ function FoodDefaultsTab() {
   }, [data]);
 
   const save = useMutation({
-    mutationFn: () => foodApi.updateFoodDefaults({ defaultCutoff: defaultCutoff.trim(), wasteWindowMinutes }),
+    mutationFn: async () => {
+      // Restated at the write: never save values that were never read back.
+      if (!data) throw new Error("The current defaults could not be read — reload before saving.");
+      return foodApi.updateFoodDefaults({ defaultCutoff: defaultCutoff.trim(), wasteWindowMinutes });
+    },
     onSuccess: () => {
       toast({ title: "Food defaults saved" });
       qc.invalidateQueries({ queryKey: ["food", "system-config", "food-defaults"] });
@@ -604,7 +636,13 @@ function FoodDefaultsTab() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {isLoading ? (
+        {isError ? (
+          <FoodQueryError
+            label="the current food defaults"
+            hint="Saving now would write the placeholder values over whatever is really stored, so the form stays hidden until this loads."
+            onRetry={() => refetch()}
+          />
+        ) : isLoading ? (
           <p className="py-4 text-sm text-muted-foreground">Loading…</p>
         ) : (
           <div className="space-y-5 max-w-md">

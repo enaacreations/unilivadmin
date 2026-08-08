@@ -578,11 +578,18 @@ export async function getPropertyFoodConfig(
  */
 export async function resolveKitchenForPincode(
   pincode: string,
-): Promise<{ id: string; name: string; code: string } | null> {
+): Promise<{ id: string; name: string; code: string; city: string | null } | null> {
   const pc = String(pincode ?? "").trim();
   if (!/^\d{6}$/.test(pc)) return null;
   const [row] = await db
-    .select({ id: kitchensTable.id, name: kitchensTable.name, code: kitchensTable.code })
+    // `city` is the kitchen's own free-text city, NOT cities.name via cityId:
+    // the two disagree in live data (KIT-DEL-CEN is "New Delhi" under a "Delhi"
+    // city row), and callers compare it against properties.city, which is the
+    // same free-text vocabulary.
+    .select({
+      id: kitchensTable.id, name: kitchensTable.name,
+      code: kitchensTable.code, city: kitchensTable.city,
+    })
     .from(kitchenPincodesTable)
     .innerJoin(kitchensTable, eq(kitchenPincodesTable.kitchenId, kitchensTable.id))
     .where(and(
@@ -601,6 +608,28 @@ export async function isActiveBrand(brand: string | null | undefined): Promise<b
     .select({ id: foodBrandsTable.id })
     .from(foodBrandsTable)
     .where(and(eq(foodBrandsTable.code, code), eq(foodBrandsTable.isActive, true)));
+  return !!row;
+}
+
+/**
+ * True if `brand` names ANY row in the food_brands master — active **or** retired.
+ *
+ * The READ twin of isActiveBrand, and the distinction is load-bearing:
+ * DELETE /brands/:id is a soft delete, so a retired brand still owns every order
+ * it ever took. isActiveBrand is the WRITE gate (a new order/share/config row has
+ * to name a brand people can still order under); this is the FILTER gate, which
+ * must keep letting a retired brand's history be reported and exported.
+ *
+ * Neither is a hardcoded list — the master is the only authority on what a brand
+ * is, so adding a brand needs no code change here.
+ */
+export async function isKnownBrand(brand: string | null | undefined): Promise<boolean> {
+  const code = String(brand ?? "").trim();
+  if (!code) return false;
+  const [row] = await db
+    .select({ id: foodBrandsTable.id })
+    .from(foodBrandsTable)
+    .where(eq(foodBrandsTable.code, code));
   return !!row;
 }
 

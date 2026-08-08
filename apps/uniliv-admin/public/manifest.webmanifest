@@ -1,0 +1,33 @@
+{
+  "name": "UNILIV",
+  "short_name": "UNILIV",
+  "description": "Property operations — audits, food, and day-to-day site work.",
+  "start_url": "/apps",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#FDF8F4",
+  "theme_color": "#E2683C",
+  "icons": [
+    {
+      "src": "/brand/uniliv-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/uniliv-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "My Audits",
+      "short_name": "Audits",
+      "description": "Your assigned audit queue",
+      "url": "/audits/my"
+    }
+  ]
+}

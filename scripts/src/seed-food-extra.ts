@@ -183,31 +183,87 @@ async function assignResidentialProperties() {
   console.log(`  ✓ tagged ${leads.length} unit leads to ${total} properties (one each)`);
 }
 
+/**
+ * Group unassigned DISPATCHED orders onto seed trips.
+ *
+ * Two invariants this used to break:
+ *  • ONE TRIP = ONE KITCHEN. A van leaves from a single kitchen, and
+ *    `food_dispatches.kitchen_id` is what the dispatch board and every
+ *    kitchen-scoped read filter on. The old version put every unassigned order
+ *    on one trip and stamped it with `orders[0].kitchen_id`, so orders from a
+ *    second kitchen rode a trip belonging to a kitchen they were never cooked in
+ *    — invisible to their own kitchen's board.
+ *  • RE-RUNS CONVERGE. The dispatch number was `DISP-SEED-<epoch>`, unique per
+ *    run, so every re-seed minted a fresh trip and abandoned the previous one
+ *    (6 trips, 5 of them empty, after six runs). The number is now derived from
+ *    the kitchen, so a re-run reuses the same trip; empty leftovers from the
+ *    old scheme are swept.
+ */
 async function groupDispatchTrip() {
-  console.log("  dispatch trip for existing DISPATCHED orders...");
-  const orders = await db.select().from(foodOrdersTable).where(and(eq(foodOrdersTable.status, "DISPATCHED"), isNull(foodOrdersTable.dispatchId)));
+  console.log("  dispatch trips for existing DISPATCHED orders (one per kitchen)...");
+  const orders = await db
+    .select()
+    .from(foodOrdersTable)
+    .where(and(eq(foodOrdersTable.status, "DISPATCHED"), isNull(foodOrdersTable.dispatchId)));
+
+  // Sweep the empty per-run trips the old `DISP-SEED-<epoch>` scheme left behind.
+  // Only seed-minted trips, only ones no order points at — never touches real data.
+  const swept = await pool.query(
+    `DELETE FROM food_dispatches d
+      WHERE d.dispatch_number LIKE 'DISP-SEED-%'
+        AND NOT EXISTS (SELECT 1 FROM food_orders o WHERE o.dispatch_id = d.id)`,
+  );
+  if (swept.rowCount) console.log(`  ✓ swept ${swept.rowCount} empty seed trip(s)`);
+
   if (!orders.length) { console.log("  ✓ no unassigned dispatched orders"); return; }
+
+  const { rows: kitchens } = await pool.query<{ id: string; code: string }>(
+    `SELECT id, code FROM kitchens`,
+  );
+  const codeOf = new Map(kitchens.map((k) => [k.id, k.code]));
+
   const now = new Date();
-  const tripId = id();
-  // Unique dispatch number (timestamp) so we never collide with seed:demo trips —
-  // a collision would skip the insert and leave the order FK dangling.
-  await db.insert(foodDispatchesTable).values({
-    id: tripId,
-    dispatchNumber: `DISP-SEED-${now.getTime()}`,
-    // Use whatever kitchen the orders already belong to (preserve the per-city
-    // assignment); fall back to a real kitchen id only if none is set.
-    kitchenId: orders[0]!.kitchenId ?? "kitchen_kit_blr_kmg",
-    deliveryPartnerId: orders[0]!.deliveryPartnerId ?? "dp_swift",
-    vehicleNumber: "KA05AB5001", driverName: "Ravi Kumar", driverPhone: "9876543210",
-    dispatchedById: "user_food_fnbsup", dispatchedAt: now,
-    estimatedArrivalAt: new Date(now.getTime() + 90 * 60000), status: "IN_TRANSIT",
-    notes: "Auto-grouped seed trip", updatedAt: now,
-  });
+  const byKitchen = new Map<string, typeof orders>();
+  let orphaned = 0;
   for (const o of orders) {
-    // Link the trip; do NOT rewrite kitchen_id — keep each order's own kitchen.
-    await db.update(foodOrdersTable).set({ dispatchId: tripId, updatedAt: now }).where(eq(foodOrdersTable.id, o.id));
+    if (!o.kitchenId) { orphaned++; continue; } // no kitchen ⇒ no trip it could honestly belong to
+    const bucket = byKitchen.get(o.kitchenId) ?? [];
+    bucket.push(o);
+    byKitchen.set(o.kitchenId, bucket);
   }
-  console.log(`  ✓ grouped ${orders.length} order(s) into a trip`);
+
+  let linked = 0;
+  for (const [kitchenId, group] of byKitchen) {
+    // Stable, kitchen-derived number ⇒ a re-run reuses the trip it already made.
+    const dispatchNumber = `DISP-SEED-${codeOf.get(kitchenId) ?? kitchenId}`;
+    const existing = await db
+      .select({ id: foodDispatchesTable.id })
+      .from(foodDispatchesTable)
+      .where(eq(foodDispatchesTable.dispatchNumber, dispatchNumber));
+    let tripId = existing[0]?.id;
+    if (!tripId) {
+      tripId = id();
+      await db.insert(foodDispatchesTable).values({
+        id: tripId,
+        dispatchNumber,
+        kitchenId,
+        deliveryPartnerId: group[0]!.deliveryPartnerId ?? "dp_swift",
+        vehicleNumber: "KA05AB5001", driverName: "Ravi Kumar", driverPhone: "9876543210",
+        dispatchedById: "user_food_fnbsup", dispatchedAt: now,
+        estimatedArrivalAt: new Date(now.getTime() + 90 * 60000), status: "IN_TRANSIT",
+        notes: "Auto-grouped seed trip", updatedAt: now,
+      });
+    }
+    for (const o of group) {
+      // Link the trip; do NOT rewrite kitchen_id — the trip was chosen to match it.
+      await db.update(foodOrdersTable).set({ dispatchId: tripId, updatedAt: now }).where(eq(foodOrdersTable.id, o.id));
+      linked++;
+    }
+  }
+  console.log(
+    `  ✓ ${linked} order(s) on ${byKitchen.size} kitchen trip(s)` +
+      (orphaned ? `, ${orphaned} skipped (no kitchen_id)` : ""),
+  );
 }
 
 /* ── New-model backfill (brands, City→Kitchen→Property, per-item ordering) ───── */
@@ -360,35 +416,99 @@ async function seedFoodSystemConfig() {
   console.log(`  ✓ ${cfg.length} food config keys (food_default_cutoff, food_waste_edit_window_minutes)`);
 }
 
+/**
+ * The one true resolution for "which kitchen serves this pincode".
+ *
+ * INVARIANT (enforced by assertKitchenPincodesSameCity below): the kitchen a
+ * pincode maps to is ALWAYS in the city of the properties that carry that
+ * pincode. kitchen_pincodes is trusted OVER properties.kitchen_id by
+ * `PUT /properties/:id` (apps/api-server/src/routes/properties.ts), so a
+ * cross-city row silently reassigns a Pune property to the Delhi kitchen the
+ * moment anyone edits its pincode.
+ *
+ * `p.kitchen_id` is only accepted when it is itself in the property's city —
+ * taking it unconditionally is how the wrong-city rows got minted in the first
+ * place (an earlier run assigned clusters round-robin, before the city-strict
+ * realignment in assignPropertyKitchensByCity existed).
+ */
+const PINCODE_KITCHEN_SQL = `
+  SELECT DISTINCT ON (p.pincode)
+         p.pincode,
+         COALESCE(
+           (SELECT k.id FROM kitchens k
+             WHERE k.id = p.kitchen_id AND k.is_active AND k.city_id = c.city_id),
+           (SELECT k.id FROM kitchens k
+             WHERE k.is_active AND k.city_id = c.city_id
+             ORDER BY k.id LIMIT 1)
+         ) AS kid
+    FROM properties p
+    JOIN clusters c ON c.id = p.cluster_id
+   WHERE p.pincode IS NOT NULL
+   ORDER BY p.pincode, p.kitchen_id NULLS LAST`;
+
 async function seedKitchenPincodes() {
   console.log("  kitchen_pincodes (property pincode → kitchen)...");
   // pincode is GLOBALLY UNIQUE (one kitchen per pincode; a kitchen serves many).
   // Cover EVERY existing property pincode so downstream auto-derivation resolves.
-  // Resolve each property's kitchen: property.kitchen_id if set, else the
-  // lowest-id active kitchen in the property's city (via cluster.city_id).
   // Skip-on-conflict keeps this idempotent and respects the global-unique rule
   // (if two properties share a pincode, the first mapping wins — intended).
   const r = await pool.query(
     `INSERT INTO kitchen_pincodes (id, kitchen_id, pincode, is_active, created_at, updated_at)
        SELECT gen_random_uuid()::text, sub.kid, sub.pincode, true, now(), now()
-         FROM (
-           SELECT DISTINCT ON (p.pincode)
-                  p.pincode,
-                  COALESCE(
-                    p.kitchen_id,
-                    (SELECT k.id FROM kitchens k
-                       JOIN clusters c2 ON c2.city_id = k.city_id
-                      WHERE c2.id = p.cluster_id AND k.is_active
-                      ORDER BY k.id LIMIT 1)
-                  ) AS kid
-             FROM properties p
-            WHERE p.pincode IS NOT NULL
-            ORDER BY p.pincode, p.kitchen_id NULLS LAST
-         ) sub
+         FROM (${PINCODE_KITCHEN_SQL}) sub
         WHERE sub.kid IS NOT NULL
      ON CONFLICT (pincode) DO NOTHING`,
   );
-  console.log(`  ✓ ${r.rowCount} kitchen_pincodes inserted (existing skipped)`);
+
+  // Repair pass. DO NOTHING above cannot fix a row that is ALREADY wrong, and a
+  // stale cross-city mapping is exactly the failure this table causes. Only rows
+  // pointing OUT of the pincode's own city are repointed, so an operator's
+  // choice between two kitchens WITHIN the city is preserved.
+  const fix = await pool.query(
+    `UPDATE kitchen_pincodes kp
+        SET kitchen_id = sub.kid, is_active = true, updated_at = now()
+       FROM (${PINCODE_KITCHEN_SQL}) sub
+      WHERE kp.pincode = sub.pincode AND sub.kid IS NOT NULL
+        AND kp.kitchen_id IS DISTINCT FROM sub.kid
+        AND NOT EXISTS (
+          SELECT 1 FROM kitchens ko JOIN kitchens kn ON kn.id = sub.kid
+           WHERE ko.id = kp.kitchen_id AND ko.city_id = kn.city_id
+        )`,
+  );
+  console.log(
+    `  ✓ ${r.rowCount} kitchen_pincodes inserted, ${fix.rowCount} cross-city mapping(s) repointed`,
+  );
+}
+
+/**
+ * Fails the seed if any pincode still maps to a kitchen outside the city of the
+ * properties carrying it. Twin of assertScopesResolve in seed-food.ts: the seed
+ * asserts the invariant against the database instead of claiming it.
+ */
+async function assertKitchenPincodesSameCity(): Promise<void> {
+  const { rows } = await pool.query<{
+    pincode: string; kitchen_code: string; kitchen_city: string; prop_cities: string;
+  }>(
+    `SELECT kp.pincode, k.code AS kitchen_code,
+            COALESCE(kci.name, '(none)') AS kitchen_city,
+            string_agg(DISTINCT pci.name, ', ') AS prop_cities
+       FROM kitchen_pincodes kp
+       JOIN kitchens k        ON k.id = kp.kitchen_id
+       LEFT JOIN cities kci   ON kci.id = k.city_id
+       JOIN properties p      ON p.pincode = kp.pincode
+       JOIN clusters pc       ON pc.id = p.cluster_id
+       JOIN cities pci        ON pci.id = pc.city_id
+      WHERE k.city_id IS DISTINCT FROM pc.city_id
+      GROUP BY kp.pincode, k.code, kci.name`,
+  );
+  if (rows.length) {
+    console.error("\n❌ kitchen_pincodes maps a pincode to a kitchen in ANOTHER city:");
+    for (const r of rows) {
+      console.error(`     ${r.pincode} → ${r.kitchen_code} (${r.kitchen_city}) but its properties are in ${r.prop_cities}`);
+    }
+    throw new Error("kitchen_pincodes crosses city boundaries — PUT /properties would reassign the property to the wrong kitchen");
+  }
+  console.log("  ✓ every pincode maps to a kitchen in its own city");
 }
 
 async function backfillPropertyBrandAndKitchen() {
@@ -456,19 +576,47 @@ async function seedKitchenMenus() {
 }
 
 async function backfillOrdersAndItems() {
-  console.log("  orders → kitchen, order items → persons_count...");
+  console.log("  orders → kitchen + brand, order items → persons_count...");
   const ok = await pool.query(
     `UPDATE food_orders o SET kitchen_id = p.kitchen_id, updated_at = now()
        FROM properties p
       WHERE o.property_id = p.id AND p.kitchen_id IS NOT NULL
         AND o.kitchen_id IS DISTINCT FROM p.kitchen_id`,
   );
+  /**
+   * Invariant: an order's brand IS its property's brand. POST /food/orders never
+   * lets a client pick it — it reads it from the property (getPropertyFoodConfig)
+   * — so an order on a brand its property does not have is unreachable state that
+   * makes every brand-filtered view disagree with the property list.
+   *
+   * Fixed HERE rather than at the write sites because there are two of them and
+   * they run at different times: seed-food.ts stamps the property's brand when
+   * the order is created, and assignResidentialProperties() above then re-points
+   * those orders at a DIFFERENT property (potentially on the other brand). This
+   * runs after the property brand is final (backfillPropertyBrandAndKitchen), so
+   * it closes the invariant whichever site drifted.
+   */
+  const ob = await pool.query(
+    `UPDATE food_orders o SET brand = p.brand, updated_at = now()
+       FROM properties p
+      WHERE o.property_id = p.id AND p.brand IS NOT NULL
+        AND o.brand IS DISTINCT FROM p.brand`,
+  );
+  const bb = await pool.query(
+    `UPDATE food_order_batches b SET brand = p.brand
+       FROM properties p
+      WHERE b.property_id = p.id AND p.brand IS NOT NULL
+        AND b.brand IS DISTINCT FROM p.brand`,
+  );
   const oi = await pool.query(
     `UPDATE food_order_items i SET persons_count = o.residents_count
        FROM food_orders o
       WHERE i.order_id = o.id AND i.persons_count IS NULL`,
   );
-  console.log(`  ✓ ${ok.rowCount} orders → kitchen, ${oi.rowCount} items → persons_count`);
+  console.log(
+    `  ✓ ${ok.rowCount} orders → kitchen, ${ob.rowCount} orders + ${bb.rowCount} batches → property brand, ` +
+      `${oi.rowCount} items → persons_count`,
+  );
 }
 
 // migrateGeoScopes() lived here. It rewrote the four seeded ZONE/CLUSTER grants
@@ -787,11 +935,16 @@ async function main() {
   await seedFoodSystemConfig();
   await assignResidentialProperties();
   await assignPropertyKitchensAndBrands();
-  await seedKitchenPincodes();
-  await backfillPropertyBrandAndKitchen();
-  // Final authoritative pass: pin every property to a kitchen in its OWN city
-  // (overrides any pincode/cluster-derived cross-city kitchen) + realign cluster.
+  // Authoritative pass: pin every property to a kitchen in its OWN city + realign
+  // its cluster. This MUST precede seedKitchenPincodes — the pincode→kitchen
+  // mapping derives the pincode's city from the property's cluster, and until
+  // this pass runs the cluster is still seed-food.ts's round-robin one (a Pune
+  // property can sit in a Delhi cluster). That is how 411045 came to map to the
+  // Delhi kitchen, which PUT /properties then trusts over properties.kitchen_id.
   await assignPropertyKitchensByCity();
+  await seedKitchenPincodes();
+  await assertKitchenPincodesSameCity();
+  await backfillPropertyBrandAndKitchen();
   await setDishBrands();
   await seedIngredients();
   await seedCompositionRules();

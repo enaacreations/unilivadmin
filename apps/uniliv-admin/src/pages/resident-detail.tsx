@@ -66,8 +66,15 @@ import jsPDF from "jspdf";
 import { BellRing, RefreshCw, ArrowUpCircle } from "lucide-react";
 import { walletAmountClass, walletAmountSign } from "@/lib/wallet-direction";
 
+// Both lists must be a SUBSET of the pg enums the API validates against
+// (ledger_type / payment_mode in lib/db/src/schema/core.ts) — offering a label
+// the column does not have builds a form that cannot be submitted.
 const LEDGER_TYPES = ["RENT", "UTILITY", "FOOD", "LAUNDRY", "PENALTY", "ADJUSTMENT", "DEPOSIT", "INCENTIVE"];
-const PAYMENT_MODES = ["CASH", "UPI", "BANK_TRANSFER", "CARD", "CHEQUE"];
+// CHEQUE was never a payment_mode label: picking it 500'd, and now 400s. Dropped
+// and NETBANKING (a real label that was missing) offered instead. WALLET and
+// WALLET_PARTIAL are deliberately NOT here — those are written by the wallet
+// settlement path, and recording one by hand would double-count the wallet ledger.
+const PAYMENT_MODES = ["CASH", "UPI", "NETBANKING", "BANK_TRANSFER", "CARD"];
 
 function ResidentAttendanceHistory({ residentId }: { residentId: string }) {
   const { data, isLoading } = useQuery<{ data: Array<{ id: string; attendanceDate: string; status: string; notes?: string | null }> }>({

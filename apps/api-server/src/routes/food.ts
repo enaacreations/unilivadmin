@@ -78,6 +78,7 @@ import {
   detectSharedIngredients,
   buildCompositionVerdict,
   isIngredientClashRuleOn,
+  isKnownBrand,
   getWasteEditWindowMs,
   findPortionRuleUsage,
 } from "../lib/food-service.js";
@@ -88,8 +89,8 @@ import {
 } from "../lib/export-service.js";
 // Shared order cut-off enforcement (single source of truth lives in food-ops.ts,
 // alongside resolveCutoff()/atTime()) so /orders and /order-batches stay consistent.
-import { checkOrderCutoff, createDispatchForOrders, reconcileDispatchForOrder, residentsCapForProperty, type TxClient } from "./food-ops.js";
-import { ymdToIstDayStart, todayIstYmd, istParts } from "../lib/tz.js";
+import { checkOrderCutoff, createDispatchForOrders, reconcileDispatchForOrder, residentsCapForProperty, enumParamError, type TxClient } from "./food-ops.js";
+import { ymdToIstDayStart, istDayYmd, todayIstYmd, istParts } from "../lib/tz.js";
 import { writeAuditLog } from "../lib/wallet-service.js";
 
 export const foodRouter: Router = Router();
@@ -230,16 +231,27 @@ function isAccessible(propertyId: string, ids: string[] | null): boolean {
 }
 
 /**
- * The row `uq_food_orders_property_meal_date` protects: a LIVE order already
- * covering this (property, meal, service date). Mirrors that index's own
- * predicate exactly — CANCELLED and REJECTED are excluded so re-ordering a meal
- * after a cancellation is never reported as a duplicate.
+ * The invariant `uq_food_orders_property_meal_date` is the backstop for: a LIVE
+ * order already covering this (property, meal, service DAY). CANCELLED and
+ * REJECTED are excluded, exactly as the index predicate does, so re-ordering a
+ * meal after a cancellation is never reported as a duplicate.
+ *
+ * Deliberately a half-open IST DAY window, not the index's exact-instant
+ * equality: service_date is meant to be the 00:00-IST instant of the service
+ * day, but any row that landed on another time-of-day (a caller-supplied
+ * timestamp, a seed) is still the same meal on the same day, and the index
+ * cannot see it. This is the same pre-check POST /order-batches runs
+ * (food-ops.ts) — the day window is what actually holds the invariant; the index
+ * only closes the concurrent-insert race.
  */
 async function liveOrderExists(propertyId: string, mealType: string, serviceDate: Date): Promise<boolean> {
+  const dayStart = ymdToIstDayStart(istDayYmd(serviceDate));
+  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
   const [row] = await db.select({ id: foodOrdersTable.id }).from(foodOrdersTable).where(and(
     eq(foodOrdersTable.propertyId, propertyId),
     eq(foodOrdersTable.mealType, mealType as never),
-    eq(foodOrdersTable.serviceDate, serviceDate),
+    gte(foodOrdersTable.serviceDate, dayStart),
+    lt(foodOrdersTable.serviceDate, dayEnd),
     notInArray(foodOrdersTable.status, ["CANCELLED", "REJECTED"]),
   )).limit(1);
   return !!row;
@@ -256,8 +268,33 @@ function invalidEnumParam(
 ): boolean {
   if (value === undefined || value === "") return false;
   if (allowed.includes(String(value))) return false;
-  res.status(400).json({ success: false, error: `Invalid ${name}: ${String(value)}` });
+  res.status(400).json({ success: false, error: enumParamError(name, value, allowed) });
   return true;
+}
+
+/**
+ * Membership gate for a `?brand=` FILTER, against the live food_brands master.
+ *
+ * The brand twin of invalidEnumParam, and the same defect one column over: brand
+ * is `text`, not an enum, so an unknown code did not 500 — it silently produced
+ * `WHERE brand = 'BOGUS'`, i.e. a confident empty dashboard. A typo'd or retired
+ * code read as "zero orders this month" with nothing to distinguish it from a
+ * genuinely quiet month, which is the worse failure of the two.
+ *
+ * isKnownBrand, NOT isActiveBrand: DELETE /brands/:id is a soft delete, so a
+ * retired brand still owns every order it ever took and those must stay
+ * reportable. isActiveBrand is the WRITE gate; this is the READ gate. Shared
+ * with food-ops.ts via food-service so the two routers cannot drift — food.ts
+ * mounts FIRST at /food and therefore owns every path both declare.
+ *
+ * Throws rather than writing the 400 itself so fetchRotationForExport — which
+ * has no `res` — can use the same gate; every caller ends in fail(), which
+ * answers a HandlerAbort with its own status.
+ */
+async function assertKnownBrand(value: unknown): Promise<void> {
+  if (value === undefined || value === "") return;
+  if (await isKnownBrand(String(value))) return;
+  throw new HandlerAbort(400, { error: `Invalid brand: ${String(value)}` });
 }
 
 /**
@@ -433,6 +470,7 @@ foodRouter.get("/dashboard", authenticate, authorize("FOOD_DASHBOARD", "view"), 
     const from = parseWindowStart(req.query["from"]) ?? new Date(to.getTime() - 30 * 86400000);
     const propertyId = req.query["propertyId"] as string | undefined;
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
 
     const windowMs = to.getTime() - from.getTime();
     const prevFrom = new Date(from.getTime() - windowMs);
@@ -590,6 +628,7 @@ foodRouter.get("/waste-pending", authenticate, authorize("FOOD_DASHBOARD", "view
     const scope = scopeOrdersCondition(ids);
     const propertyId = req.query["propertyId"] as string | undefined;
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
 
     const conds = [
       eq(foodOrdersTable.status, "DELIVERED"),
@@ -661,6 +700,7 @@ foodRouter.get("/orders", authenticate, authorizeAny(["FOOD_ALL_ORDERS", "FOOD_D
     const serviceDate = req.query["serviceDate"] as string | undefined;
     const propertyId = req.query["propertyId"] as string | undefined;
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     const mealType = req.query["mealType"] as string | undefined;
     const search = req.query["search"] as string | undefined;
 
@@ -671,7 +711,7 @@ foodRouter.get("/orders", authenticate, authorizeAny(["FOOD_ALL_ORDERS", "FOOD_D
     // Every value has to be a real status: one bad entry in the CSV reaches
     // Postgres as an unknown enum label and 500s the whole list (L6).
     const unknownStatus = statuses.find((s) => !ORDER_STATUSES.includes(s));
-    if (unknownStatus) { res.status(400).json({ success: false, error: `Invalid status: ${unknownStatus}` }); return; }
+    if (unknownStatus) { res.status(400).json({ success: false, error: enumParamError("status", unknownStatus, ORDER_STATUSES) }); return; }
 
     // Clamp non-FOOD_ALL_ORDERS callers to the operational pipeline: intersect an
     // explicit status filter with the allowlist, or default to it when none given.
@@ -757,13 +797,20 @@ foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create")
       res.status(400).json({ success: false, error: "propertyId, mealType, serviceDate, quantity required" });
       return;
     }
-    if (!(MEAL_TYPES as readonly string[]).includes(mealType)) { res.status(400).json({ success: false, error: `Invalid mealType: ${mealType}` }); return; }
+    if (!(MEAL_TYPES as readonly string[]).includes(mealType)) { res.status(400).json({ success: false, error: enumParamError("mealType", mealType, MEAL_TYPES) }); return; }
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty <= 0) { res.status(400).json({ success: false, error: "quantity must be a positive number" }); return; }
     // serviceDate is an IST calendar date; anchor a bare 'yyyy-MM-dd' to IST so
     // the cut-off compare (in checkOrderCutoff) is correct regardless of host tz.
-    const sd = parseServiceDate(serviceDate);
-    if (!sd) { res.status(400).json({ success: false, error: "Invalid serviceDate" }); return; }
+    const parsedSd = parseServiceDate(serviceDate);
+    if (!parsedSd) { res.status(400).json({ success: false, error: "Invalid serviceDate" }); return; }
+    // Invariant: service_date IS the 00:00-IST instant of the service DAY, the
+    // value POST /order-batches writes (food-ops.ts) and every day-window query
+    // in this module compares against. A caller-supplied timestamp used to be
+    // stored verbatim, so the same IST day could occupy two different instants
+    // and uq_food_orders_property_meal_date — keyed on the exact instant — saw
+    // them as two distinct rows.
+    const sd = ymdToIstDayStart(istDayYmd(parsedSd));
 
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(propertyId, ids)) { res.status(403).json({ success: false, error: "Property not accessible" }); return; }
@@ -775,6 +822,17 @@ foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create")
     // Enforce the order cut-off server-side (past date / past cut-off → 422).
     const cutoffError = await checkOrderCutoff(brand, propertyId, sd);
     if (cutoffError) { res.status(422).json({ success: false, error: cutoffError }); return; }
+
+    // Dedupe pre-check — the same guard POST /order-batches already runs, and the
+    // one this path was missing entirely: it relied solely on
+    // uq_food_orders_property_meal_date, which keys the exact service_date
+    // INSTANT and therefore cannot see a live order for the same IST day written
+    // at a different time-of-day. One property, one meal, one service day.
+    // (The unique violation handled below stays as the concurrency backstop.)
+    if (await liveOrderExists(propertyId, mealType, sd)) {
+      res.status(409).json({ success: false, error: "An order for this property, meal and service date already exists." });
+      return;
+    }
 
     const residents = residentsCount != null ? Number(residentsCount) : qty;
     // H1 — the 120% occupancy cap, which both sibling write paths enforce
@@ -2083,6 +2141,7 @@ foodRouter.get("/kitchen-summary", authenticate, authorize("FOOD_KITCHEN_SUMMARY
 
     const dateRaw = req.query["date"] as string | undefined;
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     const mealType = req.query["mealType"] as string | undefined;
     const clusterId = req.query["clusterId"] as string | undefined;
     const propertyId = req.query["propertyId"] as string | undefined;
@@ -2224,8 +2283,11 @@ function reportConds(
 foodRouter.get("/reports", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
     // reportConds casts `status` onto the enum column; check it here, where a
-    // response can still be written (L6).
+    // response can still be written (L6). `brand` is the same filter one column
+    // over — text, so it never 500'd, it just reported zero for a brand that
+    // does not exist.
     if (invalidEnumParam(res, "status", req.query["status"], ORDER_STATUSES)) return;
+    await assertKnownBrand(req.query["brand"]);
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const scope = scopeOrdersCondition(ids);
     const where = reportConds(scope, req.query as Record<string, unknown>);
@@ -2342,6 +2404,7 @@ foodRouter.get("/dishes", authenticate, authorizeAny(FOOD_MODULES, "view"), asyn
     const search = req.query["search"] as string | undefined;
     const active = req.query["active"] as string | undefined;
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     if (invalidEnumParam(res, "component", component, DISH_COMPONENTS)) return;
     const conds = [] as ReturnType<typeof eq>[];
     if (component) conds.push(eq(dishesTable.component, component as never));
@@ -2717,6 +2780,10 @@ foodRouter.get("/menu-rotation/resolve", authenticate, authorizeAny(FOOD_MODULES
     const propertyId = req.query["propertyId"] as string | undefined;
     let brand = req.query["brand"] as string | undefined;
     let kitchenId = req.query["kitchenId"] as string | undefined;
+    // Only the CALLER-supplied brand is gated, and before the property-config
+    // fallback overwrites it. A brand that reached properties.brand is a data
+    // problem to surface as an empty menu, not a 400 blamed on this request.
+    await assertKnownBrand(brand);
     if (propertyId) {
       const cfg = await getPropertyFoodConfig(propertyId);
       brand = brand || cfg.brand || undefined;
@@ -2773,15 +2840,18 @@ async function deniedKitchen(
 foodRouter.get("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     const kitchenId = req.query["kitchenId"] as string | undefined;
-    const rotationWeek = req.query["rotationWeek"] as string | undefined;
-    const dayOfWeek = req.query["dayOfWeek"] as string | undefined;
+    // Bounded exactly like the export's copy of these filters — an unchecked
+    // Number() here 500'd the board on `?rotationWeek=abc` (L12).
+    const rotationWeek = rotationCoordParam("rotationWeek", zRotationWeek, req.query["rotationWeek"]);
+    const dayOfWeek = rotationCoordParam("dayOfWeek", zDayOfWeek, req.query["dayOfWeek"]);
     const mealType = req.query["mealType"] as string | undefined;
     const conds = [] as ReturnType<typeof eq>[];
     if (brand) conds.push(eq(foodMenuRotationTable.brand, brand as never));
     if (kitchenId) conds.push(eq(foodMenuRotationTable.kitchenId, kitchenId));
-    if (rotationWeek) conds.push(eq(foodMenuRotationTable.rotationWeek, Number(rotationWeek)));
-    if (dayOfWeek) conds.push(eq(foodMenuRotationTable.dayOfWeek, Number(dayOfWeek)));
+    if (rotationWeek !== undefined) conds.push(eq(foodMenuRotationTable.rotationWeek, rotationWeek));
+    if (dayOfWeek !== undefined) conds.push(eq(foodMenuRotationTable.dayOfWeek, dayOfWeek));
     if (invalidEnumParam(res, "mealType", mealType, MEAL_TYPES)) return;
     if (mealType) conds.push(eq(foodMenuRotationTable.mealType, mealType as never));
     // READ condition: the board must show the brand-wide templates (kitchenId
@@ -2804,6 +2874,25 @@ foodRouter.get("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "view"
     res.json({ success: true, data: rows.map((r) => ({ ...r.r, dishName: r.dishName, component: r.component, dishUnit: r.dishUnit, kitchenName: r.kitchenName })) });
   } catch (err) { fail(req, res, err); }
 });
+
+/**
+ * A rotation coordinate arriving as a QUERY param, bounded by the very schema
+ * the write path uses (zRotationWeek / zDayOfWeek, declared below) (L12).
+ *
+ * Both filters were a bare `Number(...)`: `?rotationWeek=abc` handed NaN and
+ * `?rotationWeek=1e999` handed Infinity to an integer column, which came back as
+ * an opaque 500 instead of "that is not a week" — the same asymmetry mealType
+ * did not have, since it is allowlisted. Invariant: the read path must not
+ * accept a coordinate the write path forbids, or a filter names a cell the board
+ * can never contain. Travels as a HandlerAbort so it also works from
+ * fetchRotationForExport, which has no `res`; both callers end in fail().
+ */
+function rotationCoordParam(name: string, schema: z.ZodTypeAny, value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new HandlerAbort(400, { error: `Invalid ${name}: ${String(value)}` });
+  return parsed.data as number;
+}
 
 const ROTATION_HEADERS = ["Kitchen", "Brand", "Week", "Day", "Meal", "Dish", "Slot", "Order"];
 
@@ -2831,19 +2920,22 @@ async function fetchRotationForExport(req: any): Promise<{
 }> {
   const brand = req.query["brand"] as string | undefined;
   const kitchenId = req.query["kitchenId"] as string | undefined;
-  const rotationWeek = req.query["rotationWeek"] as string | undefined;
-  const dayOfWeek = req.query["dayOfWeek"] as string | undefined;
+  const rotationWeek = rotationCoordParam("rotationWeek", zRotationWeek, req.query["rotationWeek"]);
+  const dayOfWeek = rotationCoordParam("dayOfWeek", zDayOfWeek, req.query["dayOfWeek"]);
   const mealType = req.query["mealType"] as string | undefined;
   // No `res` down here, so the enum check (L6) travels as a HandlerAbort — both
-  // export handlers end in fail(), which answers it with its own 400.
+  // export handlers end in fail(), which answers it with its own 400. Same for
+  // the brand gate: the export must refuse exactly the filters the board does,
+  // or a typo'd brand downloads an empty file instead of saying why.
   if (mealType && !(MEAL_TYPES as readonly string[]).includes(mealType)) {
-    throw new HandlerAbort(400, { error: `Invalid mealType: ${mealType}` });
+    throw new HandlerAbort(400, { error: enumParamError("mealType", mealType, MEAL_TYPES) });
   }
+  await assertKnownBrand(brand);
   const conds = [] as ReturnType<typeof eq>[];
   if (brand) conds.push(eq(foodMenuRotationTable.brand, brand as never));
   if (kitchenId) conds.push(eq(foodMenuRotationTable.kitchenId, kitchenId));
-  if (rotationWeek) conds.push(eq(foodMenuRotationTable.rotationWeek, Number(rotationWeek)));
-  if (dayOfWeek) conds.push(eq(foodMenuRotationTable.dayOfWeek, Number(dayOfWeek)));
+  if (rotationWeek !== undefined) conds.push(eq(foodMenuRotationTable.rotationWeek, rotationWeek));
+  if (dayOfWeek !== undefined) conds.push(eq(foodMenuRotationTable.dayOfWeek, dayOfWeek));
   if (mealType) conds.push(eq(foodMenuRotationTable.mealType, mealType as never));
   // Same kitchen scoping as the list — an export must never widen it, and must
   // not narrow it either, or the file disagrees with the board it was taken from.
@@ -3339,6 +3431,7 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
 foodRouter.get("/menu-rotation/validate", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     const mealType = req.query["mealType"] as string | undefined;
     const kitchenId = (req.query["kitchenId"] as string) || null;
     const raw = req.query["dishIds"] ?? req.query["dishId"];
@@ -3373,6 +3466,7 @@ foodRouter.get("/menu-rotation/validate", authenticate, authorizeAny(FOOD_MODULE
 foodRouter.get("/menu-rotation/auto-fill", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     const mealType = req.query["mealType"] as string | undefined;
     const kitchenId = (req.query["kitchenId"] as string) || null;
     if (!brand || !mealType) { res.status(400).json({ success: false, error: "brand, mealType required" }); return; }
@@ -3571,6 +3665,7 @@ async function refusePortionRuleInUse(
 foodRouter.get("/rules", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     const mealType = req.query["mealType"] as string | undefined;
     const dishId = req.query["dishId"] as string | undefined;
     const conds = [] as ReturnType<typeof eq>[];
@@ -3726,6 +3821,7 @@ const slotValues = (ruleId: string, slots: any[]) =>
 foodRouter.get("/composition-rules", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
+    await assertKnownBrand(brand);
     const mealType = req.query["mealType"] as string | undefined;
     const kitchenId = req.query["kitchenId"] as string | undefined;
     const conds = [] as ReturnType<typeof eq>[];

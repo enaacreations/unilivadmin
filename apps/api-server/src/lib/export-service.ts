@@ -136,8 +136,12 @@ export async function toPdf(table: ExportTable): Promise<Uint8Array> {
     }
   };
   const fit = (value: unknown) => {
-    // Coerce null/undefined/number cell values to string safely before measuring.
-    const text = value == null ? "" : String(value);
+    // winAnsi FIRST, not just a String() coerce: pdf-lib's standard fonts are
+    // WinAnsi-encoded and drawText THROWS on any glyph outside that set, which
+    // makes one out-of-range character in free text a 500 for the whole export.
+    // This was live — every report PDF 500'd because the date-range label joins
+    // its two dates with U+2192 (→).
+    const text = winAnsi(value);
     const maxW = colW - 6;
     if (measure(text) <= maxW) return text;
     // Need to truncate. Account for the ellipsis glyph width in the loop
@@ -160,10 +164,13 @@ export async function toPdf(table: ExportTable): Promise<Uint8Array> {
   const metaLine = metaParts.join("    ");
 
   const drawTitle = () => {
-    page.drawText(table.title, { x: margin, y: y - 4, size: 14, font: bold, color: navy });
+    // Both of these are free text reaching drawText directly rather than through
+    // fit(), so both need the same WinAnsi treatment — metaLine is the one that
+    // was actually 500ing.
+    page.drawText(winAnsi(table.title), { x: margin, y: y - 4, size: 14, font: bold, color: navy });
     page.drawRectangle({ x: margin, y: y - 12, width: 48, height: 3, color: orange });
     y -= 26;
-    page.drawText(metaLine, { x: margin, y: y - 4, size: 8, font, color: grey });
+    page.drawText(winAnsi(metaLine), { x: margin, y: y - 4, size: 8, font, color: grey });
     y -= 18;
   };
   const drawHeader = () => {
@@ -253,10 +260,14 @@ const DAY_SHORT = ["", "MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
 /**
  * pdf-lib's standard fonts are WinAnsi-encoded and `drawText` THROWS on a glyph
- * outside that set. Dish and kitchen names are free text, so one pasted curly
- * quote or a Devanagari character would 500 the whole export. Map the few
- * punctuation characters that actually occur to ASCII equivalents and drop
- * anything else still outside the encodable range.
+ * outside that set, so a single out-of-range character anywhere in a document
+ * 500s the entire export. Map the punctuation that actually occurs to ASCII and
+ * drop anything else still outside the encodable range.
+ *
+ * EVERY string reaching drawText must go through this — in both `toPdf` and
+ * `toMenuRotationPdf`. It is not only about free text like dish names: the
+ * report exports 500'd on their own generated header, because the date-range
+ * label joins its two dates with U+2192.
  */
 function winAnsi(value: unknown): string {
   const s = value == null ? "" : String(value);
@@ -264,6 +275,13 @@ function winAnsi(value: unknown): string {
     .replace(/[‘’‛]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/[–—]/g, "-")
+    // Arrows are MAPPED, not stripped: the export date-range label is
+    // "<from> → <to>", and dropping the glyph would leave two dates separated
+    // by whitespace with nothing saying it is a range.
+    .replace(/[→⟶➔➜]/g, "->")
+    .replace(/[←⟵]/g, "<-")
+    .replace(/[×✕✖]/g, "x")
+    .replace(/[•]/g, "-")
     .replace(/…/g, "...")
     .replace(/ /g, " ")
     // eslint-disable-next-line no-control-regex

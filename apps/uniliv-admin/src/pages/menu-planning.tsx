@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { BoundedScroll } from "@/components/ui/bounded-scroll";
+import { FoodQueryError } from "@/components/food/query-error";
 import { AlertTriangle, ChevronLeft, ChevronRight, Send, Copy, Truck, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
@@ -77,7 +78,9 @@ export default function MenuPlanning() {
   // needs whichever grant that week's write will actually use.
   const canSetSlot = plan ? canEditPlan : canCreatePlan;
 
-  const { data: recipesRes } = useQuery({ queryKey: ["recipes", "all"], queryFn: () => apiFetch<any>("/recipes?limit=200") });
+  // Recipes name every filled cell. A failed read turns a fully planned week
+  // into a grid of "—" and an empty recipe picker, neither of which is true.
+  const { data: recipesRes, isError: recipesError, refetch: refetchRecipes } = useQuery({ queryKey: ["recipes", "all"], queryFn: () => apiFetch<any>("/recipes?limit=200") });
   const recipes = recipesRes?.data || [];
 
   const setSlot = async (day: number, slot: string, recipeId: string) => {
@@ -196,6 +199,14 @@ export default function MenuPlanning() {
             </div>
           </div>
 
+          {recipesError && (
+            <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span className="flex-1">Could not load recipes — planned meals below show as &ldquo;—&rdquo; and the picker is empty.</span>
+              <Button variant="outline" size="sm" onClick={() => refetchRecipes()}>Retry</Button>
+            </div>
+          )}
+
           {/* A failed plan fetch would otherwise render as an untouched week. */}
           {planError && (
             <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -265,7 +276,11 @@ export default function MenuPlanning() {
                 <div className="text-xs text-muted-foreground">{r.category} · {r.mealType} · {r.isVeg ? "Veg" : "Non-Veg"}</div>
               </button>
             ))}
-            {!filteredRecipes.length && <p className="text-sm text-muted-foreground p-4 text-center">No matching recipes</p>}
+            {!filteredRecipes.length && (
+              <p className="p-4 text-center text-sm text-muted-foreground">
+                {recipesError ? "Recipes could not be loaded — close this and retry." : "No matching recipes"}
+              </p>
+            )}
           </div>
           <DialogFooter><Button variant="outline" onClick={() => { if (pickerCell) { setSlot(pickerCell.day, pickerCell.slot, ""); setPickerCell(null); } }}>Clear cell</Button></DialogFooter>
         </DialogContent>
@@ -281,13 +296,22 @@ function DailyProductionTab({ propertyId, recipes, slots, canEdit }: { propertyI
   const today = new Date();
   const todayKey = today.toISOString().slice(0, 10);
 
-  const { data: prodRes } = useQuery({ queryKey: ["production", propertyId, todayKey], queryFn: () => apiFetch<any>(`/daily-production?propertyId=${propertyId}&date=${todayKey}`), enabled: !!propertyId });
+  // POST /daily-production replaces the WHOLE array for a key, and every writer
+  // below builds `[...existing, newRow]` from this read. A failed fetch makes
+  // `existing` empty, so one "Add" would wipe today's log instead of appending
+  // to it — same invariant as the rotation generator, so the tab refuses to
+  // render (and `update` refuses to fire) until the day genuinely loads.
+  const { data: prodRes, isError: prodError, isSuccess: prodLoaded, refetch: refetchProd } = useQuery({ queryKey: ["production", propertyId, todayKey], queryFn: () => apiFetch<any>(`/daily-production?propertyId=${propertyId}&date=${todayKey}`), enabled: !!propertyId });
   const prod = prodRes?.data?.[0] || { dispatches: [], wastage: [], receivings: [] };
 
   const dayIdx = (today.getDay() + 6) % 7;
   const todaysSlots = SLOTS.map((s) => ({ slot: s, recipeId: slots[`${dayIdx}-${s}`] || "" }));
 
   const update = async (key: "dispatches" | "wastage" | "receivings", arr: any[]) => {
+    if (!prodLoaded) {
+      toast({ title: "Today's log could not be read", description: "Reload before adding — saving now would overwrite what is already recorded.", variant: "destructive" });
+      return;
+    }
     try {
       await apiFetch("/daily-production", { method: "POST", body: JSON.stringify({ propertyId, date: today.toISOString(), [key]: arr }) });
       qc.invalidateQueries({ queryKey: ["production", propertyId, todayKey] });
@@ -298,6 +322,16 @@ function DailyProductionTab({ propertyId, recipes, slots, canEdit }: { propertyI
   const dispatches = (prod.dispatches as any[]) || [];
   const wastage = (prod.wastage as any[]) || [];
   const receivings = (prod.receivings as any[]) || [];
+
+  if (prodError) {
+    return (
+      <FoodQueryError
+        label="today's production log"
+        hint="An empty log here is indistinguishable from a day nothing has been recorded on, and adding a row would overwrite it."
+        onRetry={() => refetchProd()}
+      />
+    );
+  }
 
   return (
     <div className="grid lg:grid-cols-2 gap-4">
@@ -373,9 +407,12 @@ function AddRow({ onAdd, fields }: { onAdd: (a: string, b: string, c: string, d:
 }
 
 function KitchenAnalyticsTab({ propertyId }: { propertyId: string }) {
-  const { data: feedRes } = useQuery({ queryKey: ["k-feed", propertyId], queryFn: () => apiFetch<any>(`/kitchen-analytics/feedback-trends?propertyId=${propertyId}`), enabled: !!propertyId });
-  const { data: wRes } = useQuery({ queryKey: ["k-wast", propertyId], queryFn: () => apiFetch<any>(`/kitchen-analytics/wastage-trends?propertyId=${propertyId}`), enabled: !!propertyId });
-  const { data: dRes } = useQuery({ queryKey: ["k-div", propertyId], queryFn: () => apiFetch<any>(`/kitchen-analytics/menu-diversity?propertyId=${propertyId}`), enabled: !!propertyId });
+  // "No feedback yet" / "No wastage logged yet" / "Plan a menu first" are all
+  // claims about the kitchen's record. A failed fetch is not evidence for any
+  // of them, so each card reports its own failure instead.
+  const { data: feedRes, isError: feedError } = useQuery({ queryKey: ["k-feed", propertyId], queryFn: () => apiFetch<any>(`/kitchen-analytics/feedback-trends?propertyId=${propertyId}`), enabled: !!propertyId });
+  const { data: wRes, isError: wError } = useQuery({ queryKey: ["k-wast", propertyId], queryFn: () => apiFetch<any>(`/kitchen-analytics/wastage-trends?propertyId=${propertyId}`), enabled: !!propertyId });
+  const { data: dRes, isError: dError } = useQuery({ queryKey: ["k-div", propertyId], queryFn: () => apiFetch<any>(`/kitchen-analytics/menu-diversity?propertyId=${propertyId}`), enabled: !!propertyId });
   const feedback = feedRes?.data || [];
   const wastage = wRes?.data || [];
   const diversity = dRes?.data || { veg: 0, nonVeg: 0, special: 0 };
@@ -388,7 +425,7 @@ function KitchenAnalyticsTab({ propertyId }: { propertyId: string }) {
         <CardContent style={{ height: 280 }}>
           {feedback.length ? (
             <ResponsiveContainer width="100%" height="100%"><BarChart data={feedback}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="recipeName" tick={{ fontSize: 10 }} /><YAxis domain={[0, 5]} /><Tooltip /><Bar dataKey="avgRating" fill="var(--primary)" /></BarChart></ResponsiveContainer>
-          ) : <p className="text-sm text-muted-foreground">No feedback yet</p>}
+          ) : <p className="text-sm text-muted-foreground">{feedError ? "Could not load feedback." : "No feedback yet"}</p>}
         </CardContent>
       </Card>
       <Card>
@@ -396,7 +433,7 @@ function KitchenAnalyticsTab({ propertyId }: { propertyId: string }) {
         <CardContent style={{ height: 280 }}>
           {wastage.length ? (
             <ResponsiveContainer width="100%" height="100%"><LineChart data={wastage}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="weekStart" /><YAxis /><Tooltip /><Line type="monotone" dataKey="kg" stroke="var(--primary)" strokeWidth={2} /></LineChart></ResponsiveContainer>
-          ) : <p className="text-sm text-muted-foreground">No wastage logged yet</p>}
+          ) : <p className="text-sm text-muted-foreground">{wError ? "Could not load wastage." : "No wastage logged yet"}</p>}
         </CardContent>
       </Card>
       <Card>
@@ -404,15 +441,15 @@ function KitchenAnalyticsTab({ propertyId }: { propertyId: string }) {
         <CardContent style={{ height: 280 }}>
           {divData.length ? (
             <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={divData} dataKey="value" nameKey="name" outerRadius={90} label>{divData.map((_, i) => <Cell key={i} fill={COLORS[i]} />)}</Pie><Tooltip /><Legend /></PieChart></ResponsiveContainer>
-          ) : <p className="text-sm text-muted-foreground">Plan a menu first</p>}
+          ) : <p className="text-sm text-muted-foreground">{dError ? "Could not load menu diversity." : "Plan a menu first"}</p>}
         </CardContent>
       </Card>
       <Card>
         <CardHeader><CardTitle className="text-base">At a glance</CardTitle></CardHeader>
         <CardContent className="space-y-2">
-          <div className="flex justify-between"><span className="text-muted-foreground text-sm">Recipes used (last 4 weeks)</span><span className="font-medium">{diversity.total || 0}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground text-sm">Recipes used (last 4 weeks)</span><span className="font-medium">{dError ? "—" : (diversity.total || 0)}</span></div>
           <div className="flex justify-between"><span className="text-muted-foreground text-sm">Avg rating</span><span className="font-medium">{feedback.length ? (feedback.reduce((s: number, x: any) => s + x.avgRating, 0) / feedback.length).toFixed(2) : "—"}</span></div>
-          <div className="flex justify-between"><span className="text-muted-foreground text-sm">Total feedback entries</span><span className="font-medium">{feedback.reduce((s: number, x: any) => s + x.feedbackCount, 0)}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground text-sm">Total feedback entries</span><span className="font-medium">{feedError ? "—" : feedback.reduce((s: number, x: any) => s + x.feedbackCount, 0)}</span></div>
         </CardContent>
       </Card>
     </div>

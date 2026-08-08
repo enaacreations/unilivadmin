@@ -117,15 +117,18 @@ export const DEFAULT_SWEEP_GRACE_MS = 2 * 60_000;
  *
  * Invariant: the grace window is exactly graceMs, whatever the database's
  * timezone is. `notification_outbox.created_at` is `timestamp` WITHOUT time zone
- * and is filled by the column's own `DEFAULT now()`, so it holds wall-clock in
- * the DB session timezone (Asia/Kolkata in every UNILIV environment). Drizzle
- * serialises a JS `Date` into that column as UTC wall-clock, so handing `lt()` a
- * JS-side cutoff compared two different clocks and the real grace was
- * (DB offset + graceMs) — 5h32m here, i.e. the outbox was effectively unswept
- * for most of a shift. Comparing against `localtimestamp` (= `now()` rendered in
- * the same session timezone that wrote the row) keeps both sides on one clock,
- * and stays a plain timestamp/timestamp comparison so the
- * notification_outbox(status, created_at) index is still usable.
+ * and is filled by the column's own `DEFAULT now()`, which renders in the DB
+ * SESSION timezone — pinned to UTC in lib/db/src/index.ts, the same clock
+ * Drizzle serialises a JS `Date` onto.
+ *
+ * `localtimestamp` is therefore not a correction for a skew any more (the pin
+ * removed it); it stays because it keeps the comparison on the DB side of the
+ * wire, as a plain timestamp/timestamp expression, so the
+ * notification_outbox(status, created_at) index is still usable. Do not "simplify"
+ * it to a JS-side Date: that is only equivalent while the pin holds, and it
+ * re-introduces the original bug the moment a session sets another TimeZone.
+ * (Before the pin the session was Asia/Kolkata and the two clocks were 5h30m
+ * apart, making the real grace 5h32m — the outbox went unswept for most of a shift.)
  */
 export function outboxAgeCutoff(graceMs: number) {
   const secs = Math.max(graceMs, 0) / 1000;

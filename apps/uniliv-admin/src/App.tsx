@@ -60,7 +60,6 @@ import TemplateBuilder from "@/pages/audits/template-builder";
 import QuestionBank from "@/pages/audits/question-bank";
 import AuditSchedules from "@/pages/audits/schedules";
 import ScheduleForm from "@/pages/audits/schedule-form";
-import ScheduleCalendar from "@/pages/audits/schedule-calendar";
 import AuditRegister from "@/pages/audits/register";
 import NewAudit from "@/pages/audits/new-audit";
 import MyAudits from "@/pages/audits/my-audits";
@@ -239,7 +238,10 @@ function Router() {
       {/* Schedules: /new and /calendar must precede the :id edit route */}
       <Route path="/audits/schedules">{() => <ProtectedRoute component={AuditSchedules} />}</Route>
       <Route path="/audits/schedules/new">{() => <ProtectedRoute component={ScheduleForm} />}</Route>
-      <Route path="/audits/schedules/calendar">{() => <ProtectedRoute component={ScheduleCalendar} />}</Route>
+      {/* The calendar became a view of the Schedules page; keep the old path working. */}
+      <Route path="/audits/schedules/calendar">
+        {() => <Redirect to="/audits/schedules?view=calendar" replace />}
+      </Route>
       <Route path="/audits/schedules/:id">{() => <ProtectedRoute component={ScheduleForm} />}</Route>
       {/* Templates: builder before the :id detail catch-all */}
       <Route path="/audits/templates">{() => <ProtectedRoute component={AuditTemplates} />}</Route>

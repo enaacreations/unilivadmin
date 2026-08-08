@@ -4,6 +4,7 @@
 // All paths are relative to /api/
 // ─────────────────────────────────────────────────────────────────────────────
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import {
   db,
   walletsTable,
@@ -101,6 +102,11 @@ async function sendAdHoc(
 // one key — passing both per-wallet pre-checks, then colliding at the INSERT.
 // So the wallet id is composed into the stored key, which makes the global index
 // per-wallet and keeps the guard and the constraint describing the same thing.
+//
+// All four money paths (topup, pay, partial-pay, adjust) store the key the SAME
+// way. pay/partial-pay used to key their replay on the `notes` marker alone and
+// keep a payment id in referenceId, which left them outside that unique index —
+// so nothing but a SELECT stood between two concurrent replays.
 // ─────────────────────────────────────────────────────────────────────────────
 const IDEMPOTENCY_REF_TYPE = "IDEMPOTENCY";
 
@@ -117,6 +123,65 @@ function getIdempotencyKey(req: { headers: Record<string, unknown>; body?: any }
   if (!raw) return null;
   const trimmed = String(raw).trim();
   return trimmed.length > 0 ? trimmed.slice(0, 200) : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Replay equality
+// Invariant: an idempotency key identifies ONE request, not one caller. A key
+// replayed against a DIFFERENT payload is a conflict — never the first request's
+// result echoed back. /pay used to key its replay on wallet + referenceType +
+// notes and never looked at the body, so a second call with the same key and a
+// different ledger entry answered HTTP 200 with the FIRST payment object
+// (entriesPaid:1) while its own entry stayed is_paid=false and the balance never
+// moved: the caller was told money was settled that was not.
+//
+// The check needs the original request back. Where the stored row records the
+// whole request — topup (amount, notes) and adjust (amount, type, description,
+// notes) — the columns are compared directly. Where it does not (pay /
+// partial-pay carry a ledgerEntryIds set no column holds) a fingerprint of the
+// payload is folded into the `idem:` marker that already occupies `notes` on
+// those two paths. Neither needs a schema change.
+// ─────────────────────────────────────────────────────────────────────────────
+const IDEMPOTENCY_CONFLICT = "Idempotency-Key was already used for a different request";
+
+/** Stable digest of a request payload (field order fixed by the call site). */
+const requestFingerprint = (payload: unknown): string =>
+  createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 16);
+
+/** The `notes` marker written by pay / partial-pay: `idem:<key>#<fingerprint>`. */
+const idempotencyMarker = (key: string, fingerprint: string): string =>
+  `idem:${key}#${fingerprint}`;
+
+/**
+ * Replay guard for the fingerprinted paths (pay / partial-pay). A row found by
+ * key whose marker does not carry THIS request's fingerprint was produced by a
+ * different payload. A pre-fingerprint row (bare `idem:<key>`) cannot be proven
+ * identical either, so it conflicts too rather than being replayed on faith.
+ */
+function assertSameFingerprint(
+  storedNotes: string | null,
+  key: string,
+  fingerprint: string
+): void {
+  if (storedNotes !== idempotencyMarker(key, fingerprint)) {
+    throw httpError(409, IDEMPOTENCY_CONFLICT);
+  }
+}
+
+/**
+ * Replay guard for the paths whose transaction row records the whole request
+ * (topup / adjust) — no fingerprint needed, the columns ARE the payload.
+ */
+function assertSameRecordedRequest(
+  existing: { amount: unknown; type: string; description: string; notes: string | null },
+  requested: { amount: number; type: string; description: string; notes: string | null }
+): void {
+  const same =
+    Number(existing.amount) === roundMoney(requested.amount) &&
+    existing.type === requested.type &&
+    existing.description === requested.description &&
+    (existing.notes ?? null) === (requested.notes ?? null);
+  if (!same) throw httpError(409, IDEMPOTENCY_CONFLICT);
 }
 
 /** Serialize a wallet transaction row to the API response shape. */
@@ -290,6 +355,7 @@ walletRouter.post(
       const idempotencyKey = getIdempotencyKey(req);
 
       const storedKey = idempotencyKey ? scopedIdempotencyKey(wallet.id, idempotencyKey) : null;
+      const description = `Cash top-up by ${req.user!.email}`;
 
       const result = await db.transaction(async (tx) => {
         // Idempotency: re-apply guard inside the locked path. If a prior txn
@@ -304,10 +370,20 @@ walletRouter.post(
                 eq(walletTransactionsTable.referenceId, storedKey)
               )
             );
-          if (existing) return { txn: existing, balanceAfter: Number(existing.balanceAfter), replayed: true };
+          if (existing) {
+            // Same key, DIFFERENT body → 409. Returning the earlier top-up here
+            // would report a credit this request never made.
+            assertSameRecordedRequest(existing, {
+              amount,
+              type: "TOPUP",
+              description,
+              notes: body.notes ?? null,
+            });
+            return { txn: existing, balanceAfter: Number(existing.balanceAfter), replayed: true };
+          }
         }
         const r = await creditWallet(wallet.id, amount, "TOPUP", {
-          description: `Cash top-up by ${req.user!.email}`,
+          description,
           recordedBy: req.user!.id,
           propertyId: resident.propertyId,
           notes: body.notes ?? null,
@@ -330,8 +406,10 @@ walletRouter.post(
         },
       });
     } catch (err: any) {
-      if (err?.statusCode === 403) {
-        res.status(403).json({ success: false, error: err.message });
+      if (err?.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
+        // Includes the 409 raised when this key was already used for a
+        // different payload — that must not degrade into a generic 500.
+        res.status(err.statusCode).json({ success: false, error: err.message });
         return;
       }
       // Lost the race with a concurrent replay of the same key: the unique index
@@ -466,24 +544,39 @@ walletRouter.post(
 
       const config = await getWalletConfig(resident.propertyId);
       const idempotencyKey = getIdempotencyKey(req);
+      const storedKey = idempotencyKey ? scopedIdempotencyKey(wallet.id, idempotencyKey) : null;
+      // Payload identity for the replay guard: the entry set (order-insensitive,
+      // since order carries no meaning) plus the note persisted on the payment.
+      const fingerprint = idempotencyKey
+        ? requestFingerprint({
+            ledgerEntryIds: [...ledgerEntryIds].sort(),
+            notes: body.notes ?? null,
+          })
+        : null;
 
       const result = await db.transaction(async (tx) => {
-        // Idempotency: replay returns the original wallet txn + its payment.
-        if (idempotencyKey) {
+        // Idempotency: replay returns the original wallet txn + its payment —
+        // but only for the SAME payload; a different one is a 409 (see
+        // assertSameFingerprint), not a success report for work never done.
+        if (storedKey) {
           const [existingTxn] = await tx
             .select()
             .from(walletTransactionsTable)
             .where(
               and(
-                eq(walletTransactionsTable.walletId, wallet.id),
                 eq(walletTransactionsTable.referenceType, IDEMPOTENCY_REF_TYPE),
-                eq(walletTransactionsTable.notes, `idem:${idempotencyKey}`)
+                eq(walletTransactionsTable.referenceId, storedKey)
               )
             );
           if (existingTxn) {
-            const [existingPayment] = existingTxn.referenceId
-              ? await tx.select().from(paymentsTable).where(eq(paymentsTable.id, existingTxn.referenceId))
-              : [];
+            assertSameFingerprint(existingTxn.notes, idempotencyKey!, fingerprint!);
+            // Reached through the payment's own back-link (payments.reference =
+            // wallet txn id), which is written at insert time and never rewritten
+            // — referenceId now carries the idempotency key instead.
+            const [existingPayment] = await tx
+              .select()
+              .from(paymentsTable)
+              .where(eq(paymentsTable.reference, existingTxn.id));
             return {
               debitResult: { txn: existingTxn, balanceAfter: Number(existingTxn.balanceAfter) },
               payment: existingPayment ?? null,
@@ -524,7 +617,12 @@ walletRouter.post(
             description: `Payment for ${entries.length} ledger entr${entries.length === 1 ? "y" : "ies"}`,
             recordedBy: req.user!.id,
             propertyId: resident.propertyId,
-            notes: idempotencyKey ? `idem:${idempotencyKey}` : (body.notes ?? null),
+            notes: idempotencyKey ? idempotencyMarker(idempotencyKey, fingerprint!) : (body.notes ?? null),
+            // The key lands in referenceId (namespaced IDEMPOTENCY) so the
+            // partial unique index — not only the SELECT above — refuses a
+            // CONCURRENT replay, exactly as it does for topup/adjust.
+            referenceId: storedKey,
+            referenceType: storedKey ? IDEMPOTENCY_REF_TYPE : null,
           },
           config,
           tx
@@ -559,14 +657,15 @@ walletRouter.post(
           throw httpError(409, "One or more ledger entries were already paid");
         }
 
-        // Back-link wallet transaction to payment (and stamp idempotency marker).
-        await tx
-          .update(walletTransactionsTable)
-          .set({
-            referenceId: paymentId,
-            referenceType: idempotencyKey ? IDEMPOTENCY_REF_TYPE : "PAYMENT",
-          })
-          .where(eq(walletTransactionsTable.id, debitResult.txn.id));
+        // Back-link wallet transaction to payment. Only when no key is in play:
+        // with one, referenceId holds the key and the payment stays reachable
+        // the other way round (payments.reference = wallet txn id).
+        if (!storedKey) {
+          await tx
+            .update(walletTransactionsTable)
+            .set({ referenceId: paymentId, referenceType: "PAYMENT" })
+            .where(eq(walletTransactionsTable.id, debitResult.txn.id));
+        }
 
         return { debitResult, payment: payment!, replayed: false as const };
       });
@@ -606,6 +705,12 @@ walletRouter.post(
       }
       if (err?.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
         res.status(err.statusCode).json({ success: false, error: err.message });
+        return;
+      }
+      // Lost the race with a concurrent replay of the same key: the unique index
+      // rolled this transaction back, so the payment was applied exactly once.
+      if (isUniqueViolation(err)) {
+        res.status(409).json({ success: false, error: "This request was already applied" });
         return;
       }
       req.log.error(err);
@@ -676,24 +781,42 @@ walletRouter.post(
 
       const config = await getWalletConfig(resident.propertyId);
       const idempotencyKey = getIdempotencyKey(req);
+      const storedKey = idempotencyKey ? scopedIdempotencyKey(wallet.id, idempotencyKey) : null;
+      // Same payload identity as /pay: everything that decides where the money
+      // goes, plus the note persisted on the payment rows.
+      const fingerprint = idempotencyKey
+        ? requestFingerprint({
+            ledgerEntryIds: [...ledgerEntryIds].sort(),
+            walletAmount,
+            otherAmount,
+            otherMode,
+            reference: body.reference ?? null,
+            notes: body.notes ?? null,
+          })
+        : null;
 
       const result = await db.transaction(async (tx) => {
-        // Idempotency: replay returns the original wallet txn + payments.
-        if (idempotencyKey) {
+        // Idempotency: replay returns the original wallet txn + payments — but
+        // only for the SAME payload; a different one is a 409, not a success
+        // report for a split payment this request never made.
+        if (storedKey) {
           const [existingTxn] = await tx
             .select()
             .from(walletTransactionsTable)
             .where(
               and(
-                eq(walletTransactionsTable.walletId, wallet.id),
                 eq(walletTransactionsTable.referenceType, IDEMPOTENCY_REF_TYPE),
-                eq(walletTransactionsTable.notes, `idem:${idempotencyKey}`)
+                eq(walletTransactionsTable.referenceId, storedKey)
               )
             );
           if (existingTxn) {
-            const linked = existingTxn.referenceId
-              ? await tx.select().from(paymentsTable).where(eq(paymentsTable.id, existingTxn.referenceId))
-              : [];
+            assertSameFingerprint(existingTxn.notes, idempotencyKey!, fingerprint!);
+            // Via the payment's own back-link (payments.reference = txn id);
+            // referenceId now carries the idempotency key instead.
+            const linked = await tx
+              .select()
+              .from(paymentsTable)
+              .where(eq(paymentsTable.reference, existingTxn.id));
             return {
               debitResult: { txn: existingTxn, balanceAfter: Number(existingTxn.balanceAfter) },
               walletPayment: linked[0] ?? null,
@@ -741,7 +864,11 @@ walletRouter.post(
             description: `Partial wallet payment (₹${walletAmount}) for ${entries.length} ledger entr${entries.length === 1 ? "y" : "ies"}`,
             recordedBy: req.user!.id,
             propertyId: resident.propertyId,
-            notes: idempotencyKey ? `idem:${idempotencyKey}` : (body.notes ?? null),
+            notes: idempotencyKey ? idempotencyMarker(idempotencyKey, fingerprint!) : (body.notes ?? null),
+            // Key in referenceId so the partial unique index refuses a
+            // concurrent replay too (same shape as topup/adjust/pay).
+            referenceId: storedKey,
+            referenceType: storedKey ? IDEMPOTENCY_REF_TYPE : null,
           },
           config,
           tx
@@ -789,14 +916,14 @@ walletRouter.post(
           throw httpError(409, "One or more ledger entries were already paid");
         }
 
-        // Back-link wallet transaction to wallet payment (stamp idempotency marker).
-        await tx
-          .update(walletTransactionsTable)
-          .set({
-            referenceId: walletPayment!.id,
-            referenceType: idempotencyKey ? IDEMPOTENCY_REF_TYPE : "PAYMENT",
-          })
-          .where(eq(walletTransactionsTable.id, debitResult.txn.id));
+        // Back-link wallet transaction to wallet payment. Only without a key:
+        // with one, referenceId holds the key (see /pay).
+        if (!storedKey) {
+          await tx
+            .update(walletTransactionsTable)
+            .set({ referenceId: walletPayment!.id, referenceType: "PAYMENT" })
+            .where(eq(walletTransactionsTable.id, debitResult.txn.id));
+        }
 
         return {
           debitResult,
@@ -845,6 +972,11 @@ walletRouter.post(
       }
       if (err?.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
         res.status(err.statusCode).json({ success: false, error: err.message });
+        return;
+      }
+      // Concurrent replay of the same key — applied exactly once.
+      if (isUniqueViolation(err)) {
+        res.status(409).json({ success: false, error: "This request was already applied" });
         return;
       }
       req.log.error(err);
@@ -1124,7 +1256,17 @@ walletRouter.post(
                 eq(walletTransactionsTable.referenceId, storedKey)
               )
             );
-          if (existing) return { txn: existing, balanceAfter: Number(existing.balanceAfter), replayed: true as const };
+          if (existing) {
+            // Same key, DIFFERENT body → 409. Echoing back the earlier
+            // adjustment would credit/debit nothing while reporting success.
+            assertSameRecordedRequest(existing, {
+              amount,
+              type: adjustType,
+              description: body.description,
+              notes: body.notes ?? null,
+            });
+            return { txn: existing, balanceAfter: Number(existing.balanceAfter), replayed: true as const };
+          }
         }
         const r =
           adjustType === "ADJUSTMENT_CREDIT"

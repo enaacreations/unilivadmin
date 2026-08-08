@@ -36,6 +36,7 @@ const REQUIRED_IN_BUNDLE = {
   "@aws-sdk/client-sesv2": "SESv2ServiceException", // notify-core providers.ts (EMAIL_PROVIDER=ses)
   nodemailer: "SMTPConnection", // notify-core providers.ts (SMTP_HOST)
   "sns-validator": "signableKeysForSubscription", // routes/webhooks.ts verifySns
+  "web-push": "generateVAPIDKeys", // lib/web-push.ts pushToUser (VAPID_* set)
 };
 
 /**
@@ -48,7 +49,6 @@ const REQUIRED_IN_BUNDLE = {
 const OPTIONAL_RUNTIME_IMPORTS = {
   ioredis: "notify-core/queue.ts — only loaded when REDIS_URL is set; callers fall back to inline delivery on throw",
   bullmq: "notify-core/queue.ts — only loaded when REDIS_URL is set; callers fall back to inline delivery on throw",
-  "web-push": "lib/web-push.ts — only loaded when VAPID_* are set; pushToUser catches and logs, never throws",
   "pg-native": "pg's lazy `pg.native` getter — not installed, never touched by us; the getter swallows MODULE_NOT_FOUND",
   "supports-color": "debug's optional colour probe — not installed, wrapped in its own try/catch, falls back to default colours",
 };
@@ -162,7 +162,10 @@ async function buildAll() {
       // in the slim image; externalizing it made the documented SMTP remedy a
       // guaranteed ERR_MODULE_NOT_FOUND at first send. (twilio is gone entirely:
       // notify-core now calls the Twilio REST API over fetch, no SDK.)
-      "web-push",
+      // NOTE: web-push is NOT externalized either — same invariant. It is pure JS
+      // with no native/dynamic requires, and the slim image has no node_modules,
+      // so leaving it external made every browser push a swallowed
+      // ERR_MODULE_NOT_FOUND. It is in REQUIRED_IN_BUNDLE above.
       "bullmq",
       "ioredis",
       "handlebars",

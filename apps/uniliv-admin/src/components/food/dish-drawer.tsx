@@ -149,11 +149,18 @@ export function DishDrawer({
   const editing = dishes.find((d) => d.id === draft?.id) ?? null;
 
   // Portion rules currently on file, so save can diff rather than blindly rewrite.
-  const { data: savedRules = [] } = useQuery<PerResidentRule[]>({
+  // The diff is only sound against a rule set that was actually read: on a failed
+  // fetch [] makes every filled cell look new (re-CREATE over live rules) and
+  // hides every drop from the confirm dialog. `rulesUnread` blocks the save.
+  const rulesQuery = useQuery<PerResidentRule[]>({
     queryKey: foodKeys.rules({ dishId: draft?.id ?? "" }),
     queryFn: () => foodApi.listRules({ dishId: draft!.id! }),
     enabled: open && !!draft?.id,
   });
+  const savedRules = rulesQuery.data ?? [];
+  // Only matters where the sync actually runs — it is a no-op for a
+  // scope-restricted caller, so their save must not be held up by this read.
+  const rulesUnread = !!draft?.id && orgWideConfig && !rulesQuery.isSuccess;
 
   /** Creates / updates / deletes the per-resident rules to match the grid. */
   const syncPortions = async (dishId: string, d: DishDraft) => {
@@ -163,6 +170,12 @@ export function DishDrawer({
     // lives on the DISH, so changing it would still re-write every rule's unit
     // and 403 an otherwise-valid dish save. Skip the whole sync instead.
     if (!orgWideConfig) return;
+    // Restated at the write: diffing against a rule set we never read would
+    // re-create rules that already exist and silently skip the deletes. A NEW
+    // dish has no rules to read (the query is disabled), so it is exempt.
+    if (d.id && !rulesQuery.isSuccess) {
+      throw new Error("The portions on file could not be read — reopen the dish before saving.");
+    }
     const existing = new Map(savedRules.map((r) => [`${r.brand}|${r.mealType}`, r]));
     const jobs: Promise<unknown>[] = [];
     for (const b of brands) {
@@ -265,7 +278,15 @@ export function DishDrawer({
   // A retired ingredient still shows while it is selected — otherwise the row that
   // is already on the dish would be the one row you cannot untick.
   const ingOptions = ingredients.filter((g) => g.isActive || draft.ingredientIds.includes(g.id));
-  const canCreateIng = !!q && !ingredients.some((g) => g.name.toLowerCase() === ql);
+  // M16 — every other control in this drawer only edits the local draft, but
+  // "Create <name>" POSTs /food/ingredients the moment it is chosen. The drawer
+  // opens read-only from the catalogue's "View dish" button, so without canEdit
+  // that write was offered to a view-only principal and 403'd. Gate on canEdit
+  // ALONE, not orgWideConfig: POST /food/ingredients is a plain
+  // FOOD_SETTINGS:create with no scope guard (see IngredientsGrid, the sibling
+  // on the same endpoint), so a kitchen-scoped F&B manager may legitimately do
+  // this and must not lose it.
+  const canCreateIng = canEdit && !!q && !ingredients.some((g) => g.name.toLowerCase() === ql);
 
   // A dish has to be served at a meal to exist usefully: computeOrderItems skips
   // dishes with no per-resident rule, so one with an empty grid can never be
@@ -298,9 +319,13 @@ export function DishDrawer({
   /** Why saving is blocked, or null when the dish is good to go. */
   const blockReason = !draft.name.trim()
     ? "Give the dish a name to save it."
-    : orgWideConfig && filledMeals.length === 0
-      ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
-      : null;
+    : rulesUnread
+      ? rulesQuery.isError
+        ? "The portions on file could not be read — saving now would rewrite them from a blank slate. Reopen the dish to try again."
+        : "Reading the portions on file…"
+      : orgWideConfig && filledMeals.length === 0
+        ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
+        : null;
   // B3 — the portion requirement may only be asked of a caller who can satisfy
   // it. Dishes themselves carry no scope (POST /dishes is FOOD_SETTINGS:create,
   // unscoped), but per_resident_rules is brand-wide and refused for a

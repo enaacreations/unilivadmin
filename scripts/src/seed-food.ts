@@ -71,7 +71,6 @@ import { reportOrderability } from "./orderability.js";
 
 const id = () => randomUUID();
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
-const daysFromNow = (n: number) => new Date(Date.now() + n * 86_400_000);
 
 type Brand = "UNILIV" | "HUDDLE";
 type Meal = "BREAKFAST" | "LUNCH" | "SNACKS" | "DINNER";
@@ -332,6 +331,32 @@ function isoDayOfWeek(date: Date): number {
   return d === 0 ? 7 : d;
 }
 
+/**
+ * The instant of `hh:mm` IST on the IST calendar day `n` days from today.
+ *
+ * Invariant: `food_orders.service_date` is the IST DAY START (00:00 IST =
+ * 18:30 UTC wall-clock of the previous calendar day) — that is exactly what the
+ * API writes via `ymdToIstDayStart`, and the partial unique index
+ * `uq_food_orders_property_meal_date` keys the EXACT instant. Seeding a raw
+ * `now() ± n days` instant (with a time-of-day) produced rows the real
+ * duplicate-order guard could never collide with, so the "one live order per
+ * property + meal + date" invariant was silently unenforceable against seeded
+ * data. Mirrors api-server lib/tz.ts atIst(); IST has no DST.
+ */
+function istDayOffsetAt(n: number, h = 0, min = 0): Date {
+  const shifted = new Date(Date.now() + IST_OFFSET_MS);
+  return new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate() + n, h, min, 0) -
+      IST_OFFSET_MS,
+  );
+}
+
+/** The IST day-start instant `n` days from today — the canonical service_date. */
+const istServiceDate = (n: number) => istDayOffsetAt(n);
+
+/** Plausible IST serving hour per meal, for the lifecycle timestamps around it. */
+const MEAL_HOUR_IST: Record<Meal, number> = { BREAKFAST: 8, LUNCH: 13, SNACKS: 17, DINNER: 20 };
+
 interface ComputedItem {
   dishId: string;
   unit: Unit;
@@ -443,10 +468,24 @@ async function main() {
 
   // 2. Assign every existing property to a cluster (deterministic round-robin)
   const properties = await db
-    .select({ id: propertiesTable.id })
+    .select({ id: propertiesTable.id, name: propertiesTable.name, brand: propertiesTable.brand })
     .from(propertiesTable)
     .orderBy(propertiesTable.id);
   const propIds = properties.map((p) => p.id);
+  /**
+   * Invariant: an order's brand is the PROPERTY's brand — the API never lets a
+   * client choose it (POST /food/orders reads it from getPropertyFoodConfig), so
+   * a seeded order on a brand its property does not have is unreachable state
+   * and makes every brand-filtered view disagree with the property list.
+   * `properties.brand` is still NULL on a fresh DB (seed:food-extra fills it),
+   * so fall back to the exact rule that seed's backfill uses.
+   */
+  const brandOfProperty = new Map<string, Brand>(
+    properties.map((p) => [
+      p.id,
+      ((p.brand as Brand | null) ?? (/HUDDLE/i.test(p.name ?? "") ? "HUDDLE" : "UNILIV")) as Brand,
+    ]),
+  );
   if (propIds.length === 0) {
     throw new Error("No properties found — run the main seed (seed) first.");
   }
@@ -741,20 +780,21 @@ async function main() {
   const STATUSES = ["PLACED", "ACCEPTED", "DISPATCHED", "DELIVERED", "CANCELLED"] as const;
   type Status = (typeof STATUSES)[number];
 
+  // No `brand` here on purpose: it is the PROPERTY's brand, not a per-plan
+  // choice — see brandOfProperty above.
   interface OrderPlan {
     status: Status;
-    brand: Brand;
     meal: Meal;
     residentsCount: number;
     serviceOffsetDays: number; // +future for upcoming, -past for delivered
   }
 
   const PLANS: OrderPlan[] = [
-    { status: "PLACED",     brand: "UNILIV", meal: "LUNCH",     residentsCount: 80, serviceOffsetDays: 1 },
-    { status: "ACCEPTED",   brand: "UNILIV", meal: "BREAKFAST", residentsCount: 60, serviceOffsetDays: 0 },
-    { status: "DISPATCHED", brand: "HUDDLE", meal: "DINNER",    residentsCount: 45, serviceOffsetDays: 0 },
-    { status: "DELIVERED",  brand: "UNILIV", meal: "LUNCH",     residentsCount: 90, serviceOffsetDays: -1 },
-    { status: "CANCELLED",  brand: "HUDDLE", meal: "SNACKS",    residentsCount: 30, serviceOffsetDays: -2 },
+    { status: "PLACED",     meal: "LUNCH",     residentsCount: 80, serviceOffsetDays: 1 },
+    { status: "ACCEPTED",   meal: "BREAKFAST", residentsCount: 60, serviceOffsetDays: 0 },
+    { status: "DISPATCHED", meal: "DINNER",    residentsCount: 45, serviceOffsetDays: 0 },
+    { status: "DELIVERED",  meal: "LUNCH",     residentsCount: 90, serviceOffsetDays: -1 },
+    { status: "CANCELLED",  meal: "SNACKS",    residentsCount: 30, serviceOffsetDays: -2 },
   ];
 
   let orderSeq = 0;
@@ -765,17 +805,20 @@ async function main() {
 
   for (const lead of unitLeads) {
     const propertyId = propIds[(lead.propertyIndex ?? 0) % propIds.length]!;
+    const brand = brandOfProperty.get(propertyId)!;
     for (const plan of PLANS) {
       orderSeq += 1;
       const orderId = id();
       const orderNumber = `ORD-${year}-${String(orderSeq).padStart(6, "0")}`;
-      const serviceDate = plan.serviceOffsetDays >= 0
-        ? daysFromNow(plan.serviceOffsetDays)
-        : daysAgo(-plan.serviceOffsetDays);
+      // service_date is the IST DAY START, never a raw now()±n instant — see
+      // istServiceDate. The lifecycle stamps hang off the meal's serving hour on
+      // that same IST day so they stay plausible relative to it.
+      const serviceDate = istServiceDate(plan.serviceOffsetDays);
+      const serviceMoment = istDayOffsetAt(plan.serviceOffsetDays, MEAL_HOUR_IST[plan.meal]);
       const createdAt = daysAgo(Math.max(1, -plan.serviceOffsetDays + 1));
 
       const computed = computeItemsForOrder(
-        rotation, plan.brand, plan.meal, serviceDate, plan.residentsCount,
+        rotation, brand, plan.meal, serviceDate, plan.residentsCount,
       );
       const totalQuantity = computed.reduce((sum, c) => sum + c.orderedQty, 0);
 
@@ -790,7 +833,7 @@ async function main() {
         : null;
       const dispatcherId = isDispatched ? "user_food_fnbsup" : null;
       const confirmerId = isDelivered ? lead.id : null;
-      const deliveredAt = isDelivered ? new Date(serviceDate.getTime() + 2 * 3_600_000) : null;
+      const deliveredAt = isDelivered ? new Date(serviceMoment.getTime() + 2 * 3_600_000) : null;
       const wasteEditableUntil = deliveredAt
         ? new Date(deliveredAt.getTime() + 3_600_000) // delivered + 1h (PRD §7.7)
         : null;
@@ -799,7 +842,7 @@ async function main() {
         id: orderId,
         orderNumber,
         propertyId,
-        brand: plan.brand,
+        brand,
         mealType: plan.meal,
         unitLeadId: lead.id,
         residentsCount: plan.residentsCount,
@@ -809,13 +852,13 @@ async function main() {
         notes: `Seeded ${plan.status} order for ${plan.meal.toLowerCase()}.`,
         deliveryPartnerId,
         dispatchedById: dispatcherId,
-        dispatchStartedAt: isDispatched ? new Date(serviceDate.getTime() - 3_600_000) : null,
-        dispatchedAt: isDispatched ? new Date(serviceDate.getTime() - 1_800_000) : null,
+        dispatchStartedAt: isDispatched ? new Date(serviceMoment.getTime() - 3_600_000) : null,
+        dispatchedAt: isDispatched ? new Date(serviceMoment.getTime() - 1_800_000) : null,
         confirmedById: confirmerId,
         deliveredAt,
         deliveryRemarks: isDelivered ? "Delivered in full, verified by unit lead." : null,
         wasteEditableUntil,
-        acceptedAt: isAccepted ? new Date(serviceDate.getTime() - 5 * 3_600_000) : null,
+        acceptedAt: isAccepted ? new Date(serviceMoment.getTime() - 5 * 3_600_000) : null,
         acceptedById: isAccepted ? "user_food_fnbsup" : null,
         cancelledAt: isCancelled ? createdAt : null,
         cancelReason: isCancelled ? "Resident count dropped; meal not required." : null,
@@ -854,11 +897,11 @@ async function main() {
       } else {
         if (isAccepted) {
           pushEvent("ACCEPTED", "Order accepted by kitchen.", "user_food_fnbsup",
-            new Date(serviceDate.getTime() - 5 * 3_600_000));
+            new Date(serviceMoment.getTime() - 5 * 3_600_000));
         }
         if (isDispatched) {
           pushEvent("DISPATCHED", "Dispatched to property.", dispatcherId!,
-            new Date(serviceDate.getTime() - 1_800_000));
+            new Date(serviceMoment.getTime() - 1_800_000));
         }
         if (isDelivered) {
           pushEvent("DELIVERED", "Delivery confirmed with item-wise proof.", lead.id, deliveredAt!);

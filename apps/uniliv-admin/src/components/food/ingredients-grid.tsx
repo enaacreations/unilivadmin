@@ -16,6 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { FormModal } from "@/components/ui/form-modal";
 import { useToast } from "@/hooks/use-toast";
 import { foodApi, type Ingredient } from "@/lib/food-api";
+import { FoodQueryError } from "./query-error";
 import { useDishCatalogue, useIngredients } from "./use-food-masters";
 
 const ING_UNITS = ["G", "KG", "ML", "LITRE", "PCS", "PLATE", "SERVING"];
@@ -27,8 +28,12 @@ type IngDraft = { id: string | null; name: string; unit: string; isActive: boole
 export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: ingredients = [], isLoading } = useIngredients();
-  const { data: dishes = [] } = useDishCatalogue();
+  const { data: ingredients = [], isLoading, isError, refetch } = useIngredients();
+  // A failed catalogue read empties `usage`, so every ingredient would be
+  // labelled "unused" — the flag people delete on — and the delete dialog would
+  // drop its "used by N dishes" warning.
+  const { data: dishes = [], isError: dishesError } = useDishCatalogue();
+  const usageKnown = !dishesError;
 
   const [search, setSearch] = React.useState("");
   const [draft, setDraft] = React.useState<IngDraft | null>(null);
@@ -98,7 +103,9 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
         </div>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <FoodQueryError label="the ingredients" onRetry={() => refetch()} />
+      ) : isLoading ? (
         <p className="py-10 text-center text-sm text-muted-foreground">Loading ingredients…</p>
       ) : rows.length === 0 ? (
         <p className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">
@@ -117,8 +124,8 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
                 {!r.isActive && (
                   <span className="rounded-full bg-muted px-1.5 py-px text-[10px] text-muted-foreground">Inactive</span>
                 )}
-                <span className={`whitespace-nowrap text-[11px] ${uses ? "text-muted-foreground" : "text-warning"}`}>
-                  {uses ? `in ${uses} dish${uses === 1 ? "" : "es"}` : "unused"}
+                <span className={`whitespace-nowrap text-[11px] ${uses || !usageKnown ? "text-muted-foreground" : "text-warning"}`}>
+                  {!usageKnown ? "usage unknown" : uses ? `in ${uses} dish${uses === 1 ? "" : "es"}` : "unused"}
                 </span>
                 {canEdit && (
                   <div className="flex shrink-0 items-center gap-0.5">
@@ -213,7 +220,9 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
       >
         <p className="text-sm text-muted-foreground">
           Delete <span className="font-medium text-foreground">{delTarget?.name}</span>?
-          {delUses > 0 && <> It is used by {delUses} dish{delUses === 1 ? "" : "es"}, which will lose it.</>}
+          {!usageKnown
+            ? <> The dish catalogue could not be read, so it is not known which dishes still use it.</>
+            : delUses > 0 ? <> It is used by {delUses} dish{delUses === 1 ? "" : "es"}, which will lose it.</> : null}
         </p>
       </FormModal>
     </div>

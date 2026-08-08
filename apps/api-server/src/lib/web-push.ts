@@ -22,8 +22,11 @@ export interface PushPayload {
 
 /**
  * Best-effort web push to all of a user's active subscriptions. Never throws.
- * web-push is dynamically imported so the dependency stays optional (and absent
- * from the static bundle). Dead subscriptions (404/410) are deactivated.
+ * web-push is imported lazily so it is only loaded when VAPID_* are configured,
+ * but the specifier MUST stay a LITERAL string: the runtime image ships no
+ * node_modules, so a variable specifier (`const pkg = "web-push"`) leaves the
+ * import unbundled and every push dies as a swallowed ERR_MODULE_NOT_FOUND.
+ * See REQUIRED_IN_BUNDLE in build.mjs. Dead subscriptions (404/410) are deactivated.
  */
 export async function pushToUser(userId: string, payload: PushPayload): Promise<void> {
   if (!webPushEnabled()) return;
@@ -34,8 +37,7 @@ export async function pushToUser(userId: string, payload: PushPayload): Promise<
       .where(and(eq(pushSubscriptionsTable.userId, userId), eq(pushSubscriptionsTable.isActive, true)));
     if (!subs.length) return;
 
-    const pkg = "web-push";
-    const mod: any = await import(pkg);
+    const mod: any = await import("web-push");
     const webpush = mod.default ?? mod;
     webpush.setVapidDetails(SUBJECT, PUBLIC, PRIVATE);
 

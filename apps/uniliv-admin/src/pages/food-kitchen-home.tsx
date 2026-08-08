@@ -370,7 +370,10 @@ export default function FoodKitchenHome() {
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const summaryParams = { date };
-  const { data: summary, isLoading: summaryLoading } = useQuery({
+  // The cook plan. A failed read empties `dishes`, and the panel then tells the
+  // kitchen there is nothing to cook — the most consequential false empty on
+  // this page.
+  const { data: summary, isLoading: summaryLoading, isError: summaryError } = useQuery({
     queryKey: foodKeys.kitchenSummary(summaryParams),
     queryFn: () => foodApi.kitchenSummary(summaryParams),
   });
@@ -485,7 +488,9 @@ export default function FoodKitchenHome() {
   // standalone Kitchen Summary page.
   const [summaryOpen, setSummaryOpen] = React.useState(false);
   React.useEffect(() => { setSummaryOpen(false); }, [selected?.mealType, day]);
-  const { data: sheetItems, isLoading: sheetLoading } = useQuery({
+  // "No dish breakdown on this order" is a statement about the order; a failed
+  // read is not one.
+  const { data: sheetItems, isLoading: sheetLoading, isError: sheetError } = useQuery({
     queryKey: ["food", "kitchen-items", sheetOrder?.id],
     queryFn: () => foodApi.kitchenItems(sheetOrder!.id),
     enabled: !!sheetOrder,
@@ -796,7 +801,11 @@ export default function FoodKitchenHome() {
                   </div>
                 }
               />
-              {selected.dishes.length === 0 ? (
+              {summaryError ? (
+                <div className="rounded-[9px] border border-destructive/40 bg-destructive/5 px-3 py-5 text-center text-[13px] text-destructive">
+                  Could not load the cook plan — do not treat this as nothing to cook.
+                </div>
+              ) : selected.dishes.length === 0 ? (
                 <div className="rounded-[9px] border border-dashed border-border px-3 py-5 text-center text-[13px] text-muted-foreground">
                   No cook plan for {shortMeal(selected.mealType).toLowerCase()} {dayLabel.toLowerCase()} — it fills in as orders land.
                 </div>
@@ -1024,6 +1033,10 @@ export default function FoodKitchenHome() {
                   />
                   {sheetLoading ? (
                     <Skeleton className="h-24 w-full" />
+                  ) : sheetError ? (
+                    <div className="py-3 text-center text-[13px] text-destructive">
+                      Could not load the dish breakdown.
+                    </div>
                   ) : !sheetItems?.length ? (
                     <div className="py-3 text-center text-[13px] text-muted-foreground">
                       No dish breakdown on this order.
@@ -1093,7 +1106,11 @@ export default function FoodKitchenHome() {
               </SheetHeader>
 
               <div className="mt-4 flex flex-col gap-3">
-                {selected.dishes.length === 0 ? (
+                {summaryError ? (
+                  <div className="rounded-[12px] border border-destructive/40 bg-destructive/5 px-4 py-8 text-center text-[13px] text-destructive">
+                    Could not load the cook plan — do not treat this as nothing to cook.
+                  </div>
+                ) : selected.dishes.length === 0 ? (
                   <div className="rounded-[12px] border border-dashed border-border px-4 py-8 text-center text-[13px] text-muted-foreground">
                     No cook plan for {shortMeal(selected.mealType).toLowerCase()} {dayLabel.toLowerCase()} — it fills in as orders land.
                   </div>

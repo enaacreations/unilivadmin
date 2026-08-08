@@ -13,6 +13,37 @@ import { writeAuditLog } from "../lib/wallet-service.js";
 
 const router = Router();
 
+/**
+ * Flags a pincode→kitchen mapping that would put a property under a kitchen in
+ * a DIFFERENT city.
+ *
+ * kitchen_pincodes is operator-entered and importable, and both write paths
+ * derive kitchenId from it while trusting it completely. A single mistyped row
+ * therefore silently reassigns a property to another city's kitchen — which
+ * changes who cooks for it, who can see its orders, and which kitchen scope its
+ * F&B staff need — with nothing in the response to say so.
+ *
+ * Deliberately a WARNING, not a 400. properties.city and kitchens.city are two
+ * independent free-text columns ("New Delhi" vs "Delhi" is live today), so an
+ * equality test has real false positives and a hard refusal would block
+ * legitimate edits. This records the reassignment where an operator can find it;
+ * the mapping table itself is the place to fix a genuinely wrong row.
+ */
+function warnKitchenCityMismatch(
+  log: { warn: (obj: unknown, msg: string) => void },
+  propertyCity: unknown,
+  kitchen: { id: string; code: string; city: string | null },
+): void {
+  const norm = (v: unknown) => String(v ?? "").trim().toLowerCase();
+  const pCity = norm(propertyCity);
+  const kCity = norm(kitchen.city);
+  if (!pCity || !kCity || pCity === kCity) return;
+  log.warn(
+    { propertyCity: String(propertyCity), kitchenCity: kitchen.city, kitchenId: kitchen.id, kitchenCode: kitchen.code },
+    "Pincode-derived kitchen is in a different city than the property; check kitchen_pincodes",
+  );
+}
+
 /** Client-writable property columns (never id/createdAt/updatedAt). */
 const PROPERTY_FIELDS = [
   "name",
@@ -307,6 +338,7 @@ router.post("/", authenticate, authorize("PROPERTIES", "create"), async (req, re
       res.status(400).json({ success: false, error: "Kitchen does not match the kitchen mapped to this pincode." });
       return;
     }
+    warnKitchenCityMismatch(req.log, body.city, kitchen);
 
     // Property code: use the provided override (editable) if non-empty, else
     // auto-generate PROP-<CITY3>-<NNN> with a per-city sequence (unique-checked).
@@ -424,6 +456,9 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
         res.status(400).json({ success: false, error: "Kitchen does not match the kitchen mapped to this pincode." });
         return;
       }
+      // Same check as create — the city being compared is the one the property
+      // will HAVE after this request, not the one it had before.
+      warnKitchenCityMismatch(req.log, body.city !== undefined ? body.city : existing.city, kitchen);
       body.kitchenId = kitchen.id; // always persist the server-derived kitchen
     } else {
       // No pincode/kitchen change in this request — don't touch the column.

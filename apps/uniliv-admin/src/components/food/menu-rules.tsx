@@ -27,6 +27,7 @@ import {
   componentLabel, fillPlate, plateKey, plateToItems, rowsToPlates, ruleFor, slotsOf,
 } from "./menu-lib";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
+import { FoodQueryError } from "./query-error";
 
 /** Courses offered by the "add course" affordance, in menu order. */
 const COURSES = [
@@ -65,8 +66,11 @@ export function MenuRulesEditor(
 
   const brands = useActiveBrands();
   const { data: kitchens = [] } = useKitchens();
-  const { data: dishes = [] } = useDishCatalogue();
-  const { data: rules = [], isLoading } = useCompositionRules();
+  const { data: dishes = [], isError: dishesError } = useDishCatalogue();
+  // A failed rules read must not render as "this brand has no plate rule": the
+  // editor would then offer an empty plate whose Save CREATES a second rule
+  // alongside the one that is really there.
+  const { data: rules = [], isLoading, isError: rulesError, refetch: refetchRules } = useCompositionRules();
 
   const [brand, setBrand] = React.useState(focus?.brand ?? "");
   const [meal, setMeal] = React.useState<MealType>(focus?.meal ?? "LUNCH");
@@ -78,7 +82,10 @@ export function MenuRulesEditor(
   // kitchen" would be wrong for them).
   const { role } = usePermissions();
   const kitchenBound = role === "FNB_MANAGER";
-  const { data: lookups } = useQuery<FoodLookups>({
+  // The defaulting effect below waits on this, so a failed read leaves
+  // `genKitchen` empty and the generate panel permanently inert with no reason
+  // given. Pass the failure down so the panel can say why.
+  const { data: lookups, isError: lookupsError } = useQuery<FoodLookups>({
     queryKey: foodKeys.lookups(),
     queryFn: () => foodApi.lookups(),
     enabled: kitchenBound,
@@ -182,6 +189,15 @@ export function MenuRulesEditor(
   // One gate for every control that edits the draft.
   const canEditPlate = canEdit && orgWideConfig;
 
+  if (rulesError) {
+    return (
+      <FoodQueryError
+        label="the menu rules"
+        hint="Nothing on this tab can be trusted until the saved rules load — editing or generating now would work from a blank plate."
+        onRetry={() => refetchRules()}
+      />
+    );
+  }
   if (isLoading) return <p className="py-10 text-center text-sm text-muted-foreground">Loading rules…</p>;
 
   return (
@@ -390,7 +406,13 @@ export function MenuRulesEditor(
           <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Dishes that qualify today
           </p>
-          {slots.length === 0 ? (
+          {/* A failed catalogue read scores every course at 0 and lights the
+              "will repeat heavily" warning — say it's unknown, don't say zero. */}
+          {dishesError ? (
+            <p className="py-6 text-center text-xs text-destructive">
+              Could not load the dish catalogue — depth is unknown.
+            </p>
+          ) : slots.length === 0 ? (
             <p className="py-6 text-center text-xs text-muted-foreground">Add a course to see its depth.</p>
           ) : (
             <div className="flex h-[104px] items-end gap-2">
@@ -412,7 +434,7 @@ export function MenuRulesEditor(
               })}
             </div>
           )}
-          {slots.some((s) => qualifying(s).length < THIN_CATALOGUE) && (
+          {!dishesError && slots.some((s) => qualifying(s).length < THIN_CATALOGUE) && (
             <p className="mt-2 flex items-start gap-1.5 text-[11px] text-warning">
               <Info className="mt-px h-3 w-3 shrink-0" />
               A course with fewer than {THIN_CATALOGUE} dishes will repeat heavily across four weeks.
@@ -426,6 +448,7 @@ export function MenuRulesEditor(
           brand={brand} brandName={brandName} rules={rules} dishes={dishes}
           kitchens={kitchens} kitchenId={genKitchen} onKitchenChange={setGenKitchen}
           canPickKitchen={!kitchenBound}
+          kitchenUnresolved={kitchenBound && lookupsError}
           dirty={dirty}
         />
       )}
@@ -440,7 +463,8 @@ export function MenuRulesEditor(
  * because "what's still empty" is a question about the rotation as a whole.
  */
 function GenerateFromRule({
-  brand, brandName, rules, dishes, kitchens, kitchenId, onKitchenChange, canPickKitchen, dirty,
+  brand, brandName, rules, dishes, kitchens, kitchenId, onKitchenChange, canPickKitchen,
+  kitchenUnresolved, dirty,
 }: {
   brand: string;
   brandName: string;
@@ -450,12 +474,25 @@ function GenerateFromRule({
   kitchenId: string;
   onKitchenChange: (v: string) => void;
   canPickKitchen: boolean;
+  /** The caller's own kitchen could not be read, so there is nothing to generate into. */
+  kitchenUnresolved: boolean;
   dirty: boolean;
 }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const params = { kitchenId, brand };
-  const { data: rows = [] } = useQuery<MenuRotationRow[]>({
+  // H1 — this query is the ONLY thing standing between the generator and a
+  // hand-built menu. Generation writes each slot with a delete-then-insert
+  // (PUT /menu-rotation/slot), and it decides what to write from "which slots
+  // look empty". A failed read used to yield [], every slot then looked empty,
+  // and the whole four-week rotation was overwritten. "I could not read the
+  // current state" must never be treated as "the current state is empty" on a
+  // destructive path — so nothing below runs unless `isSuccess` says the
+  // rotation genuinely loaded.
+  const {
+    data: rows, isError: rotationError, isSuccess: rotationLoaded, isFetching: rotationFetching,
+    refetch: refetchRotation,
+  } = useQuery<MenuRotationRow[]>({
     queryKey: foodKeys.rotation(params),
     queryFn: () => foodApi.listRotation(params),
     enabled: !!kitchenId && !!brand,
@@ -465,11 +502,13 @@ function GenerateFromRule({
   // listRotation returns all four weeks here, so bucket by week before folding.
   const platesByWeek = React.useMemo(() => {
     const out = new Map<number, ReturnType<typeof rowsToPlates>>();
-    for (const w of ROTATION_WEEKS) out.set(w, rowsToPlates(rows.filter((r) => r.rotationWeek === w)));
+    for (const w of ROTATION_WEEKS) out.set(w, rowsToPlates((rows ?? []).filter((r) => r.rotationWeek === w)));
     return out;
   }, [rows]);
 
+  /** null = the rotation has not been read; only a number is a real answer. */
   const empties = React.useMemo(() => {
+    if (!rotationLoaded) return null;
     let n = 0;
     for (const w of ROTATION_WEEKS) {
       for (const meal of MEAL_TYPES) {
@@ -479,10 +518,15 @@ function GenerateFromRule({
       }
     }
     return n;
-  }, [platesByWeek]);
+  }, [platesByWeek, rotationLoaded]);
 
   const generate = useMutation({
     mutationFn: async () => {
+      // Same invariant the button enforces, restated at the write: a stale click
+      // or a refetch that failed between render and click must not overwrite.
+      if (!rotationLoaded) {
+        throw new Error("The current rotation could not be read — reload before generating.");
+      }
       const writes: { week: number; day: number; meal: MealType; items: ReturnType<typeof plateToItems> }[] = [];
       let seed = 2;
       for (const w of ROTATION_WEEKS) {
@@ -525,12 +569,18 @@ function GenerateFromRule({
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="font-display text-sm font-semibold text-primary">Generate the rotation from these rules</p>
-          <p className="text-xs text-muted-foreground">
-            {dirty
+          <p className={`text-xs ${rotationError || kitchenUnresolved ? "text-destructive" : "text-muted-foreground"}`}>
+            {kitchenUnresolved
+              ? "Could not work out which kitchen you run, so there is nothing to generate into. Reload the page."
+              : dirty
               ? "Save the rule above first — generation uses the saved rules."
-              : empties
-                ? `${empties} meal${empties === 1 ? "" : "s"} across the 4 weeks are still empty for ${brandName}.`
-                : `Every meal in all 4 weeks is filled for ${brandName}.`}
+              : rotationError
+                ? "Could not read the current rotation. Generating now could overwrite meals that are already planned, so it stays disabled until this loads."
+                : empties == null
+                  ? "Reading the current rotation…"
+                  : empties
+                    ? `${empties} meal${empties === 1 ? "" : "s"} across the 4 weeks are still empty for ${brandName}.`
+                    : `Every meal in all 4 weeks is filled for ${brandName}.`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -542,9 +592,14 @@ function GenerateFromRule({
               </SelectContent>
             </Select>
           )}
+          {rotationError && (
+            <Button variant="outline" onClick={() => refetchRotation()} disabled={rotationFetching}>
+              {rotationFetching ? "Retrying…" : "Retry"}
+            </Button>
+          )}
           <Button
             className="bg-accent text-white hover:bg-accent/90"
-            disabled={dirty || !empties || generate.isPending || !kitchenId}
+            disabled={dirty || !rotationLoaded || !empties || generate.isPending || !kitchenId}
             onClick={() => generate.mutate()}
           >
             <Sparkles className="mr-2 h-3.5 w-3.5" />

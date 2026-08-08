@@ -26,6 +26,7 @@ import {
   foodMenuSharesTable,
   foodMenuShareChannelEnum,
   foodOrdersTable,
+  foodOrderStatusEnum,
   foodOrderItemsTable,
   foodOrderEventsTable,
   dishesTable,
@@ -61,6 +62,7 @@ import {
   resolveMenu,
   resolveRulesByDish,
   isActiveBrand,
+  isKnownBrand,
   isIngredientClashRuleOn,
   isRepeatFlagRuleOn,
   FOOD_RULE_INGREDIENT_CLASH_KEY,
@@ -162,6 +164,104 @@ function isAccessible(propertyId: string, ids: string[] | null): boolean {
  */
 function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/* ── Query-parameter membership gates (L6) ────────────────────────────────────
+ *
+ * INVARIANT: a filter value that names nothing is refused by the handler with a
+ * 400 that repeats the value back; it is never handed to a query. Two different
+ * failure modes hide behind that one invariant:
+ *
+ *  - an ENUM column (`status`) reached through the `as never` cast makes
+ *    Postgres raise 22P02, which lands in the handler's generic catch and
+ *    surfaces as "Internal server error" — GET /reports/export?status=bogus
+ *    500'd on all three formats while its sibling GET /food/reports already
+ *    answered 400 for exactly the same value;
+ *  - `brand` is a TEXT column, so an unknown code raises nothing: it simply
+ *    matched no row and every report/export answered 200 with an empty dataset.
+ *    "No data for this brand" and "there is no such brand" are different
+ *    answers and the screen cannot tell them apart.
+ *
+ * Same shape and wording as food.ts's invalidEnumParam, deliberately: the two
+ * routers back the same screens and must refuse the same values identically.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Order statuses the DB enum accepts — read off the enum so the two cannot drift.
+ *  (This block's constants and the two gates are exported for the unit test, the
+ *  same reason checkOrderCutoff below is.) */
+export const ORDER_STATUSES: readonly string[] = foodOrderStatusEnum.enumValues;
+
+/** Window keywords periodRange understands. Anything else silently became the
+ *  30-day "month" window, i.e. a typo answered with the wrong period's numbers. */
+export const REPORT_PERIODS: readonly string[] = ["week", "month", "quarter", "year"];
+
+/** Window keywords homePeriodRange understands (FY-aware) — a different set from
+ *  REPORT_PERIODS, so the two surfaces are gated on their own vocabulary. */
+export const HOME_PERIODS: readonly string[] = ["week", "month", "fq", "fy"];
+
+/** The two values a boolean query flag may take (`?active=`). */
+const BOOLEAN_PARAM: readonly string[] = ["true", "false"];
+
+/** Buckets wasteAnalyticsScope understands; absent still means auto (span-derived). */
+export const WASTE_GRANULARITIES: readonly string[] = ["day", "month"];
+
+/** The only two things the gates below touch on a request/response. Narrower than
+ *  express's Request/Response on purpose: it is what these functions actually
+ *  use, and it keeps them unit-testable against a stub without an `any` or a
+ *  cast standing in for the other ~90 members of `Response`. */
+type Refusable = { status(code: number): { json(body: unknown): void } };
+type Queryable = { query: Record<string, unknown> };
+
+/** Twin of food.ts's invalidEnumParam. An absent/empty param is not a value, so
+ *  it passes and the handler's own default applies. Returns true when the
+ *  request was refused, having already written the 400.
+ *
+ *  The message carries the allowlist because these values are not discoverable
+ *  anywhere else — most of these params are absent from openapi.yaml, so
+ *  "Invalid status: bogus" alone left the caller guessing at the spelling. */
+export function invalidEnumParam(res: Refusable, name: string, value: unknown, allowed: readonly string[]): boolean {
+  if (value === undefined || value === "") return false;
+  if (allowed.includes(String(value))) return false;
+  res.status(400).json({ success: false, error: enumParamError(name, value, allowed) });
+  return true;
+}
+
+/** The one wording both routers' enum refusals use. */
+export function enumParamError(name: string, value: unknown, allowed: readonly string[]): string {
+  return `Invalid ${name}: ${String(value)}. Valid values: ${allowed.join(", ")}`;
+}
+
+/** Membership gate for a `?brand=` FILTER, against the live master (food-service's
+ *  isKnownBrand — the READ gate, which accepts retired brands so their history
+ *  stays reportable; isActiveBrand is the WRITE gate). Returns true when the
+ *  request was refused, having already written the 400. */
+export async function invalidBrandParam(res: Refusable, value: unknown): Promise<boolean> {
+  if (value === undefined || value === "") return false;
+  if (await isKnownBrand(String(value))) return false;
+  res.status(400).json({ success: false, error: `Invalid brand: ${String(value)}` });
+  return true;
+}
+
+/** A date filter the handler could not read. parseDate returns undefined for an
+ *  unparseable value and every window helper then fell back to its default —
+ *  answering a question about a different fortnight than the one asked, with no
+ *  hint that it had. Returns true when the request was refused. */
+export function invalidDateParam(res: Refusable, name: string, value: unknown): boolean {
+  if (value === undefined || value === "") return false;
+  if (parseDate(value)) return false;
+  res.status(400).json({ success: false, error: `Invalid ${name}: ${String(value)}` });
+  return true;
+}
+
+/** The window trio every report/analytics/export surface accepts: `period` (from
+ *  that surface's own vocabulary — REPORT_PERIODS and HOME_PERIODS differ) plus
+ *  the explicit `from`/`to` days that override it. One gate so the JSON widgets
+ *  and the files they export refuse identical windows. */
+export function invalidWindowParams(req: Queryable, res: Refusable, periods: readonly string[]): boolean {
+  if (invalidEnumParam(res, "period", req.query["period"], periods)) return true;
+  if (invalidDateParam(res, "from", req.query["from"])) return true;
+  if (invalidDateParam(res, "to", req.query["to"])) return true;
+  return false;
 }
 
 /** The master-data / config tables whose mutations this file records (M17). */
@@ -512,6 +612,9 @@ foodOpsRouter.put("/meal-config/:mealType", authenticate, authorize("FOOD_SETTIN
 
 foodOpsRouter.get("/meal-windows", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
+    // L6: an unknown brand listed as "no windows configured" instead of saying
+    // the brand does not exist. Read gate (retired brands stay inspectable).
+    if (await invalidBrandParam(res, req.query["brand"])) return;
     const brand = req.query["brand"] as string | undefined;
     const propertyId = req.query["propertyId"] as string | undefined;
     const conds = [] as any[];
@@ -537,6 +640,10 @@ foodOpsRouter.post("/meal-windows", authenticate, authorize("FOOD_SETTINGS", "cr
     if (!validateBody(createMealWindowSchema, req, res)) return;
     const b = req.body || {};
     if (!b.brand || !b.mealType) { res.status(400).json({ success: false, error: "brand and mealType required" }); return; }
+    // L6 (write gate): `brand` has no FK, so a typo minted a window nothing will
+    // ever resolve — dead config that reads as "configured". A NEW row must name
+    // a brand people can still order under, hence isActiveBrand (properties.ts).
+    if (!(await isActiveBrand(b.brand))) { res.status(400).json({ success: false, error: "Unknown or inactive brand." }); return; }
     // H4: a meal window drives the cut-off and service SLA for the properties it
     // covers, so it carries the same scope guard as the rotation writes.
     if (await deniedConfigScope(req, res, b.propertyId ?? null)) return;
@@ -576,6 +683,9 @@ foodOpsRouter.put("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS", 
     if (!before) { res.status(404).json({ success: false, error: "Not found" }); return; }
     if (await deniedConfigScope(req, res, before.propertyId)) return;
     if (b.propertyId !== undefined && await deniedConfigScope(req, res, b.propertyId ?? null)) return;
+    // L6: same write gate as the POST — re-pointing a window at a brand that
+    // does not exist retires the window just as silently as creating it there.
+    if (b.brand !== undefined && !(await isActiveBrand(b.brand))) { res.status(400).json({ success: false, error: "Unknown or inactive brand." }); return; }
     const u: Record<string, unknown> = { updatedAt: new Date() };
     for (const k of ["brand", "mealType", "cutoffTime", "serviceTime", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
     if (b.propertyId !== undefined) u["propertyId"] = b.propertyId ?? null;
@@ -607,6 +717,9 @@ foodOpsRouter.delete("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS
 /* ── Single cut-off per brand (applies to all meals; property-overridable) ── */
 foodOpsRouter.get("/cutoff-config", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
+    // L6: sibling of the /meal-windows filter — an unknown brand is a 400, not
+    // an empty list that reads as "this brand has no cut-off configured".
+    if (await invalidBrandParam(res, req.query["brand"])) return;
     const brand = req.query["brand"] as string | undefined;
     const conds = [] as any[];
     if (brand) conds.push(eq(foodCutoffsTable.brand, brand as never));
@@ -627,6 +740,9 @@ foodOpsRouter.post("/cutoff-config", authenticate, authorize("FOOD_SETTINGS", "c
     if (!validateBody(createCutoffSchema, req, res)) return;
     const b = req.body || {};
     if (!b.brand || !b.cutoffTime) { res.status(400).json({ success: false, error: "brand and cutoffTime required" }); return; }
+    // L6 (write gate): no FK on `brand` — a cut-off filed under a brand that does
+    // not exist never closes ordering for anyone. Same gate as POST /meal-windows.
+    if (!(await isActiveBrand(b.brand))) { res.status(400).json({ success: false, error: "Unknown or inactive brand." }); return; }
     const propertyId = b.propertyId ?? null;
     // H4: the cut-off decides when a property may still order at all, so it
     // carries the same scope guard as the rotation writes.
@@ -669,6 +785,9 @@ foodOpsRouter.put("/cutoff-config/:id", authenticate, authorize("FOOD_SETTINGS",
     if (!before) { res.status(404).json({ success: false, error: "Not found" }); return; }
     if (await deniedConfigScope(req, res, before.propertyId)) return;
     if (b.propertyId !== undefined && await deniedConfigScope(req, res, b.propertyId ?? null)) return;
+    // L6: same write gate as the POST — moving a cut-off onto a brand that does
+    // not exist silently re-opens ordering for the brand it left.
+    if (b.brand !== undefined && !(await isActiveBrand(b.brand))) { res.status(400).json({ success: false, error: "Unknown or inactive brand." }); return; }
     const u: Record<string, unknown> = { updatedAt: new Date() };
     for (const k of ["brand", "propertyId", "cutoffTime", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
     const [row] = await db.update(foodCutoffsTable).set(u as never).where(eq(foodCutoffsTable.id, req.params["id"]!)).returning();
@@ -700,6 +819,14 @@ foodOpsRouter.delete("/cutoff-config/:id", authenticate, authorize("FOOD_SETTING
 // is still open, and the settings screen to preview what it just configured.
 foodOpsRouter.get("/cutoffs", authenticate, authorizeAny(["FOOD_PLACE_ORDER", "FOOD_SETTINGS"], "view"), async (req, res) => {
   try {
+    // L6: an unknown brand fell through to the org-wide default cut-off and was
+    // reported as that brand's window — a deadline for a brand nobody sells.
+    // (The `|| "UNILIV"` fallback below is itself the known hardcoded-brand
+    // defect; it is left to its owner, but a NAMED brand is now checked.)
+    if (await invalidBrandParam(res, req.query["brand"])) return;
+    // L6: an unreadable ?date silently answered for TODAY — a cut-off banner for
+    // the wrong service day is worse than an error (same gate as from/to above).
+    if (invalidDateParam(res, "date", req.query["date"])) return;
     const brand = (req.query["brand"] as string) || "UNILIV";
     const propertyId = req.query["propertyId"] as string | undefined;
     const date = parseDate(req.query["date"]) ?? new Date();
@@ -969,6 +1096,10 @@ async function deniedKitchenWrite(req: any, res: any, kitchenId: string, body: R
 
 foodOpsRouter.get("/kitchens", authenticate, authorizeAny([...KITCHEN_MASTER_READERS], "view"), async (req, res) => {
   try {
+    // L6: `active === "true"` reads ANY other value as false, so `?active=1`
+    // quietly returned the DEACTIVATED rows. Two-value allowlist; absent still
+    // means "no filter".
+    if (invalidEnumParam(res, "active", req.query["active"], BOOLEAN_PARAM)) return;
     const active = req.query["active"] as string | undefined;
     const conds = [] as any[];
     if (active !== undefined) conds.push(eq(kitchensTable.isActive, active === "true"));
@@ -1118,6 +1249,10 @@ foodOpsRouter.get("/kitchen-by-pincode", authenticate, authorizeAny(["PROPERTIES
 // the property form and every food config screen.
 foodOpsRouter.get("/brands", authenticate, authorizeAny([...KITCHEN_MASTER_READERS], "view"), async (req, res) => {
   try {
+    // L6: `active === "true"` reads ANY other value as false, so `?active=1`
+    // quietly returned the DEACTIVATED rows. Two-value allowlist; absent still
+    // means "no filter".
+    if (invalidEnumParam(res, "active", req.query["active"], BOOLEAN_PARAM)) return;
     const active = req.query["active"] as string | undefined;
     const conds = [] as any[];
     if (active !== undefined) conds.push(eq(foodBrandsTable.isActive, active === "true"));
@@ -2639,8 +2774,18 @@ foodOpsRouter.get("/order-preview", authenticate, authorize("FOOD_PLACE_ORDER", 
     if (!propertyId) { res.status(400).json({ success: false, error: "propertyId required" }); return; }
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(propertyId, ids)) { res.status(403).json({ success: false, error: "Property not accessible" }); return; }
+    // L6: an unreadable service date previewed TODAY's menu under tomorrow's
+    // heading — the grid the order is placed from must not guess the day.
+    if (invalidDateParam(res, "serviceDate", req.query["serviceDate"] ?? req.query["date"])) return;
     const sd = parseDate(req.query["serviceDate"] ?? req.query["date"]) ?? new Date();
-    const persons = req.query["persons"] != null ? Number(req.query["persons"]) : 0;
+    // L6 (numeric twin): an unparseable headcount became NaN, propagated through
+    // every derived quantity and serialised to `null` — the grid then offered an
+    // empty quantity for every dish rather than saying the headcount was bad.
+    const personsRaw = req.query["persons"];
+    const persons = personsRaw != null ? Number(personsRaw) : 0;
+    if (!Number.isFinite(persons) || persons < 0) {
+      res.status(400).json({ success: false, error: `Invalid persons: ${String(personsRaw)}` }); return;
+    }
     const { brand, kitchenId } = await getPropertyFoodConfig(propertyId);
     if (!brand || !kitchenId) { res.json({ success: true, data: { brand, kitchenId, configured: false, meals: [] } }); return; }
 
@@ -2663,6 +2808,10 @@ foodOpsRouter.get("/order-preview", authenticate, authorize("FOOD_PLACE_ORDER", 
 // FOOD_SETTINGS is the other legitimate reader (menu preview from the config tab).
 foodOpsRouter.get("/menu/full", authenticate, authorizeAny(["FOOD_PLACE_ORDER", "FOOD_SETTINGS"], "view"), async (req, res) => {
   try {
+    // L6: an unknown brand resolved no rotation row, so the menu came back empty
+    // and the screen said "no menu for this day" instead of "no such brand".
+    if (await invalidBrandParam(res, req.query["brand"])) return;
+    if (invalidDateParam(res, "date", req.query["date"])) return;
     const date = parseDate(req.query["date"]) ?? new Date();
     const propertyId = req.query["propertyId"] as string | undefined;
     let brand = (req.query["brand"] as string) || "";
@@ -2720,6 +2869,13 @@ foodOpsRouter.post("/menu/share", authenticate, authorize("FOOD_PLACE_ORDER", "v
     if (!validateBody(menuShareSchema, req, res)) return;
     const b = req.body || {};
     if (!b.propertyId || !b.brand || !b.channel) { res.status(400).json({ success: false, error: "propertyId, brand, channel required" }); return; }
+    // L6 (write gate): food_menu_shares.brand has NO foreign key, and the public
+    // /m/<token> page resolves its menu by (kitchen, brand, meal, date) — so a
+    // brand that names nothing minted a live, shareable link that renders an
+    // empty menu for its whole TTL and can never render anything else. Live
+    // master, not a hardcoded list; ACTIVE because this creates a new artefact
+    // for a brand people are expected to order under (properties.ts:289).
+    if (!(await isActiveBrand(b.brand))) { res.status(400).json({ success: false, error: "Unknown or inactive brand." }); return; }
     const ids = await resolveAccessiblePropertyIds(req.user!);
     if (!isAccessible(b.propertyId, ids)) { res.status(403).json({ success: false, error: "Property not accessible" }); return; }
     let recipients: string[] = Array.isArray(b.recipients) ? b.recipients : [];
@@ -3083,6 +3239,11 @@ const wastePctOfOrdered = (wasted: unknown, ordered: unknown) =>
 
 foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
+    // L6: `brand` filters the order scope below and `period` picks the window —
+    // an unrecognised value for either answered 200 with the wrong dataset
+    // (empty, or silently the 30-day window) instead of naming the bad value.
+    if (invalidWindowParams(req, res, REPORT_PERIODS)) return;
+    if (await invalidBrandParam(res, req.query["brand"])) return;
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const period = req.query["period"] as string | undefined;
     const { from, to } = periodRange(period, req.query as Record<string, unknown>);
@@ -3211,6 +3372,22 @@ const wr3 = (n: unknown) => Math.round(Number(n ?? 0) * 1000) / 1000;
  * IST from/to YMD strings, the granularity, and the cityId→clusterId expansion
  * used to apply the cityId filter without a properties.cityId column.
  */
+/**
+ * L6 — gate every caller-supplied filter wasteAnalyticsScope reads, in ONE place
+ * so the JSON widget and its export refuse exactly the same values (the scope
+ * helper itself has no `res` to answer with). `brand` silently emptied the whole
+ * page; `granularity` silently fell back to the span-derived bucket, so a typo
+ * relabelled a daily chart monthly. Returns true when 400 has been written.
+ */
+async function invalidWasteFilters(req: Queryable, res: Refusable): Promise<boolean> {
+  if (invalidEnumParam(res, "granularity", req.query["granularity"], WASTE_GRANULARITIES)) return true;
+  // This surface has no `period` keyword — its window is from/to only.
+  if (invalidDateParam(res, "from", req.query["from"])) return true;
+  if (invalidDateParam(res, "to", req.query["to"])) return true;
+  if (await invalidBrandParam(res, req.query["brand"])) return true;
+  return false;
+}
+
 async function wasteAnalyticsScope(req: any): Promise<{
   where: ReturnType<typeof and>;
   fromYmd: string; toYmd: string;
@@ -3276,6 +3453,7 @@ async function wasteAnalyticsScope(req: any): Promise<{
 
 foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
+    if (await invalidWasteFilters(req, res)) return;
     const { where, fromYmd, toYmd, granularity } = await wasteAnalyticsScope(req);
 
     // ── Summary — totals across the filtered set, PER UNIT (M7) ──────────────
@@ -3562,6 +3740,9 @@ foodOpsRouter.get("/waste-analytics/export.:fmt", authenticate, requireRoles("SU
     if (!WASTE_EXPORT_WIDGETS.has(widget)) {
       res.status(400).json({ success: false, error: "widget must be one of property, dish, mealtype, menu, trend" }); return;
     }
+    // The file must mirror the on-screen widget, so it refuses the same filters
+    // the JSON endpoint does — a bad brand downloaded as an empty spreadsheet.
+    if (await invalidWasteFilters(req, res)) return;
     const t = await buildWasteWidgetTable(widget, req);
     // H11: the widget datasets are grouped, so their row count is a cardinality
     // (property × unit, dish × unit, day × unit) with no upper bound — each query
@@ -3602,6 +3783,9 @@ foodOpsRouter.get("/waste-analytics/export.:fmt", authenticate, requireRoles("SU
 
 foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
+    // L6: this surface speaks HOME_PERIODS (week|month|fq|fy), not the reports'
+    // vocabulary — an unrecognised key silently fell through to the week branch.
+    if (invalidWindowParams(req, res, HOME_PERIODS)) return;
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const period = (req.query["period"] as string | undefined) ?? "week";
     const { from, to, prevFrom, prevTo } = homePeriodRange(period, req.query as Record<string, unknown>);
@@ -3829,6 +4013,10 @@ foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "vi
  * ════════════════════════════════════════════════════════════════════════ */
 foodOpsRouter.get("/reports/variance", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
+    // L6: same window vocabulary as its siblings. (This report deliberately has
+    // no brand filter — the card on the screen says so — so there is no brand
+    // to validate here; adding one would imply a filter that does not exist.)
+    if (invalidWindowParams(req, res, REPORT_PERIODS)) return;
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const { from, to } = periodRange(req.query["period"] as string | undefined, req.query as Record<string, unknown>);
     const propertyId = req.query["propertyId"] as string | undefined;
@@ -3959,6 +4147,10 @@ async function loadServiceTimeResolver(): Promise<(brand: string, mealType: stri
  */
 foodOpsRouter.get("/reports/on-time", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
+    // L6: `brand` narrows the scope below — an unknown code reported a flawless
+    // 0-of-0 on-time record rather than admitting the brand does not exist.
+    if (invalidWindowParams(req, res, REPORT_PERIODS)) return;
+    if (await invalidBrandParam(res, req.query["brand"])) return;
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const { from, to } = periodRange(req.query["period"] as string | undefined, req.query as Record<string, unknown>);
     const propertyId = req.query["propertyId"] as string | undefined;
@@ -4060,6 +4252,8 @@ foodOpsRouter.put("/settings/ontime-tolerance", authenticate, async (req, res) =
  * ════════════════════════════════════════════════════════════════════════ */
 foodOpsRouter.get("/reports/variance-by-day", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
   try {
+    // L6: mealType is already gated below; `period` is its window sibling.
+    if (invalidWindowParams(req, res, REPORT_PERIODS)) return;
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const { from, to } = periodRange(req.query["period"] as string | undefined, req.query as Record<string, unknown>);
     const propertyId = req.query["propertyId"] as string | undefined;
@@ -4277,6 +4471,20 @@ async function serveReportExport(req: any, res: any, fmt: "csv" | "pdf" | "xls")
   if (!EXPORT_REPORTS.has(report)) {
     res.status(400).json({ success: false, error: "report must be one of orders, variance, waste, ontime" }); return;
   }
+  /* L6 — HIGH: the filter gate for EVERY export dataset and every format, here
+   * because this is the one handler behind all of them (see the block above);
+   * putting it in fetchOrdersForExport/reportExportScope would gate one dataset
+   * and miss its siblings.
+   *   - `status` lands on eq(orders.status, … as never): an unknown label made
+   *     Postgres raise 22P02 (invalid enum input), which the catch in
+   *     runReportExport turned into a 500. GET /food/reports already answered
+   *     400 for the same value, so the two disagreed about the same filter.
+   *   - `brand` is text: an unknown code downloaded a headers-only file that
+   *     reads as "no orders", not "no such brand".
+   *   - `period` picks the export window (exportWindow → periodRange). */
+  if (invalidEnumParam(res, "status", req.query["status"], ORDER_STATUSES)) return;
+  if (invalidWindowParams(req, res, REPORT_PERIODS)) return;
+  if (await invalidBrandParam(res, req.query["brand"])) return;
   const t = await buildReportTable(report, req);
   const table = { title: t.title, headers: t.headers, rows: t.rows, propertyName: t.propertyName, dateRange: t.dateRange };
   // `orders` carries fileBase "food-orders", so this reproduces the historical

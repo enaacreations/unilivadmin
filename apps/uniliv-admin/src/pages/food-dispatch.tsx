@@ -238,14 +238,16 @@ export default function FoodDispatch() {
   const queueTruncated = acceptedRes?.truncated ?? false;
   const queueTotal = acceptedRes?.total ?? dispatchable.length;
 
-  const { data: dispatchedRes, isLoading: loadingDispatched } = useQuery({
+  // "No orders in transit" is a claim about live deliveries — a failed fetch is
+  // not evidence for it.
+  const { data: dispatchedRes, isLoading: loadingDispatched, isError: transitError, refetch: refetchTransit } = useQuery({
     queryKey: foodKeys.orders(dispatchedParams),
     queryFn: () => foodApi.listAllOrders(dispatchedParams),
   });
   const dispatched = dispatchedRes?.orders ?? [];
 
   // ── Recent trips ──────────────────────────────────────────────────────────
-  const { data: trips = [], isLoading: loadingTrips } = useQuery({
+  const { data: trips = [], isLoading: loadingTrips, isError: tripsError, refetch: refetchTrips } = useQuery({
     queryKey: foodKeys.dispatches(),
     queryFn: () => foodApi.listDispatches(),
   });
@@ -714,7 +716,9 @@ export default function FoodDispatch() {
 
       {/* ── TRIPS: recent dispatch trips ─────────────────────────────────── */}
       {tab === "trips" && (
-        loadingTrips ? (
+        tripsError ? (
+          <FoodQueryError label="the trips" onRetry={() => refetchTrips()} />
+        ) : loadingTrips ? (
           <RowsSkeleton />
         ) : trips.length === 0 ? (
           <LocalEmpty
@@ -742,7 +746,9 @@ export default function FoodDispatch() {
 
       {/* ── IN TRANSIT: DISPATCHED orders, read-only tracking ───────────── */}
       {tab === "transit" && (
-        loadingDispatched ? (
+        transitError ? (
+          <FoodQueryError label="the orders in transit" onRetry={() => refetchTransit()} />
+        ) : loadingDispatched ? (
           <RowsSkeleton />
         ) : dispatched.length === 0 ? (
           <LocalEmpty

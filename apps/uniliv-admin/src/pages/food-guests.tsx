@@ -7,6 +7,7 @@ import {
   FileDown, FileText, FileSpreadsheet,
 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { FoodQueryError } from "@/components/food/query-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -66,10 +67,12 @@ export default function FoodGuests() {
   // Accessible properties for the on-screen scope selector. Switching writes
   // the GLOBAL property scope (same store the sidebar uses) so it stays
   // consistent app-wide.
-  const { data: lookups } = useQuery({
+  const { data: lookups, isError: lookupsError } = useQuery({
     queryKey: foodKeys.lookups(),
     queryFn: () => foodApi.lookups(),
   });
+  // An empty picker reads as "you have access to one property"; on a failed
+  // read the user is silently stuck on All Properties instead.
   const properties = lookups?.properties ?? [];
   const ALL = "__all__";
 
@@ -101,7 +104,9 @@ export default function FoodGuests() {
     page,
     limit: PAGE_SIZE,
   };
-  const { data: guestsRes, isLoading } = useQuery({
+  // This list is the head-count an order is placed against, so a failed fetch
+  // rendering as "no guests" is a false zero on the input to a meal order.
+  const { data: guestsRes, isLoading, isError, refetch } = useQuery({
     queryKey: foodKeys.guests(guestParams),
     queryFn: () => foodApi.guests(guestParams),
   });
@@ -196,6 +201,12 @@ export default function FoodGuests() {
         )}
       </div>
 
+      {!isSingleProperty && lookupsError && (
+        <p className="text-xs text-destructive">
+          Could not load your properties — the scope picker below is empty, so the list is not narrowed.
+        </p>
+      )}
+
       {/* Property scope (multi-property users) + search */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         {!isSingleProperty && (
@@ -257,7 +268,9 @@ export default function FoodGuests() {
 
       {/* Guest list */}
       <div className="overflow-hidden rounded-[14px] border border-border bg-card">
-        {isLoading ? (
+        {isError ? (
+          <FoodQueryError label="the guest list" onRetry={() => refetch()} />
+        ) : isLoading ? (
           Array.from({ length: 8 }).map((_, i) => (
             <div
               key={`sk-${i}`}

@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { FoodQueryError } from "@/components/food/query-error";
 import { foodApi, foodKeys, type MyPropertyCard } from "@/lib/food-api";
 import { withQuery } from "@/lib/nav-helpers";
 
@@ -46,7 +47,10 @@ export default function FoodMyProperties() {
   const [, setLocation] = useLocation();
   const { setPropertyId: setGlobalProperty } = useAppStore();
 
-  const { data: properties = [], isLoading } = useQuery<MyPropertyCard[]>({
+  // A failed fetch must not read as "an administrator forgot to assign you":
+  // the empty state below is advice, and giving it on a transport error sends
+  // the user to the wrong person.
+  const { data: properties = [], isLoading, isError, refetch } = useQuery<MyPropertyCard[]>({
     queryKey: foodKeys.myProperties(),
     queryFn: () => foodApi.myProperties(),
   });
@@ -74,7 +78,9 @@ export default function FoodMyProperties() {
         subtitle="Properties tagged to you — manage orders, guests and deliveries per property."
       />
 
-      {isLoading ? (
+      {isError ? (
+        <FoodQueryError label="your properties" onRetry={() => refetch()} />
+      ) : isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-64 w-full" />)}
         </div>

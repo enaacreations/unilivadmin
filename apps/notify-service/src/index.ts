@@ -56,8 +56,9 @@ const GRACE_MS = DEFAULT_SWEEP_GRACE_MS;
 async function reconcile(): Promise<void> {
   try {
     // Invariant: the grace window is exactly GRACE_MS. created_at is a
-    // timezone-naive column written by the DB's own now(), so a JS-side Date
-    // cutoff is skewed by the whole DB timezone offset (5h30m here).
+    // timezone-naive column written by the DB's own now(); the session is pinned
+    // to UTC in lib/db/src/index.ts, and this cutoff stays DB-side so the
+    // (status, created_at) index still applies. See notify-core/process.ts.
     const cutoff = outboxAgeCutoff(GRACE_MS);
     const stuck = await db
       .select({ id: notificationOutboxTable.id })
