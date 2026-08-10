@@ -11,25 +11,47 @@
  */
 import { apiFetch, getToken, refreshSession } from "@/lib/api-fetch";
 
-export type BulkResource = "residents" | "users";
+export type BulkResource = "residents" | "users" | "dishes" | "ingredients" | "menu";
 
 export interface BulkRowError {
   index: number;
   message: string;
 }
 
-/** Result of a dryRun=true validation pass — nothing is inserted. */
+/** Result of a dryRun=true validation pass — nothing is written. */
 export interface BulkValidateResult {
   total: number;
   valid: number;
   invalid: number;
   errors: BulkRowError[];
+  /**
+   * 0-based indices of rows that match an existing record and will UPDATE it
+   * rather than insert. Only the food resources upsert; residents/users are
+   * insert-only and omit this.
+   */
+  updates?: number[];
+  /**
+   * True when the resource SKIPS invalid rows and writes the valid ones anyway.
+   * Absent (falsey) means all-or-nothing: one bad row rejects the whole file, so
+   * the dialog must not offer a commit until every row is clean.
+   */
+  partial?: boolean;
 }
 
-/** Result of a commit (dryRun falsey). On 422 inserted=0 and errors is non-empty. */
+/**
+ * Result of a commit (dryRun falsey).
+ *
+ * On an all-or-nothing resource a 422 means nothing was written and `errors` is
+ * non-empty. On a partial resource the response is a 200 that can carry BOTH
+ * written counts and `errors` — those are the rows that were skipped.
+ */
 export interface BulkCommitResult {
   total: number;
   inserted: number;
+  /** Rows that matched an existing record. Absent on insert-only resources. */
+  updated?: number;
+  /** Rows left out because they had errors. Absent on all-or-nothing resources. */
+  skipped?: number;
   errors: BulkRowError[];
 }
 

@@ -81,7 +81,7 @@ type SettingsTab = { value: string; label: string; icon: typeof Globe; gated?: b
 const TABS: SettingsTab[] = [
   { value: "dishes", label: "Dishes", icon: UtensilsCrossed },
   { value: "ingredients", label: "Ingredients", icon: Boxes },
-  { value: "rotation", label: "Menu Rotation", icon: CalendarRange },
+  { value: "rotation", label: "Menu", icon: CalendarRange },
   { value: "composition", label: "Menu Rules", icon: SlidersHorizontal },
   { value: "meals", label: "Meal Types", icon: ListChecks },
   { value: "cutoffs", label: "Cut-offs & Service", icon: Clock },

@@ -817,3 +817,72 @@ export async function getPropertyHierarchy(propertyIds: string[]) {
   }
   return map;
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Menu-slot guards — the rules a plate must satisfy before it can be saved.
+ * Shared by the slot/bulk write endpoints in routes/food.ts and the menu bulk
+ * import in routes/bulk.ts, so an imported rotation is held to exactly the
+ * same standard as one built in the plate composer.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * A rotation row whose dish has no per-resident portion rule for this (brand,
+ * mealType) is silently skipped by computeOrderItems — it shows on the menu but
+ * never reaches the kitchen. Reject the save instead.
+ *
+ * This covers mains as well as sides. It used to check sides only, on the
+ * reasoning that mains go through the deliberate builder flow and all carried
+ * rules; but a main can now be created straight from the Dishes grid without
+ * ever opening the portion editor, so an unpriced main is just as reachable —
+ * and a silently-uncooked main is the worse failure. Returns offending names.
+ */
+export async function dishesMissingPortionRule(
+  brand: string, mealType: string, dishIds: string[],
+): Promise<string[]> {
+  const unique = [...new Set(dishIds.filter(Boolean))];
+  if (!unique.length) return [];
+  const rules = await db.select({ dishId: perResidentRuleTable.dishId })
+    .from(perResidentRuleTable)
+    .where(and(
+      eq(perResidentRuleTable.brand, brand as never),
+      eq(perResidentRuleTable.mealType, mealType as never),
+      eq(perResidentRuleTable.isActive, true),
+      inArray(perResidentRuleTable.dishId, unique),
+    ));
+  const priced = new Set(rules.map((r) => r.dishId));
+  const missing = unique.filter((id) => !priced.has(id));
+  if (!missing.length) return [];
+  const named = await db.select({ name: dishesTable.name })
+    .from(dishesTable).where(inArray(dishesTable.id, missing));
+  return named.map((n) => n.name);
+}
+
+/** Every dish a slot payload would put on the menu — the items and their sides. */
+export const collectDishIds = (items: Array<{ dishId: string; sideDishIds?: string[] }>): string[] =>
+  [...new Set(items.flatMap((it) => [it.dishId, ...(it.sideDishIds ?? [])]).filter(Boolean))];
+
+/**
+ * The shared-ingredient rule, enforced where it actually matters.
+ *
+ * `detectSharedIngredients` has existed since the rule engine was written, but
+ * was wired only into GET /menu/validate — a read-only endpoint the admin client
+ * never calls. The real block lived in the plate composer's disabled save button,
+ * so "duplicate the week" (28 direct slot writes) and any API caller sailed past
+ * a rule the UI advertised as always enforced. This closes that.
+ *
+ * Returns a 422 payload to send, or null when the plate is acceptable — either
+ * because nothing clashes or because the rule is switched off in Service Set.
+ */
+export async function ingredientClashError(
+  dishIds: string[],
+): Promise<{ error: string; details: Record<string, unknown> } | null> {
+  if (dishIds.length < 2) return null;
+  if (!(await isIngredientClashRuleOn())) return null;
+  const shared = await detectSharedIngredients(dishIds);
+  if (!shared.length) return null;
+  const names = shared.map((s) => s.name).join(", ");
+  return {
+    error: `Two or more dishes on this plate share an ingredient (${names}). Swap one of them, or turn off the shared-ingredient rule under Menu Rules.`,
+    details: { sharedIngredients: shared },
+  };
+}

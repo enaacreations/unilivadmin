@@ -13,15 +13,34 @@ import { Lock, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormModal } from "@/components/ui/form-modal";
+import { type BulkColumn } from "@/components/bulk-upload-dialog";
+import { ImportExportMenu } from "@/components/import-export-menu";
 import { useToast } from "@/hooks/use-toast";
 import {
-  foodApi, foodKeys, MEAL_TYPES,
+  foodApi, foodKeys, MEAL_TYPES, PREPARATIONS,
   type Dish, type MenuRotationRow, type PerResidentRule,
 } from "@/lib/food-api";
 import { MEAL_SHORT, componentLabel } from "./menu-lib";
-import { DishDrawer, draftFromDish, type DishDraft } from "./dish-drawer";
+import { DishDrawer, DISH_COMPONENTS, DISH_UNITS, draftFromDish, type DishDraft } from "./dish-drawer";
 import { PrepDot } from "./plate-composer";
 import { useActiveBrands, useDishCatalogue, useIngredients } from "./use-food-masters";
+
+/**
+ * Template columns for the bulk import. Keys are the verbatim row keys read by
+ * POST /bulk/dishes; the list columns take one comma-separated cell each.
+ * Side options are deliberately absent — they pair two catalogue rows, which a
+ * flat sheet can't express, and stay in the drawer.
+ */
+const DISH_BULK_COLUMNS: BulkColumn[] = [
+  { key: "name", label: "name", required: true, hint: "dish name, e.g. Aloo Jeera" },
+  { key: "component", label: "component", required: true, hint: `course — one of ${DISH_COMPONENTS.join(", ")}` },
+  { key: "unit", label: "unit", required: true, hint: `one of ${DISH_UNITS.join(", ")}` },
+  { key: "brands", label: "brands", hint: "brand codes, comma-separated. Blank = every active brand" },
+  { key: "preparations", label: "preparations", hint: `${PREPARATIONS.join(" / ")}, comma-separated. Blank = VEG` },
+  { key: "ingredients", label: "ingredients", hint: "existing ingredient names, comma-separated. Add unknown ones under Ingredients first" },
+  { key: "isQtyLocked", label: "isQtyLocked", hint: "true to pin the people count (non-editable at order time). Blank = false" },
+  { key: "isActive", label: "isActive", hint: "true / false. Blank = true" },
+];
 
 export function DishesCatalogue() {
   const qc = useQueryClient();
@@ -34,6 +53,24 @@ export function DishesCatalogue() {
   const [facet, setFacet] = React.useState("ALL");
   const [draft, setDraft] = React.useState<DishDraft | null>(null);
   const [delTarget, setDelTarget] = React.useState<Dish | null>(null);
+
+  // Exported under the import template's own columns — ingredients by name, the
+  // list columns comma-joined — so a download can be edited and uploaded back.
+  // Deliberately the whole catalogue, not the current search or facet: a
+  // filtered export re-uploads as a partial file.
+  const exportRows = React.useMemo(
+    () => dishes.map((d) => ({
+      name: d.name,
+      component: d.component,
+      unit: d.unit,
+      brands: (d.brands ?? []).join(", "),
+      preparations: (d.preparations ?? []).join(", "),
+      ingredients: (d.ingredients ?? []).map((i) => i.ingredientName ?? "").filter(Boolean).join(", "),
+      isQtyLocked: String(d.isQtyLocked ?? false),
+      isActive: String(d.isActive),
+    })),
+    [dishes],
+  );
 
   // Portion rules and rotation usage are read once for the whole catalogue —
   // both are per-dish badges, and a query each would be an N+1 on render.
@@ -101,6 +138,15 @@ export function DishesCatalogue() {
               placeholder="Search name or ingredient" aria-label="Search dishes" className="pl-9"
             />
           </div>
+          <ImportExportMenu
+            resource="dishes"
+            columns={DISH_BULK_COLUMNS}
+            exportRows={exportRows}
+            onImported={() => {
+              qc.invalidateQueries({ queryKey: ["food", "dishes"] });
+              qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
+            }}
+          />
           <Button
             className="bg-accent text-white hover:bg-accent/90"
             onClick={() => setDraft(draftFromDish(null, brands.map((b) => b.code), []))}

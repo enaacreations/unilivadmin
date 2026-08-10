@@ -16,14 +16,13 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AlertTriangle, Check, CheckCircle2, CircleAlert, ClipboardPaste, Copy, Download,
-  FileDown, FileText, ChevronDown, Plus, SlidersHorizontal, Sparkles,
+  AlertTriangle, Check, CheckCircle2, CircleAlert, ClipboardPaste, Copy,
+  FileDown, FileText, Plus, SlidersHorizontal, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
-  DropdownMenuSeparator, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
+import { type BulkColumn } from "@/components/bulk-upload-dialog";
+import { ImportExportMenu } from "@/components/import-export-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiDownload } from "@/lib/api-fetch";
@@ -42,6 +41,23 @@ import {
 } from "./menu-lib";
 import { PlateComposer, PrepDot } from "./plate-composer";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
+
+/**
+ * Import template for the rotation — one row per DISH, because that is how the
+ * rotation is stored and because a slot's sides belong to a specific dish.
+ * Rows are grouped back into (kitchen, brand, week, day, meal) slots server-side
+ * and each named slot is replaced wholesale, exactly as saving a plate does.
+ */
+const MENU_BULK_COLUMNS: BulkColumn[] = [
+  { key: "kitchen", label: "kitchen", required: true, hint: "kitchen name or code" },
+  { key: "brand", label: "brand", required: true, hint: "brand code, e.g. UNILIV" },
+  { key: "week", label: "week", required: true, hint: `rotation week — ${ROTATION_WEEKS.join(", ")}` },
+  { key: "day", label: "day", required: true, hint: "Mon–Sun, or 1–7 with 1 = Monday" },
+  { key: "meal", label: "meal", required: true, hint: `one of ${MEAL_TYPES.join(", ")}` },
+  { key: "dish", label: "dish", required: true, hint: "dish name — must already exist, and be the only dish with that name" },
+  { key: "slotLabel", label: "slotLabel", hint: "optional label for the plate slot, e.g. Veg 2" },
+  { key: "sides", label: "sides", hint: "accompaniments for this dish, comma-separated. Each must already be paired with it on the dish" },
+];
 
 /** Dish lines a cell shows before collapsing the rest into "+N more". */
 const CELL_LINES = 4;
@@ -141,13 +157,48 @@ export function RotationBoard(
   // week 1 Monday — so detection needs EVERY week, not just the one on screen.
   // Omitting rotationWeek returns all of them under its own cache key, so the
   // four weeks share one fetch instead of refetching as you page between them.
+  // Not gated on flagRepeats any more: the import/export menu exports the whole
+  // cycle, so these rows are needed whether or not repeat-flagging is on.
   const cycleParams = { kitchenId, brand };
   const { data: cycleRows = [] } = useQuery<MenuRotationRow[]>({
     queryKey: foodKeys.rotation(cycleParams),
     queryFn: () => foodApi.listRotation(cycleParams),
-    enabled: !!kitchenId && !!brand && flagRepeats,
+    enabled: !!kitchenId && !!brand,
   });
   const cycleCells = React.useMemo(() => rowsToCycleCells(cycleRows), [cycleRows]);
+
+  /**
+   * The whole cycle in the import template's own columns, so a download can be
+   * edited and uploaded back. Side rows are folded onto the dish they accompany
+   * — they live in the table as ordinary rows tagged with parentRotationId, but
+   * the sheet expresses them as one cell of their parent's row.
+   */
+  const menuExportRows = React.useMemo(() => {
+    const kitchenName = kitchens.find((k) => k.id === kitchenId)?.name ?? "";
+    const sidesByParent = new Map<string, string[]>();
+    for (const r of cycleRows) {
+      if (!r.parentRotationId) continue;
+      sidesByParent.set(r.parentRotationId, [...(sidesByParent.get(r.parentRotationId) ?? []), r.dishName ?? ""]);
+    }
+    const mealOrder = new Map(MEAL_TYPES.map((m, i) => [m, i]));
+    return cycleRows
+      .filter((r) => !r.parentRotationId)
+      .sort((a, b) =>
+        a.rotationWeek - b.rotationWeek
+        || a.dayOfWeek - b.dayOfWeek
+        || (mealOrder.get(a.mealType) ?? 0) - (mealOrder.get(b.mealType) ?? 0)
+        || a.sortOrder - b.sortOrder)
+      .map((r) => ({
+        kitchen: kitchenName,
+        brand: r.brand,
+        week: String(r.rotationWeek),
+        day: DAY_SHORT[r.dayOfWeek] ?? String(r.dayOfWeek),
+        meal: r.mealType,
+        dish: r.dishName ?? "",
+        slotLabel: r.slotLabel ?? "",
+        sides: (sidesByParent.get(r.id) ?? []).filter(Boolean).join(", "),
+      }));
+  }, [cycleRows, kitchens, kitchenId]);
   const repeatsFor = React.useCallback(
     (day: number, meal: MealType) => (flagRepeats ? cellRepeats(cycleCells, week, day, meal) : []),
     [cycleCells, week, flagRepeats],
@@ -312,7 +363,7 @@ export function RotationBoard(
       {/* ── header ───────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="font-display text-lg font-semibold text-primary">Menu Rotation</h2>
+          <h2 className="font-display text-lg font-semibold text-primary">Menu</h2>
           <p className="text-sm text-muted-foreground">
             Click any meal to build its plate. The rule for that meal drives what you can pick.
           </p>
@@ -333,23 +384,26 @@ export function RotationBoard(
               onChange={(v) => { setBrand(v); setSel(null); }}
             />
           )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline">
-                <Download className="mr-2 h-4 w-4" /> Export <ChevronDown className="ml-2 h-4 w-4 opacity-70" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-40">
-              <DropdownMenuLabel>Export week {week}</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => runExport("csv")}>
-                <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> CSV
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => runExport("pdf")}>
-                <FileText className="mr-2 h-4 w-4 text-destructive" /> PDF
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* One control for both directions. The printable week report keeps
+              its place here as an extra group — it is a different artefact from
+              the round-trippable export above it, and is deliberately labelled
+              so the two CSVs are not mistaken for each other. */}
+          <ImportExportMenu
+            resource="menu"
+            columns={MENU_BULK_COLUMNS}
+            exportRows={menuExportRows}
+            onImported={() => qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] })}
+          >
+            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Printable report
+            </DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => runExport("csv")}>
+              <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> Week {week} · CSV
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => runExport("pdf")}>
+              <FileText className="mr-2 h-4 w-4 text-destructive" /> Week {week} · PDF
+            </DropdownMenuItem>
+          </ImportExportMenu>
           <Button variant="outline" disabled={busy} onClick={duplicateWeek}>
             <Copy className="mr-2 h-3.5 w-3.5" /> Copy W{week} → W{week === 4 ? 1 : week + 1}
           </Button>

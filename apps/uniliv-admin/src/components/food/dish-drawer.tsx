@@ -28,11 +28,13 @@ import {
 import { MEAL_SHORT, componentLabel } from "./menu-lib";
 import { PrepDot } from "./plate-composer";
 
-const DISH_COMPONENTS = [
+/** Mirrors the food_dish_component / food_measurement_unit enums. Exported so
+ *  the bulk-import template documents the same accepted values the chips offer. */
+export const DISH_COMPONENTS = [
   "HOT_FOOD", "SABZI", "DAL", "RICE", "BREAD", "SALAD", "CURD_RAITA", "DESSERT",
   "PAPAD_PICKLE", "CHUTNEY", "PICKLE", "FRUITS", "BAKERY", "BEVERAGE", "SNACK", "MILK", "OTHER",
 ];
-const DISH_UNITS = ["SERVING", "PLATE", "PCS", "G", "KG", "ML", "LITRE"];
+export const DISH_UNITS = ["SERVING", "PLATE", "PCS", "G", "KG", "ML", "LITRE"];
 /**
  * Courses a side dish plausibly belongs to. Sorting only — every dish stays
  * selectable, because "what goes with what" is a kitchen call, not a taxonomy.

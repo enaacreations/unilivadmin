@@ -14,11 +14,20 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { FormModal } from "@/components/ui/form-modal";
+import { type BulkColumn } from "@/components/bulk-upload-dialog";
+import { ImportExportMenu } from "@/components/import-export-menu";
 import { useToast } from "@/hooks/use-toast";
 import { foodApi, type Ingredient } from "@/lib/food-api";
 import { useDishCatalogue, useIngredients } from "./use-food-masters";
 
 const ING_UNITS = ["G", "KG", "ML", "LITRE", "PCS", "PLATE", "SERVING"];
+
+/** Template columns for the bulk import — keys are the row keys POST /bulk/ingredients reads. */
+const INGREDIENT_BULK_COLUMNS: BulkColumn[] = [
+  { key: "name", label: "name", required: true, hint: "ingredient name, e.g. Aloo. Must not already exist" },
+  { key: "unit", label: "unit", required: true, hint: `default unit — one of ${ING_UNITS.join(", ")}` },
+  { key: "isActive", label: "isActive", hint: "true / false. Blank = true" },
+];
 
 type IngDraft = { id: string | null; name: string; unit: string; isActive: boolean };
 
@@ -31,6 +40,14 @@ export function IngredientsGrid() {
   const [search, setSearch] = React.useState("");
   const [draft, setDraft] = React.useState<IngDraft | null>(null);
   const [delTarget, setDelTarget] = React.useState<Ingredient | null>(null);
+
+  // Exported under the import template's own columns, so a download can be
+  // edited and uploaded straight back. Deliberately the whole list, not the
+  // current search — a filtered export re-uploads as a partial file.
+  const exportRows = React.useMemo(
+    () => ingredients.map((r) => ({ name: r.name, unit: r.unit, isActive: String(r.isActive) })),
+    [ingredients],
+  );
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["food", "ingredients"] });
@@ -85,6 +102,12 @@ export function IngredientsGrid() {
               placeholder="Search ingredients" aria-label="Search ingredients" className="pl-9"
             />
           </div>
+          <ImportExportMenu
+            resource="ingredients"
+            columns={INGREDIENT_BULK_COLUMNS}
+            exportRows={exportRows}
+            onImported={invalidate}
+          />
           <Button
             className="bg-accent text-white hover:bg-accent/90"
             onClick={() => setDraft({ id: null, name: "", unit: "KG", isActive: true })}

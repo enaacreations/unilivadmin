@@ -1,5 +1,5 @@
 import * as React from "react";
-import * as XLSX from "xlsx";
+import { downloadSheet, parseSheet, type SheetFormat } from "@/lib/sheet";
 import {
   Dialog,
   DialogContent,
@@ -25,15 +25,18 @@ import {
   type BulkResource,
   type BulkRowError,
 } from "@/lib/bulk-api";
-import { Download, Upload, FileSpreadsheet, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, Download, Upload, FileSpreadsheet, CheckCircle2, RefreshCw } from "lucide-react";
 
 /** One column of the upload template. `key` is the verbatim object key the
  *  backend reads; `label` is the human header written to the template file and
- *  mapped back to `key` on parse. */
+ *  mapped back to `key` on parse. `hint` documents accepted values in the
+ *  dialog — a column with an enum or a comma-separated list is unguessable from
+ *  the header alone. */
 export interface BulkColumn {
   key: string;
   label: string;
   required?: boolean;
+  hint?: string;
 }
 
 interface BulkUploadDialogProps {
@@ -72,6 +75,12 @@ export function BulkUploadDialog({
   const [rows, setRows] = React.useState<Array<Record<string, unknown>>>([]);
   const [errors, setErrors] = React.useState<BulkRowError[]>([]);
   const [counts, setCounts] = React.useState({ total: 0, valid: 0, invalid: 0 });
+  // Rows that match an existing record and will update it. Undefined on the
+  // insert-only resources, which is not the same as "none of them".
+  const [updates, setUpdates] = React.useState<Set<number> | null>(null);
+  // Whether this resource skips bad rows and imports the rest. Decided by the
+  // server, not assumed here — it is the half that has to honour it.
+  const [partial, setPartial] = React.useState(false);
   const [validating, setValidating] = React.useState(false);
   const [committing, setCommitting] = React.useState(false);
 
@@ -83,6 +92,8 @@ export function BulkUploadDialog({
       setRows([]);
       setErrors([]);
       setCounts({ total: 0, valid: 0, invalid: 0 });
+      setUpdates(null);
+      setPartial(false);
       setValidating(false);
       setCommitting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -96,48 +107,15 @@ export function BulkUploadDialog({
     return m;
   }, [errors]);
 
-  /** Build a single-row (header-only) sheet from the column labels and download it. */
-  const downloadTemplate = (format: "csv" | "xlsx") => {
-    // json_to_sheet over a single object whose keys are the labels yields a sheet
-    // with exactly the header row populated (and one empty example row).
-    const headerObj: Record<string, string> = {};
-    for (const c of columns) headerObj[c.label] = "";
-    const sheet = XLSX.utils.json_to_sheet([headerObj], {
-      header: columns.map((c) => c.label),
-    });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, sheet, "Template");
-    XLSX.writeFile(wb, `${resource}-template.${format}`, {
-      bookType: format === "csv" ? "csv" : "xlsx",
-    });
-  };
+  /** Header-only sheet built from the column labels. */
+  const downloadTemplate = (format: SheetFormat) =>
+    downloadSheet(`${resource}-template`, columns.map((c) => c.label), [], format);
 
   /** Parse the picked .csv/.xlsx into row objects keyed by column `key`. */
   const onFile = async (file: File) => {
     setFileName(file.name);
     try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf);
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-        defval: "",
-      });
-
-      // Map each header (which equals a column `label`) back to that column's
-      // `key`. Headers we don't recognise are ignored. Drop fully-empty rows.
-      const labelToKey = new Map(columns.map((c) => [c.label, c.key]));
-      const mapped: Array<Record<string, unknown>> = [];
-      for (const r of raw) {
-        const obj: Record<string, unknown> = {};
-        let hasValue = false;
-        for (const [header, value] of Object.entries(r)) {
-          const key = labelToKey.get(header);
-          if (!key) continue;
-          obj[key] = value;
-          if (value !== "" && value != null) hasValue = true;
-        }
-        if (hasValue) mapped.push(obj);
-      }
+      const mapped = parseSheet(await file.arrayBuffer(), columns);
 
       if (mapped.length === 0) {
         toast({ title: "No data rows found in the file", variant: "destructive" });
@@ -152,38 +130,56 @@ export function BulkUploadDialog({
     }
   };
 
-  /** Dry-run validation pass; populates counts + per-row errors. */
+  /** Dry-run validation pass; populates counts, per-row errors and insert/update split. */
   const runValidate = async (toValidate: Array<Record<string, unknown>>) => {
     setValidating(true);
     try {
       const res = await bulkValidate(resource, toValidate);
       setCounts({ total: res.total, valid: res.valid, invalid: res.invalid });
       setErrors(res.errors);
+      setUpdates(res.updates ? new Set(res.updates) : null);
+      setPartial(res.partial === true);
     } catch (e: any) {
       toast({ title: e?.message || "Validation failed", variant: "destructive" });
       setErrors([]);
+      setUpdates(null);
+      setPartial(false);
       setCounts({ total: toValidate.length, valid: 0, invalid: toValidate.length });
     } finally {
       setValidating(false);
     }
   };
 
-  /** Commit the whole batch (all-or-nothing). */
+  /**
+   * Commit. On a partial resource the errors that come back are rows that were
+   * SKIPPED while the rest landed; on an all-or-nothing one they mean nothing
+   * was written. The written count is what tells the two apart.
+   */
   const onCommit = async () => {
     setCommitting(true);
     try {
       const res = await bulkCommit(resource, rows);
-      if (res.errors.length > 0) {
-        // 422: nothing inserted. Surface the row-level errors in the table.
+      const written = res.inserted + (res.updated ?? 0);
+
+      if (written === 0) {
+        // Either an all-or-nothing rejection, or a file with no valid row in it.
         setErrors(res.errors);
         setCounts((c) => ({ ...c, valid: c.total - res.errors.length, invalid: res.errors.length }));
         toast({
-          title: `Import rejected — ${res.errors.length} row(s) had errors`,
+          title: `Nothing imported — ${res.errors.length} row(s) had errors`,
           variant: "destructive",
         });
         return;
       }
-      toast({ title: `Imported ${res.inserted} ${resource}` });
+
+      const parts: string[] = [];
+      if (res.inserted) parts.push(`${res.inserted} added`);
+      if (res.updated) parts.push(`${res.updated} updated`);
+      if (res.skipped) parts.push(`${res.skipped} skipped`);
+      toast({
+        title: `Imported ${written} ${resource}`,
+        ...(parts.length > 1 ? { description: `${parts.join(", ")}.` } : {}),
+      });
       onDone?.();
       onOpenChange(false);
     } catch (e: any) {
@@ -254,16 +250,33 @@ export function BulkUploadDialog({
               <span className="font-medium">Required columns:</span>{" "}
               {columns.filter((c) => c.required).map((c) => c.label).join(", ") || "—"}
             </div>
+
+            {columns.some((c) => c.hint) && (
+              <ul className="max-h-40 space-y-1 overflow-y-auto rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
+                {columns.filter((c) => c.hint).map((c) => (
+                  <li key={c.key}>
+                    <span className="font-mono text-foreground">{c.label}</span> — {c.hint}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-muted-foreground">
+              <span className="min-w-0 truncate text-muted-foreground" title={fileName}>
                 <FileSpreadsheet className="inline w-4 h-4 mr-1" />
                 {fileName}
               </span>
               <Badge variant="outline">Total {counts.total}</Badge>
-              <Badge variant="success">Valid {counts.valid}</Badge>
+              {updates ? (
+                <>
+                  <Badge variant="success">New {counts.valid - updates.size}</Badge>
+                  <Badge variant="outline">Updates {updates.size}</Badge>
+                </>
+              ) : (
+                <Badge variant="success">Valid {counts.valid}</Badge>
+              )}
               <Badge variant={invalid > 0 ? "destructive" : "outline"}>
                 Invalid {invalid}
               </Badge>
@@ -272,12 +285,46 @@ export function BulkUploadDialog({
               )}
             </div>
 
-            <div className="max-h-80 overflow-auto rounded-md border">
+            {/* Say plainly what happens to the bad rows before the user commits —
+                the counts above show how many, not what becomes of them. */}
+            {invalid > 0 && !validating && (
+              <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                <p className="text-xs leading-relaxed text-warning">
+                  {partial ? (
+                    <>
+                      <span className="font-medium">
+                        The {invalid} row{invalid === 1 ? "" : "s"} marked below will not be imported.
+                      </span>{" "}
+                      The other {counts.valid} will be. Fix the skipped rows in your file and upload
+                      it again — rows that already exist are updated, not duplicated.
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-medium">
+                        {invalid} row{invalid === 1 ? "" : "s"} below have errors.
+                      </span>{" "}
+                      Nothing is imported until every row is clean — fix them in your file and upload
+                      it again.
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
+
+            {/* min-w-0 is load-bearing: DialogContent is a grid, and a grid item
+                defaults to min-width:auto — it refuses to shrink below its
+                content's min-content width. Without it this box grows to fit the
+                widest row and drags the whole dialog past its max-width instead
+                of scrolling, however wide the dialog is made. */}
+            <div className="min-w-0 max-h-80 overflow-auto rounded-md border">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-12">#</TableHead>
-                    <TableHead className="w-28">Status</TableHead>
+                    {/* Wide enough for a wrapped error message — it is the one
+                        cell the reader actually has to read in full. */}
+                    <TableHead className="w-56">Status</TableHead>
                     {columns.map((c) => (
                       <TableHead key={c.key}>{c.label}</TableHead>
                     ))}
@@ -287,26 +334,49 @@ export function BulkUploadDialog({
                   {rows.map((r, i) => {
                     const err = errorByIndex.get(i);
                     return (
-                      <TableRow key={i} data-testid={`bulk-row-${i}`}>
-                        <TableCell className="text-muted-foreground">{i + 1}</TableCell>
-                        <TableCell>
+                      <TableRow
+                        key={i}
+                        // Dimmed so the rows that won't land are scannable at a glance.
+                        className={err ? "opacity-60" : undefined}
+                        data-testid={`bulk-row-${i}`}
+                      >
+                        <TableCell className="align-top text-muted-foreground">{i + 1}</TableCell>
+                        <TableCell className="align-top">
                           {err ? (
-                            <Badge variant="destructive" title={err}>
+                            // Badge is whitespace-nowrap by default; let the
+                            // message wrap inside the column rather than widen it.
+                            <Badge
+                              variant="destructive"
+                              className="whitespace-normal text-left leading-snug"
+                              title={err}
+                            >
                               {err}
+                            </Badge>
+                          ) : updates?.has(i) ? (
+                            <Badge variant="outline" title="Matches an existing record — it will be updated">
+                              <RefreshCw className="w-3 h-3 mr-1" /> Update
                             </Badge>
                           ) : (
                             <Badge variant="success">
-                              <CheckCircle2 className="w-3 h-3 mr-1" /> OK
+                              <CheckCircle2 className="w-3 h-3 mr-1" /> New
                             </Badge>
                           )}
                         </TableCell>
-                        {columns.map((c) => (
-                          <TableCell key={c.key} className="whitespace-nowrap">
-                            {r[c.key] === "" || r[c.key] == null
-                              ? "—"
-                              : String(r[c.key])}
-                          </TableCell>
-                        ))}
+                        {columns.map((c) => {
+                          const raw = r[c.key];
+                          const text = raw === "" || raw == null ? "—" : String(raw);
+                          return (
+                            <TableCell key={c.key} className="align-top">
+                              {/* max-width lives on an inner block, not the cell:
+                                  a <td> in an auto-layout table sizes to content
+                                  and ignores its own max-width. The full value is
+                                  on the title for hover. */}
+                              <div className="max-w-[180px] truncate" title={text}>
+                                {text}
+                              </div>
+                            </TableCell>
+                          );
+                        })}
                       </TableRow>
                     );
                   })}
@@ -333,10 +403,18 @@ export function BulkUploadDialog({
           {step === "preview" && (
             <Button
               onClick={onCommit}
-              disabled={validating || committing || invalid > 0 || counts.total === 0}
+              disabled={
+                validating || committing || counts.total === 0 ||
+                // Partial resources import what's valid; the rest need a clean file.
+                (partial ? counts.valid === 0 : invalid > 0)
+              }
               data-testid="button-bulk-commit"
             >
-              {committing ? "Importing…" : `Import ${counts.valid} ${resource}`}
+              {committing
+                ? "Importing…"
+                : partial && invalid > 0
+                  ? `Import ${counts.valid} of ${counts.total} rows`
+                  : `Import ${counts.valid} ${resource}`}
             </Button>
           )}
         </DialogFooter>
