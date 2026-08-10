@@ -114,8 +114,9 @@ router.post(
     const resource = req.params["resource"];
     if (resource === "residents") return authorize("RESIDENTS", "create")(req, res, next);
     if (resource === "users") return authorize("USERS", "create")(req, res, next);
+    // The catalogue tabs are gated separately from the rest of Service Set.
     if (resource === "dishes" || resource === "ingredients") {
-      return authorize("FOOD_SETTINGS", "create")(req, res, next);
+      return authorize("FOOD_CATALOGUE", "create")(req, res, next);
     }
     // A menu import REPLACES the slots it names — an edit, not a create.
     if (resource === "menu") return authorize("FOOD_SETTINGS", "edit")(req, res, next);

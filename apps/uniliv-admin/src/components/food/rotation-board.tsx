@@ -33,7 +33,7 @@ import {
   type MenuRuleSettings,
 } from "@/lib/food-api";
 import {
-  DAY_SHORT, MEAL_SHORT, ROTATION_WEEKS, WEEK_DAYS,
+  DAY_SHORT, MEAL_SHORT, REPEAT_WITHIN_DAYS, ROTATION_WEEKS, WEEK_DAYS,
   allPlateDishIds, cellRepeats, componentLabel, fillPlate, nearbyRepeats,
   plateKey, plateToItems, plateVerdict, rowsToCycleCells,
   rowsToPlates, ruleFor, slotsOf,
@@ -151,6 +151,8 @@ export function RotationBoard(
 
   /** The two Menu Rules switches. Everything the board shows honours both. */
   const flagRepeats = ruleSettings?.flagRepeatsWithin3Days !== false;
+  /** The window the rule is set to — see repeatWithinDays under Menu Rules. */
+  const repeatDays = ruleSettings?.repeatWithinDays ?? REPEAT_WITHIN_DAYS;
   const clashBlocks = ruleSettings?.ingredientClashBlocks !== false;
 
   // Repeats span the whole rotation cycle — week 4 Sunday sits one day before
@@ -200,8 +202,8 @@ export function RotationBoard(
       }));
   }, [cycleRows, kitchens, kitchenId]);
   const repeatsFor = React.useCallback(
-    (day: number, meal: MealType) => (flagRepeats ? cellRepeats(cycleCells, week, day, meal) : []),
-    [cycleCells, week, flagRepeats],
+    (day: number, meal: MealType) => (flagRepeats ? cellRepeats(cycleCells, week, day, meal, repeatDays) : []),
+    [cycleCells, week, flagRepeats, repeatDays],
   );
 
   const dishById = React.useMemo(() => new Map(dishes.map((d) => [d.id, d])), [dishes]);
@@ -517,7 +519,7 @@ export function RotationBoard(
                     repeats={repeatsFor(day, meal)}
                     clashBlocks={clashBlocks}
                     onOpen={() => setSel({ day, meal })}
-                    onGoToRules={() => onGoToRules?.({ brand, meal })}
+                    onGoToRules={onGoToRules ? () => onGoToRules({ brand, meal }) : undefined}
                   />
                 ))}
               </React.Fragment>
@@ -543,7 +545,7 @@ export function RotationBoard(
           // Both switches come from Menu Rules. An empty map is how "don't flag
           // repeats" is expressed — the composer needs no separate off-switch.
           nearby={flagRepeats
-            ? nearbyRepeats(cycleCells, week, sel.day, sel.meal)
+            ? nearbyRepeats(cycleCells, week, sel.day, sel.meal, repeatDays)
             : new Map<string, string>()}
           clashBlocks={clashBlocks}
           serviceTime={serviceTime(sel.meal)}
@@ -572,7 +574,8 @@ function BoardCell({
   /** Shared-ingredient rule. Off means the cell says nothing about clashes. */
   clashBlocks: boolean;
   onOpen: () => void;
-  onGoToRules: () => void;
+  /** Absent when the viewer cannot open Menu Rules — see FOOD_CATALOGUE. */
+  onGoToRules?: () => void;
 }) {
   const noRule = slots.length === 0;
 
@@ -580,6 +583,19 @@ function BoardCell({
     // Rules before rotation: an empty cell with no rule has nothing to compose
     // against, so it points at the fix instead of opening an unusable drawer.
     if (noRule) {
+      // Without the catalogue grant there is nowhere to send them, so the cell
+      // states the blocker instead of being a button that does nothing.
+      if (!onGoToRules) {
+        return (
+          <div
+            aria-label={`${cell} — no menu rule set`}
+            className="flex min-h-[118px] flex-col items-center justify-center gap-1.5 rounded-[10px] border border-dashed p-2 text-muted-foreground"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            <span className="px-1 text-center text-[11px] leading-tight">No menu rule for this meal</span>
+          </div>
+        );
+      }
       return (
         <button
           type="button" onClick={onGoToRules}

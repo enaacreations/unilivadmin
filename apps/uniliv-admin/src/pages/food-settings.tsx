@@ -76,13 +76,23 @@ function RowActions({ onEdit, onDelete }: { onEdit?: () => void; onDelete?: () =
  * Kitchens / Agencies / Hierarchy / Users tabs, Portion Size Rules folded into
  * the Dishes drawer) that a "More" dropdown hid two items to save no space.
  */
-type SettingsTab = { value: string; label: string; icon: typeof Globe; gated?: boolean };
+type SettingsTab = {
+  value: string; label: string; icon: typeof Globe;
+  /** Super Admin only (org-wide defaults). */
+  gated?: boolean;
+  /** Needs the catalogue grant — the definitional tabs. See FOOD_CATALOGUE. */
+  catalogue?: boolean;
+};
 
+// Ordered the way a service set is actually built: the raw materials, then the
+// dishes made from them, then the rule a plate must satisfy, then the rotation
+// built against that rule. Meal Types and Cut-offs are configured once and
+// rarely revisited, so they sit after the four that get daily use.
 const TABS: SettingsTab[] = [
-  { value: "dishes", label: "Dishes", icon: UtensilsCrossed },
-  { value: "ingredients", label: "Ingredients", icon: Boxes },
+  { value: "ingredients", label: "Ingredients", icon: Boxes, catalogue: true },
+  { value: "dishes", label: "Dishes", icon: UtensilsCrossed, catalogue: true },
+  { value: "composition", label: "Menu Rules", icon: SlidersHorizontal, catalogue: true },
   { value: "rotation", label: "Menu", icon: CalendarRange },
-  { value: "composition", label: "Menu Rules", icon: SlidersHorizontal },
   { value: "meals", label: "Meal Types", icon: ListChecks },
   { value: "cutoffs", label: "Cut-offs & Service", icon: Clock },
   // Org-wide defaults — Super Admin only (see canFoodDefaults).
@@ -97,17 +107,34 @@ export default function FoodSettings() {
   const properties = lookups?.properties ?? [];
   const propName = (id?: string | null) =>
     id ? (properties.find((p) => p.id === id)?.name ?? "—") : "—";
-  const { role } = usePermissions();
+  const { role, can } = usePermissions();
   const isSuperAdmin = isSuperAdminRole(role);
+  // Ingredients / Dishes / Menu Rules define what a plate may contain. Roles
+  // without the grant (F&B Manager) build the rotation from the agreed
+  // catalogue instead of editing it, so those three tabs are not shown —
+  // the write endpoints refuse them too, this is not the only gate.
+  const canCatalogue = can("FOOD_CATALOGUE", "view");
   // Food Defaults are org-wide (default cut-off + waste edit window) — Super
   // Admin only (backend PUT mirrors this). F&B Manager manages day-to-day food
   // config but not these org-wide fallbacks.
   const canFoodDefaults = isSuperAdmin;
 
+  const visibleTabs = TABS.filter((t) =>
+    (!t.gated || canFoodDefaults) && (!t.catalogue || canCatalogue));
+
   // Controlled so the rotation board can send you to Menu Rules when a meal has
   // no rule to build against.
   const [tab, setTab] = React.useState("dishes");
   const [rulesFocus, setRulesFocus] = React.useState<{ brand: string; meal: MealType }>();
+
+  // A tab the role cannot see renders no trigger AND no content, so landing on
+  // one would show an empty page. Fall back to the first tab that is actually
+  // there — which is what a role without the catalogue does on arrival, since
+  // the default is Dishes.
+  React.useEffect(() => {
+    if (!visibleTabs.length) return;
+    if (!visibleTabs.some((t) => t.value === tab)) setTab(visibleTabs[0]!.value);
+  }, [visibleTabs, tab]);
 
   // No PageHeader: every tab already opens with its own heading and one-line
   // explanation, so a page-level title only pushed the tab strip down and
@@ -124,7 +151,7 @@ export default function FoodSettings() {
             slide past it. */}
         <div className="sticky -top-4 sm:-top-6 z-20 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 bg-background px-4 sm:px-6 pt-4 sm:pt-6 pb-2">
           <TabsList className="flex h-auto w-fit max-w-full flex-nowrap justify-start gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {TABS.filter((t) => !t.gated || canFoodDefaults).map(({ value, label, icon: Icon }) => (
+            {visibleTabs.map(({ value, label, icon: Icon }) => (
               <TabsTrigger key={value} value={value} className="shrink-0 whitespace-nowrap">
                 <Icon className="h-4 w-4 mr-2" /> {label}
               </TabsTrigger>
@@ -135,12 +162,21 @@ export default function FoodSettings() {
         {/* The four menu-building tabs mount lazily — the rotation board and the
             plate composer each pull the whole dish catalogue, which is wasted
             work on a visit to, say, Meal Types. */}
-        <TabsContent value="dishes"><DishesCatalogue /></TabsContent>
-        <TabsContent value="ingredients"><IngredientsGrid /></TabsContent>
+        {canCatalogue && (
+          <>
+            <TabsContent value="ingredients"><IngredientsGrid /></TabsContent>
+            <TabsContent value="dishes"><DishesCatalogue /></TabsContent>
+            <TabsContent value="composition"><MenuRulesEditor focus={rulesFocus} /></TabsContent>
+          </>
+        )}
         <TabsContent value="rotation">
-          <RotationBoard onGoToRules={(f) => { setRulesFocus(f); setTab("composition"); }} />
+          {/* Only offer the jump to Menu Rules to someone who can open them. */}
+          <RotationBoard
+            onGoToRules={canCatalogue
+              ? (f) => { setRulesFocus(f); setTab("composition"); }
+              : undefined}
+          />
         </TabsContent>
-        <TabsContent value="composition"><MenuRulesEditor focus={rulesFocus} /></TabsContent>
         <TabsContent value="meals"><MealTypesTab /></TabsContent>
         <TabsContent value="cutoffs"><CutoffWindowsTab properties={properties} propName={propName} /></TabsContent>
         {canFoodDefaults && (

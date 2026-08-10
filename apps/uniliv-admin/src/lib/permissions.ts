@@ -23,6 +23,12 @@ export type Module =
   | "FOOD_DASHBOARD" | "FOOD_ALL_ORDERS" | "FOOD_PLACE_ORDER" | "FOOD_KITCHEN_SUMMARY"
   | "FOOD_DISPATCH" | "FOOD_CONFIRM_DELIVERY" | "FOOD_WASTE_TRACKING" | "FOOD_REPORTS"
   | "FOOD_SETTINGS" | "FOOD_RECEIVE_UPDATE" | "FOOD_DELIVERY_TRACKING" | "FOOD_ORG"
+  // The definitional layer of Service Set — ingredients, dishes (with their
+  // portion rules) and the menu-composition rules: what a plate MAY be built
+  // from and what it MUST contain. Split out of FOOD_SETTINGS so a role can
+  // build the rotation from an agreed catalogue without editing the catalogue.
+  // Reads are not gated on it; the rotation board still sees every dish.
+  | "FOOD_CATALOGUE"
   // Audit & Inspection module (FRD v1.2.2). Coarse page gates; fine-grained
   // audit-type/org-node truth is server-side (audit_role_grants).
   // AUDIT_LOG above is the unrelated host audit log.
@@ -38,7 +44,7 @@ const VIEW = { view: true, create: false, edit: false, delete: false };
 const FOOD_MODULES: Module[] = [
   "FOOD_DASHBOARD","FOOD_ALL_ORDERS","FOOD_PLACE_ORDER","FOOD_KITCHEN_SUMMARY",
   "FOOD_DISPATCH","FOOD_CONFIRM_DELIVERY","FOOD_WASTE_TRACKING","FOOD_REPORTS",
-  "FOOD_SETTINGS","FOOD_RECEIVE_UPDATE","FOOD_DELIVERY_TRACKING","FOOD_ORG",
+  "FOOD_SETTINGS","FOOD_RECEIVE_UPDATE","FOOD_DELIVERY_TRACKING","FOOD_ORG","FOOD_CATALOGUE",
 ];
 
 /** All Audit & Inspection modules, for the everything-granted roles. */
@@ -127,9 +133,14 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: FULL, FOOD_DISPATCH: FULL, FOOD_CONFIRM_DELIVERY: VIEW,
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
-    // F&B managers own the food operating configuration (dishes, rotation,
-    // cutoffs, quantity rules) — and with it the Masters reference data, which
-    // shares the FOOD_SETTINGS gate.
+    // F&B managers own the food OPERATING configuration — the rotation, meal
+    // types, cut-offs — and with it the Masters reference data, which shares
+    // the FOOD_SETTINGS gate.
+    //
+    // Deliberately NOT FOOD_CATALOGUE: ingredients, dishes and the menu rules
+    // are agreed centrally, so those three Service Set tabs are hidden for this
+    // role and their write endpoints refuse it. Reads stay open, so the plate
+    // composer still sees every dish. Keep in sync with the backend copy.
     FOOD_SETTINGS: FULL,
     // Kitchen & Menu lives inside the Food module (13-Jul): recipe and menu
     // management belongs to F&B managers (and kitchen managers / ops

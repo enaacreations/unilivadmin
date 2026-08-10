@@ -1939,7 +1939,7 @@ const createDishSchema = z.object({
   sideDishIds: z.array(zId).optional(),
 }).passthrough();
 
-foodRouter.post("/dishes", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
   try {
     if (!validateBody(createDishSchema, req, res)) return;
     const b = req.body || {};
@@ -1995,7 +1995,7 @@ const updateDishSchema = z.object({
   sideDishIds: z.array(zId).optional(),
 }).passthrough();
 
-foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
   try {
     if (!validateBody(updateDishSchema, req, res)) return;
     const b = req.body || {};
@@ -2023,7 +2023,7 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), 
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
   try {
     const [row] = await db.update(dishesTable).set({ isActive: false, updatedAt: new Date() }).where(eq(dishesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -2053,7 +2053,7 @@ const createIngredientSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/ingredients", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/ingredients", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
   try {
     if (!validateBody(createIngredientSchema, req, res)) return;
     const b = req.body || {};
@@ -2071,7 +2071,7 @@ const updateIngredientSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
   try {
     if (!validateBody(updateIngredientSchema, req, res)) return;
     const b = req.body || {};
@@ -2083,7 +2083,7 @@ foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_SETTINGS", "edi
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.delete("/ingredients/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodRouter.delete("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
   try {
     const [row] = await db.update(ingredientsTable).set({ isActive: false, updatedAt: new Date() }).where(eq(ingredientsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -2623,7 +2623,7 @@ const createRuleSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/rules", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/rules", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
   try {
     if (!validateBody(createRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -2659,7 +2659,7 @@ const updateRuleSchema = z.object({
   qtyPerResident: z.coerce.number().optional(),
 }).passthrough();
 
-foodRouter.put("/rules/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
   try {
     if (!validateBody(updateRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -2672,7 +2672,7 @@ foodRouter.put("/rules/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), a
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.delete("/rules/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodRouter.delete("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
   try {
     await db.delete(perResidentRuleTable).where(eq(perResidentRuleTable.id, req.params["id"]!));
     res.json({ success: true });
@@ -2733,7 +2733,7 @@ const createCompositionRuleSchema = z.object({
   slots: z.array(zCompositionSlot).optional(),
 }).passthrough();
 
-foodRouter.post("/composition-rules", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/composition-rules", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
   try {
     if (!validateBody(createCompositionRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -2762,7 +2762,7 @@ const updateCompositionRuleSchema = z.object({
   slots: z.array(zCompositionSlot).optional(),
 }).passthrough();
 
-foodRouter.put("/composition-rules/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
   try {
     if (!validateBody(updateCompositionRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -2785,7 +2785,7 @@ foodRouter.put("/composition-rules/:id", authenticate, authorize("FOOD_SETTINGS"
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodRouter.delete("/composition-rules/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodRouter.delete("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
   try {
     await db.delete(menuCompositionRuleTable).where(eq(menuCompositionRuleTable.id, req.params["id"]!));
     res.json({ success: true });

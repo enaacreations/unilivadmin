@@ -324,6 +324,12 @@ export interface MenuRuleSettings {
   ingredientClashBlocks: boolean;
   /** Show the "used Tue" hint while picking. Never blocks a save. */
   flagRepeatsWithin3Days: boolean;
+  /**
+   * How many days apart two servings of a dish stop counting as a repeat.
+   * Editable under Menu Rules; 1–14 (the cycle is measured the short way round,
+   * so 14 already reaches every other day in it). Defaults to 3.
+   */
+  repeatWithinDays: number;
 }
 export interface AnalyticsData {
   period: string; range: { from: string; to: string };

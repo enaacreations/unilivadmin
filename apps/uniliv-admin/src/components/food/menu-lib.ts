@@ -286,8 +286,20 @@ export function fillPlate(
 
 /** Days in one full rotation cycle, after which the menu starts over. */
 export const CYCLE_DAYS = ROTATION_WEEKS.length * 7;
-/** How close two servings of the same dish must be to count as a repeat. */
+/**
+ * How close two servings of the same dish must be to count as a repeat.
+ *
+ * Configurable under Menu Rules (system_config `food_rule_repeat_days`); this is
+ * the fallback used before the setting has loaded, and the value it defaults to
+ * server-side. Callers that have the setting should pass it explicitly.
+ */
 export const REPEAT_WITHIN_DAYS = 3;
+/**
+ * Widest window worth offering. cycleGap measures the short way round the
+ * cycle, so half of it already reaches every other day — beyond this the rule
+ * cannot get any stricter.
+ */
+export const REPEAT_WITHIN_DAYS_MAX = (ROTATION_WEEKS.length * 7) / 2;
 
 /** 0-based position of (week, day) within the rotation cycle. */
 export const cycleIndex = (week: number, day: number) => (week - 1) * 7 + (day - 1);
@@ -318,13 +330,14 @@ const whereLabel = (sameWeek: boolean, week: number, day: number) =>
   sameWeek ? DAY_SHORT[day]! : `W${week} ${DAY_SHORT[day]}`;
 
 /**
- * Dishes served for the SAME meal within REPEAT_WITHIN_DAYS of this cell,
- * anywhere in the cycle, as dishId → where it also appears.
+ * Dishes served for the SAME meal within `withinDays` of this cell, anywhere in
+ * the cycle, as dishId → where it also appears.
  *
- * `excludeSelf` skips the cell itself — a dish is not a repeat of itself.
+ * The cell itself is skipped — a dish is not a repeat of itself.
  */
 export function repeatsNearCell(
   cells: CycleCells, week: number, day: number, meal: MealType | string,
+  withinDays: number = REPEAT_WITHIN_DAYS,
 ): Map<string, string> {
   const here = cycleIndex(week, day);
   const out = new Map<string, string>();
@@ -332,7 +345,7 @@ export function repeatsNearCell(
     for (const d of WEEK_DAYS) {
       if (w === week && d === day) continue;
       const gap = cycleGap(here, cycleIndex(w, d));
-      if (gap === 0 || gap > REPEAT_WITHIN_DAYS) continue;
+      if (gap === 0 || gap > withinDays) continue;
       for (const id of cells.get(cycleKey(w, d, meal)) ?? []) {
         if (!out.has(id)) out.set(id, whereLabel(w === week, w, d));
       }
@@ -347,8 +360,9 @@ export function repeatsNearCell(
  */
 export function cellRepeats(
   cells: CycleCells, week: number, day: number, meal: MealType | string,
+  withinDays: number = REPEAT_WITHIN_DAYS,
 ): Array<{ dishId: string; where: string }> {
-  const near = repeatsNearCell(cells, week, day, meal);
+  const near = repeatsNearCell(cells, week, day, meal, withinDays);
   if (!near.size) return [];
   const mine = cells.get(cycleKey(week, day, meal)) ?? [];
   return [...new Set(mine)]
@@ -362,6 +376,7 @@ export function cellRepeats(
  */
 export function nearbyRepeats(
   cells: CycleCells, week: number, day: number, meal: MealType,
+  withinDays: number = REPEAT_WITHIN_DAYS,
 ): Map<string, string> {
-  return repeatsNearCell(cells, week, day, meal);
+  return repeatsNearCell(cells, week, day, meal, withinDays);
 }

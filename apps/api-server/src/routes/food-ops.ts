@@ -58,6 +58,9 @@ import {
   resolveRulesByDish,
   isIngredientClashRuleOn,
   isRepeatFlagRuleOn,
+  getRepeatWindowDays,
+  FOOD_RULE_REPEAT_DAYS_KEY,
+  REPEAT_WINDOW_MAX_DAYS,
   FOOD_RULE_INGREDIENT_CLASH_KEY,
   FOOD_RULE_REPEAT_FLAG_KEY,
   getDefaultCutoffTime,
@@ -529,6 +532,10 @@ foodOpsRouter.put("/system-config/food-defaults", authenticate, async (req, res)
 const menuRuleSettingsSchema = z.object({
   ingredientClashBlocks: z.boolean().optional(),
   flagRepeatsWithin3Days: z.boolean().optional(),
+  repeatWithinDays: z.coerce.number().int()
+    .min(1, "The repeat window must be at least 1 day")
+    .max(REPEAT_WINDOW_MAX_DAYS, `The rotation cycle cannot express a window wider than ${REPEAT_WINDOW_MAX_DAYS} days`)
+    .optional(),
 }).passthrough();
 
 /** Read the menu rule switches. */
@@ -539,13 +546,19 @@ foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SET
       data: {
         ingredientClashBlocks: await isIngredientClashRuleOn(),
         flagRepeatsWithin3Days: await isRepeatFlagRuleOn(),
+        repeatWithinDays: await getRepeatWindowDays(),
       },
     });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-/** Upsert the menu rule switches. */
-foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+/**
+ * Upsert the menu rule switches. Gated on FOOD_CATALOGUE, not FOOD_SETTINGS:
+ * these live on the Menu Rules tab and decide what a plate must contain, so
+ * they belong with the rules themselves. Reading them stays open to anyone who
+ * can see Service Set — the rotation board honours them.
+ */
+foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
   try {
     if (!validateBody(menuRuleSettingsSchema, req, res)) return;
     const b = req.body || {};
@@ -562,7 +575,14 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_SET
       updates.push({
         key: FOOD_RULE_REPEAT_FLAG_KEY,
         value: b.flagRepeatsWithin3Days === true,
-        description: "Flag (never block) a dish already used for the same meal within 3 days.",
+        description: "Flag (never block) a dish already used for the same meal within the repeat window.",
+      });
+    }
+    if (b.repeatWithinDays !== undefined) {
+      updates.push({
+        key: FOOD_RULE_REPEAT_DAYS_KEY,
+        value: Number(b.repeatWithinDays),
+        description: "How many days apart two servings of a dish stop counting as a repeat.",
       });
     }
     if (!updates.length) { res.status(400).json({ success: false, error: "Nothing to update" }); return; }

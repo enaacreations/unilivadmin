@@ -69,8 +69,19 @@ export async function getDefaultCutoffTime(): Promise<string> {
 
 /** Block saving a plate whose dishes share an ingredient. */
 export const FOOD_RULE_INGREDIENT_CLASH_KEY = "food_rule_ingredient_clash";
-/** Flag (never block) a dish already used for the same meal within 3 days. */
+/** Flag (never block) a dish already used for the same meal within N days. */
 export const FOOD_RULE_REPEAT_FLAG_KEY = "food_rule_repeat_flag";
+/** How many days apart two servings must be before they stop counting as a repeat. */
+export const FOOD_RULE_REPEAT_DAYS_KEY = "food_rule_repeat_days";
+/** The window the rule shipped with, used whenever the row is absent. */
+export const REPEAT_WINDOW_DEFAULT_DAYS = 3;
+/**
+ * Widest window worth offering: the gap between two days is measured the short
+ * way round a 28-day cycle, so 14 already reaches every other day in it — the
+ * rule becomes "never repeat anywhere in the rotation", and higher numbers
+ * cannot mean anything more.
+ */
+export const REPEAT_WINDOW_MAX_DAYS = 14;
 
 /**
  * Boolean from system_config. `getSystemConfigValue` does an unchecked cast, and
@@ -96,9 +107,29 @@ export async function isIngredientClashRuleOn(): Promise<boolean> {
   return getSystemConfigBool(FOOD_RULE_INGREDIENT_CLASH_KEY, true);
 }
 
-/** Is the 3-day repeat hint switched on? Defaults ON. */
+/** Is the repeat hint switched on? Defaults ON. */
 export async function isRepeatFlagRuleOn(): Promise<boolean> {
   return getSystemConfigBool(FOOD_RULE_REPEAT_FLAG_KEY, true);
+}
+
+/**
+ * Number from system_config, tolerating the same wrapped-object rows
+ * getSystemConfigBool does. A value that is not a usable number falls back
+ * rather than propagating NaN into a comparison.
+ */
+export async function getSystemConfigNumber(key: string, fallback: number): Promise<number> {
+  const raw = await getSystemConfigValue<unknown>(key, fallback);
+  const v = raw !== null && typeof raw === "object" ? Object.values(raw as object)[0] : raw;
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.trim()) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** How many days apart two servings of a dish stop counting as a repeat. */
+export async function getRepeatWindowDays(): Promise<number> {
+  const n = await getSystemConfigNumber(FOOD_RULE_REPEAT_DAYS_KEY, REPEAT_WINDOW_DEFAULT_DAYS);
+  // Clamp on READ as well as on write: a row set by an older client, a migration
+  // or by hand must never widen the window past what the cycle can express.
+  return Math.min(Math.max(Math.round(n), 1), REPEAT_WINDOW_MAX_DAYS);
 }
 
 /** Roles that always see every property regardless of scope rows. */

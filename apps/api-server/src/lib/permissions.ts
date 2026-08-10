@@ -25,6 +25,13 @@ export type Module =
   | "FOOD_ALL_ORDERS" | "FOOD_PLACE_ORDER" | "FOOD_KITCHEN_SUMMARY"
   | "FOOD_DISPATCH" | "FOOD_CONFIRM_DELIVERY" | "FOOD_WASTE_TRACKING"
   | "FOOD_REPORTS" | "FOOD_SETTINGS" | "FOOD_ORG"
+  // The definitional layer of Service Set — ingredients, dishes (with their
+  // portion rules) and the menu-composition rules: what a plate MAY be built
+  // from and what it MUST contain. Split out of FOOD_SETTINGS so a role can
+  // build the rotation from an agreed catalogue without being able to change
+  // the catalogue itself. Reads are not gated on it; the rotation board must
+  // still see every dish.
+  | "FOOD_CATALOGUE"
   // Audit & Inspection module (PRD v1.0). Coarse endpoint gates; fine-grained
   // audit-type/org-node truth lives in audit_role_grants (resolveAuditAccess).
   // AUDIT_LOG above is the unrelated host audit log.
@@ -44,7 +51,7 @@ const FOOD_MODULES: Module[] = [
   "FOOD_RECEIVE_UPDATE", "FOOD_DELIVERY_TRACKING", "FOOD_DASHBOARD",
   "FOOD_ALL_ORDERS", "FOOD_PLACE_ORDER", "FOOD_KITCHEN_SUMMARY",
   "FOOD_DISPATCH", "FOOD_CONFIRM_DELIVERY", "FOOD_WASTE_TRACKING",
-  "FOOD_REPORTS", "FOOD_SETTINGS", "FOOD_ORG",
+  "FOOD_REPORTS", "FOOD_SETTINGS", "FOOD_ORG", "FOOD_CATALOGUE",
 ];
 
 /** All Audit & Inspection modules, for the everything-granted roles. */
@@ -155,8 +162,13 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: VE, FOOD_DISPATCH: VE, FOOD_CONFIRM_DELIVERY: VIEW,
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
-    // F&B managers own the food operating configuration (dishes, rotation,
-    // cutoffs, quantity rules) — includes Masters, which shares this gate.
+    // F&B managers own the food OPERATING configuration — the rotation, meal
+    // types, cut-offs and Masters, which shares this gate.
+    //
+    // Deliberately NOT FOOD_CATALOGUE: ingredients, dishes and the menu rules
+    // are agreed centrally, and an F&B manager builds the menu from that agreed
+    // catalogue rather than editing it. They still READ every dish — reads are
+    // ungated — so the plate composer works exactly as before.
     FOOD_SETTINGS: VE,
     // Kitchen & Menu lives inside the Food module (13-Jul): recipe and menu
     // management belongs to F&B managers (kitchen managers / ops excellence

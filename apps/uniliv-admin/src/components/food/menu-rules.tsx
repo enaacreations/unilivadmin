@@ -15,6 +15,7 @@ import { Check, Info, Minus, Plus, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { NumberStepper } from "@/components/ui/number-stepper";
 import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
 import {
@@ -23,7 +24,7 @@ import {
   type MenuRotationRow, type MenuRuleSettings,
 } from "@/lib/food-api";
 import {
-  MEAL_SHORT, ROTATION_WEEKS, WEEK_DAYS,
+  MEAL_SHORT, REPEAT_WITHIN_DAYS, REPEAT_WITHIN_DAYS_MAX, ROTATION_WEEKS, WEEK_DAYS,
   componentLabel, fillPlate, plateKey, plateToItems, rowsToPlates, ruleFor, slotsOf,
 } from "./menu-lib";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
@@ -84,16 +85,61 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
     mutationFn: (b: Partial<MenuRuleSettings>) => foodApi.updateMenuRuleSettings(b),
     onSuccess: (fresh, sent) => {
       qc.setQueryData(foodKeys.menuRuleSettings(), fresh);
+      // The board reads the same settings to decide what to flag, so a changed
+      // window has to reach it rather than waiting for a refetch.
+      qc.invalidateQueries({ queryKey: foodKeys.menuRuleSettings() });
       // Say which way it went — a switch sliding back on failure is otherwise
       // the only feedback, and it is easy to miss.
-      const [[key, value]] = Object.entries(sent) as [[keyof MenuRuleSettings, boolean]];
+      const [[key, value]] = Object.entries(sent) as [[keyof MenuRuleSettings, boolean | number]];
+      if (key === "repeatWithinDays") {
+        toast({ title: `Repeats now flagged within ${value} day${value === 1 ? "" : "s"}` });
+        return;
+      }
       const label = key === "ingredientClashBlocks"
         ? "Shared-ingredient block"
-        : "3-day repeat flag";
+        : "Repeat flag";
       toast({ title: `${label} turned ${value ? "on" : "off"}` });
     },
     onError: (e: any) => toast({ title: e?.message || "Could not change the rule", variant: "destructive" }),
   });
+  /** Falls back to the shipped default until the settings land. */
+  const repeatDays = ruleSettings?.repeatWithinDays ?? REPEAT_WITHIN_DAYS;
+  const repeatOn = ruleSettings?.flagRepeatsWithin3Days !== false;
+
+  // The window is edited in place, inside the rule's own sentence: the number is
+  // a control, and the stepper only exists while it is being changed. It opens
+  // by itself when the rule is switched on — the one moment the window is worth
+  // a second look — and stays reachable afterwards for the rare later edit.
+  const [editingDays, setEditingDays] = React.useState(false);
+  const [draftDays, setDraftDays] = React.useState(repeatDays);
+  const dayEditorRef = React.useRef<HTMLSpanElement>(null);
+
+  // Track the saved value while idle, so re-opening never starts from a stale draft.
+  React.useEffect(() => {
+    if (!editingDays) setDraftDays(repeatDays);
+  }, [repeatDays, editingDays]);
+
+  // Clicking away or pressing Escape abandons the edit rather than committing
+  // it — an org-wide rule should not change because a click landed elsewhere.
+  React.useEffect(() => {
+    if (!editingDays) return;
+    const dismiss = () => { setDraftDays(repeatDays); setEditingDays(false); };
+    const onDown = (e: MouseEvent) => {
+      if (!dayEditorRef.current?.contains(e.target as Node)) dismiss();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") dismiss(); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [editingDays, repeatDays]);
+
+  const commitDays = () => {
+    if (draftDays === repeatDays) { setEditingDays(false); return; }
+    saveRules.mutate({ repeatWithinDays: draftDays }, { onSuccess: () => setEditingDays(false) });
+  };
 
   // Arriving from a rotation cell that had no rule — open on the exact plate
   // that was missing rather than making the user find it again.
@@ -331,18 +377,76 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
             </div>
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1">
-                <p className="text-sm">No dish repeats within 3 days</p>
+                {/* The window lives in the sentence. Off, it is plain prose;
+                    on, the number is the control that changes it. */}
+                {!repeatOn ? (
+                  <p className="text-sm">
+                    No dish repeats within {repeatDays} day{repeatDays === 1 ? "" : "s"}
+                  </p>
+                ) : editingDays ? (
+                  <span ref={dayEditorRef} className="flex flex-wrap items-center gap-1.5 text-sm">
+                    No dish repeats within
+                    <NumberStepper
+                      value={draftDays}
+                      onChange={setDraftDays}
+                      min={1}
+                      max={REPEAT_WITHIN_DAYS_MAX}
+                      size="sm"
+                      disabled={saveRules.isPending}
+                      aria-label="Days within which a repeat is flagged"
+                    />
+                    day{draftDays === 1 ? "" : "s"}
+                    <Button
+                      size="sm"
+                      className="bg-accent text-white hover:bg-accent/90"
+                      disabled={saveRules.isPending}
+                      onClick={commitDays}
+                    >
+                      {saveRules.isPending ? "Saving…" : "Save"}
+                    </Button>
+                    <Button
+                      size="sm" variant="ghost" disabled={saveRules.isPending}
+                      onClick={() => { setDraftDays(repeatDays); setEditingDays(false); }}
+                    >
+                      Cancel
+                    </Button>
+                  </span>
+                ) : (
+                  <p className="text-sm">
+                    No dish repeats within{" "}
+                    <button
+                      type="button"
+                      onClick={() => { setDraftDays(repeatDays); setEditingDays(true); }}
+                      className="border-b border-dashed border-accent-strong font-medium text-accent-strong hover:border-solid"
+                      title="Change the repeat window"
+                    >
+                      {repeatDays}
+                    </button>{" "}
+                    day{repeatDays === 1 ? "" : "s"}
+                  </p>
+                )}
                 <p className="text-[11px] text-muted-foreground">
-                  {ruleSettings?.flagRepeatsWithin3Days === false
+                  {!repeatOn
                     ? "Off — repeats are not flagged while picking."
-                    : "Repeats are flagged as you pick, never blocked — the kitchen decides."}
+                    : editingDays
+                      ? draftDays >= REPEAT_WITHIN_DAYS_MAX
+                        ? "The whole rotation — a dish is flagged wherever else it appears for this meal."
+                        : `A dish served for the same meal ${draftDays} day${draftDays === 1 ? "" : "s"} either side is flagged.`
+                      : "Repeats are flagged as you pick, never blocked — the kitchen decides."}
                 </p>
               </div>
               <Switch
                 checked={ruleSettings?.flagRepeatsWithin3Days ?? true}
                 disabled={!ruleSettings || saveRules.isPending}
-                onCheckedChange={(v) => saveRules.mutate({ flagRepeatsWithin3Days: v })}
-                aria-label="Flag dishes repeated within 3 days"
+                onCheckedChange={(v) => {
+                  saveRules.mutate({ flagRepeatsWithin3Days: v });
+                  // Switching the rule ON is the one moment the window is worth
+                  // a second look, so open the editor with it; switching off
+                  // closes whatever was open.
+                  setDraftDays(repeatDays);
+                  setEditingDays(v);
+                }}
+                aria-label={`Flag dishes repeated within ${repeatDays} days`}
               />
             </div>
           </div>
