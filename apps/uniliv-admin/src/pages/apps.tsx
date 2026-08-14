@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard, Building2, Wrench, Users, Truck,
-  ChefHat, UtensilsCrossed, TrendingUp, Landmark, Settings, LayoutGrid,
+  UtensilsCrossed, TrendingUp, Landmark, Settings, LayoutGrid,
   ClipboardCheck, MapPin,
   type LucideIcon,
 } from "lucide-react";
@@ -20,7 +20,6 @@ const MODULE_ICON: Record<string, LucideIcon> = {
   Operations: Wrench,
   People: Users,
   "Supply Chain": Truck,
-  "Kitchen & Menu": ChefHat,
   Food: UtensilsCrossed,
   Audits: ClipboardCheck,
   Growth: TrendingUp,
@@ -35,7 +34,6 @@ const MODULE_DESC: Record<string, string> = {
   Operations: "Rooms, residents and upkeep",
   People: "Employees, attendance and hiring",
   "Supply Chain": "Vendors, orders and stock",
-  "Kitchen & Menu": "Recipes and menu planning",
   Food: "Order food, confirm deliveries, track waste",
   Audits: "Your checks, findings and scores",
   Growth: "Leads and sales pipeline",
@@ -54,7 +52,6 @@ const MODULE_TINT: Record<string, [string, string, string, string]> = {
   Operations: ["#0891B2", "#0EA5A5", "#22B8CF", "#0EA5A5"],
   People: ["#E85D75", "#C2459A", "#E85D75", "#C2459A"],
   "Supply Chain": ["#D97706", "#E8602C", "#E5A13D", "#E8602C"],
-  "Kitchen & Menu": ["#F2603C", "#C2459A", "#F2703A", "#C2459A"],
   Growth: ["#16A34A", "#0EA5A5", "#34C58A", "#0EA5A5"],
   Finance: ["#157F5B", "#3666CF", "#34A57F", "#3666CF"],
   Settings: ["#8B7D72", "#5C5049", "#8B7D72", "#5C5049"],

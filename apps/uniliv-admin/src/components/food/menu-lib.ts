@@ -88,21 +88,41 @@ export const plateToItems = (plate: PlateEntry[]) =>
 // ─── Composition rules ───────────────────────────────────────────────────────
 
 /**
- * The rule that governs one (brand, meal).
+ * How specific a rule is for the (kitchen, property) being resolved — higher
+ * wins. Mirrors `scopeRank` in the server's food-service.ts; the two MUST agree
+ * or the board grades a plate against one rule while the server saves it
+ * against another.
+ */
+export function scopeRank(
+  r: { kitchenId?: string | null; propertyId?: string | null },
+  kitchenId?: string | null,
+  propertyId?: string | null,
+): number {
+  if (propertyId && r.propertyId === propertyId) return 3;
+  if (kitchenId && r.kitchenId === kitchenId) return 2;
+  return 1;
+}
+
+/**
+ * The rule that governs one (brand, meal) at the narrowest scope that applies:
+ * a property rule beats a kitchen rule, which beats the brand default.
  *
- * Kitchen-specific rules exist in the schema but are disabled in the UI, so the
- * brand-default (kitchenId === null) wins and a kitchen-scoped rule is only used
- * when no default exists — the same precedence `resolveCompositionRule` applies
- * server-side.
+ * Rules carrying a scope that does NOT match the arguments are dropped rather
+ * than ranked — another property's rule must never be picked just because it
+ * happens to be the only row for the meal.
  */
 export function ruleFor(
-  rules: CompositionRule[], brand: string, meal: MealType, kitchenId?: string | null,
+  rules: CompositionRule[], brand: string, meal: MealType,
+  kitchenId?: string | null, propertyId?: string | null,
 ): CompositionRule | null {
-  const forMeal = rules.filter((r) => r.brand === brand && r.mealType === meal && r.isActive !== false);
-  return forMeal.find((r) => !r.kitchenId)
-    ?? (kitchenId ? forMeal.find((r) => r.kitchenId === kitchenId) : undefined)
-    ?? forMeal[0]
-    ?? null;
+  const applicable = rules.filter((r) =>
+    r.brand === brand && r.mealType === meal && r.isActive !== false
+    && (!r.propertyId || r.propertyId === propertyId)
+    && (!r.kitchenId || r.kitchenId === kitchenId));
+  if (!applicable.length) return null;
+  return [...applicable].sort(
+    (a, b) => scopeRank(b, kitchenId, propertyId) - scopeRank(a, kitchenId, propertyId),
+  )[0] ?? null;
 }
 
 /** A rule's slots in display order. */

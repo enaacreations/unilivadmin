@@ -1,10 +1,10 @@
 import {
   LayoutDashboard, AlertCircle, WashingMachine, MessageSquare,
   UserCheck, Briefcase, GraduationCap, Truck, ClipboardList, ShoppingCart,
-  PackageCheck, Boxes, ChefHat, CalendarDays, TrendingUp, MapPin,
+  PackageCheck, Boxes, TrendingUp, MapPin,
   BookOpen, CreditCard, Shield, Settings, BarChart3,
   Repeat, BellRing, Landmark, Receipt, Wrench, Zap, ClipboardCheck, Radio, Wallet,
-  UtensilsCrossed, ListOrdered, Soup, Send, SlidersHorizontal,
+  UtensilsCrossed, ListOrdered, SlidersHorizontal,
   Network, LayoutGrid,
   DoorOpen, CalendarCheck, CalendarX, LineChart, Recycle, Database, ScrollText,
   Gauge, AlertTriangle, ListChecks, Kanban, BadgeCheck, FileBarChart,
@@ -73,9 +73,9 @@ export const navGroups: NavGroup[] = [
   // Unit leads get the prototype's three-item Food nav (Food Overview / All
   // Orders / Reports) — the journey dashboard absorbs place-order, confirm,
   // waste and guests, so those entries are hidden for that role only.
-  // Kitchen & Menu lives INSIDE Food (13-Jul): visible to roles holding
-  // RECIPES/MENU_PLANNING (kitchen managers, F&B managers, ops excellence) —
-  // unit leads have no grant on those modules, so they never see them.
+  // Recipes and Menu Planning (the old Kitchen & Menu pair) were removed
+  // product-wide along with their routes, API and RECIPES/MENU_PLANNING
+  // permission modules; only their `recipes`/`menu_plans` tables remain.
   { title: "Food", items: [
     // My Dashboard (UnitLeadHome), My Properties and Active Guests are
     // property/tenancy surfaces, not food ops — they belong to the Property
@@ -87,17 +87,12 @@ export const navGroups: NavGroup[] = [
     { title: "Organization", href: "/food/organization", icon: Network, module: "FOOD_ORG" },
     { title: "All Orders", href: "/food/orders", icon: ListOrdered, module: "FOOD_ALL_ORDERS" },
     // Kitchen Home is the F&B journey dashboard (accept → cook → dispatch per
-    // meal) and the FNB_MANAGER landing page. F&B managers now run entirely
-    // from it: Kitchen Summary, Dispatch, Recipes, Menu Planning, Waste
-    // Analytics and Settings are hidden for that persona (the routes still
-    // exist for other roles + deep links) so their Food nav is just Kitchen
-    // Home + Reports. Other kitchen roles (supervisor, ops-excellence, admin)
-    // still see the full set.
+    // meal) and the FNB_MANAGER landing page. Every kitchen role now runs from
+    // it: the standalone Kitchen Summary and Dispatch pages were pulled from
+    // the UI (nav + Kitchen Home quick links) — their routes, APIs and
+    // permission modules are untouched, so deep links still resolve and
+    // restoring them is just re-adding the two nav items here.
     { title: "Kitchen Home", href: "/food/kitchen-home", icon: CookingPot, module: "FOOD_KITCHEN_SUMMARY" },
-    { title: "Kitchen Summary", href: "/food/kitchen-summary", icon: Soup, module: "FOOD_KITCHEN_SUMMARY", hideFor: ["FNB_MANAGER"] },
-    { title: "Dispatch", href: "/food/dispatch", icon: Send, module: "FOOD_DISPATCH", hideFor: ["FNB_MANAGER"] },
-    { title: "Recipes", href: "/recipes", icon: ChefHat, module: "RECIPES", hideFor: ["FNB_MANAGER"] },
-    { title: "Menu Planning", href: "/menu-planning", icon: CalendarDays, module: "MENU_PLANNING", hideFor: ["FNB_MANAGER"] },
     // Place Order / Confirm Delivery / Waste Tracking were folded into the
     // Food Overview single page (place order, receive, log waste inline), so
     // the standalone pages + routes were removed. Their permission MODULES

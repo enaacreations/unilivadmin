@@ -19,7 +19,6 @@ tags:
   - name: leaves
   - name: hrRecruitment
   - name: procurement
-  - name: kitchen
   - name: sales
   - name: lnd
   - name: propertyAcquisition
@@ -1282,130 +1281,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InventoryItemResponse"
-
-  # ─── KITCHEN ──────────────────────────────────────────
-  /recipes:
-    get:
-      operationId: getRecipes
-      tags: [kitchen]
-      summary: List recipes
-      parameters:
-        - $ref: "#/components/parameters/PageParam"
-        - $ref: "#/components/parameters/LimitParam"
-        - $ref: "#/components/parameters/SearchParam"
-      responses:
-        "200":
-          description: Recipes list
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecipesListResponse"
-    post:
-      operationId: createRecipe
-      tags: [kitchen]
-      summary: Create recipe
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateRecipeBody"
-      responses:
-        "201":
-          description: Recipe created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecipeResponse"
-
-  /recipes/{id}:
-    put:
-      operationId: updateRecipe
-      tags: [kitchen]
-      summary: Update recipe
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateRecipeBody"
-      responses:
-        "200":
-          description: Updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecipeResponse"
-    delete:
-      operationId: deleteRecipe
-      tags: [kitchen]
-      summary: Delete recipe
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      responses:
-        "200":
-          description: Deleted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-
-  /menu-plans:
-    get:
-      operationId: getMenuPlans
-      tags: [kitchen]
-      summary: List menu plans
-      parameters:
-        - $ref: "#/components/parameters/PageParam"
-        - $ref: "#/components/parameters/LimitParam"
-        - $ref: "#/components/parameters/PropertyIdParam"
-      responses:
-        "200":
-          description: Menu plans list
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MenuPlansListResponse"
-    post:
-      operationId: createMenuPlan
-      tags: [kitchen]
-      summary: Create menu plan
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateMenuPlanBody"
-      responses:
-        "201":
-          description: Menu plan created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MenuPlanResponse"
-
-  /menu-plans/{id}:
-    put:
-      operationId: updateMenuPlan
-      tags: [kitchen]
-      summary: Update menu plan
-      parameters:
-        - $ref: "#/components/parameters/IdParam"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateMenuPlanBody"
-      responses:
-        "200":
-          description: Updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MenuPlanResponse"
 
   # ─── LEADS / CRM ──────────────────────────────────────
   /leads:
@@ -3420,6 +3295,13 @@ components:
           type: array
           items:
             type: string
+        # Food-ops links: `brand` is a food_brands.code, `kitchenId` a kitchens.id.
+        brand:
+          type: string
+          nullable: true
+        kitchenId:
+          type: string
+          nullable: true
         occupiedBeds:
           type: integer
         createdAt:
@@ -3485,6 +3367,10 @@ components:
           type: array
           items:
             type: string
+        brand:
+          type: string
+        kitchenId:
+          type: string
       required: [name, address, city, state, pincode, totalBeds]
 
     # ─── ROOM ─────────────────────────────────────────────
@@ -4897,137 +4783,6 @@ components:
         condition:
           type: string
       required: [name, category, unit]
-
-    # ─── RECIPE ───────────────────────────────────────────
-    RecipeDto:
-      type: object
-      properties:
-        id:
-          type: string
-        name:
-          type: string
-        category:
-          type: string
-        mealType:
-          type: string
-        ingredients:
-          type: array
-          items:
-            type: object
-        method:
-          type: string
-          nullable: true
-        allergens:
-          type: array
-          items:
-            type: string
-        isVeg:
-          type: boolean
-        isActive:
-          type: boolean
-        createdAt:
-          type: string
-      required: [id, name, category, mealType, ingredients, allergens, isVeg, isActive, createdAt]
-
-    RecipeResponse:
-      type: object
-      properties:
-        success:
-          type: boolean
-        data:
-          $ref: "#/components/schemas/RecipeDto"
-      required: [success, data]
-
-    RecipesListResponse:
-      type: object
-      properties:
-        success:
-          type: boolean
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/RecipeDto"
-        meta:
-          $ref: "#/components/schemas/PaginationMeta"
-      required: [success, data, meta]
-
-    CreateRecipeBody:
-      type: object
-      properties:
-        name:
-          type: string
-        category:
-          type: string
-        mealType:
-          type: string
-        ingredients:
-          type: array
-          items:
-            type: object
-        method:
-          type: string
-        allergens:
-          type: array
-          items:
-            type: string
-        isVeg:
-          type: boolean
-        isActive:
-          type: boolean
-      required: [name, category, mealType, ingredients]
-
-    # ─── MENU PLAN ────────────────────────────────────────
-    MenuPlanDto:
-      type: object
-      properties:
-        id:
-          type: string
-        propertyId:
-          type: string
-        weekStart:
-          type: string
-        slots:
-          type: object
-        status:
-          type: string
-        createdAt:
-          type: string
-      required: [id, propertyId, weekStart, slots, status, createdAt]
-
-    MenuPlanResponse:
-      type: object
-      properties:
-        success:
-          type: boolean
-        data:
-          $ref: "#/components/schemas/MenuPlanDto"
-      required: [success, data]
-
-    MenuPlansListResponse:
-      type: object
-      properties:
-        success:
-          type: boolean
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/MenuPlanDto"
-        meta:
-          $ref: "#/components/schemas/PaginationMeta"
-      required: [success, data, meta]
-
-    CreateMenuPlanBody:
-      type: object
-      properties:
-        propertyId:
-          type: string
-        weekStart:
-          type: string
-        slots:
-          type: object
-        status:
-          type: string
-      required: [propertyId, weekStart, slots]
 
     # ─── LEAD ─────────────────────────────────────────────
     LeadDto:

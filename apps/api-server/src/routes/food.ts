@@ -1494,7 +1494,16 @@ foodRouter.get("/kitchen-summary", authenticate, authorize("FOOD_KITCHEN_SUMMARY
 
     // The cook plan covers every order the kitchen still has to cook: freshly
     // placed and accepted (pre-dispatch). Once dispatched it leaves the plan.
-    const conds = [inArray(foodOrdersTable.status, ["PLACED", "ACCEPTED"])];
+    //
+    // `includeDispatched=true` keeps dispatched orders in, giving the DAY'S
+    // TOTAL rather than the remaining work. Kitchen Home reads it for the
+    // downloadable summaries, which the kitchen still needs after everything
+    // has gone out — the on-screen cook plan keeps the default meaning.
+    const includeDispatched = req.query["includeDispatched"] === "true";
+    const conds = [inArray(
+      foodOrdersTable.status,
+      includeDispatched ? ["PLACED", "ACCEPTED", "DISPATCHED"] : ["PLACED", "ACCEPTED"],
+    )];
     if (scope) conds.push(scope);
     if (brand) conds.push(eq(foodOrdersTable.brand, brand as never));
     if (mealType) conds.push(eq(foodOrdersTable.mealType, mealType as never));
@@ -2700,10 +2709,15 @@ foodRouter.get("/composition-rules", authenticate, async (req, res) => {
     const brand = req.query["brand"] as string | undefined;
     const mealType = req.query["mealType"] as string | undefined;
     const kitchenId = req.query["kitchenId"] as string | undefined;
+    const propertyId = req.query["propertyId"] as string | undefined;
     const conds = [] as ReturnType<typeof eq>[];
     if (brand) conds.push(eq(menuCompositionRuleTable.brand, brand as never));
     if (mealType) conds.push(eq(menuCompositionRuleTable.mealType, mealType as never));
     if (kitchenId) conds.push(eq(menuCompositionRuleTable.kitchenId, kitchenId));
+    // Exact-scope filters, same as kitchenId: the Menu Rules editor fetches by
+    // brand alone and resolves the scope client-side (see ruleFor), so it must
+    // still receive the brand defaults alongside any narrower rows.
+    if (propertyId) conds.push(eq(menuCompositionRuleTable.propertyId, propertyId));
     const rules = await db.select().from(menuCompositionRuleTable).where(conds.length ? and(...conds) : undefined)
       .orderBy(menuCompositionRuleTable.brand, menuCompositionRuleTable.mealType);
     const ids = rules.map((r) => r.id);
@@ -2728,6 +2742,7 @@ const createCompositionRuleSchema = z.object({
   brand: zBrand,
   mealType: zMealType,
   kitchenId: z.string().max(128).nullish(),
+  propertyId: z.string().max(128).nullish(),
   name: z.string().max(256).nullish(),
   isActive: z.boolean().optional(),
   slots: z.array(zCompositionSlot).optional(),
@@ -2741,6 +2756,7 @@ foodRouter.post("/composition-rules", authenticate, authorize("FOOD_CATALOGUE", 
     const result = await db.transaction(async (tx) => {
       const [rule] = await tx.insert(menuCompositionRuleTable).values({
         id: newId(), brand: b.brand, mealType: b.mealType, kitchenId: b.kitchenId || null,
+        propertyId: b.propertyId || null,
         name: b.name ?? null, isActive: b.isActive !== false, updatedAt: new Date(),
       }).returning();
       const sv = slotValues(rule!.id, b.slots);
@@ -2757,6 +2773,7 @@ const updateCompositionRuleSchema = z.object({
   brand: z.string().max(128).optional(),
   mealType: z.string().max(64).optional(),
   kitchenId: z.string().max(128).optional(),
+  propertyId: z.string().max(128).optional(),
   name: z.string().max(256).optional(),
   isActive: z.boolean().optional(),
   slots: z.array(zCompositionSlot).optional(),
@@ -2769,7 +2786,7 @@ foodRouter.put("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE
     const id = req.params["id"]!;
     const result = await db.transaction(async (tx) => {
       const u: Record<string, unknown> = { updatedAt: new Date() };
-      for (const k of ["brand", "mealType", "kitchenId", "name", "isActive"]) if (b[k] !== undefined) u[k] = b[k] === "" ? null : b[k];
+      for (const k of ["brand", "mealType", "kitchenId", "propertyId", "name", "isActive"]) if (b[k] !== undefined) u[k] = b[k] === "" ? null : b[k];
       const [rule] = await tx.update(menuCompositionRuleTable).set(u as never).where(eq(menuCompositionRuleTable.id, id)).returning();
       if (!rule) return null;
       if (b.slots !== undefined) {

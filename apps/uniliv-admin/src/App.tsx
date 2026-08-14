@@ -37,8 +37,6 @@ import Indents from "@/pages/indents";
 import PurchaseOrders from "@/pages/purchase-orders";
 import GRN from "@/pages/grn";
 import Inventory from "@/pages/inventory";
-import Recipes from "@/pages/kitchen";
-import MenuPlanning from "@/pages/menu-planning";
 import Leads from "@/pages/leads";
 import Courses from "@/pages/courses";
 import CourseDetail from "@/pages/course-detail";
@@ -172,10 +170,6 @@ function Router() {
       <Route path="/purchase-orders">{() => <ProtectedRoute component={PurchaseOrders} />}</Route>
       <Route path="/grn">{() => <ProtectedRoute component={GRN} />}</Route>
       <Route path="/inventory">{() => <ProtectedRoute component={Inventory} />}</Route>
-      
-      <Route path="/recipes">{() => <ProtectedRoute component={Recipes} />}</Route>
-      <Route path="/kitchen">{() => <Redirect to="/recipes" />}</Route>
-      <Route path="/menu-planning">{() => <ProtectedRoute component={MenuPlanning} />}</Route>
 
       {/* Food Ordering & Kitchen Operations */}
       <Route path="/food">{() => <Redirect to="/food/dashboard" />}</Route>

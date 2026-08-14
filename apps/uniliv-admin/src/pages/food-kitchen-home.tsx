@@ -1,10 +1,9 @@
 import * as React from "react";
-import { Link } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, addDays, parseISO } from "date-fns";
 import {
   ChevronLeft, ChevronRight, Check, AlertCircle, Truck, Soup, Inbox,
-  History, Download,
+  Download, CookingPot,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,8 +21,9 @@ import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 import {
   foodApi, foodKeys, orderPeople, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty, isFractionalUnit,
-  type FoodOrder, type MealType, type KitchenSummaryDish, type KitchenItem,
+  type FoodOrder, type MealType, type KitchenSummaryDish, type KitchenItem, type DishIngredientRow,
 } from "@/lib/food-api";
+import { useDishCatalogue } from "@/components/food/use-food-masters";
 
 /** Kitchen serve-by targets per meal (prototype schedule — not in the API).
  *  Kept in sync with food-kitchen-summary.tsx. */
@@ -47,6 +47,32 @@ const stateShort = (s: KState, n: number): string =>
   : s === "dispatch" ? "Ready to send"
   : s === "transit" ? "On the road"
   : "No orders";
+
+/** The journey state of any bag of orders — one property, one meal, or the
+ *  whole day. Earliest unfinished stage wins, so the card always shows the
+ *  thing that still needs a hand. */
+const kstateOf = (os: FoodOrder[]): KState =>
+  os.some((o) => o.status === "PLACED") ? "accept"
+  : os.some((o) => o.status === "ACCEPTED") ? "dispatch"
+  : os.some((o) => o.status === "DISPATCHED") ? "transit"
+  : "quiet";
+
+/** Which properties' orders the page is working: `null` is the property
+ *  picker (landing), ALL_SCOPE the combined board, otherwise one propertyId. */
+const ALL_SCOPE = "ALL";
+type Scope = string | null;
+
+/** Narrow a meal's cook plan to a set of properties — one property when scoped
+ *  to it, a kitchen's whole roster when a kitchen is picked. The summary already
+ *  carries a per-property split per dish (and `byProperty.qty` is in
+ *  `displayUnit`), so this is exact and costs no extra round-trip. */
+function dishesForProperties(dishes: KitchenSummaryDish[], propertyIds: Set<string>): KitchenSummaryDish[] {
+  return dishes.flatMap((d) => {
+    const byProperty = d.byProperty.filter((bp) => propertyIds.has(bp.propertyId));
+    const qty = byProperty.reduce((n, bp) => n + bp.qty, 0);
+    return qty > 0 ? [{ ...d, displayQty: qty, byProperty }] : [];
+  });
+}
 
 type Slot = {
   mealType: MealType;
@@ -88,6 +114,83 @@ function downloadChefSummary(dishes: KitchenSummaryDish[], meal: MealType, day: 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...rows]), "Chef summary");
   XLSX.writeFile(wb, xlsxName("chef-summary", meal, day));
+}
+
+/** One ingredient's total for a meal, plus the dishes that call for it. */
+type IngredientLine = { name: string; qty: number; unit: string; dishes: string[] };
+
+/**
+ * Raw ingredients a meal consumes.
+ *
+ * `dish_ingredients.quantity` is a PER-PERSON rate (2 slices of bread a head,
+ * 80g of potato a head) — so a dish's requirement is that rate × the people
+ * eating it, NOT × the dish's cooked quantity. Under the plate model everyone
+ * at a property that ordered the dish is served it, so the dish's head count is
+ * the people at the properties in its own per-property split. That keeps the
+ * total right when only some properties ordered a dish.
+ *
+ * Grouped by (ingredient, unit) with NO unit conversion: a spice measured in
+ * grams stays in grams, matching how the store issues it.
+ */
+export function buildIngredientLines(
+  dishes: KitchenSummaryDish[],
+  ingredientsByDish: Map<string, DishIngredientRow[]>,
+  peopleByProperty: Map<string, number>,
+): IngredientLine[] {
+  const acc = new Map<string, IngredientLine>();
+  for (const d of dishes) {
+    const rows = ingredientsByDish.get(d.dishId) ?? [];
+    if (!rows.length) continue;
+    const people = d.byProperty.reduce((n, bp) => n + (peopleByProperty.get(bp.propertyId) ?? 0), 0);
+    if (people <= 0) continue;
+    for (const r of rows) {
+      const perPerson = Number(r.quantity ?? 0);
+      if (!Number.isFinite(perPerson) || perPerson <= 0) continue;
+      const name = r.ingredientName ?? "Ingredient";
+      const unit = r.unit ?? "";
+      const key = `${name}|${unit}`;
+      const line = acc.get(key) ?? { name, qty: 0, unit, dishes: [] };
+      line.qty += perPerson * people;
+      if (!line.dishes.includes(d.dishName)) line.dishes.push(d.dishName);
+      acc.set(key, line);
+    }
+  }
+  return [...acc.values()]
+    .map((l) => ({ ...l, qty: Math.round(l.qty * 1000) / 1000 }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Ingredients summary = what to pull from the store for this meal. */
+function downloadIngredients(lines: IngredientLine[], meal: MealType, day: string) {
+  const aoa: (string | number)[][] = [
+    ["Ingredient", "Quantity", "Unit", "Used in"],
+    ...lines.map((l) => [l.name, l.qty, l.unit, l.dishes.join(", ")]),
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Ingredients");
+  XLSX.writeFile(wb, xlsxName("ingredients", meal, day));
+}
+
+/** Dispatch manifest = one row per order on the board, sent or still to go. */
+function downloadDispatchBoard(
+  rows: { o: FoodOrder; partner: string; status: string; sentAt: string }[],
+  meal: MealType,
+  day: string,
+) {
+  const aoa: (string | number)[][] = [
+    ["Property", "Order", "People", "Partner", "Status", "Dispatched at"],
+    ...rows.map((r) => [
+      r.o.propertyName ?? "Property",
+      r.o.orderNumber,
+      orderPeople(r.o),
+      r.partner,
+      r.status,
+      r.sentAt,
+    ]),
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Dispatch board");
+  XLSX.writeFile(wb, xlsxName("dispatch-board", meal, day));
 }
 
 function ColumnHead({ icon, label, tone, right }: {
@@ -339,25 +442,189 @@ function DispatchRow({
   );
 }
 
+/** Kitchen switcher. Only rendered when this login actually runs more than one
+ *  kitchen — a single-kitchen F&B manager has nothing to switch between, and
+ *  their orders are already server-scoped. */
+function KitchenSwitcher({ kitchens, value, onChange }: {
+  kitchens: { id: string; name: string }[];
+  value: string | null;
+  onChange: (id: string | null) => void;
+}) {
+  return (
+    <Select value={value ?? ALL_SCOPE} onValueChange={(v) => onChange(v === ALL_SCOPE ? null : v)}>
+      <SelectTrigger
+        aria-label="Switch kitchen"
+        className="h-[34px] w-auto min-w-[190px] max-w-[260px] gap-1.5 rounded-[9px] border-border bg-card px-3 text-[13px] font-semibold"
+      >
+        <CookingPot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={ALL_SCOPE}>All kitchens</SelectItem>
+        {kitchens.map((k) => (
+          <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** Yesterday / Today / Tomorrow stepper. Shared by the property picker and the
+ *  scoped board so both views always work the same kitchen day. */
+function DayStepper({ day, setDay, dayLabel, dayDate }: {
+  day: number;
+  setDay: React.Dispatch<React.SetStateAction<number>>;
+  dayLabel: string;
+  dayDate: Date;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setDay((d) => Math.max(-1, d - 1))}
+        aria-label="Previous day"
+        disabled={day <= -1}
+        className="flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-border bg-card text-foreground disabled:text-border"
+      >
+        <ChevronLeft className="h-[15px] w-[15px]" />
+      </button>
+      <span className="min-w-[130px] text-center">
+        <span className="block font-display text-sm font-bold tracking-[-0.012em]">{dayLabel}</span>
+        <span className="block font-mono text-[11px] text-muted-foreground">{format(dayDate, "EEE, dd MMM")}</span>
+      </span>
+      <button
+        type="button"
+        onClick={() => setDay((d) => Math.min(1, d + 1))}
+        aria-label="Next day"
+        disabled={day >= 1}
+        className="flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-border bg-card text-foreground disabled:text-border"
+      >
+        <ChevronRight className="h-[15px] w-[15px]" />
+      </button>
+    </div>
+  );
+}
+
+/** One property on the picker: who they are, where the day stands, a four-meal
+ *  strip, and the two ways in — accept their waiting orders outright, or open
+ *  their kitchen and work the meal. */
+function PropertyCard({ card, canKitchen, busy, onOpen, onAccept }: {
+  card: PropertyCardData;
+  canKitchen: boolean;
+  busy: string | null;
+  onOpen: () => void;
+  onAccept: () => void;
+}) {
+  const tint = STATE_TINT[card.state];
+  const actionable = card.state === "accept" || card.state === "dispatch";
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-[14px] bg-card p-4"
+      style={{ border: card.state === "accept" ? `1.5px solid ${tint}` : "1px solid var(--border)" }}
+    >
+      <div className="flex items-start gap-2.5">
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={onOpen}
+            className="block max-w-full truncate text-left font-display text-base font-bold tracking-[-0.012em] transition-colors hover:text-accent-strong"
+          >
+            {card.name}
+          </button>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+            {card.city ? `${card.city} · ` : ""}
+            <span className="font-mono tabular-nums">{card.people} people today</span>
+          </div>
+        </div>
+        <span
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold"
+          style={{ background: `color-mix(in srgb, ${tint} 16%, var(--card))`, color: tint }}
+        >
+          <span
+            className={cn("h-[7px] w-[7px] rounded-full", actionable && "animate-pulse-dot")}
+            style={{ background: tint }}
+          />
+          {stateShort(card.state, card.placed.length)}
+        </span>
+      </div>
+
+      {/* Four-meal strip — where each meal of this property's day stands */}
+      <div className="flex gap-1.5">
+        {card.meals.map((m) => {
+          const mt = STATE_TINT[m.state];
+          return (
+            <div
+              key={m.mealType}
+              className="flex flex-1 flex-col items-center gap-0.5 rounded-[9px] px-1 py-1.5"
+              style={{ background: `color-mix(in srgb, ${mt} 14%, var(--card))` }}
+            >
+              <span className="text-[10.5px] font-bold uppercase tracking-[.06em]" style={{ color: mt }}>
+                {shortMeal(m.mealType)}
+              </span>
+              <span className="font-mono text-[11px] tabular-nums" style={{ color: mt }}>
+                {m.live.length ? `${m.people}p` : "—"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-auto flex gap-2">
+        {canKitchen && card.placed.length > 0 && (
+          <button
+            type="button"
+            onClick={onAccept}
+            disabled={!!busy}
+            className="h-9 flex-1 rounded-[9px] bg-warning text-[13px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy === `accept:prop:${card.id}` ? "Accepting…" : `Accept ${card.placed.length} →`}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onOpen}
+          className="h-9 flex-1 rounded-[9px] border border-border bg-card text-[13px] font-bold transition-colors hover:border-accent hover:text-accent-strong"
+        >
+          Open kitchen →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type PropertyCardData = {
+  id: string;
+  name: string;
+  city: string | null;
+  people: number;
+  placed: FoodOrder[];
+  state: KState;
+  meals: Slot[];
+};
+
 export default function FoodKitchenHome() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { confetti, fire } = useConfetti();
-  const { role, can } = usePermissions();
+  const { can } = usePermissions();
   // Accept/prepare are FOOD_KITCHEN_SUMMARY edit; sending a van is
   // FOOD_DISPATCH edit — mirror the server so view-only roles (auditors,
   // leadership) get a read-only board instead of buttons that 403.
   const canKitchen = can("FOOD_KITCHEN_SUMMARY", "edit");
   const canDispatch = can("FOOD_DISPATCH", "edit");
-  // F&B managers run entirely from Kitchen Home — the standalone Kitchen
-  // Summary / Dispatch pages are hidden from their nav, so don't link out to
-  // them here either. Other kitchen roles still get the shortcuts.
-  const showSideSurfaces = role !== "FNB_MANAGER";
 
   // ── Day navigation: yesterday / today / tomorrow ──────────────────────────
   const [day, setDay] = React.useState(0);
   const [pickedMeal, setPickedMeal] = React.useState<MealType | null>(null);
-  React.useEffect(() => { setPickedMeal(null); }, [day]);
+  // Which properties the board is working. The page opens on the picker so the
+  // kitchen chooses a property (or the combined view) before working a meal —
+  // a manager running four properties was otherwise stuck with one merged
+  // board and no way to tell whose orders were whose.
+  const [scope, setScope] = React.useState<Scope>(null);
+  // Which kitchen the whole page is reading; null = every kitchen this login
+  // can see. Only meaningful for multi-kitchen logins (heads/admins).
+  const [kitchen, setKitchen] = React.useState<string | null>(null);
+  React.useEffect(() => { setPickedMeal(null); }, [day, scope]);
 
   // The kitchen's day is an IST calendar day (order serviceDates are anchored
   // to IST server-side) — so "Today" follows Asia/Kolkata, not the viewer's
@@ -373,6 +640,25 @@ export default function FoodKitchenHome() {
     queryKey: foodKeys.kitchenSummary(summaryParams),
     queryFn: () => foodApi.kitchenSummary(summaryParams),
   });
+
+  // The DAY'S TOTAL, dispatched orders included. The cook plan above is what's
+  // still to cook, so it empties as vans leave — and the downloads went with
+  // it. The exports read this instead, so "what did we cook today" stays
+  // answerable after everything has gone out.
+  const totalParams = { date, includeDispatched: "true" };
+  const { data: daySummary } = useQuery({
+    queryKey: foodKeys.kitchenSummary(totalParams),
+    queryFn: () => foodApi.kitchenSummary(totalParams),
+  });
+
+  // Whole dish catalogue with its per-person ingredient rates — shared with the
+  // Service Set tabs, so react-query serves it from cache when they've loaded.
+  const { data: dishCatalogue = [] } = useDishCatalogue();
+  const ingredientsByDish = React.useMemo(() => {
+    const m = new Map<string, DishIngredientRow[]>();
+    for (const d of dishCatalogue) if (d.ingredients?.length) m.set(d.id, d.ingredients);
+    return m;
+  }, [dishCatalogue]);
 
   // The live pipeline for the day. serviceDate is the exact-day filter the
   // server supports; the status list matches the operational clamp for F&B.
@@ -401,30 +687,113 @@ export default function FoodKitchenHome() {
   const agencies = lookups?.agencies ?? [];
   const { data: kitchens = [] } = useQuery({ queryKey: foodKeys.kitchens(), queryFn: () => foodApi.listKitchens() });
 
-  // "Your kitchen" identity chip — F&B manager logins are one-per-kitchen, so
-  // the header names the kitchen this login runs. Heads/admins see all.
+  // ── Kitchen scope ─────────────────────────────────────────────────────────
+  // `myKitchenIds` is what the SERVER already scopes this login to (null = all,
+  // for heads/admins); the switcher narrows within that, never beyond it.
   const myKitchenIds = lookups?.myKitchenIds;
-  const kitchenScopeLabel =
-    myKitchenIds === null ? "All kitchens"
-    : myKitchenIds && myKitchenIds.length === 1 ? kitchens.find((k) => k.id === myKitchenIds[0])?.name ?? "Your kitchen"
-    : myKitchenIds && myKitchenIds.length > 1 ? `${myKitchenIds.length} kitchens`
-    : null;
+  const availableKitchens = React.useMemo(() => {
+    const list = myKitchenIds == null ? kitchens : kitchens.filter((k) => myKitchenIds.includes(k.id));
+    return [...list].sort((a, b) => a.name.localeCompare(b.name));
+  }, [kitchens, myKitchenIds]);
 
-  // ── Per-meal slots ────────────────────────────────────────────────────────
-  const slots: Slot[] = MEAL_TYPES.map((mealType) => {
-    const live = orders.filter((o) => o.mealType === mealType);
-    const placed = live.filter((o) => o.status === "PLACED");
-    const accepted = live.filter((o) => o.status === "ACCEPTED");
-    const dispatched = live.filter((o) => o.status === "DISPATCHED");
-    const dishes = summary?.meals.find((m) => m.mealType === mealType)?.dishes ?? [];
-    const people = live.reduce((s, o) => s + orderPeople(o), 0);
-    const state: KState =
-      placed.length ? "accept"
-      : accepted.length ? "dispatch"
-      : dispatched.length ? "transit"
-      : "quiet";
-    return { mealType, placed, accepted, dispatched, live, dishes, people, state };
+  // A picked kitchen that leaves the list (permissions changed, kitchen retired)
+  // would silently filter everything to nothing — fall back to all kitchens.
+  React.useEffect(() => {
+    if (kitchen && availableKitchens.length > 0 && !availableKitchens.some((k) => k.id === kitchen)) {
+      setKitchen(null);
+      setScope(null);
+    }
+  }, [kitchen, availableKitchens]);
+
+  // Switching kitchens invalidates the property scope (that property belongs to
+  // the kitchen you just left), so drop back to the new kitchen's picker.
+  const pickKitchen = (id: string | null) => { setKitchen(id); setScope(null); };
+
+  // Every order carries its kitchen, so the switch is a pure client-side
+  // narrowing of the day's orders — no refetch, and the picker stays instant.
+  const kitchenOrders = kitchen ? orders.filter((o) => o.kitchenId === kitchen) : orders;
+
+  const selectedKitchenName = kitchen ? availableKitchens.find((k) => k.id === kitchen)?.name ?? null : null;
+  // Header identity: the picked kitchen, else what this login runs overall.
+  const kitchenScopeLabel =
+    selectedKitchenName
+    ?? (myKitchenIds === null ? "All kitchens"
+      : myKitchenIds && myKitchenIds.length === 1 ? kitchens.find((k) => k.id === myKitchenIds[0])?.name ?? "Your kitchen"
+      : myKitchenIds && myKitchenIds.length > 1 ? `${myKitchenIds.length} kitchens`
+      : null);
+
+  // ── Property roster for the picker ────────────────────────────────────────
+  // A definite kitchen scope — picked from the switcher, or a kitchen-bound
+  // login — has a known roster, so quiet properties stay listed and read as
+  // quiet rather than going missing. Without one, an org-wide login would get
+  // the entire portfolio, so it sees who actually ordered. Either way anything
+  // with an order today is present, so no work can hide from the picker.
+  const propertyRoster = React.useMemo(() => {
+    const ordered = new Set(kitchenOrders.map((o) => o.propertyId));
+    const all = lookups?.properties ?? [];
+    const scopeKitchens = kitchen ? [kitchen] : myKitchenIds ?? null;
+    const mine = scopeKitchens == null
+      ? all.filter((p) => ordered.has(p.id))
+      : all.filter((p) => (p.kitchenId != null && scopeKitchens.includes(p.kitchenId)) || ordered.has(p.id));
+    return [...mine].sort((a, b) => a.name.localeCompare(b.name));
+  }, [lookups?.properties, myKitchenIds, kitchen, kitchenOrders]);
+
+  // Property ids the kitchen selection covers — the cook plan is reported per
+  // property, so narrowing it needs the roster, not the kitchen id.
+  const kitchenPropertyIds = React.useMemo(
+    () => (kitchen ? new Set(propertyRoster.map((p) => p.id)) : null),
+    [kitchen, propertyRoster],
+  );
+
+  // A scoped property that drops off the roster (day flip, order cancelled)
+  // would otherwise strand the board on an empty scope — fall back to the picker.
+  React.useEffect(() => {
+    if (scope && scope !== ALL_SCOPE && lookups && !propertyRoster.some((p) => p.id === scope)) setScope(null);
+  }, [scope, propertyRoster, lookups]);
+
+  // ── Per-meal slots, narrowed to the current scope ─────────────────────────
+  const scopedOrders = scope == null || scope === ALL_SCOPE
+    ? kitchenOrders
+    : kitchenOrders.filter((o) => o.propertyId === scope);
+
+  // `propertyIds` narrows the cook plan; null leaves it whole (every property
+  // the summary covers, which is already server-scoped to this login).
+  const buildSlots = (os: FoodOrder[], propertyIds: Set<string> | null): Slot[] =>
+    MEAL_TYPES.map((mealType) => {
+      const live = os.filter((o) => o.mealType === mealType);
+      const all = summary?.meals.find((m) => m.mealType === mealType)?.dishes ?? [];
+      return {
+        mealType,
+        placed: live.filter((o) => o.status === "PLACED"),
+        accepted: live.filter((o) => o.status === "ACCEPTED"),
+        dispatched: live.filter((o) => o.status === "DISPATCHED"),
+        live,
+        dishes: propertyIds ? dishesForProperties(all, propertyIds) : all,
+        people: live.reduce((s, o) => s + orderPeople(o), 0),
+        state: kstateOf(live),
+      };
+    });
+
+  const slots = buildSlots(
+    scopedOrders,
+    scope != null && scope !== ALL_SCOPE ? new Set([scope]) : kitchenPropertyIds,
+  );
+
+  // Per-property cards for the picker, and the combined card's meal chips
+  // (the whole kitchen's day, regardless of which property is scoped).
+  const propertyCards: PropertyCardData[] = propertyRoster.map((p) => {
+    const mine = kitchenOrders.filter((o) => o.propertyId === p.id);
+    return {
+      id: p.id,
+      name: p.name,
+      city: p.city,
+      people: mine.reduce((n, o) => n + orderPeople(o), 0),
+      placed: mine.filter((o) => o.status === "PLACED"),
+      state: kstateOf(mine),
+      meals: buildSlots(mine, new Set([p.id])),
+    };
   });
+  const combinedSlots = buildSlots(kitchenOrders, kitchenPropertyIds);
 
   // Auto-focus the meal that needs a hand; a manual pick always wins.
   const selected: Slot =
@@ -443,8 +812,45 @@ export default function FoodKitchenHome() {
     if (!pickedMeal && !loadingAny && selected) setPickedMeal(selected.mealType);
   }, [pickedMeal, loadingAny, selected?.mealType]);
 
-  const totalPlaced = slots.reduce((n, s) => n + s.placed.length, 0);
-  const totalPeople = slots.reduce((n, s) => n + s.people, 0);
+  // ── Export data for the selected meal ─────────────────────────────────────
+  // The day's total (dispatched included), narrowed by exactly the same
+  // kitchen/property scope as the board — so a download always matches the
+  // scope on screen, and keeps working once the vans have gone.
+  const exportDishes = React.useMemo(() => {
+    const all = daySummary?.meals.find((m) => m.mealType === selected?.mealType)?.dishes ?? [];
+    const ids = scope != null && scope !== ALL_SCOPE ? new Set([scope]) : kitchenPropertyIds;
+    return ids ? dishesForProperties(all, ids) : all;
+  }, [daySummary, selected?.mealType, scope, kitchenPropertyIds]);
+
+  // People per property for this meal, across every live status — the basis the
+  // per-person ingredient rates scale by.
+  const peopleByProperty = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const o of selected?.live ?? []) m.set(o.propertyId, (m.get(o.propertyId) ?? 0) + orderPeople(o));
+    return m;
+  }, [selected?.live]);
+
+  const ingredientLines = React.useMemo(
+    () => buildIngredientLines(exportDishes, ingredientsByDish, peopleByProperty),
+    [exportDishes, ingredientsByDish, peopleByProperty],
+  );
+
+  // Hero counts follow the view: the picker totals the whole kitchen day, the
+  // scoped board totals just what's in scope.
+  const heroOrders = scope == null ? kitchenOrders : scopedOrders;
+  const heroPlaced = heroOrders.filter((o) => o.status === "PLACED");
+  const heroPeople = heroOrders.reduce((n, o) => n + orderPeople(o), 0);
+  const placedPropertyCount = new Set(heroPlaced.map((o) => o.propertyId)).size;
+
+  // Scope identity — the title/subtitle of the board, and the label the cook
+  // plan sheet reports against.
+  const scopeProperty = scope && scope !== ALL_SCOPE ? propertyRoster.find((p) => p.id === scope) : undefined;
+  const scopeTitle = scope === ALL_SCOPE
+    ? selectedKitchenName ?? "All properties — combined"
+    : scopeProperty?.name ?? "Kitchen";
+  const scopeLabel = scope === ALL_SCOPE
+    ? kitchenScopeLabel ?? "All properties"
+    : scopeProperty?.name ?? kitchenScopeLabel;
 
   // ── Actions ───────────────────────────────────────────────────────────────
   // One shared busy flag — the loops are sequential so each transition event
@@ -473,8 +879,12 @@ export default function FoodKitchenHome() {
   };
 
   const acceptMeal = (s: Slot) => runAccept(s.placed, shortMeal(s.mealType), `accept:${s.mealType}`);
+  // The hero's "Accept all" takes whatever the hero is counting — the whole
+  // kitchen day on the picker, the scope's orders on the board.
   const acceptEverything = () =>
-    runAccept(slots.flatMap((s) => s.placed), `${dayLabel}'s orders`, "accept:ALL");
+    runAccept(heroPlaced, scope == null ? `${dayLabel}'s orders` : scopeTitle, "accept:ALL");
+  const acceptProperty = (card: PropertyCardData) =>
+    runAccept(card.placed, card.name, `accept:prop:${card.id}`);
 
   // ── Order-details sheet ───────────────────────────────────────────────────
   // Clicking a property NAME opens a right-side sheet with that order's dish
@@ -580,6 +990,19 @@ export default function FoodKitchenHome() {
     return [partner, batch ? `batch ${batch}` : null, time || null].filter(Boolean).join(" · ");
   };
 
+  // Everything on the board, ready and gone, as a downloadable manifest.
+  const dispatchExportRows = [
+    ...dispatchable.map((o) => ({
+      o, partner: partnerNameOf(o) || "—", status: "Ready to send", sentAt: "",
+    })),
+    ...dispatchedForMeal.map((o) => ({
+      o,
+      partner: o.deliveryPartnerName ?? agencies.find((a) => a.id === o.deliveryPartnerId)?.name ?? "—",
+      status: "Dispatched",
+      sentAt: o.dispatchedAt ? format(parseISO(o.dispatchedAt), "dd MMM, h:mm a") : "",
+    })),
+  ];
+
   const loading = ordersLoading || summaryLoading;
   const tint = STATE_TINT[selected?.state ?? "quiet"];
 
@@ -588,30 +1011,103 @@ export default function FoodKitchenHome() {
     <div className="mx-auto flex max-w-[760px] animate-fade-up flex-col gap-6">
       {confetti}
 
-      {/* Header — the title IS the kitchen this login runs (user decision:
-          no persona/kitchen badges; the page is simply "your kitchen"). */}
-      <div>
-        <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">
-          {kitchenScopeLabel ?? "Kitchen Home"}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Your kitchen day — accept orders and send the vans from one place.
-        </p>
-      </div>
+      {/* Header. On the picker the title is the kitchen this login runs; once
+          scoped it's the property (or the combined view) being worked, with a
+          way back. The day stepper is shared, so both views work one day. */}
+      {scope == null ? (
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="min-w-[260px] flex-1">
+            <h1 className="mb-1 font-display text-2xl font-bold tracking-[-0.012em]">
+              {kitchenScopeLabel ?? "Kitchen Home"}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Your kitchen day — pick a property to run it, or work the combined view.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {availableKitchens.length > 1 && (
+              <KitchenSwitcher kitchens={availableKitchens} value={kitchen} onChange={pickKitchen} />
+            )}
+            <DayStepper day={day} setDay={setDay} dayLabel={dayLabel} dayDate={dayDate} />
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {/* Scope switcher — back to the picker, then jump straight between
+              properties without going through it. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setScope(null)}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3.5 py-1.5 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" /> Properties
+            </button>
+            <span className="h-5 w-px bg-border" />
+            {[{ id: ALL_SCOPE, name: "All properties" }, ...propertyRoster].map((p) => {
+              const active = scope === p.id;
+              const nPlaced = kitchenOrders.filter(
+                (o) => o.status === "PLACED" && (p.id === ALL_SCOPE || o.propertyId === p.id),
+              ).length;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setScope(p.id)}
+                  className={cn(
+                    "inline-flex items-center gap-[7px] rounded-full px-3.5 py-1.5 text-[13px] font-bold transition-colors",
+                    active
+                      ? "border-[1.5px] border-accent bg-accent/[.08] text-accent-strong"
+                      : "border border-border bg-card text-muted-foreground hover:border-accent hover:text-foreground",
+                  )}
+                >
+                  {p.name}
+                  {!active && nPlaced > 0 && (
+                    <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-warning px-1.5 text-[11px] font-extrabold text-white">
+                      {nPlaced}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
 
-      {/* Hero: what needs the kitchen's attention for the selected day */}
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="min-w-[260px] flex-1">
+              <h1 className="mb-1 font-display text-[22px] font-bold tracking-[-0.012em]">{scopeTitle}</h1>
+              <p className="text-sm text-muted-foreground">
+                {scope === ALL_SCOPE
+                  ? `Every property's orders${selectedKitchenName ? " in this kitchen" : ""} in one board — same flow, everything together.`
+                  : `${scopeProperty?.city ? `${scopeProperty.city} · ` : ""}only this property's orders — accept, cook and send from here.`}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {availableKitchens.length > 1 && (
+                <KitchenSwitcher kitchens={availableKitchens} value={kitchen} onChange={pickKitchen} />
+              )}
+              <DayStepper day={day} setDay={setDay} dayLabel={dayLabel} dayDate={dayDate} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hero: what needs a hand — the whole day on the picker, the scope's
+          orders once inside. */}
       {ordersLoading ? (
         <Skeleton className="h-24 w-full rounded-[14px]" />
-      ) : totalPlaced > 0 ? (
+      ) : heroPlaced.length > 0 ? (
         <section className="rounded-[14px] bg-brand-gradient p-[2px]">
           <div className="flex flex-wrap items-center gap-[18px] rounded-[12px] bg-card px-6 py-5">
             <div className="min-w-[220px] flex-1">
               <div className="font-display text-lg font-bold tracking-[-0.012em]">
-                {totalPlaced} order{totalPlaced === 1 ? "" : "s"} waiting for the kitchen
+                {heroPlaced.length} order{heroPlaced.length === 1 ? "" : "s"} waiting
+                {scope == null && placedPropertyCount > 1
+                  ? ` across ${placedPropertyCount} properties`
+                  : " for the kitchen"}
               </div>
               <div className="mt-1 text-[13px] text-muted-foreground">
                 {dayLabel}, {format(dayDate, "EEEE, dd MMM")} ·{" "}
-                <strong className="text-accent-strong">{totalPeople} people</strong> to feed
+                <strong className="text-accent-strong">{heroPeople} people</strong> to feed
               </div>
             </div>
             {canKitchen && (
@@ -626,7 +1122,7 @@ export default function FoodKitchenHome() {
             )}
           </div>
         </section>
-      ) : orders.length > 0 ? (
+      ) : heroOrders.length > 0 ? (
         <section className="flex items-center gap-3.5 rounded-[14px] bg-success-soft px-[22px] py-4">
           <span className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-success">
             <Check className="h-4 w-4 text-white" strokeWidth={3} />
@@ -636,44 +1132,93 @@ export default function FoodKitchenHome() {
               Everything&rsquo;s accepted
             </div>
             <div className="mt-0.5 text-[13px] text-muted-foreground">
-              {format(dayDate, "EEEE, dd MMM")} · {totalPeople} people · send the vans below.
+              {format(dayDate, "EEEE, dd MMM")} · {heroPeople} people ·{" "}
+              {scope == null ? "open a property below to cook and send the vans." : "send the vans below."}
             </div>
           </div>
         </section>
       ) : null}
 
-      {/* Kitchen day: day nav + meal tabs + detail */}
-      <section>
-        <div className="mb-3 flex items-center gap-3">
-          <h2 className="flex-1 font-display text-base font-bold tracking-[-0.012em]">Kitchen day</h2>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setDay((d) => Math.max(-1, d - 1))}
-              aria-label="Previous day"
-              disabled={day <= -1}
-              className="flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-border bg-card text-foreground disabled:text-border"
-            >
-              <ChevronLeft className="h-[15px] w-[15px]" />
-            </button>
-            <span className="min-w-[130px] text-center">
-              <span className="block font-display text-sm font-bold tracking-[-0.012em]">{dayLabel}</span>
-              <span className="block font-mono text-[11px] text-muted-foreground">
-                {format(dayDate, "EEE, dd MMM")}
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setDay((d) => Math.min(1, d + 1))}
-              aria-label="Next day"
-              disabled={day >= 1}
-              className="flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-border bg-card text-foreground disabled:text-border"
-            >
-              <ChevronRight className="h-[15px] w-[15px]" />
-            </button>
-          </div>
-        </div>
+      {/* ── Property picker ─────────────────────────────────────────────── */}
+      {scope == null ? (
+        <>
+          {/* Combined view — work every property's orders on one board */}
+          <button
+            type="button"
+            onClick={() => setScope(ALL_SCOPE)}
+            className="flex w-full flex-wrap items-center gap-4 rounded-[14px] border border-border bg-card px-[22px] py-4 text-left transition-colors hover:border-accent"
+          >
+            <div className="min-w-[240px] flex-1">
+              <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">
+                Combined summary
+              </div>
+              <div className="font-display text-[17px] font-bold tracking-[-0.012em]">
+                All properties — one kitchen day
+              </div>
+              <div className="mt-0.5 text-[13px] text-muted-foreground">
+                Accept, cook and dispatch everything together.
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {combinedSlots.map((s) => {
+                const t = STATE_TINT[s.state];
+                return (
+                  <span
+                    key={s.mealType}
+                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-bold"
+                    style={{ background: `color-mix(in srgb, ${t} 16%, var(--card))`, color: t }}
+                  >
+                    <span
+                      className={cn("h-[7px] w-[7px] rounded-full", s.state === "accept" && "animate-pulse-dot")}
+                      style={{ background: t }}
+                    />
+                    {shortMeal(s.mealType)} · {stateShort(s.state, s.placed.length)}
+                  </span>
+                );
+              })}
+            </div>
+            <span className="font-display text-[15px] font-bold text-accent-strong">Open →</span>
+          </button>
 
+          <section>
+            <div className="mb-3 flex items-baseline gap-2.5">
+              <h2 className="font-display text-base font-bold tracking-[-0.012em]">Ordering today</h2>
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                {propertyCards.length} propert{propertyCards.length === 1 ? "y" : "ies"}
+              </span>
+            </div>
+            {loading ? (
+              <div className="grid gap-3.5 sm:grid-cols-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <Skeleton key={i} className="h-[184px] rounded-[14px]" />
+                ))}
+              </div>
+            ) : propertyCards.length === 0 ? (
+              <div className="rounded-[12px] border border-dashed border-border px-4 py-8 text-center text-[13px] text-muted-foreground">
+                {selectedKitchenName
+                  ? `No properties are served by ${selectedKitchenName} yet — assign some in Organization.`
+                  : `No properties ordered ${dayLabel.toLowerCase()} — cards appear as orders land.`}
+              </div>
+            ) : (
+              <div className="grid gap-3.5 sm:grid-cols-2">
+                {propertyCards.map((card) => (
+                  <PropertyCard
+                    key={card.id}
+                    card={card}
+                    canKitchen={canKitchen}
+                    busy={busy}
+                    onOpen={() => setScope(card.id)}
+                    onAccept={() => acceptProperty(card)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      ) : (
+
+      /* ── Scoped board: meal tabs + cook plan + accept + dispatch ─────── */
+      <section>
         {/* Meal tabs */}
         {loading ? (
           <div className="mb-4 flex flex-wrap gap-3">
@@ -762,24 +1307,39 @@ export default function FoodKitchenHome() {
                         {selected.people} people
                       </span>
                     )}
-                    {/* Downloads (real .xlsx, generated from this cook plan). Both
-                        live here so they're available before AND after accepting. */}
-                    {selected.dishes.length > 0 && (
+                    {/* Downloads (real .xlsx). They read the DAY'S TOTAL, not the
+                        remaining cook plan, so they stay available before
+                        accepting, after accepting, and after everything has been
+                        dispatched — when the plan above is empty. */}
+                    {exportDishes.length > 0 && (
                       <>
                         <button
                           type="button"
-                          onClick={() => downloadFullSummary(selected.dishes, selected.mealType, dayLabel)}
+                          onClick={() => downloadFullSummary(exportDishes, selected.mealType, dayLabel)}
                           className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
                         >
                           <Download className="h-3 w-3" /> Full summary
                         </button>
                         <button
                           type="button"
-                          onClick={() => downloadChefSummary(selected.dishes, selected.mealType, dayLabel)}
+                          onClick={() => downloadChefSummary(exportDishes, selected.mealType, dayLabel)}
                           className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
                         >
                           <Download className="h-3 w-3" /> Chef summary
                         </button>
+                        {/* Raw store issue for this meal — per-person rates × the
+                            people eating each dish. Hidden when no dish in the
+                            plan has an ingredient list, so it never downloads a
+                            header-only sheet. */}
+                        {ingredientLines.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => downloadIngredients(ingredientLines, selected.mealType, dayLabel)}
+                            className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+                          >
+                            <Download className="h-3 w-3" /> Ingredients
+                          </button>
+                        )}
                       </>
                     )}
                   </div>
@@ -787,7 +1347,9 @@ export default function FoodKitchenHome() {
               />
               {selected.dishes.length === 0 ? (
                 <div className="rounded-[9px] border border-dashed border-border px-3 py-5 text-center text-[13px] text-muted-foreground">
-                  No cook plan for {shortMeal(selected.mealType).toLowerCase()} {dayLabel.toLowerCase()} — it fills in as orders land.
+                  {exportDishes.length > 0
+                    ? `All of ${shortMeal(selected.mealType).toLowerCase()} has gone out — the day's totals are still downloadable above.`
+                    : `No cook plan for ${shortMeal(selected.mealType).toLowerCase()} ${dayLabel.toLowerCase()} — it fills in as orders land.`}
                 </div>
               ) : (
                 <div className="-mr-1 max-h-[320px] overflow-y-auto pr-1">
@@ -865,11 +1427,25 @@ export default function FoodKitchenHome() {
                     </span>
                   )}
                 </div>
-                {boardTotal > 0 && (
-                  <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                    {dispatchedTotal} of {boardTotal} dispatched
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {boardTotal > 0 && (
+                    <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                      {dispatchedTotal} of {boardTotal} dispatched
+                    </span>
+                  )}
+                  {/* The board as a manifest: who it's for, how many people, the
+                      partner, and whether it has left. Stays available once
+                      everything is out, which is when it's usually wanted. */}
+                  {dispatchExportRows.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => downloadDispatchBoard(dispatchExportRows, selected.mealType, dayLabel)}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+                    >
+                      <Download className="h-3 w-3" /> Dispatch list
+                    </button>
+                  )}
+                </div>
               </div>
 
               {dispatchable.length === 0 && dispatchedForMeal.length === 0 ? (
@@ -950,25 +1526,6 @@ export default function FoodKitchenHome() {
           </div>
         ) : null}
       </section>
-
-      {/* Quick links — only for roles that keep the standalone pages */}
-      {showSideSurfaces && (
-        <div className="flex flex-wrap justify-end gap-2">
-          <Link href="/food/kitchen-summary">
-            <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-              <Soup className="h-3.5 w-3.5" />
-              Full kitchen summary
-              <ChevronRight className="h-[13px] w-[13px]" />
-            </span>
-          </Link>
-          <Link href="/food/dispatch">
-            <span className="inline-flex cursor-pointer items-center gap-[7px] rounded-full border border-border bg-card px-3.5 py-2 text-[13px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-              <History className="h-3.5 w-3.5" />
-              Dispatch board
-              <ChevronRight className="h-[13px] w-[13px]" />
-            </span>
-          </Link>
-        </div>
       )}
 
       {/* Order-details sheet — what this property ordered */}
@@ -1071,10 +1628,10 @@ export default function FoodKitchenHome() {
                 </SheetTitle>
                 <SheetDescription>
                   {[
-                    kitchenScopeLabel,
+                    scopeLabel,
                     `${selected.people} people`,
                     (() => {
-                      const props = new Set(selected.dishes.flatMap((d) => d.byProperty.map((bp) => bp.propertyId)));
+                      const props = new Set(exportDishes.flatMap((d) => d.byProperty.map((bp) => bp.propertyId)));
                       return props.size > 0 ? `${props.size} propert${props.size === 1 ? "y" : "ies"}` : null;
                     })(),
                   ].filter(Boolean).join(" · ")}
@@ -1082,12 +1639,12 @@ export default function FoodKitchenHome() {
               </SheetHeader>
 
               <div className="mt-4 flex flex-col gap-3">
-                {selected.dishes.length === 0 ? (
+                {exportDishes.length === 0 ? (
                   <div className="rounded-[12px] border border-dashed border-border px-4 py-8 text-center text-[13px] text-muted-foreground">
                     No cook plan for {shortMeal(selected.mealType).toLowerCase()} {dayLabel.toLowerCase()} — it fills in as orders land.
                   </div>
                 ) : (
-                  selected.dishes.map((d) => (
+                  exportDishes.map((d) => (
                     <div key={`${d.dishId}|${d.unit}`} className="rounded-[12px] border border-border bg-background px-4 py-3">
                       {/* dish head: icon + name + total */}
                       <div className="mb-2 flex items-center gap-2.5">

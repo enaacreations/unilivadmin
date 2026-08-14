@@ -330,6 +330,12 @@ export interface MenuRuleSettings {
    * so 14 already reaches every other day in it). Defaults to 3.
    */
   repeatWithinDays: number;
+  /**
+   * Which scope the returned values were resolved at. Present on reads/writes
+   * that named a propertyId or kitchenId; the values themselves are always the
+   * RESOLVED answer (property → kitchen → org default), never the raw row.
+   */
+  scope?: "GLOBAL" | "KITCHEN" | "PROPERTY";
 }
 export interface AnalyticsData {
   period: string; range: { from: string; to: string };
@@ -428,7 +434,7 @@ export interface OrderPreviewMeal { mealType: MealType; label: string; items: Or
 
 // ─── Menu-composition rule engine ─────────────────────────────────────────────
 export interface CompositionSlot { id?: string; slotLabel: string | null; component: string | null; preparation: string | null; minCount: number; maxCount: number | null; sortOrder: number }
-export interface CompositionRule { id: string; brand: string; mealType: MealType; kitchenId: string | null; name: string | null; isActive: boolean; slots: CompositionSlot[] }
+export interface CompositionRule { id: string; brand: string; mealType: MealType; kitchenId: string | null; propertyId: string | null; name: string | null; isActive: boolean; slots: CompositionSlot[] }
 export interface SlotValidation { slotId: string; slotLabel: string | null; component: string | null; preparation: string | null; minCount: number; maxCount: number | null; count: number; matchedDishIds: string[]; status: "OK" | "MISSING" | "UNDER" | "OVER" }
 export interface SharedIngredient { ingredientId: string; name: string; dishIds: string[] }
 // Machine-readable verdict for hard-blocking a menu/slot selection (B3-16).
@@ -470,7 +476,10 @@ export const foodKeys = {
   ingredients: (p: Record<string, unknown> = {}) => ["food", "ingredients", p] as const,
   compositionRules: (p: Record<string, unknown> = {}) => ["food", "composition-rules", p] as const,
   /** Shared by the Menu Rules editor, the plate composer and the rotation board. */
-  menuRuleSettings: () => ["food", "menu-rule-settings"] as const,
+  // Scoped: the same switches resolve differently per property/kitchen, so the
+  // scope has to be part of the key or one property's answer would be served
+  // from another's cache entry.
+  menuRuleSettings: (p: Record<string, unknown> = {}) => ["food", "menu-rule-settings", p] as const,
   rotationValidate: (p: Record<string, unknown>) => ["food", "rotation-validate", p] as const,
   rotation: (p: Record<string, unknown>) => ["food", "menu-rotation", p] as const,
   rules: (p: Record<string, unknown>) => ["food", "rules", p] as const,
@@ -795,9 +804,16 @@ export const foodApi = {
     apiFetch<Envelope<FoodDefaults>>(`/food/system-config/food-defaults`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
 
   // Menu rule switches (system_config) — read and written by FOOD_SETTINGS holders.
-  menuRuleSettings: () =>
-    apiFetch<Envelope<MenuRuleSettings>>(`/food/system-config/menu-rules`).then((r) => r.data),
-  updateMenuRuleSettings: (b: Partial<MenuRuleSettings>) =>
+  // Both take an optional scope. Omit it for the org-wide values; pass
+  // propertyId (or kitchenId) to read the RESOLVED answer for that scope, or to
+  // write an override there. On write, an explicit null on a setting clears the
+  // override so it inherits again.
+  menuRuleSettings: (p: { propertyId?: string; kitchenId?: string } = {}) =>
+    apiFetch<Envelope<MenuRuleSettings>>(`/food/system-config/menu-rules${qs(p)}`).then((r) => r.data),
+  updateMenuRuleSettings: (
+    b: Partial<Record<"ingredientClashBlocks" | "flagRepeatsWithin3Days", boolean | null>>
+      & { repeatWithinDays?: number | null; propertyId?: string | null; kitchenId?: string | null },
+  ) =>
     apiFetch<Envelope<MenuRuleSettings>>(`/food/system-config/menu-rules`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
 
   // Menu (full day + share)

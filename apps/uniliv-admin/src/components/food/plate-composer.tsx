@@ -409,19 +409,19 @@ export function PlateComposer({
               exactly where else it runs — and it sits alongside a clash rather
               than being outranked by one, since the drawer has the space. */}
           {plateRepeats.length > 0 && (
-            <div className="rounded-xl bg-warning-soft px-3.5 py-3">
-              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-warning">
+            <div className="rounded-xl bg-danger-soft px-3.5 py-3">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-destructive">
                 <CircleAlert className="h-3.5 w-3.5" />
                 {plateRepeats.length === 1
                   ? "1 dish repeats within 3 days"
                   : `${plateRepeats.length} dishes repeat within 3 days`}
               </p>
               {plateRepeats.map((r) => (
-                <p key={r.dishId} className="text-xs leading-relaxed text-warning">
+                <p key={r.dishId} className="text-xs leading-relaxed text-destructive">
                   {r.name} is also served {r.where}.
                 </p>
               ))}
-              <p className="mt-1 text-[11px] leading-relaxed text-warning/80">
+              <p className="mt-1 text-[11px] leading-relaxed text-destructive/80">
                 Repeats are only flagged, never blocked — save it if the kitchen wants it.
               </p>
             </div>

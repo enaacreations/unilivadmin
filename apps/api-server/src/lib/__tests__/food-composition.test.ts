@@ -24,6 +24,7 @@ const rule = (slots: CompositionSlot[], over: Partial<CompositionRule> = {}): Co
   brand: "UNILIV",
   mealType: "LUNCH",
   kitchenId: null,
+  propertyId: null,
   name: "Standard Thali",
   slots,
   ...over,

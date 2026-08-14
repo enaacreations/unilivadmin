@@ -315,9 +315,19 @@ export const dishIngredientsTable = pgTable("dish_ingredients", {
 }));
 
 /**
- * Menu-composition rule — the STRUCTURE of a meal per (brand, mealType, kitchen?).
+ * Menu-composition rule — the STRUCTURE of a meal per (brand, mealType, scope).
  * A rule = a header + N slots (e.g. Lunch = 1 DAL + 1 SABZI + 1 RICE + 1 SALAD).
- * A kitchen-specific rule (kitchenId set) overrides the brand default (kitchenId null).
+ *
+ * Scope resolves narrowest-first: propertyId > kitchenId > brand default (both
+ * null). Only ONE of propertyId/kitchenId is meant to be set on a row — a
+ * property already implies its kitchen (properties.kitchenId), so a row
+ * carrying both adds nothing the property row doesn't already say.
+ *
+ * Caveat worth knowing before authoring property rules: the rotation itself is
+ * per (kitchen, brand) — see foodMenuRotationTable — so every property sharing
+ * a kitchen eats the SAME plate. Two properties on one kitchen with conflicting
+ * rules means one of them can never be satisfied. Property rules are safe when
+ * the properties sit on different kitchens.
  */
 export const menuCompositionRuleTable = pgTable("menu_composition_rules", {
   id: text("id").primaryKey(),
@@ -325,12 +335,15 @@ export const menuCompositionRuleTable = pgTable("menu_composition_rules", {
   mealType: mealTypeEnum("meal_type").notNull(),
   /** Null → applies to all kitchens of the brand (default). */
   kitchenId: text("kitchen_id").references(() => kitchensTable.id),
+  /** Null → not property-specific. Set → overrides the kitchen/brand rule. */
+  propertyId: text("property_id").references(() => propertiesTable.id),
   name: text("name"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => ({
   resolveIdx: index("idx_comp_rule_resolve").on(t.brand, t.mealType, t.kitchenId, t.isActive),
+  propIdx: index("idx_comp_rule_property").on(t.propertyId, t.mealType, t.isActive),
 }));
 
 /** A required slot within a composition rule (by component and/or preparation, with counts). */
@@ -348,6 +361,35 @@ export const menuCompositionSlotTable = pgTable("menu_composition_slots", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => ({ ruleIdx: index("idx_comp_slot_rule").on(t.ruleId) }));
+
+/**
+ * Per-scope overrides for the two Menu Rules switches (repeat flag + window,
+ * ingredient clash). The ORG-WIDE defaults stay in `system_config` under the
+ * FOOD_RULE_* keys — this table only holds narrower overrides, so an install
+ * with no rows behaves exactly as it did before and needs no data migration.
+ *
+ * Resolution mirrors menuCompositionRuleTable: propertyId > kitchenId >
+ * system_config. Every setting column is nullable and means "inherit" when
+ * null, so a property can override the repeat window without also pinning the
+ * clash switch.
+ */
+export const menuRuleOverrideTable = pgTable("menu_rule_overrides", {
+  id: text("id").primaryKey(),
+  /** Exactly one of these is set; both null would just restate the global row. */
+  propertyId: text("property_id").references(() => propertiesTable.id, { onDelete: "cascade" }),
+  kitchenId: text("kitchen_id").references(() => kitchensTable.id, { onDelete: "cascade" }),
+  /** Null → inherit. Block saving a plate whose dishes share an ingredient. */
+  ingredientClashBlocks: boolean("ingredient_clash_blocks"),
+  /** Null → inherit. Flag (never block) a dish repeated inside the window. */
+  flagRepeats: boolean("flag_repeats"),
+  /** Null → inherit. Days apart before two servings stop counting as a repeat. */
+  repeatWithinDays: integer("repeat_within_days"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  propIdx: uniqueIndex("idx_menu_rule_override_property").on(t.propertyId),
+  kitchenIdx: uniqueIndex("idx_menu_rule_override_kitchen").on(t.kitchenId),
+}));
 
 /**
  * Weekly menu rotation = the meal → dish mapping per brand/service set, with a

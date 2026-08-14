@@ -127,6 +127,23 @@ export default function FoodSettings() {
   const [tab, setTab] = React.useState("dishes");
   const [rulesFocus, setRulesFocus] = React.useState<{ brand: string; meal: MealType }>();
 
+  // Kitchen + brand are page-level, not per-tab: picking Koramangala under Menu
+  // Rules should leave you on Koramangala when you switch to Menu. Each tab
+  // unmounts when inactive, so local state there was silently reset on every
+  // switch. "" until whichever tab mounts first seeds them.
+  const [kitchenId, setKitchenId] = React.useState("");
+  const [brand, setBrand] = React.useState("");
+  // Menu Rules can also sit on "all kitchens" (the brand default), which the
+  // board has no equivalent of. It lives here rather than in the tab so that
+  // choosing it survives a trip to another tab and back — tab-local state would
+  // be thrown away on unmount and silently snap back to a specific kitchen.
+  // Starts true: every rule authored before the picker existed is a brand default.
+  const [rulesAllKitchens, setRulesAllKitchens] = React.useState(true);
+  const menuScope = {
+    kitchenId, onKitchenChange: setKitchenId,
+    brand, onBrandChange: setBrand,
+  };
+
   // A tab the role cannot see renders no trigger AND no content, so landing on
   // one would show an empty page. Fall back to the first tab that is actually
   // there — which is what a role without the catalogue does on arrival, since
@@ -166,12 +183,18 @@ export default function FoodSettings() {
           <>
             <TabsContent value="ingredients"><IngredientsGrid /></TabsContent>
             <TabsContent value="dishes"><DishesCatalogue /></TabsContent>
-            <TabsContent value="composition"><MenuRulesEditor focus={rulesFocus} /></TabsContent>
+            <TabsContent value="composition">
+              <MenuRulesEditor
+                focus={rulesFocus} {...menuScope}
+                allKitchens={rulesAllKitchens} onAllKitchensChange={setRulesAllKitchens}
+              />
+            </TabsContent>
           </>
         )}
         <TabsContent value="rotation">
           {/* Only offer the jump to Menu Rules to someone who can open them. */}
           <RotationBoard
+            {...menuScope}
             onGoToRules={canCatalogue
               ? (f) => { setRulesFocus(f); setTab("composition"); }
               : undefined}

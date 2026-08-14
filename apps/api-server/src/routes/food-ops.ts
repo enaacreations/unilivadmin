@@ -11,6 +11,7 @@ import { Router } from "express";
 import { db } from "@workspace/db";
 import {
   kitchensTable,
+  menuRuleOverrideTable,
   kitchenPincodesTable,
   citiesTable,
   clustersTable,
@@ -59,6 +60,7 @@ import {
   isIngredientClashRuleOn,
   isRepeatFlagRuleOn,
   getRepeatWindowDays,
+  resolveMenuRuleSettings,
   FOOD_RULE_REPEAT_DAYS_KEY,
   REPEAT_WINDOW_MAX_DAYS,
   FOOD_RULE_INGREDIENT_CLASH_KEY,
@@ -530,23 +532,40 @@ foodOpsRouter.put("/system-config/food-defaults", authenticate, async (req, res)
  * ════════════════════════════════════════════════════════════════════════ */
 
 const menuRuleSettingsSchema = z.object({
-  ingredientClashBlocks: z.boolean().optional(),
-  flagRepeatsWithin3Days: z.boolean().optional(),
+  ingredientClashBlocks: z.boolean().nullish(),
+  flagRepeatsWithin3Days: z.boolean().nullish(),
   repeatWithinDays: z.coerce.number().int()
     .min(1, "The repeat window must be at least 1 day")
     .max(REPEAT_WINDOW_MAX_DAYS, `The rotation cycle cannot express a window wider than ${REPEAT_WINDOW_MAX_DAYS} days`)
-    .optional(),
+    .nullish(),
+  /**
+   * Scope to write. Neither → the org-wide system_config default (the original
+   * behaviour). One of them → an override row for that property or kitchen,
+   * where an explicit null on a setting clears the override back to inherited.
+   */
+  propertyId: z.string().max(128).nullish(),
+  kitchenId: z.string().max(128).nullish(),
 }).passthrough();
 
-/** Read the menu rule switches. */
+/**
+ * Read the menu rule switches AS RESOLVED for a scope: `?propertyId=` or
+ * `?kitchenId=` walks property → kitchen → org default. No scope returns the
+ * org-wide values, which is what the kitchen-level rotation board reads.
+ */
 foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
+    const propertyId = (req.query["propertyId"] as string) || null;
+    const kitchenId = (req.query["kitchenId"] as string) || null;
+    const s = await resolveMenuRuleSettings(kitchenId, propertyId);
     res.json({
       success: true,
       data: {
-        ingredientClashBlocks: await isIngredientClashRuleOn(),
-        flagRepeatsWithin3Days: await isRepeatFlagRuleOn(),
-        repeatWithinDays: await getRepeatWindowDays(),
+        ingredientClashBlocks: s.ingredientClashBlocks,
+        flagRepeatsWithin3Days: s.flagRepeats,
+        repeatWithinDays: s.repeatWithinDays,
+        // Which scope the caller asked for, so the editor can label the values
+        // it is showing as inherited vs overridden without a second call.
+        scope: propertyId ? "PROPERTY" : kitchenId ? "KITCHEN" : "GLOBAL",
       },
     });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
@@ -562,23 +581,72 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
   try {
     if (!validateBody(menuRuleSettingsSchema, req, res)) return;
     const b = req.body || {};
+
+    // ── Scoped write: a property or kitchen override row, not the global default.
+    // One scope only — a property already implies its kitchen, so accepting both
+    // would leave two rows claiming the same answer.
+    const propertyId = b.propertyId || null;
+    const kitchenId = b.kitchenId || null;
+    if (propertyId && kitchenId) {
+      res.status(400).json({ success: false, error: "Set propertyId or kitchenId, not both" });
+      return;
+    }
+    if (propertyId || kitchenId) {
+      // undefined = leave as-is; explicit null = clear the override so the
+      // setting falls back to the kitchen/global value again.
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (b.ingredientClashBlocks !== undefined) patch["ingredientClashBlocks"] = b.ingredientClashBlocks;
+      if (b.flagRepeatsWithin3Days !== undefined) patch["flagRepeats"] = b.flagRepeatsWithin3Days;
+      if (b.repeatWithinDays !== undefined) patch["repeatWithinDays"] = b.repeatWithinDays;
+      if (Object.keys(patch).length === 1) {
+        res.status(400).json({ success: false, error: "Nothing to update" });
+        return;
+      }
+      const scopeCond = propertyId
+        ? eq(menuRuleOverrideTable.propertyId, propertyId)
+        : eq(menuRuleOverrideTable.kitchenId, kitchenId!);
+      const [existing] = await db.select().from(menuRuleOverrideTable).where(scopeCond).limit(1);
+      if (existing) {
+        await db.update(menuRuleOverrideTable).set(patch as never).where(scopeCond);
+      } else {
+        await db.insert(menuRuleOverrideTable).values({
+          id: newId(), propertyId, kitchenId, ...patch,
+        } as never);
+      }
+      const s = await resolveMenuRuleSettings(kitchenId, propertyId);
+      res.json({
+        success: true,
+        data: {
+          ingredientClashBlocks: s.ingredientClashBlocks,
+          flagRepeatsWithin3Days: s.flagRepeats,
+          repeatWithinDays: s.repeatWithinDays,
+          scope: propertyId ? "PROPERTY" : "KITCHEN",
+        },
+      });
+      return;
+    }
+
     const updates: Array<{ key: string; value: unknown; description: string }> = [];
 
-    if (b.ingredientClashBlocks !== undefined) {
+    // `!= null` not `!== undefined`: null means "clear the override" on the
+    // scoped path above, and there is nothing to clear at global level — the
+    // org default IS the floor. Treating it as `false` here would silently
+    // switch a rule off for everyone.
+    if (b.ingredientClashBlocks != null) {
       updates.push({
         key: FOOD_RULE_INGREDIENT_CLASH_KEY,
         value: b.ingredientClashBlocks === true,
         description: "Block saving a rotation plate whose dishes share an ingredient.",
       });
     }
-    if (b.flagRepeatsWithin3Days !== undefined) {
+    if (b.flagRepeatsWithin3Days != null) {
       updates.push({
         key: FOOD_RULE_REPEAT_FLAG_KEY,
         value: b.flagRepeatsWithin3Days === true,
         description: "Flag (never block) a dish already used for the same meal within the repeat window.",
       });
     }
-    if (b.repeatWithinDays !== undefined) {
+    if (b.repeatWithinDays != null) {
       updates.push({
         key: FOOD_RULE_REPEAT_DAYS_KEY,
         value: Number(b.repeatWithinDays),
@@ -593,12 +661,17 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
         .onConflictDoUpdate({ target: systemConfigTable.key, set: { value: u.value as never, updatedAt: new Date() } });
     }
 
-    // Re-read through the getters so the client always sees the coerced truth.
+    // Re-read through the resolver so the client always sees the coerced truth
+    // (and the same three fields the GET returns — the old reply omitted the
+    // window, so a client echoing the response lost it).
+    const s = await resolveMenuRuleSettings();
     res.json({
       success: true,
       data: {
-        ingredientClashBlocks: await isIngredientClashRuleOn(),
-        flagRepeatsWithin3Days: await isRepeatFlagRuleOn(),
+        ingredientClashBlocks: s.ingredientClashBlocks,
+        flagRepeatsWithin3Days: s.flagRepeats,
+        repeatWithinDays: s.repeatWithinDays,
+        scope: "GLOBAL",
       },
     });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }

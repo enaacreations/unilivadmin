@@ -14,7 +14,6 @@ export type Module =
   | "PROPERTIES" | "RESIDENTS" | "COMPLAINTS" | "LAUNDRY" | "COMMUNICATIONS"
   | "EMPLOYEES" | "RECRUITMENT" | "LND"
   | "VENDORS" | "INDENTS" | "PURCHASE_ORDERS" | "GRN" | "INVENTORY"
-  | "RECIPES" | "MENU_PLANNING"
   | "SALES_LEADS" | "SALES_DASHBOARD" | "PROPERTY_LEADS"
   | "LEDGER" | "PAYMENTS" | "WALLET" | "BILLING_CYCLES" | "REMINDERS" | "BANKING" | "EXPENSES"
   | "FACILITY" | "ELECTRICITY" | "RESIDENT_ATTENDANCE" | "IOT"
@@ -57,7 +56,7 @@ const AUDIT_MODULES: Module[] = [
 const ALL_MODULES: Module[] = [
   "DASHBOARD","EXECUTIVE_DASHBOARD","PROPERTIES","RESIDENTS","COMPLAINTS","LAUNDRY","COMMUNICATIONS",
   "EMPLOYEES","RECRUITMENT","LND","VENDORS","INDENTS","PURCHASE_ORDERS","GRN","INVENTORY",
-  "RECIPES","MENU_PLANNING","SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
+  "SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
   "BILLING_CYCLES","REMINDERS","BANKING","EXPENSES",
   "FACILITY","ELECTRICITY","RESIDENT_ATTENDANCE","IOT",
   "USERS","SETTINGS","AUDIT_LOG",
@@ -70,7 +69,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
   HR_MANAGER: { DASHBOARD: VIEW, EMPLOYEES: FULL, RECRUITMENT: FULL, LND: FULL, USERS: FULL, SETTINGS: VIEW },
   OPERATIONS_MANAGER: { DASHBOARD: VIEW, PROPERTIES: FULL, RESIDENTS: FULL, COMPLAINTS: FULL, LAUNDRY: FULL, COMMUNICATIONS: FULL, FACILITY: FULL, ELECTRICITY: FULL, RESIDENT_ATTENDANCE: FULL, IOT: FULL, WALLET: VIEW },
   PROCUREMENT_MANAGER: { DASHBOARD: VIEW, VENDORS: FULL, INDENTS: FULL, PURCHASE_ORDERS: FULL, GRN: FULL, INVENTORY: FULL },
-  KITCHEN_MANAGER: { DASHBOARD: VIEW, RECIPES: FULL, MENU_PLANNING: FULL, INVENTORY: VIEW },
+  // Recipes / Menu Planning were removed product-wide, so this role is left
+  // with the inventory read it always had alongside them.
+  KITCHEN_MANAGER: { DASHBOARD: VIEW, INVENTORY: VIEW },
   PROJECTS_MANAGER: { DASHBOARD: VIEW, PROPERTY_LEADS: FULL, LEDGER: VIEW, PAYMENTS: VIEW, INDENTS: VIEW, PURCHASE_ORDERS: VIEW },
   PROPERTY_ACQUISITION: { DASHBOARD: VIEW, PROPERTY_LEADS: FULL },
   FINANCE: { DASHBOARD: VIEW, EXECUTIVE_DASHBOARD: VIEW, RESIDENTS: VIEW, LEDGER: FULL, PAYMENTS: FULL, WALLET: FULL, BILLING_CYCLES: FULL, REMINDERS: FULL, BANKING: FULL, EXPENSES: FULL, INDENTS: VIEW, PURCHASE_ORDERS: VIEW },
@@ -142,10 +143,6 @@ export const ROLE_PERMISSIONS: Record<UserRole, Partial<Record<Module, Partial<R
     // role and their write endpoints refuse it. Reads stay open, so the plate
     // composer still sees every dish. Keep in sync with the backend copy.
     FOOD_SETTINGS: FULL,
-    // Kitchen & Menu lives inside the Food module (13-Jul): recipe and menu
-    // management belongs to F&B managers (and kitchen managers / ops
-    // excellence); unit leads deliberately have no grant here.
-    RECIPES: FULL, MENU_PLANNING: FULL,
   },
   FNB_ZONAL_HEAD: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
@@ -203,9 +200,6 @@ export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
   [/^\/purchase-orders/, "PURCHASE_ORDERS"],
   [/^\/grn/, "GRN"],
   [/^\/inventory/, "INVENTORY"],
-  [/^\/recipes/, "RECIPES"],
-  [/^\/kitchen/, "RECIPES"],
-  [/^\/menu-planning/, "MENU_PLANNING"],
   // Food Ordering & Kitchen Operations (specific paths before the /food dashboard)
   [/^\/food\/organization/, "FOOD_ORG"],
   [/^\/food\/my-properties/, "FOOD_DASHBOARD"],
@@ -216,6 +210,10 @@ export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
   // to kitchen personas, gate BOTH sides on FOOD_DELIVERY_TRACKING instead.)
   [/^\/food\/track/, "FOOD_ALL_ORDERS"],
   [/^\/food\/kitchen-home/, "FOOD_KITCHEN_SUMMARY"],
+  // Kitchen Summary and Dispatch were pulled from the UI (nav + Kitchen Home
+  // quick links) — every persona now works the meal from Kitchen Home. Their
+  // routes and pages are intentionally still mounted, so these gates stay live
+  // for anyone hitting the URLs directly.
   [/^\/food\/kitchen-summary/, "FOOD_KITCHEN_SUMMARY"],
   [/^\/food\/dispatch/, "FOOD_DISPATCH"],
   // /food/place-order, /food/confirm-delivery, /food/waste were folded into

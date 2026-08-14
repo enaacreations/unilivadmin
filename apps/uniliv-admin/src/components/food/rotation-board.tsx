@@ -39,6 +39,7 @@ import {
   rowsToPlates, ruleFor, slotsOf,
   type PlateEntry, type PlateMap,
 } from "./menu-lib";
+import { GenerateFromRule } from "./generate-from-rule";
 import { PlateComposer, PrepDot } from "./plate-composer";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
 
@@ -87,9 +88,21 @@ function Segmented<T extends string | number>({
   );
 }
 
-export function RotationBoard(
-  { onGoToRules }: { onGoToRules?: (focus: { brand: string; meal: MealType }) => void } = {},
-) {
+export function RotationBoard({
+  onGoToRules, kitchenId, onKitchenChange, brand, onBrandChange,
+}: {
+  onGoToRules?: (focus: { brand: string; meal: MealType }) => void;
+  /**
+   * Kitchen + brand are owned by the Service Set page and shared with the Menu
+   * Rules tab, so switching kitchen on one tab carries to the other. Both are
+   * "" until the defaulting effect below picks one — whichever tab mounts first
+   * does it, and the other finds it already set.
+   */
+  kitchenId: string;
+  onKitchenChange: (v: string) => void;
+  brand: string;
+  onBrandChange: (v: string) => void;
+}) {
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -108,8 +121,8 @@ export function RotationBoard(
     enabled: kitchenBound,
   });
 
-  const [kitchenId, setKitchenId] = React.useState("");
-  const [brand, setBrand] = React.useState("");
+  const setKitchenId = onKitchenChange;
+  const setBrand = onBrandChange;
   const [week, setWeek] = React.useState(1);
   const [clipboard, setClipboard] = React.useState<number | null>(null);
   const [sel, setSel] = React.useState<{ day: number; meal: MealType } | null>(null);
@@ -127,11 +140,15 @@ export function RotationBoard(
     if (!brand && brands.length) setBrand(brands[0]!.code);
   }, [brands, brand]);
 
-  // Org-wide, and the server enforces the same values — this only keeps the
-  // composer's affordances honest about what a save will actually be allowed.
+  // Resolved for THIS kitchen (a kitchen override wins over the org default),
+  // matching the scope the board actually edits — the rotation is per
+  // (kitchen, brand), so there is no single property to resolve against here.
+  // The server enforces the same values; this only keeps the composer's
+  // affordances honest about what a save will be allowed to do.
+  const ruleScope = React.useMemo(() => (kitchenId ? { kitchenId } : {}), [kitchenId]);
   const { data: ruleSettings } = useQuery<MenuRuleSettings>({
-    queryKey: foodKeys.menuRuleSettings(),
-    queryFn: () => foodApi.menuRuleSettings(),
+    queryKey: foodKeys.menuRuleSettings(ruleScope),
+    queryFn: () => foodApi.menuRuleSettings(ruleScope),
   });
 
   const params = { kitchenId, brand, rotationWeek: week };
@@ -556,6 +573,11 @@ export function RotationBoard(
             : {})}
         />
       )}
+
+      {/* Bulk fill sits BELOW the board: it is the thing you reach for after
+          seeing the empty cells, and it writes into the kitchen selected above
+          — no second kitchen picker needed. */}
+      <GenerateFromRule kitchenId={kitchenId} brand={brand} brandName={brandName} />
     </div>
   );
 }
@@ -645,7 +667,7 @@ function BoardCell({
   const tone = clash ? "text-destructive"
     : noRule ? "text-muted-foreground"
     : missing.length ? "text-warning"
-    : repeats.length ? "text-warning"
+    : repeats.length ? "text-destructive"
     : "text-success";
   const status = clash ? `shares ${clash.ingredientName}`
     : noRule ? "no rule set"

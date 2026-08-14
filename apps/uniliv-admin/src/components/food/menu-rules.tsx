@@ -11,7 +11,7 @@
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Info, Minus, Plus, Sparkles, X } from "lucide-react";
+import { Check, Info, Minus, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -20,14 +20,20 @@ import { useToast } from "@/hooks/use-toast";
 import { usePermissions } from "@/lib/use-permissions";
 import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, PREPARATION_LABEL,
-  type CompositionRule, type CompositionSlot, type Dish, type FoodLookups, type MealType,
-  type MenuRotationRow, type MenuRuleSettings,
+  type CompositionRule, type CompositionSlot, type FoodLookups, type MealType,
+  type MenuRuleSettings,
 } from "@/lib/food-api";
 import {
   MEAL_SHORT, REPEAT_WITHIN_DAYS, REPEAT_WITHIN_DAYS_MAX, ROTATION_WEEKS, WEEK_DAYS,
-  componentLabel, fillPlate, plateKey, plateToItems, rowsToPlates, ruleFor, slotsOf,
+  componentLabel, ruleFor, slotsOf,
 } from "./menu-lib";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
+
+/**
+ * Radix Select forbids an empty-string item value, so the "no kitchen scope"
+ * option needs a sentinel. It is mapped back to "" on both edges.
+ */
+const ALL_KITCHENS = "__ALL__";
 
 /** Courses offered by the "add course" affordance, in menu order. */
 const COURSES = [
@@ -37,7 +43,6 @@ const COURSES = [
 ];
 /** Courses with fewer qualifying dishes than this can't sustain a 4-week rotation. */
 const THIN_CATALOGUE = 3;
-const WRITE_CONCURRENCY = 4;
 
 type DraftSlot = CompositionSlot & { key: string };
 
@@ -50,7 +55,19 @@ const countLabel = (s: CompositionSlot) =>
     : s.maxCount !== s.minCount ? `${s.minCount}–${s.maxCount}`
     : `${s.minCount}`;
 
-export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: MealType } } = {}) {
+export function MenuRulesEditor({
+  focus, kitchenId, onKitchenChange, brand, onBrandChange, allKitchens, onAllKitchensChange,
+}: {
+  focus?: { brand: string; meal: MealType };
+  /** Shared with the Menu tab — see RotationBoard for why the page owns these. */
+  kitchenId: string;
+  onKitchenChange: (v: string) => void;
+  brand: string;
+  onBrandChange: (v: string) => void;
+  /** True = editing the brand default rather than `kitchenId`. Page-owned too. */
+  allKitchens: boolean;
+  onAllKitchensChange: (v: boolean) => void;
+}) {
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -59,13 +76,11 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
   const { data: dishes = [] } = useDishCatalogue();
   const { data: rules = [], isLoading } = useCompositionRules();
 
-  const [brand, setBrand] = React.useState(focus?.brand ?? "");
+  const setBrand = onBrandChange;
   const [meal, setMeal] = React.useState<MealType>(focus?.meal ?? "LUNCH");
   const [draft, setDraft] = React.useState<DraftSlot[] | null>(null);
-  const [genKitchen, setGenKitchen] = React.useState("");
 
-  // F&B managers run exactly one kitchen: no picker on the generate panel, and
-  // generation pins to their own kitchen (listKitchens is unscoped, so "first
+  // F&B managers run exactly one kitchen (listKitchens is unscoped, so "first
   // kitchen" would be wrong for them).
   const { role } = usePermissions();
   const kitchenBound = role === "FNB_MANAGER";
@@ -75,30 +90,52 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
     enabled: kitchenBound,
   });
 
-  // The two rule switches. Org-wide, so no brand/meal in the key — flipping one
-  // here changes what the server accepts for every plate.
+  // ── Scope ────────────────────────────────────────────────────────────────
+  // Two states: the brand default every kitchen follows, or one specific
+  // kitchen. The KITCHEN comes from the page so it stays in step with the Menu
+  // tab; only "am I on the default or on that kitchen" is local, because the
+  // Menu tab has no equivalent of "all kitchens" to sync with.
+  //
+  // Kitchen, not property, is the finest scope a rule can be ENFORCED at: the
+  // rotation is one plate per (kitchen, brand), so every property a kitchen
+  // serves eats the same plate and two properties on one kitchen cannot satisfy
+  // conflicting rules.
+  //
+  const scopeAll = allKitchens;
+  const setScopeAll = onAllKitchensChange;
+  const scopeKitchen = scopeAll ? "" : kitchenId;
+  const scopeArgs = scopeKitchen ? { kitchenId: scopeKitchen } : {};
+  const scopeName = kitchens.find((k) => k.id === scopeKitchen)?.name ?? "";
+
+  // The two rule switches, resolved for the current scope. On the brand default
+  // these are the org-wide values and flipping one changes every plate; on a
+  // kitchen, the write lands as an override for that kitchen alone.
   const { data: ruleSettings } = useQuery<MenuRuleSettings>({
-    queryKey: foodKeys.menuRuleSettings(),
-    queryFn: () => foodApi.menuRuleSettings(),
+    queryKey: foodKeys.menuRuleSettings(scopeArgs),
+    queryFn: () => foodApi.menuRuleSettings(scopeArgs),
   });
   const saveRules = useMutation({
-    mutationFn: (b: Partial<MenuRuleSettings>) => foodApi.updateMenuRuleSettings(b),
+    mutationFn: (b: Partial<MenuRuleSettings>) =>
+      foodApi.updateMenuRuleSettings({ ...b, ...scopeArgs }),
     onSuccess: (fresh, sent) => {
-      qc.setQueryData(foodKeys.menuRuleSettings(), fresh);
-      // The board reads the same settings to decide what to flag, so a changed
-      // window has to reach it rather than waiting for a refetch.
-      qc.invalidateQueries({ queryKey: foodKeys.menuRuleSettings() });
+      qc.setQueryData(foodKeys.menuRuleSettings(scopeArgs), fresh);
+      // Invalidate the whole family, not just this scope: a global change moves
+      // what every property inherits, and the board reads these too.
+      qc.invalidateQueries({ queryKey: ["food", "menu-rule-settings"] });
       // Say which way it went — a switch sliding back on failure is otherwise
       // the only feedback, and it is easy to miss.
+      // Name the scope: "turned off" reads as org-wide, and doing that to every
+      // property when you meant one is the expensive mistake here.
+      const where = scopeName ? ` for ${scopeName}` : " everywhere";
       const [[key, value]] = Object.entries(sent) as [[keyof MenuRuleSettings, boolean | number]];
       if (key === "repeatWithinDays") {
-        toast({ title: `Repeats now flagged within ${value} day${value === 1 ? "" : "s"}` });
+        toast({ title: `Repeats now flagged within ${value} day${value === 1 ? "" : "s"}${where}` });
         return;
       }
       const label = key === "ingredientClashBlocks"
         ? "Shared-ingredient block"
         : "Repeat flag";
-      toast({ title: `${label} turned ${value ? "on" : "off"}` });
+      toast({ title: `${label} turned ${value ? "on" : "off"}${where}` });
     },
     onError: (e: any) => toast({ title: e?.message || "Could not change the rule", variant: "destructive" }),
   });
@@ -150,18 +187,30 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
   }, [focus?.brand, focus?.meal]);
 
   React.useEffect(() => { if (!brand && brands.length) setBrand(brands[0]!.code); }, [brands, brand]);
+  // Seed the SHARED kitchen if this tab is the first one opened. Same rule as
+  // the board: the caller's own kitchen when they are bound to one, else the
+  // first. Guarded on `kitchenId` so it never overwrites a live choice.
   React.useEffect(() => {
-    if (genKitchen || !kitchens.length || !role) return;
+    if (kitchenId || !kitchens.length || !role) return;
     if (kitchenBound && !lookups) return;
     const mine = kitchenBound ? lookups?.myKitchenIds?.[0] : null;
-    setGenKitchen(mine ?? kitchens[0]!.id);
-  }, [kitchens, genKitchen, role, kitchenBound, lookups]);
-  // Switching brand or meal abandons an unsaved edit to the previous rule.
-  React.useEffect(() => { setDraft(null); }, [brand, meal]);
+    onKitchenChange(mine ?? kitchens[0]!.id);
+  }, [kitchens, kitchenId, role, kitchenBound, lookups, onKitchenChange]);
+  // Switching brand, meal or scope abandons an unsaved edit to the previous rule.
+  React.useEffect(() => { setDraft(null); }, [brand, meal, scopeKitchen]);
 
   const rule: CompositionRule | null = React.useMemo(
-    () => ruleFor(rules, brand, meal), [rules, brand, meal],
+    () => ruleFor(rules, brand, meal, scopeKitchen || null, null),
+    [rules, brand, meal, scopeKitchen],
   );
+  /**
+   * Does the resolved rule BELONG to the scope on screen, or is it inherited
+   * from the brand default? This decides update-vs-create on save: editing an
+   * inherited rule must fork a new kitchen row, never rewrite the brand default
+   * under every other kitchen that still follows it.
+   */
+  const ruleIsOwn = !!rule && (rule.kitchenId ?? null) === (scopeKitchen || null);
+  const inherited = !!rule && !ruleIsOwn;
   const saved = React.useMemo(() => toDraft(slotsOf(rule)), [rule]);
   const slots = draft ?? saved;
   const dirty = draft !== null;
@@ -172,7 +221,12 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
   const save = useMutation({
     mutationFn: () => {
       const body = {
-        brand, mealType: meal, kitchenId: rule?.kitchenId ?? null, name: rule?.name ?? null,
+        brand, mealType: meal,
+        kitchenId: scopeKitchen || null,
+        // Rules are authored per kitchen; the finer property scope exists in the
+        // resolver but nothing here writes it.
+        propertyId: null,
+        name: rule?.name ?? null,
         // slotLabel + preparation are preserved from the saved rule; this editor
         // only moves counts and courses, and must not quietly drop the rest.
         slots: slots.map((s, i) => ({
@@ -184,10 +238,22 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
           sortOrder: i,
         })),
       };
-      return rule ? foodApi.updateCompositionRule(rule.id, body) : foodApi.createCompositionRule(body);
+      // Only update in place when the rule is the scope's OWN row; an inherited
+      // one is forked into a new rule for this scope instead.
+      return ruleIsOwn && rule
+        ? foodApi.updateCompositionRule(rule.id, body)
+        : foodApi.createCompositionRule(body);
     },
     onSuccess: () => {
-      toast({ title: `${brandName} ${MEAL_LABEL[meal]} rule saved` });
+      toast({
+        title: scopeName
+          ? `${scopeName} ${MEAL_LABEL[meal]} rule saved`
+          : `${brandName} ${MEAL_LABEL[meal]} rule saved`,
+        ...(inherited
+          ? { description: `${scopeName} now has its own rule and no longer follows the ${brandName} default.` }
+          : {}),
+
+      });
       qc.invalidateQueries({ queryKey: ["food", "composition-rules"] });
       setDraft(null);
     },
@@ -216,21 +282,66 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
             What a plate must contain, per brand and meal. Everything in the rotation is validated against this.
           </p>
         </div>
-        {brands.length > 1 && (
-          <div className="inline-flex items-center gap-1 rounded-lg bg-muted p-1">
-            {brands.map((b) => (
-              <button
-                key={b.code} type="button" onClick={() => setBrand(b.code)} aria-pressed={b.code === brand}
-                className={`inline-flex items-center rounded-md px-3 py-1 text-sm font-medium transition-all ${
-                  b.code === brand ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {b.name}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {brands.length > 1 && (
+            <div className="inline-flex items-center gap-1 rounded-lg bg-muted p-1">
+              {brands.map((b) => (
+                <button
+                  key={b.code} type="button" onClick={() => setBrand(b.code)} aria-pressed={b.code === brand}
+                  className={`inline-flex items-center rounded-md px-3 py-1 text-sm font-medium transition-all ${
+                    b.code === brand ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {b.name}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Kitchen switcher, same control as the Menu tab. Default is the
+              brand-wide rule every kitchen follows; picking a kitchen narrows
+              the rule AND the two switches below to that kitchen alone. The
+              "all kitchens" entry has to stay — every rule authored before this
+              picker existed lives there, and it is the fallback for any kitchen
+              without its own. */}
+          {kitchens.length > 0 && (
+            <Select
+              value={scopeKitchen || ALL_KITCHENS}
+              onValueChange={(v) => {
+                if (v === ALL_KITCHENS) { setScopeAll(true); return; }
+                // Picking a kitchen here also moves the Menu tab to it. Going
+                // back to "all kitchens" deliberately does NOT — the board has
+                // no such state, so there would be nothing to move it to.
+                setScopeAll(false);
+                onKitchenChange(v);
+              }}
+            >
+              <SelectTrigger className="h-9 w-[240px]" aria-label="Which kitchens this rule applies to">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_KITCHENS}>All kitchens ({brandName} default)</SelectItem>
+                {kitchens.map((k) => (
+                  <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
       </div>
+
+      {/* Inherited means the fields below are showing the WIDER rule. Saying so
+          is what stops an edit here reading as an edit to just this kitchen when
+          it would in fact fork a new rule (or, before this scope existed, quietly
+          rewrite the shared one under every kitchen). */}
+      {scopeKitchen && inherited && (
+        <p className="flex items-start gap-1.5 rounded-lg bg-muted/60 px-3 py-2 text-[13px] text-muted-foreground">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            {scopeName} follows the {brandName} default. Saving a change here gives it its own
+            rule — the other kitchens keep the shared one.
+          </span>
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         {MEAL_TYPES.map((m) => (
@@ -352,8 +463,16 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
       {/* ── enforcement + catalogue depth ────────────────────────────────── */}
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-xl border bg-card px-4 py-4">
-          <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Variety &amp; safety rules
+          </p>
+          {/* These switches follow the same scope as the rule above. Without the
+              line the two blocks look independent, and "off" would read as
+              org-wide when it is one property — or the reverse. */}
+          <p className="mb-3 text-[11px] text-muted-foreground">
+            {scopeName
+              ? `Applies to ${scopeName} only — other kitchens keep their own settings.`
+              : "Applies to every kitchen. Pick a kitchen above to set these for one kitchen."}
           </p>
           <div className="flex flex-col gap-3">
             {/* Real settings, stored in system_config and read by the server on
@@ -487,135 +606,6 @@ export function MenuRulesEditor({ focus }: { focus?: { brand: string; meal: Meal
         </div>
       </div>
 
-      <GenerateFromRule
-        brand={brand} brandName={brandName} rules={rules} dishes={dishes}
-        kitchens={kitchens} kitchenId={genKitchen} onKitchenChange={setGenKitchen}
-        canPickKitchen={!kitchenBound}
-        dirty={dirty}
-      />
-    </div>
-  );
-}
-
-/**
- * Fills every empty meal across all four weeks from the current rules.
- *
- * Reads the whole rotation for the brand + kitchen (not just the visible week)
- * because "what's still empty" is a question about the rotation as a whole.
- */
-function GenerateFromRule({
-  brand, brandName, rules, dishes, kitchens, kitchenId, onKitchenChange, canPickKitchen, dirty,
-}: {
-  brand: string;
-  brandName: string;
-  rules: CompositionRule[];
-  dishes: Dish[];
-  kitchens: { id: string; name: string }[];
-  kitchenId: string;
-  onKitchenChange: (v: string) => void;
-  canPickKitchen: boolean;
-  dirty: boolean;
-}) {
-  const qc = useQueryClient();
-  const { toast } = useToast();
-  const params = { kitchenId, brand };
-  const { data: rows = [] } = useQuery<MenuRotationRow[]>({
-    queryKey: foodKeys.rotation(params),
-    queryFn: () => foodApi.listRotation(params),
-    enabled: !!kitchenId && !!brand,
-  });
-
-  const dishById = React.useMemo(() => new Map(dishes.map((d) => [d.id, d])), [dishes]);
-  // listRotation returns all four weeks here, so bucket by week before folding.
-  const platesByWeek = React.useMemo(() => {
-    const out = new Map<number, ReturnType<typeof rowsToPlates>>();
-    for (const w of ROTATION_WEEKS) out.set(w, rowsToPlates(rows.filter((r) => r.rotationWeek === w)));
-    return out;
-  }, [rows]);
-
-  const empties = React.useMemo(() => {
-    let n = 0;
-    for (const w of ROTATION_WEEKS) {
-      for (const meal of MEAL_TYPES) {
-        for (const day of WEEK_DAYS) {
-          if (!(platesByWeek.get(w)?.get(plateKey(day, meal))?.length)) n++;
-        }
-      }
-    }
-    return n;
-  }, [platesByWeek]);
-
-  const generate = useMutation({
-    mutationFn: async () => {
-      const writes: { week: number; day: number; meal: MealType; items: ReturnType<typeof plateToItems> }[] = [];
-      let seed = 2;
-      for (const w of ROTATION_WEEKS) {
-        for (const meal of MEAL_TYPES) {
-          const slots = slotsOf(ruleFor(rules, brand, meal, kitchenId));
-          if (!slots.length) continue;
-          for (const day of WEEK_DAYS) {
-            if (platesByWeek.get(w)?.get(plateKey(day, meal))?.length) continue;
-            const plate = fillPlate([], slots, brand, dishById, dishes, (seed += 5));
-            if (plate.length) writes.push({ week: w, day, meal, items: plateToItems(plate) });
-          }
-        }
-      }
-      let failed = 0;
-      for (let i = 0; i < writes.length; i += WRITE_CONCURRENCY) {
-        await Promise.all(writes.slice(i, i + WRITE_CONCURRENCY).map(async (v) => {
-          try {
-            await foodApi.replaceRotationSlot({
-              kitchenId, brand, rotationWeek: v.week, dayOfWeek: v.day, mealType: v.meal, items: v.items,
-            });
-          } catch { failed++; }
-        }));
-      }
-      return { total: writes.length, failed };
-    },
-    onSuccess: ({ total, failed }) => {
-      qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
-      if (!total) { toast({ title: "Nothing to generate — no empty meals for this brand" }); return; }
-      toast({
-        title: `${total - failed} of ${total} meals filled`,
-        description: failed ? `${failed} could not be filled — open them on the board to see why.` : undefined,
-        variant: failed ? "destructive" : undefined,
-      });
-    },
-    onError: (e: any) => toast({ title: e?.message || "Generation failed", variant: "destructive" }),
-  });
-
-  return (
-    <div className="rounded-xl border border-accent bg-card px-5 py-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <p className="font-display text-sm font-semibold text-primary">Generate the rotation from these rules</p>
-          <p className="text-xs text-muted-foreground">
-            {dirty
-              ? "Save the rule above first — generation uses the saved rules."
-              : empties
-                ? `${empties} meal${empties === 1 ? "" : "s"} across the 4 weeks are still empty for ${brandName}.`
-                : `Every meal in all 4 weeks is filled for ${brandName}.`}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {canPickKitchen && kitchens.length > 1 && (
-            <Select value={kitchenId} onValueChange={onKitchenChange}>
-              <SelectTrigger className="w-44"><SelectValue placeholder="Kitchen" /></SelectTrigger>
-              <SelectContent>
-                {kitchens.map((k) => <SelectItem key={k.id} value={k.id}>{k.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
-          <Button
-            className="bg-accent text-white hover:bg-accent/90"
-            disabled={dirty || !empties || generate.isPending || !kitchenId}
-            onClick={() => generate.mutate()}
-          >
-            <Sparkles className="mr-2 h-3.5 w-3.5" />
-            {generate.isPending ? "Filling…" : "Fill every empty meal"}
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }

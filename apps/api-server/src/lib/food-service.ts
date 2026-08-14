@@ -20,6 +20,7 @@ import {
   foodMealWindowsTable,
   menuCompositionRuleTable,
   menuCompositionSlotTable,
+  menuRuleOverrideTable,
   dishIngredientsTable,
   ingredientsTable,
   systemConfigTable,
@@ -130,6 +131,55 @@ export async function getRepeatWindowDays(): Promise<number> {
   // Clamp on READ as well as on write: a row set by an older client, a migration
   // or by hand must never widen the window past what the cycle can express.
   return Math.min(Math.max(Math.round(n), 1), REPEAT_WINDOW_MAX_DAYS);
+}
+
+/** Same clamp as getRepeatWindowDays, applied to an override row's value. */
+const clampRepeatDays = (n: number) =>
+  Math.min(Math.max(Math.round(n), 1), REPEAT_WINDOW_MAX_DAYS);
+
+export interface MenuRuleSettings {
+  ingredientClashBlocks: boolean;
+  flagRepeats: boolean;
+  repeatWithinDays: number;
+}
+
+/**
+ * The three Menu Rules switches as they apply to one scope. The org-wide
+ * system_config values are the base; a kitchen override layers on top, and a
+ * property override on top of that. Each column is independently nullable, so
+ * a property that only pins the repeat window still inherits the clash switch
+ * from whatever is above it.
+ *
+ * Called with no scope this is exactly the old global behaviour, which is why
+ * an install with no override rows needs no migration.
+ */
+export async function resolveMenuRuleSettings(
+  kitchenId: string | null = null,
+  propertyId: string | null = null,
+): Promise<MenuRuleSettings> {
+  const settings: MenuRuleSettings = {
+    ingredientClashBlocks: await isIngredientClashRuleOn(),
+    flagRepeats: await isRepeatFlagRuleOn(),
+    repeatWithinDays: await getRepeatWindowDays(),
+  };
+  if (!kitchenId && !propertyId) return settings;
+
+  const scopeConds = [];
+  if (propertyId) scopeConds.push(eq(menuRuleOverrideTable.propertyId, propertyId));
+  if (kitchenId) scopeConds.push(eq(menuRuleOverrideTable.kitchenId, kitchenId));
+  const rows = await db.select().from(menuRuleOverrideTable)
+    .where(scopeConds.length === 1 ? scopeConds[0] : or(...scopeConds));
+
+  // Widest first so the narrowest scope is applied last and wins.
+  const ordered = [...rows].sort(
+    (a, b) => scopeRank(a, kitchenId, propertyId) - scopeRank(b, kitchenId, propertyId),
+  );
+  for (const r of ordered) {
+    if (r.ingredientClashBlocks !== null) settings.ingredientClashBlocks = r.ingredientClashBlocks;
+    if (r.flagRepeats !== null) settings.flagRepeats = r.flagRepeats;
+    if (r.repeatWithinDays !== null) settings.repeatWithinDays = clampRepeatDays(r.repeatWithinDays);
+  }
+  return settings;
 }
 
 /** Roles that always see every property regardless of scope rows. */
@@ -608,26 +658,56 @@ export interface CompositionSlot {
   minCount: number; maxCount: number | null; sortOrder: number;
 }
 export interface CompositionRule {
-  id: string; brand: string; mealType: string; kitchenId: string | null; name: string | null;
+  id: string; brand: string; mealType: string; kitchenId: string | null;
+  propertyId: string | null; name: string | null;
   slots: CompositionSlot[];
 }
 
-/** Resolves the composition rule for a (brand, meal) — kitchen-specific overrides brand default. */
+/**
+ * How specific a scoped row is for the (kitchen, property) being resolved.
+ * Higher wins: property beats kitchen beats the brand-wide default. Shared by
+ * composition rules and the menu-rule overrides so the two can never disagree
+ * about which scope is narrower.
+ */
+export function scopeRank(
+  row: { kitchenId?: string | null; propertyId?: string | null },
+  kitchenId: string | null,
+  propertyId: string | null,
+): number {
+  if (propertyId && row.propertyId === propertyId) return 3;
+  if (kitchenId && row.kitchenId === kitchenId) return 2;
+  return 1;
+}
+
+/**
+ * Resolves the composition rule for a (brand, meal) at the narrowest scope that
+ * applies: a property rule overrides a kitchen rule, which overrides the
+ * brand default. Passing propertyId null asks for the kitchen/brand answer,
+ * which is what the kitchen-level rotation board wants.
+ */
 export async function resolveCompositionRule(
-  brand: string, mealType: string, kitchenId: string | null,
+  brand: string, mealType: string, kitchenId: string | null, propertyId: string | null = null,
 ): Promise<CompositionRule | null> {
   const rules = await db.select().from(menuCompositionRuleTable).where(and(
     eq(menuCompositionRuleTable.brand, brand as any),
     eq(menuCompositionRuleTable.mealType, mealType as any),
     eq(menuCompositionRuleTable.isActive, true),
-    kitchenId ? or(isNull(menuCompositionRuleTable.kitchenId), eq(menuCompositionRuleTable.kitchenId, kitchenId)) : isNull(menuCompositionRuleTable.kitchenId),
+    propertyId
+      ? or(isNull(menuCompositionRuleTable.propertyId), eq(menuCompositionRuleTable.propertyId, propertyId))
+      : isNull(menuCompositionRuleTable.propertyId),
+    kitchenId
+      ? or(isNull(menuCompositionRuleTable.kitchenId), eq(menuCompositionRuleTable.kitchenId, kitchenId))
+      : isNull(menuCompositionRuleTable.kitchenId),
   ));
   if (!rules.length) return null;
-  const rule = rules.sort((a, b) => (a.kitchenId === kitchenId ? -1 : 1))[0]!;
+  const rule = [...rules].sort(
+    (a, b) => scopeRank(b, kitchenId, propertyId) - scopeRank(a, kitchenId, propertyId),
+  )[0]!;
   const slots = await db.select().from(menuCompositionSlotTable)
     .where(eq(menuCompositionSlotTable.ruleId, rule.id)).orderBy(menuCompositionSlotTable.sortOrder);
   return {
-    id: rule.id, brand: rule.brand, mealType: rule.mealType, kitchenId: rule.kitchenId, name: rule.name,
+    id: rule.id, brand: rule.brand, mealType: rule.mealType, kitchenId: rule.kitchenId,
+    propertyId: rule.propertyId, name: rule.name,
     slots: slots.map((s) => ({ id: s.id, slotLabel: s.slotLabel, component: s.component, preparation: s.preparation, minCount: s.minCount, maxCount: s.maxCount, sortOrder: s.sortOrder })),
   };
 }

@@ -912,76 +912,6 @@ export interface CreateInventoryItemBody {
   condition?: string;
 }
 
-export type RecipeDtoIngredientsItem = { [key: string]: unknown };
-
-export interface RecipeDto {
-  id: string;
-  name: string;
-  category: string;
-  mealType: string;
-  ingredients: RecipeDtoIngredientsItem[];
-  method?: string | null;
-  allergens: string[];
-  isVeg: boolean;
-  isActive: boolean;
-  createdAt: string;
-}
-
-export interface RecipeResponse {
-  success: boolean;
-  data: RecipeDto;
-}
-
-export interface RecipesListResponse {
-  success: boolean;
-  data: RecipeDto[];
-  meta: PaginationMeta;
-}
-
-export type CreateRecipeBodyIngredientsItem = { [key: string]: unknown };
-
-export interface CreateRecipeBody {
-  name: string;
-  category: string;
-  mealType: string;
-  ingredients: CreateRecipeBodyIngredientsItem[];
-  method?: string;
-  allergens?: string[];
-  isVeg?: boolean;
-  isActive?: boolean;
-}
-
-export type MenuPlanDtoSlots = { [key: string]: unknown };
-
-export interface MenuPlanDto {
-  id: string;
-  propertyId: string;
-  weekStart: string;
-  slots: MenuPlanDtoSlots;
-  status: string;
-  createdAt: string;
-}
-
-export interface MenuPlanResponse {
-  success: boolean;
-  data: MenuPlanDto;
-}
-
-export interface MenuPlansListResponse {
-  success: boolean;
-  data: MenuPlanDto[];
-  meta: PaginationMeta;
-}
-
-export type CreateMenuPlanBodySlots = { [key: string]: unknown };
-
-export interface CreateMenuPlanBody {
-  propertyId: string;
-  weekStart: string;
-  slots: CreateMenuPlanBodySlots;
-  status?: string;
-}
-
 export interface LeadDto {
   id: string;
   name: string;
@@ -2272,18 +2202,6 @@ export type GetInventoryParams = {
   propertyId?: PropertyIdParamParameter;
   category?: string;
   lowStock?: boolean;
-};
-
-export type GetRecipesParams = {
-  page?: PageParamParameter;
-  limit?: LimitParamParameter;
-  search?: SearchParamParameter;
-};
-
-export type GetMenuPlansParams = {
-  page?: PageParamParameter;
-  limit?: LimitParamParameter;
-  propertyId?: PropertyIdParamParameter;
 };
 
 export type GetLeadsParams = {
