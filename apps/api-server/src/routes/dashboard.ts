@@ -43,7 +43,19 @@ router.get("/stats", authenticate, authorize("DASHBOARD", "view"), async (req, r
     const [monthLeads] = await db.select({ count: sql<number>`count(*)::int` }).from(leadsTable).where(gte(leadsTable.createdAt, startOfMonth));
     const [convertedLeads] = await db.select({ count: sql<number>`count(*)::int` }).from(leadsTable).where(and(eq(leadsTable.stage, "CONVERTED"), gte(leadsTable.createdAt, startOfMonth)));
 
-    const [revenue] = await db.select({ total: sql<number>`coalesce(sum(amount::numeric), 0)` }).from(paymentsTable).where(and(eq(paymentsTable.status, "SUCCESS"), gte(paymentsTable.createdAt, startOfMonth)));
+    // Collected revenue is attributed to the property the money was taken AT
+    // (payments.property_id), never to the resident's CURRENT property — one
+    // inter-property transfer would otherwise rewrite both properties' revenue
+    // history (M10). Outstanding dues are the opposite: an unpaid charge is
+    // chased at wherever the resident lives now, so `pending` still reads
+    // residents.propertyId. Same rule as food-ops' collectedAtProperty.
+    const [revenue] = await db.select({ total: sql<number>`coalesce(sum(${paymentsTable.amount}::numeric), 0)` })
+      .from(paymentsTable)
+      .where(and(
+        eq(paymentsTable.status, "SUCCESS"),
+        gte(paymentsTable.createdAt, startOfMonth),
+        ...(propertyId ? [eq(paymentsTable.propertyId, propertyId)] : []),
+      ));
     const [pending] = propertyId
       ? await db.select({ total: sql<number>`coalesce(sum(${paymentsTable.amount}::numeric), 0)` })
           .from(paymentsTable)

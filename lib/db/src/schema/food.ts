@@ -25,6 +25,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  check,
   pgEnum,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
@@ -48,7 +49,12 @@ export const mealTypeEnum = pgEnum("food_meal_type", [
  *   PLACED      → created by Unit Lead, editable/cancellable
  *   ACCEPTED    → kitchen acknowledged the order
  *   REJECTED    → kitchen declined the order (terminal; with rejectionReason)
- *   PREPARING   → kitchen marked it preparing from Kitchen Summary
+ *   PREPARING   → DEAD. No producer has ever existed and `ORDER_NEXT` has no key
+ *                 for it, so `canTransition('PREPARING', x)` is false for all x —
+ *                 nothing can enter or leave it. The value is kept only because
+ *                 Postgres cannot drop an enum label without recreating the type
+ *                 (which would rewrite every column using it). Treat it as
+ *                 unreachable; do not add producers.
  *   DISPATCHED  → delivery partner assigned & dispatched
  *   DELIVERED   → receipt confirmed with item-wise proof
  *   CANCELLED   → cancelled before dispatch only
@@ -105,8 +111,11 @@ export const dishComponentEnum = pgEnum("food_dish_component", [
 export const PREPARATIONS = ["VEG", "NON_VEG", "JAIN"] as const;
 
 /**
- * Access scope levels. Hierarchy is City → Kitchen → Property (ZONE/CLUSTER are
- * retained for back-compat data but no longer used by the resolver/UI).
+ * Access scope levels. All five resolve, across TWO real spines that both stay
+ * live: the F&B spine City → Kitchen → Property (properties.kitchenId) and the
+ * geo spine Zone → City → Cluster → Property (properties.clusterId, the one
+ * audit-access.ts and the analytics filters already walk). CITY resolves through
+ * both; ZONE and CLUSTER resolve through the geo spine.
  */
 export const foodScopeLevelEnum = pgEnum("food_scope_level", [
   "GLOBAL",
@@ -133,7 +142,12 @@ export const foodDispatchStatusEnum = pgEnum("food_dispatch_status", [
 export const DISPATCH_TRANSITIONS: Record<string, string[]> = {
   LOADING: ["IN_TRANSIT", "CANCELLED"],
   IN_TRANSIT: ["DELIVERED", "PARTIAL", "CANCELLED"],
-  PARTIAL: ["DELIVERED", "IN_TRANSIT"],
+  // PARTIAL is a RUNNING trip, so it must keep the abort route every running
+  // state has: cancel is the ONLY path that returns still-DISPATCHED orders to
+  // the kitchen, and the reconciler moves a trip to PARTIAL as soon as its FIRST
+  // stop is confirmed. Without this edge a 12-stop trip that breaks down after
+  // stop 1 stranded its 11 remaining meals with no way back.
+  PARTIAL: ["DELIVERED", "IN_TRANSIT", "CANCELLED"],
   DELIVERED: [],
   CANCELLED: [],
 };
@@ -201,8 +215,52 @@ export const userScopesTable = pgTable("user_scopes", {
   kitchenId: text("kitchen_id").references(() => kitchensTable.id),
   clusterId: text("cluster_id").references(() => clustersTable.id),
   propertyId: text("property_id").references(() => propertiesTable.id),
+  /**
+   * Soft-revoke flag. A hard DELETE makes "never configured" and "deliberately
+   * revoked" indistinguishable, and for the BROAD_FALLBACK roles those two mean
+   * opposite things (no rows = org-wide). Revoking flips this instead.
+   */
+  isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * One grant per (user, level, geo target). Exactly one geo column is populated
+   * per row, and with the default NULLS-are-distinct rule two identical KITCHEN
+   * grants would both be accepted (the four NULL columns making the rows
+   * "different"), leaving "delete the grant" ambiguous.
+   *
+   * Expressed as six paired PARTIAL indexes — the idiom food_meal_windows,
+   * food_cutoffs and per_resident_rules already use — rather than one index over
+   * `coalesce(col, '')` expressions. drizzle-kit cannot round-trip an expression
+   * index, so the single-index form made every `push` DROP and re-CREATE it: a
+   * window with no uniqueness on the grant table on each deploy, and "push says
+   * nothing to do" permanently unusable as a drift signal. Plain columns and a
+   * plain IS NULL predicate diff cleanly.
+   *
+   * The last index covers GLOBAL (and any level with no geo target): one row per
+   * (user, level) when every geo column is null.
+   */
+  uniqGrantZone: uniqueIndex("uq_user_scopes_grant_zone")
+    .on(t.userId, t.scopeLevel, t.zoneId)
+    .where(sql`zone_id is not null`),
+  uniqGrantCity: uniqueIndex("uq_user_scopes_grant_city")
+    .on(t.userId, t.scopeLevel, t.cityId)
+    .where(sql`city_id is not null`),
+  uniqGrantCluster: uniqueIndex("uq_user_scopes_grant_cluster")
+    .on(t.userId, t.scopeLevel, t.clusterId)
+    .where(sql`cluster_id is not null`),
+  uniqGrantKitchen: uniqueIndex("uq_user_scopes_grant_kitchen")
+    .on(t.userId, t.scopeLevel, t.kitchenId)
+    .where(sql`kitchen_id is not null`),
+  uniqGrantProperty: uniqueIndex("uq_user_scopes_grant_property")
+    .on(t.userId, t.scopeLevel, t.propertyId)
+    .where(sql`property_id is not null`),
+  uniqGrantGlobal: uniqueIndex("uq_user_scopes_grant_global")
+    .on(t.userId, t.scopeLevel)
+    .where(
+      sql`zone_id is null and city_id is null and cluster_id is null and kitchen_id is null and property_id is null`,
+    ),
+}));
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Master data (PRD §7.9 Settings)
@@ -231,10 +289,21 @@ export const dishesTable = pgTable("dishes", {
   component: dishComponentEnum("component").notNull(),
   /** Default unit this dish is measured/ordered in. */
   unit: measurementUnitEnum("unit").notNull(),
-  /** Brand codes this dish belongs to (one or more). */
-  brands: text("brands").array().notNull().default(sql`'{}'::text[]`),
-  /** Preparation/diet tags (VEG, NON_VEG, JAIN — one or more). Replaces isVeg. */
-  preparations: text("preparations").array().notNull().default(sql`'{}'::text[]`),
+  /**
+   * Brand codes this dish belongs to (one or more).
+   *
+   * The empty-array default is applied by drizzle (`$defaultFn`) instead of by a
+   * column DEFAULT. drizzle-kit cannot round-trip an array default in either
+   * spelling — Postgres normalises both `'{}'` and `'{}'::text[]` back to
+   * `'{}'::text[]`, which the differ never matches — so a column DEFAULT here
+   * made `push` re-emit two ALTER statements forever and destroyed "push says
+   * nothing to do" as a drift signal. NOT NULL still guards the invariant, and
+   * every insert site in the repo goes through drizzle. Verified: push converges
+   * to a genuine no-op with this spelling.
+   */
+  brands: text("brands").array().notNull().$defaultFn(() => []),
+  /** Preparation/diet tags (VEG, NON_VEG, JAIN — one or more). Replaces isVeg. Same default note as `brands`. */
+  preparations: text("preparations").array().notNull().$defaultFn(() => []),
   photoUrl: text("photo_url"),
   /**
    * When set, this dish's people count is fixed at order time: the +/− stepper
@@ -443,6 +512,34 @@ export const foodMenuRotationTable = pgTable("food_menu_rotation", {
     t.kitchenId, t.brand, t.mealType, t.rotationWeek, t.dayOfWeek, t.isActive,
   ),
   parentIdx: index("idx_rotation_parent").on(t.parentRotationId),
+  /**
+   * One row per dish per resolved cell — the slot identity.
+   *
+   * The key is exactly the cell `resolveMenu` selects on (kitchenId, brand,
+   * mealType, dayOfWeek, rotationWeek — food-service.ts:391-399) plus dishId,
+   * because `computeOrderItems` emits one line per returned row: a dish repeated
+   * inside one cell tells the kitchen to cook it twice.
+   *
+   * Deliberately NOT part of the key:
+   *  · effectiveFrom/effectiveTo — a seasonal change swaps one dish for another,
+   *    it never schedules the same dish over two windows, so folding the window
+   *    in would only reopen the duplicate.
+   *  · isActive — rotation rows are hard-deleted, never soft-deleted; including
+   *    it would let a deactivated row hide a live duplicate.
+   *  · parentRotationId — it records which plate a side accompanies, not what
+   *    gets cooked. Two mains each pairing the same side still means the side is
+   *    cooked twice for one meal.
+   *
+   * Split in two because kitchenId is nullable (legacy rows predating per-kitchen
+   * menus) and Postgres treats NULLs as distinct, so a single index would leave
+   * exactly those rows undeduped.
+   */
+  slotUniq: uniqueIndex("uq_rotation_slot_dish")
+    .on(t.kitchenId, t.brand, t.rotationWeek, t.dayOfWeek, t.mealType, t.dishId)
+    .where(sql`kitchen_id is not null`),
+  slotUniqNoKitchen: uniqueIndex("uq_rotation_slot_dish_global")
+    .on(t.brand, t.rotationWeek, t.dayOfWeek, t.mealType, t.dishId)
+    .where(sql`kitchen_id is null`),
 }));
 
 /**
@@ -464,7 +561,23 @@ export const perResidentRuleTable = pgTable("per_resident_rules", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * One portion rule per (brand, meal, dish, property). `resolveRulesByDish`
+   * takes the first row of an unordered SELECT, so a second row for the same key
+   * silently decides how much the kitchen cooks. Split on propertyId being NULL
+   * (the global default) because Postgres treats NULLs as distinct and would
+   * otherwise let the default be defined twice.
+   */
+  ruleUniq: uniqueIndex("uq_per_resident_rule")
+    .on(t.brand, t.mealType, t.dishId, t.propertyId)
+    .where(sql`property_id is not null`),
+  ruleUniqGlobal: uniqueIndex("uq_per_resident_rule_global")
+    .on(t.brand, t.mealType, t.dishId)
+    .where(sql`property_id is null`),
+  /** A negative portion would order negative kilograms into the cook plan. */
+  qtyNonNegative: check("per_resident_rules_qty_non_negative", sql`qty_per_resident >= 0`),
+}));
 
 /** Delivery partners — legacy flat table, superseded by agencies (kept for migration). */
 export const deliveryPartnersTable = pgTable("delivery_partners", {
@@ -620,7 +733,23 @@ export const foodMealWindowsTable = pgTable("food_meal_windows", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * One window per (brand, meal, property). Both `resolveWindow` and
+   * `resolveExpectedDeliveryAt` pick a winner with a non-antisymmetric sort over
+   * an unordered SELECT, so with two rows for the same key the delay baseline
+   * stored on every order is whatever the heap scan happened to return first.
+   * Split on propertyId being NULL for the same NULLs-are-distinct reason as
+   * per_resident_rules. (`brand` is nullable in the column definition but every
+   * write path rejects a missing brand, so it is not split on.)
+   */
+  windowUniq: uniqueIndex("uq_food_meal_windows_brand_meal_prop")
+    .on(t.brand, t.mealType, t.propertyId)
+    .where(sql`property_id is not null`),
+  windowUniqGlobal: uniqueIndex("uq_food_meal_windows_brand_meal_global")
+    .on(t.brand, t.mealType)
+    .where(sql`property_id is null`),
+}));
 
 /**
  * Single order cut-off time per brand (one value applies to ALL meals that day).
@@ -638,7 +767,18 @@ export const foodCutoffsTable = pgTable("food_cutoffs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => ({
-  brandPropIdx: uniqueIndex("idx_food_cutoffs_brand_prop").on(t.brand, t.propertyId),
+  /**
+   * The pre-existing index did not cover the global rows: Postgres treats NULLs
+   * as distinct, so `(brand, NULL)` could be inserted repeatedly and `PUT
+   * /cutoffs/:id` (which has no dedupe) could promote a property override to a
+   * second global row for the same brand. Made explicitly partial and paired.
+   */
+  brandPropIdx: uniqueIndex("idx_food_cutoffs_brand_prop")
+    .on(t.brand, t.propertyId)
+    .where(sql`property_id is not null`),
+  brandGlobalIdx: uniqueIndex("uq_food_cutoffs_brand_global")
+    .on(t.brand)
+    .where(sql`property_id is null`),
 }));
 
 /**
@@ -771,7 +911,6 @@ export const foodOrdersTable = pgTable("food_orders", {
   wasteEditableUntil: timestamp("waste_editable_until"),
 
   // ── Other lifecycle ──
-  preparingAt: timestamp("preparing_at"),
   cancelledAt: timestamp("cancelled_at"),
   cancelReason: text("cancel_reason"),
 
@@ -794,7 +933,27 @@ export const foodOrdersTable = pgTable("food_orders", {
   createdById: text("created_by_id").references(() => usersTable.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * "One row per property + meal + planned date" — the header comment above, now
+   * actually enforced. Both write paths dedupe in application code outside any
+   * transaction, so two concurrent submissions each see no live order and each
+   * insert one; the kitchen summary then aggregates both and the kitchen is told
+   * to cook double. Cancelled/rejected orders are excluded so a property can
+   * legitimately re-order the same meal after a cancellation.
+   */
+  liveOrderUniq: uniqueIndex("uq_food_orders_property_meal_date")
+    .on(t.propertyId, t.mealType, t.serviceDate)
+    .where(sql`status <> 'CANCELLED' and status <> 'REJECTED'`),
+  propertyDateIdx: index("idx_food_orders_property_date").on(t.propertyId, t.serviceDate),
+  statusIdx: index("idx_food_orders_status").on(t.status),
+  dispatchIdx: index("idx_food_orders_dispatch").on(t.dispatchId),
+  batchIdx: index("idx_food_orders_batch").on(t.batchId),
+  createdAtIdx: index("idx_food_orders_created_at").on(t.createdAt),
+  /** Headcounts feed every roll-up and the cook plan; negatives are nonsense. */
+  residentsNonNegative: check("food_orders_residents_non_negative", sql`residents_count >= 0`),
+  staffNonNegative: check("food_orders_staff_non_negative", sql`staff_count >= 0`),
+}));
 
 /**
  * Per-dish order line. Holds ordered, received (delivery proof), and wasted
@@ -823,7 +982,15 @@ export const foodOrderItemsTable = pgTable("food_order_items", {
   wastedQty: numeric("wasted_qty", { precision: 12, scale: 3 }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /** Postgres does not auto-index FKs; every order-detail load scanned this table. */
+  orderIdx: index("idx_food_order_items_order").on(t.orderId),
+  /** Quantities are kilograms of food; a negative one corrupts every roll-up. */
+  orderedNonNegative: check("food_order_items_ordered_non_negative", sql`ordered_qty >= 0`),
+  preparedNonNegative: check("food_order_items_prepared_non_negative", sql`prepared_qty is null or prepared_qty >= 0`),
+  receivedNonNegative: check("food_order_items_received_non_negative", sql`received_qty is null or received_qty >= 0`),
+  wastedNonNegative: check("food_order_items_wasted_non_negative", sql`wasted_qty is null or wasted_qty >= 0`),
+}));
 
 /**
  * Append-only lifecycle event log powering the Confirm Delivery timeline
@@ -838,7 +1005,10 @@ export const foodOrderEventsTable = pgTable("food_order_events", {
   note: text("note"),
   actorId: text("actor_id").references(() => usersTable.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /** The timeline is always read as "this order's events, oldest first". */
+  orderIdx: index("idx_food_order_events_order").on(t.orderId, t.createdAt),
+}));
 
 /**
  * Append-only dispatch-trip event log (mirrors foodOrderEventsTable). One row
@@ -876,6 +1046,13 @@ export const foodMenuSharesTable = pgTable("food_menu_shares", {
   recipientType: text("recipient_type").notNull(),
   recipients: json("recipients").$type<string[]>().default([]).notNull(),
   shareToken: text("share_token").unique(),
+  /**
+   * Bounds on the public `shareToken` link. Null expiresAt = no expiry (existing
+   * rows keep today's behaviour); revokedAt is set when a share is withdrawn.
+   * A token is servable only while both are unset-or-in-the-future.
+   */
+  expiresAt: timestamp("expires_at"),
+  revokedAt: timestamp("revoked_at"),
   sharedAt: timestamp("shared_at").defaultNow().notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -921,7 +1098,17 @@ export const foodAdditionalOrderItemsTable = pgTable("food_additional_order_item
   qty: numeric("qty", { precision: 12, scale: 3 }).notNull(),
   createdById: text("created_by_id").references(() => usersTable.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * One row per dish per submission. `requestId` is the client's idempotency
+   * key, so a double-clicked "+ Additional Food" replays onto the same rows
+   * instead of double-counting food that only arrived once (M18) — and the
+   * insert is `onConflictDoNothing`, which needs this index to have any effect.
+   * The content-similarity heuristic it replaces could not tell a replay from
+   * two genuine identical top-ups minutes apart.
+   */
+  requestDishUniq: uniqueIndex("uq_food_additional_request_dish").on(t.orderId, t.requestId, t.dishId),
+}));
 export type FoodAdditionalOrderItem = typeof foodAdditionalOrderItemsTable.$inferSelect;
 
 export type FoodDispatchEvent = typeof foodDispatchEventsTable.$inferSelect;

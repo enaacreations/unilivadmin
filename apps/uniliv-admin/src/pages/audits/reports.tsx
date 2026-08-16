@@ -69,7 +69,44 @@ function RegistryTab() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-md border bg-card">
+      {/* Phone: a card per report. A nine-column table is unusable at 375px,
+          and field personas hold AUDIT_REPORTS — so the data stays available to
+          them, just in a shape that fits (requirement 12). */}
+      <div className="space-y-2 md:hidden">
+        {listQuery.isLoading ? (
+          Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-[86px] w-full rounded-[12px]" />)
+        ) : rows.length === 0 ? (
+          <div className="rounded-[12px] border border-dashed bg-card p-8 text-center text-sm text-muted-foreground">
+            No reports yet — they generate as audits complete.
+          </div>
+        ) : (
+          rows.map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              onClick={() => navigate(`/audits/reports/${r.id}`)}
+              className="w-full rounded-[12px] border border-border bg-card p-3 text-left transition-colors hover:border-accent"
+            >
+              <div className="flex items-start gap-2">
+                <span className="min-w-0 flex-1 truncate text-[13.5px] font-bold">{r.title}</span>
+                <Badge variant={REPORT_STATUS_BADGE[r.status] ?? "outline"} title={r.error ?? undefined}>
+                  {titleCase(r.status)}
+                </Badge>
+              </div>
+              <div className="mt-1 truncate text-[12px] text-muted-foreground">{r.propertyName ?? "—"}</div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                <TypeBadge type={r.auditType as AuditType} />
+                <span className="font-mono">{r.reportNo}</span>
+                <span>·</span>
+                <span>{fmtDateTime(r.generatedAt)}</span>
+                {r.sizeBytes != null && <><span>·</span><span className="tabular-nums">{fmtSize(r.sizeBytes)}</span></>}
+              </div>
+            </button>
+          ))
+        )}
+      </div>
+
+      <div className="hidden rounded-md border bg-card md:block">
         <div className="w-full overflow-auto overscroll-contain" style={{ maxHeight: "62vh" }}>
           <Table>
             <TableHeader className="sticky top-0 z-10 bg-card [&_tr]:border-b [&_tr]:border-border">

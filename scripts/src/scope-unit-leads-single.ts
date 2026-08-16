@@ -32,7 +32,12 @@ async function main(): Promise<void> {
     const scopes = await db
       .select()
       .from(userScopesTable)
-      .where(and(eq(userScopesTable.userId, lead.id), eq(userScopesTable.scopeLevel, "PROPERTY")));
+      // Live grants only — an already-revoked row is not an "extra" scope.
+      .where(and(
+        eq(userScopesTable.userId, lead.id),
+        eq(userScopesTable.scopeLevel, "PROPERTY"),
+        eq(userScopesTable.isActive, true),
+      ));
     const propIds = scopes.map((s) => s.propertyId).filter((x): x is string => !!x);
 
     // Keep the home property if it's one of the scopes, else the first scope, else home.
@@ -54,7 +59,12 @@ async function main(): Promise<void> {
 
     console.log(`  →  ${lead.name}: keep ${keepId} · remove ${extra.length} extra scope${extra.length === 1 ? "" : "s"}${fixHome ? ` · set home=${keepId}` : ""}`);
     if (APPLY) {
-      for (const s of extra) await db.delete(userScopesTable).where(eq(userScopesTable.id, s.id));
+      // SOFT revoke, matching the product (food.ts DELETE /scopes flips isActive
+      // rather than deleting, H5): the row is the audit trail of who was granted
+      // what, and a re-grant reactivates it instead of hitting uq_user_scopes_grant_*.
+      for (const s of extra) {
+        await db.update(userScopesTable).set({ isActive: false }).where(eq(userScopesTable.id, s.id));
+      }
       if (fixHome) await db.update(usersTable).set({ propertyId: keepId }).where(eq(usersTable.id, lead.id));
     }
     changed++;

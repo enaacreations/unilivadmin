@@ -36,6 +36,7 @@ import {
 } from "@workspace/db";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
+import { assertSeedTarget } from "./seed-guard.js";
 
 const id = () => randomUUID();
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
@@ -43,6 +44,8 @@ const daysFromNow = (n: number) => new Date(Date.now() + n * 86_400_000);
 
 async function main() {
   console.log("🌱 Seeding database with 50+ rows per table...");
+  // This script TRUNCATEs 60+ tables including `users`. Name the target first.
+  await assertSeedTarget("seed");
 
   // ─── TRUNCATE ALL TABLES (reverse FK order) ───────────────────────────────
   // This makes the script safe to re-run: clean state every time.
@@ -205,6 +208,9 @@ async function main() {
   for (let i = 0; i < 50; i++) {
     await db.insert(paymentsTable).values({
       id: id(), residentId: residentIds[i % 50]!,
+      // Property the money was collected AT (M10). Matches the resident's own
+      // property — residents are round-robined over the first four the same way.
+      propertyId: propIds[(i % 50) % 4]!,
       amount: String(5000 + (i % 8) * 1500),
       mode: payModes[i % 5]!, status: payStatuses[i % 5]!,
       reference: `PAY-${200000 + i}`,
@@ -1201,7 +1207,13 @@ async function main() {
     let runningBal = 0;
     for (let t = 0; t < txCount; t++) {
       const txType = txTypes[(i + t) % txTypes.length]!;
-      const isCreditTx = ["TOPUP", "ADJUSTMENT_CREDIT", "REFUND_WITHDRAWAL"].includes(txType);
+      // C2: the ONLY credit types are TOPUP and ADJUSTMENT_CREDIT.
+      // REFUND_WITHDRAWAL is a DEBIT (money leaving the wallet) — seeding it as a
+      // credit is the exact sign error C2 fixed in the app, and a seed that
+      // disagrees with WALLET_TXN_DIRECTION (apps/api-server/src/lib/wallet-service.ts,
+      // the single source of truth; not importable from this package) reintroduces
+      // it the moment txTypes gains that member.
+      const isCreditTx = ["TOPUP", "ADJUSTMENT_CREDIT"].includes(txType);
       const amount = 100 + ((i + t) % 8) * 50;
       const balBefore = runningBal;
       const balAfter = isCreditTx ? balBefore + amount : balBefore - amount;

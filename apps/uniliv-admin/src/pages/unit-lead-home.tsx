@@ -34,6 +34,8 @@ const SUCCESS = "var(--success)";
 const WARNING = "var(--warning)";
 const DESTRUCTIVE = "var(--destructive)";
 const INFO = "var(--info)";
+/** One colour per UNIT on the wastage trend — KG and PLATE are separate series. */
+const WASTE_UNIT_COLORS = [WARNING, INFO, PRIMARY, DESTRUCTIVE, ACCENT];
 const PROP_PALETTE = [ACCENT, PRIMARY, SUCCESS, WARNING, INFO, DESTRUCTIVE];
 
 // Period presets — drive the home-analytics `period` param (FY-aware on the server).
@@ -150,14 +152,32 @@ export default function UnitLeadHome() {
   // ── Chart series ────────────────────────────────────────────────────────────
   const peopleOrderedTrend = home?.peopleOrderedTrend ?? [];
   const peopleByProperty = home?.peopleByProperty ?? [];
-  const wastageTrend = home?.wastageTrend ?? [];
+  // wastageTrend is one point per (date, UNIT) (M7) — fed straight into an
+  // AreaChart keyed on `date`, a day with both KG and PLATE lines made the
+  // series zig-zag between the two on the same X tick. Pivot to one row per day
+  // with a column per unit and draw one series each; they are on different
+  // scales and must never be summed.
+  const wastageTrendRaw = home?.wastageTrend ?? [];
+  const wasteUnits = [...new Set(wastageTrendRaw.map((w) => w.unit ?? ""))].filter(Boolean);
+  const wastageTrend = React.useMemo(() => {
+    const byDate = new Map<string, Record<string, string | number>>();
+    for (const w of wastageTrendRaw) {
+      const row = byDate.get(w.date) ?? { date: w.date };
+      row[w.unit ?? ""] = Number(row[w.unit ?? ""] ?? 0) + w.wasted;
+      byDate.set(w.date, row);
+    }
+    return [...byDate.values()].sort((a, b) => (String(a["date"]) < String(b["date"]) ? -1 : 1));
+  }, [wastageTrendRaw]);
   const activeResidentTrend = home?.activeResidentTrend ?? [];
   const orderDelays = home?.orderDelays ?? [];
   const cmp = home?.peopleComparison;
 
   const topWasteChartData = (home?.topWasteItems ?? [])
     .slice(0, 8)
-    .map((w) => ({ name: w.dishName ?? "—", wasted: w.wasted, wastePct: w.wastePct, unit: w.unit }))
+    // This page reads /home-analytics — the ORDERED basis. The waste-analytics
+    // page's number is of-received; the two are different metrics and must not
+    // both render as a bare "Waste %".
+    .map((w) => ({ name: w.dishName ?? "—", wasted: w.wasted, wastePct: w.wastePctOfOrdered, unit: w.unit }))
     .reverse();
 
   const peopleByPropChartData = peopleByProperty.map((p) => ({ name: p.propertyName, people: p.people }));
@@ -400,7 +420,14 @@ export default function UnitLeadHome() {
                   <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                   <Tooltip labelFormatter={dayTickFmt} />
-                  <Area type="monotone" dataKey="wasted" name="Wasted" stroke={WARNING} strokeWidth={2} fill="url(#homeWasteGradient)" />
+                  {wasteUnits.length > 1 && <Legend />}
+                  {wasteUnits.map((u, i) => (
+                    <Area
+                      key={u} type="monotone" dataKey={u} name={u}
+                      stroke={WASTE_UNIT_COLORS[i % WASTE_UNIT_COLORS.length]!} strokeWidth={2}
+                      fill={i === 0 ? "url(#homeWasteGradient)" : "transparent"}
+                    />
+                  ))}
                 </AreaChart>
               </ResponsiveContainer>
             )}
@@ -427,7 +454,7 @@ export default function UnitLeadHome() {
                   <Tooltip
                     formatter={(val: any, _n: any, item: any) => [
                       `${val} ${item?.payload?.unit ?? ""}`.trim(),
-                      `Wasted (${item?.payload?.wastePct ?? 0}%)`,
+                      `Wasted (${item?.payload?.wastePct ?? 0}% of ordered)`,
                     ]}
                   />
                   <Bar dataKey="wasted" name="Wasted" fill={DESTRUCTIVE} radius={[0, 4, 4, 0]} />

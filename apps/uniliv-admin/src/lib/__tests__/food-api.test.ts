@@ -7,6 +7,7 @@ import {
   fmtQty,
   groupLabel,
   isFractionalUnit,
+  orderStatusPill,
   serviceDayKey,
   shortMeal,
 } from "@/lib/food-api";
@@ -67,8 +68,18 @@ describe("label helpers", () => {
 
   it("PREPARATION_LABEL / ORDER_STATUS_PILL expose the canonical display strings", () => {
     expect(PREPARATION_LABEL.NON_VEG).toBe("Non-veg");
-    expect(ORDER_STATUS_PILL.PREPARING.label).toBe("In kitchen");
-    expect(ORDER_STATUS_PILL.DELIVERED.label).toBe("Delivered ✓");
+    expect(ORDER_STATUS_PILL.DELIVERED.label).toBe("Received ✓");
+  });
+
+  it("orderStatusPill renders the retired PREPARING status via the neutral fallback", () => {
+    // PREPARING is retired from OrderStatus but still exists in the DB enum, so a
+    // legacy row must stay renderable through the safe lookup rather than a map hit.
+    expect(ORDER_STATUS_PILL).not.toHaveProperty("PREPARING");
+    expect(orderStatusPill("PREPARING")).toEqual({
+      label: "Preparing",
+      cls: "bg-muted text-muted-foreground",
+    });
+    expect(orderStatusPill("DELIVERED").label).toBe("Received ✓");
   });
 });
 

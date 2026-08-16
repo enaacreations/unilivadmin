@@ -24,22 +24,21 @@ import { isSuperAdminRole } from "@/lib/permissions";
 import { ChevronLeft, ArrowUpCircle, RotateCcw, Download, RefreshCw } from "lucide-react";
 import { format } from "date-fns";
 import { useGetResident, getGetResidentQueryKey } from "@workspace/api-client-react";
+import { walletAmountClass, walletAmountSign } from "@/lib/wallet-direction";
 
 const PAGE_SIZE = 20;
 
 const TX_COLOR: Record<string, string> = {
   TOPUP: "text-green-700",
   ADJUSTMENT_CREDIT: "text-green-600",
-  REFUND_WITHDRAWAL: "text-green-500",
+  // A checkout refund DRAINS the wallet — it is a debit, and colouring it green
+  // is what made the bad corrective reversal look reasonable (C2).
+  REFUND_WITHDRAWAL: "text-red-500",
   PAYMENT: "text-red-600",
   PARTIAL_PAYMENT: "text-orange-600",
   ADJUSTMENT_DEBIT: "text-red-500",
   REVERSAL: "text-purple-600",
 };
-
-function isCredit(type: string) {
-  return ["TOPUP", "ADJUSTMENT_CREDIT", "REFUND_WITHDRAWAL", "REVERSAL"].includes(type);
-}
 
 function txBadge(type: string) {
   return (
@@ -151,7 +150,7 @@ export default function WalletDetail() {
           format(new Date(t.createdAt), "yyyy-MM-dd HH:mm"),
           t.type,
           `"${t.description.replace(/"/g, '""')}"`,
-          `${isCredit(t.type) ? "+" : "-"}${t.amount.toFixed(2)}`,
+          `${walletAmountSign(t, "-")}${t.amount.toFixed(2)}`,
           t.balanceAfter.toFixed(2),
           `"${(t.notes || "").replace(/"/g, '""')}"`,
         ].join(",")
@@ -285,11 +284,9 @@ export default function WalletDetail() {
                       {t.notes && <div className="text-xs text-muted-foreground">{t.notes}</div>}
                     </TableCell>
                     <TableCell
-                      className={`text-right font-mono text-sm font-semibold ${
-                        isCredit(t.type) ? "text-green-600" : "text-red-600"
-                      }`}
+                      className={`text-right font-mono text-sm font-semibold ${walletAmountClass(t)}`}
                     >
-                      {isCredit(t.type) ? "+" : "−"}₹
+                      {walletAmountSign(t)}₹
                       {t.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                     </TableCell>
                     <TableCell className="text-right font-mono text-sm">

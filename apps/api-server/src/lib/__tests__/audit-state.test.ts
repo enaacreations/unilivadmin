@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AUDIT_TRANSITIONS,
+  REOPENABLE_STATES,
   TEMPLATE_VERSION_TRANSITIONS,
   assertTransition,
   canTransition,
@@ -27,8 +28,29 @@ describe("audit state machine (spec §4.1)", () => {
     expect(canTransition(AUDIT_TRANSITIONS, "SUBMITTED", "UNDER_REVIEW")).toBe(false);
   });
 
-  it("permits reopen CLOSED→IN_PROGRESS (FRD-REV-06) and nothing else from CLOSED", () => {
-    expect(AUDIT_TRANSITIONS.CLOSED).toEqual(["IN_PROGRESS"]);
+  it("reopens a finished audit into REJECTED, not straight back into progress", () => {
+    // A reopen is the same "send it back" as a rejection, so it lands in the
+    // auditor's Rework bucket and re-entry goes through the start gate.
+    expect(AUDIT_TRANSITIONS.CLOSED).toEqual(["REJECTED"]);
+    expect(AUDIT_TRANSITIONS.APPROVED).toEqual(["CLOSED", "REJECTED"]);
+    expect(canTransition(AUDIT_TRANSITIONS, "CLOSED", "IN_PROGRESS")).toBe(false);
+    expect(canTransition(AUDIT_TRANSITIONS, "APPROVED", "IN_PROGRESS")).toBe(false);
+  });
+
+  it("makes /start the only door into IN_PROGRESS, from SCHEDULED or REJECTED", () => {
+    const intoProgress = (Object.entries(AUDIT_TRANSITIONS) as [string, string[]][])
+      .filter(([, to]) => to.includes("IN_PROGRESS"))
+      .map(([from]) => from)
+      .sort();
+    // PAUSED is a legacy escape kept only so orphaned rows can exit.
+    expect(intoProgress).toEqual(["PAUSED", "REJECTED", "SCHEDULED"]);
+  });
+
+  it("lists every reopenable state", () => {
+    expect(REOPENABLE_STATES).toEqual(["SUBMITTED", "UNDER_REVIEW", "APPROVED", "CLOSED"]);
+    for (const from of REOPENABLE_STATES) {
+      expect(canTransition(AUDIT_TRANSITIONS, from, "REJECTED")).toBe(true);
+    }
   });
 
   it("keeps CANCELLED terminal", () => {
@@ -44,7 +66,7 @@ describe("audit state machine (spec §4.1)", () => {
       const err = e as { statusCode?: number; message?: string; details?: { allowed?: string[] } };
       expect(err.statusCode).toBe(409);
       expect(err.message).toBe("ILLEGAL_TRANSITION");
-      expect(err.details?.allowed).toEqual(["CLOSED"]);
+      expect(err.details?.allowed).toEqual(["CLOSED", "REJECTED"]);
     }
     expect(() => assertTransition(AUDIT_TRANSITIONS, "DRAFT", "IN_PROGRESS", "AUDIT")).toThrow();
     expect(() => assertTransition(AUDIT_TRANSITIONS, "SCHEDULED", "SUBMITTED", "AUDIT")).toThrow();

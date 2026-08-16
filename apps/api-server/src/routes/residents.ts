@@ -1,6 +1,17 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { residentsTable, ledgerEntriesTable, paymentsTable, propertiesTable, roomsTable, notificationOutboxTable } from "@workspace/db";
+import {
+  residentsTable,
+  ledgerEntriesTable,
+  paymentsTable,
+  propertiesTable,
+  roomsTable,
+  notificationOutboxTable,
+  ledgerTypeEnum,
+  paymentModeEnum,
+  paymentStatusEnum,
+  residentStatusEnum,
+} from "@workspace/db";
 import { eq, sql, ilike, or, and, inArray, asc } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
@@ -19,7 +30,8 @@ import {
   toPaise,
   RazorpayNotConfiguredError,
 } from "../lib/razorpay.js";
-import { enqueueDelivery, processDelivery, queueEnabled } from "@workspace/notify-core";
+import { enqueueDelivery, processDeliveryInline, queueEnabled } from "@workspace/notify-core";
+import { logger } from "../lib/logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ad-hoc outbound message helper.
@@ -48,12 +60,22 @@ async function sendAdHoc(
       entityId: opts.entityId ?? null,
       status: "PENDING",
     });
+    // Same shape as notification-service's notify() (H3b/H3d): enqueueDelivery
+    // only RETURNS false when REDIS_URL is unset — an unreachable Redis throws,
+    // and that throw used to fall into the catch below and discard the send
+    // silently. And processDelivery's default ctx is isLastAttempt:true, which
+    // marked a transient failure terminally FAILED with nothing anywhere to
+    // reset it; processDeliveryInline retries and leaves the row PENDING for the
+    // outbox sweep. Payment-link SMS/email is exactly the traffic this lost.
+    let queued = false;
     if (queueEnabled()) {
-      const queued = await enqueueDelivery(id);
-      if (!queued) await processDelivery(id);
-    } else {
-      await processDelivery(id);
+      try {
+        queued = await enqueueDelivery(id);
+      } catch (err) {
+        logger.warn({ err, outboxId: id }, "notification enqueue failed — delivering inline");
+      }
     }
+    if (!queued) await processDeliveryInline(id);
   } catch {
     // swallow — a delivery failure must never break the API request
   }
@@ -81,6 +103,53 @@ function sendAuthzError(err: unknown, res: import("express").Response): boolean 
     return true;
   }
   return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request validation for write paths
+// Invariant: a value the caller picks from a fixed set — or a NOT NULL column
+// written straight from the body — is checked HERE, not by Postgres. `ledger_type`
+// has 8 labels, so any other string reaches the driver as a 22P02 and a missing
+// one as a 23502; both land in the generic catch as a 500 "Internal server error".
+// On a money-adjacent write (a ledger charge is exactly what /wallet/…/pay later
+// settles) that tells an operator the server is broken when their payload was.
+// Allowed values are read off the pg enums so the two cannot drift.
+// ─────────────────────────────────────────────────────────────────────────────
+function invalidEnum(
+  field: string,
+  value: unknown,
+  allowed: readonly string[],
+  opts: { required: boolean },
+): string | null {
+  const oneOf = `must be one of: ${allowed.join(", ")}`;
+  if (value == null) return opts.required ? `${field} is required and ${oneOf}` : null;
+  return allowed.includes(value as string) ? null : `${field} ${oneOf}`;
+}
+
+function invalidText(field: string, value: unknown, opts: { required: boolean }): string | null {
+  if (value == null || value === "") return opts.required ? `${field} is required` : null;
+  return typeof value === "string" ? null : `${field} must be a string`;
+}
+
+/** Catch an unparseable date before `new Date()` hands Postgres an Invalid Date. */
+function invalidDate(field: string, value: unknown): string | null {
+  if (value == null || value === "") return null;
+  return Number.isNaN(new Date(value as string).getTime()) ? `${field} is not a valid date` : null;
+}
+
+function invalidInt(field: string, value: unknown, min: number, max: number): string | null {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= min && n <= max
+    ? null
+    : `${field} must be an integer between ${min} and ${max}`;
+}
+
+/** Send the first validation failure as a 400. Returns true when it responded. */
+function reject(res: import("express").Response, ...errors: Array<string | null>): boolean {
+  const message = errors.find((e) => e);
+  if (!message) return false;
+  res.status(400).json({ success: false, error: message });
+  return true;
 }
 
 async function enrichResident(r: typeof residentsTable.$inferSelect) {
@@ -132,6 +201,20 @@ router.post("/", authenticate, authorize("RESIDENTS", "create"), async (req, res
     if (scope) body.propertyId = scope;
     if (!body.propertyId) { res.status(400).json({ success: false, error: "propertyId is required" }); return; }
     assertPropertyAccess(req, body.propertyId);
+    // name/email/phone are NOT NULL and status is a resident_status enum: a
+    // missing or unknown value is caller input, so it answers 400 not 500.
+    if (
+      reject(
+        res,
+        invalidText("name", body.name, { required: true }),
+        invalidText("email", body.email, { required: true }),
+        invalidText("phone", body.phone, { required: true }),
+        invalidEnum("status", body.status, residentStatusEnum.enumValues, { required: false }),
+        invalidDate("dob", body.dob),
+        invalidDate("checkInDate", body.checkInDate),
+        invalidDate("checkOutDate", body.checkOutDate),
+      )
+    ) return;
     const requestedStatus = body.status || "ACTIVE";
     if (requestedStatus === "ACTIVE" && (await isKycGateEnabled())) {
       res.status(400).json({
@@ -218,6 +301,17 @@ router.put("/:id", authenticate, authorize("RESIDENTS", "edit"), async (req, res
     if (body.propertyId !== undefined && body.propertyId !== existing.propertyId) {
       assertPropertyAccess(req, body.propertyId);
     }
+    // Same enum/date invariant as the create path — an unknown status or an
+    // unparseable date is a 400, not a 22P02 dressed up as a 500.
+    if (
+      reject(
+        res,
+        invalidEnum("status", body.status, residentStatusEnum.enumValues, { required: false }),
+        invalidDate("dob", body.dob),
+        invalidDate("checkInDate", body.checkInDate),
+        invalidDate("checkOutDate", body.checkOutDate),
+      )
+    ) return;
     if (body?.status === "ACTIVE") {
       // O25: a SIGNED 'Rent Agreement' is always required to activate.
       if (!(await hasSignedRentAgreement(req.params["id"]!))) {
@@ -300,6 +394,18 @@ router.post("/:id/ledger", authenticate, authorize("RESIDENTS", "edit"), async (
     }
 
     const isCollection = String(body.entryType ?? "").toUpperCase() === "CREDIT";
+    // The collection branch defaults `type` and `description`; the ordinary
+    // charge branch writes both straight into NOT NULL columns, so there they
+    // are required. Either way an unknown label is the caller's error, not a 500.
+    if (
+      reject(
+        res,
+        invalidEnum("type", body.type, ledgerTypeEnum.enumValues, { required: !isCollection }),
+        invalidText("description", body.description, { required: !isCollection }),
+        invalidDate("dueDate", body.dueDate),
+        invalidDate("collectionDate", body.collectionDate),
+      )
+    ) return;
 
     if (isCollection) {
       const collectedAmount = Number(body.amount);
@@ -422,7 +528,15 @@ router.post("/:id/payment-link", authenticate, authorize("RESIDENTS", "edit"), a
       description: `Dues payment — ${resident.name}`,
       customer: { name: resident.name, contact: resident.phone, email: resident.email },
       expireBySeconds: 7 * 24 * 60 * 60, // 7 days
-      notes: { kind: "RESIDENT_DUES", residentId, propertyId: resident.propertyId },
+      // acceptPartial is deliberately NOT set: settleResidentDues treats one
+      // dues link as exactly ONE collection (one SUCCESS payment row, one pass
+      // of the ledger auto-settle loop). Turning partial payment on here would
+      // break that invariant — the top-up path, which does accept partial, has
+      // to reconcile instalments against a link cap to stay correct.
+      // linkRef mirrors the wallet top-up link: our own correlation token,
+      // copied by Razorpay onto every payment made against this link, and the
+      // key settleResidentDues dedupes the two event shapes on.
+      notes: { kind: "RESIDENT_DUES", residentId, propertyId: resident.propertyId, linkRef: newId() },
     });
 
     const smsText = `Hi, pay your dues of ₹${amount} for ${resident.name}: ${link.shortUrl} (valid 7 days)`;
@@ -469,9 +583,21 @@ router.post("/:id/payments", authenticate, authorize("RESIDENTS", "edit"), async
       res.status(400).json({ success: false, error: "amount is required and must be a number" });
       return;
     }
+    // Same invariant as the ledger write: `mode` is a NOT NULL payment_mode and
+    // `status` a payment_status — an unknown label (or a missing mode) is a 400.
+    if (
+      reject(
+        res,
+        invalidEnum("mode", body.mode, paymentModeEnum.enumValues, { required: true }),
+        invalidEnum("status", body.status, paymentStatusEnum.enumValues, { required: false }),
+      )
+    ) return;
     const [row] = await db.insert(paymentsTable).values({
       id: newId(),
       residentId: req.params["id"]!,
+      // Property the money was collected AT (M10) — snapshotted so a later
+      // transfer cannot re-attribute this collection to another property.
+      propertyId: resident.propertyId,
       amount: body.amount.toString(),
       mode: body.mode,
       status: body.status || "PENDING",
@@ -495,6 +621,9 @@ router.post("/:id/checkout", authenticate, authorize("RESIDENTS", "edit"), async
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
     assertPropertyAccess(req, resident.propertyId);
+    // An unparseable checkoutDate would be stored as an Invalid Date and fail
+    // the whole transaction with a 500; it is caller input, so 400.
+    if (reject(res, invalidDate("checkoutDate", checkoutDate))) return;
 
     // Record refund + deductions in ledger
     const notes = [reason, keyReturned === false ? "Key NOT returned" : null, roomConditionNote].filter(Boolean).join(" | ");
@@ -548,6 +677,10 @@ router.post("/bulk-rent", authenticate, authorize("RESIDENTS", "edit"), async (r
       res.status(400).json({ success: false, error: "propertyId, month, year required" });
       return;
     }
+    // Non-numeric month/year produce an Invalid Date, which every per-resident
+    // insert then swallows into `failed` — the caller gets "0 succeeded" with no
+    // hint that the request itself was malformed. Reject it instead.
+    if (reject(res, invalidInt("month", month, 1, 12), invalidInt("year", year, 2000, 2100))) return;
     assertPropertyAccess(req, propertyId);
     const monthLabel = new Date(year, month - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
     const dueDate = new Date(year, month - 1, 5);

@@ -64,9 +64,17 @@ import { ResidentEsignTab, RentAgreementBanner, type EsignRow } from "./resident
 import { CheckoutModal } from "@/components/checkout-modal";
 import jsPDF from "jspdf";
 import { BellRing, RefreshCw, ArrowUpCircle } from "lucide-react";
+import { walletAmountClass, walletAmountSign } from "@/lib/wallet-direction";
 
+// Both lists must be a SUBSET of the pg enums the API validates against
+// (ledger_type / payment_mode in lib/db/src/schema/core.ts) — offering a label
+// the column does not have builds a form that cannot be submitted.
 const LEDGER_TYPES = ["RENT", "UTILITY", "FOOD", "LAUNDRY", "PENALTY", "ADJUSTMENT", "DEPOSIT", "INCENTIVE"];
-const PAYMENT_MODES = ["CASH", "UPI", "BANK_TRANSFER", "CARD", "CHEQUE"];
+// CHEQUE was never a payment_mode label: picking it 500'd, and now 400s. Dropped
+// and NETBANKING (a real label that was missing) offered instead. WALLET and
+// WALLET_PARTIAL are deliberately NOT here — those are written by the wallet
+// settlement path, and recording one by hand would double-count the wallet ledger.
+const PAYMENT_MODES = ["CASH", "UPI", "NETBANKING", "BANK_TRANSFER", "CARD"];
 
 function ResidentAttendanceHistory({ residentId }: { residentId: string }) {
   const { data, isLoading } = useQuery<{ data: Array<{ id: string; attendanceDate: string; status: string; notes?: string | null }> }>({
@@ -822,7 +830,8 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
     const colorMap: Record<string, string> = {
       TOPUP: "text-green-700",
       ADJUSTMENT_CREDIT: "text-green-600",
-      REFUND_WITHDRAWAL: "text-green-600",
+      // A checkout refund DRAINS the wallet — it is a debit (C2).
+      REFUND_WITHDRAWAL: "text-red-500",
       PAYMENT: "text-red-600",
       PARTIAL_PAYMENT: "text-orange-600",
       ADJUSTMENT_DEBIT: "text-red-500",
@@ -832,8 +841,6 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
   }
 
   if (isLoading) return <Skeleton className="h-40 w-full" />;
-
-  const isCredit = (type: string) => ["TOPUP", "ADJUSTMENT_CREDIT", "REFUND_WITHDRAWAL"].includes(type);
 
   return (
     <div className="space-y-4">
@@ -885,8 +892,8 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
                       <TableCell className="text-xs">{format(new Date(t.createdAt), "dd MMM yy HH:mm")}</TableCell>
                       <TableCell>{txTypeBadge(t.type)}</TableCell>
                       <TableCell className="text-sm">{t.description}</TableCell>
-                      <TableCell className={`text-right font-mono text-sm ${isCredit(t.type) ? "text-green-600" : "text-red-600"}`}>
-                        {isCredit(t.type) ? "+" : "−"}₹{t.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      <TableCell className={`text-right font-mono text-sm ${walletAmountClass(t)}`}>
+                        {walletAmountSign(t)}₹{t.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                       </TableCell>
                       <TableCell className="text-right font-mono text-sm">
                         ₹{t.balanceAfter.toLocaleString("en-IN", { minimumFractionDigits: 2 })}

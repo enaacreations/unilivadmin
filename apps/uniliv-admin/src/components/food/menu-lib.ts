@@ -107,9 +107,14 @@ export function scopeRank(
  * The rule that governs one (brand, meal) at the narrowest scope that applies:
  * a property rule beats a kitchen rule, which beats the brand default.
  *
+ * Must match `resolveCompositionRule` (food-service.ts) exactly, or the board
+ * validates a plate against a rule the server never applies.
+ *
  * Rules carrying a scope that does NOT match the arguments are dropped rather
  * than ranked — another property's rule must never be picked just because it
- * happens to be the only row for the meal.
+ * happens to be the only row for the meal, and with no kitchen in play only the
+ * brand default is eligible at all. That mirrors the server's query, which
+ * filters the narrower rows out entirely in that case.
  */
 export function ruleFor(
   rules: CompositionRule[], brand: string, meal: MealType,

@@ -24,7 +24,7 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { usePermissions } from "@/lib/use-permissions"
 import { moduleForPath } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
-import { navGroups, type NavGroup, type NavItem } from "@/lib/nav"
+import { navGroups, canViewHref, type NavGroup, type NavItem } from "@/lib/nav"
 import { CommandPalette, type CommandNavItem } from "@/components/command-palette"
 
 function isItemActive(location: string, href: string) {
@@ -289,12 +289,24 @@ function Logo({ personaLabel }: { personaLabel?: string }) {
 }
 
 /** Account menu in the header (top-right). Present on every page — including the
- *  launcher, which has no sidebar (and therefore no other logout affordance). */
-function HeaderUserMenu({ name, subtitle, onLogout }: {
+ *  launcher, which has no sidebar (and therefore no other logout affordance).
+ *  Read-only identity: every field shown here comes straight off `/auth/me`, and
+ *  there is no profile/settings screen to link out to. */
+function HeaderUserMenu({ name, email, subtitle, role, phone, onLogout }: {
   name?: string
+  email?: string
   subtitle?: string
+  role?: string
+  phone?: string | null
   onLogout: () => void
 }) {
+  // `subtitle` is already the designation when the user has one, else the
+  // prettified role — so only spell the role out again when it adds something.
+  const roleText = role ? roleLabel(role) : ""
+  const details: { label: string; value: string }[] = [
+    ...(roleText && roleText !== subtitle ? [{ label: "Role", value: roleText }] : []),
+    ...(phone ? [{ label: "Phone", value: phone }] : []),
+  ]
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -306,13 +318,33 @@ function HeaderUserMenu({ name, subtitle, onLogout }: {
           />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel className="flex flex-col gap-0.5">
+      {/* Fixed width + truncate everywhere: a long work email must not stretch
+          the menu off the right edge of the header. */}
+      <DropdownMenuContent align="end" className="w-64 max-w-[calc(100vw-1.5rem)]">
+        <DropdownMenuLabel className="flex min-w-0 flex-col gap-0.5">
           <span className="truncate text-sm font-medium">{name || "User"}</span>
           {subtitle ? (
             <span className="truncate text-xs font-normal text-muted-foreground">{subtitle}</span>
           ) : null}
+          {email ? (
+            <span title={email} className="truncate font-mono text-[11px] font-normal leading-tight text-muted-foreground">
+              {email}
+            </span>
+          ) : null}
         </DropdownMenuLabel>
+        {details.length > 0 ? (
+          <>
+            <DropdownMenuSeparator />
+            <dl className="space-y-1 px-2 py-1.5 text-xs">
+              {details.map((d) => (
+                <div key={d.label} className="flex items-baseline gap-2">
+                  <dt className="w-12 shrink-0 text-muted-foreground">{d.label}</dt>
+                  <dd className="min-w-0 flex-1 truncate">{d.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onLogout} className="text-destructive focus:text-destructive">
           <LogOut className="mr-2 h-4 w-4" />
@@ -351,17 +383,25 @@ export function Layout({ children }: { children: React.ReactNode }) {
     })
   }
 
-  const filteredGroups = React.useMemo(
+  // Two passes over the nav, because "can open" and "shows in the nav" are
+  // different questions. `accessibleGroups` keeps every item this persona is
+  // permitted to OPEN (module grant only); `filteredGroups` additionally drops
+  // the items `hideFor` folds out of the nav. hideFor is a nav-visibility choice
+  // — those routes stay reachable — so everything that reasons about ACCESS
+  // (page title, breadcrumb) reads the accessible set, while the sidebar,
+  // launcher and ⌘K palette read the filtered one.
+  const accessibleGroups = React.useMemo(
     () => navGroups
-      .map((g) => ({
-        ...g,
-        items: g.items.filter((i) =>
-          (!i.module || can(i.module, "view")) &&
-          !(role && i.hideFor?.includes(role)),
-        ),
-      }))
+      .map((g) => ({ ...g, items: g.items.filter((i) => !i.module || can(i.module, "view")) }))
       .filter((g) => g.items.length > 0),
-    [can, role],
+    [can],
+  )
+
+  const filteredGroups = React.useMemo(
+    () => accessibleGroups
+      .map((g) => ({ ...g, items: g.items.filter((i) => !(role && i.hideFor?.includes(role))) }))
+      .filter((g) => g.items.length > 0),
+    [accessibleGroups, role],
   )
 
   // Flatten permission-filtered nav for the command palette.
@@ -372,16 +412,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
     [filteredGroups],
   )
 
-  // Active item + group, for page title and breadcrumb.
+  // Active item + group, for page title and breadcrumb. Resolved against the
+  // ACCESSIBLE nav, not the filtered one: an item folded away by hideFor is
+  // still reachable, so its detail routes should keep a real title and a working
+  // parent crumb instead of degrading to the bare module name.
   const active = React.useMemo(() => {
     let found: { item: NavItem; group: string } | null = null
-    filteredGroups.forEach((g) => g.items.forEach((i) => {
+    accessibleGroups.forEach((g) => g.items.forEach((i) => {
       if (isItemActive(location, i.href)) {
         if (!found || i.href.length > found.item.href.length) found = { item: i, group: g.title }
       }
     }))
     return found as { item: NavItem; group: string } | null
-  }, [filteredGroups, location])
+  }, [accessibleGroups, location])
 
   // The sidebar shows only the active route's module (plus the pinned links);
   // there is no group accordion — modules are switched via the /apps launcher.
@@ -392,10 +435,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // the route's module (via PATH_TO_MODULE) and show that module's group, so the
   // sidebar stays put on every detail screen across all modules.
   //
-  // The owning group is resolved from the UNfiltered nav: a persona may have the
-  // route's own item folded away by hideFor (e.g. Reports lives inside the
-  // Dashboard hub for OPS_EXCELLENCE, so /audits/reports/:id has no visible
-  // AUDIT_REPORTS item) — the sidebar must still show their audit hub items.
+  // The owning group is resolved from the UNfiltered nav: the route's module may
+  // have no item this persona can see at all (e.g. /audits/register belongs to
+  // AUDIT_REGISTER, which has no nav item) — the sidebar must still show their
+  // audit hub items.
   const activeGroup = React.useMemo(() => {
     if (active) return active.group
     const mod = moduleForPath(location)
@@ -497,7 +540,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <NotificationBell />
-            <HeaderUserMenu name={me?.name} subtitle={personaLabel} onLogout={handleLogout} />
+            <HeaderUserMenu
+              name={me?.name}
+              email={me?.email}
+              subtitle={personaLabel}
+              role={me?.role}
+              phone={me?.phone}
+              onLogout={handleLogout}
+            />
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-surface">
@@ -506,12 +556,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
               {isDetail && active && !suppressBreadcrumb ? (
                 <Breadcrumb>
                   <BreadcrumbList>
-                    <BreadcrumbItem className="hidden sm:inline-flex">
-                      <BreadcrumbLink asChild>
-                        <Link href={active.item.href}>{active.item.title}</Link>
-                      </BreadcrumbLink>
-                    </BreadcrumbItem>
-                    <BreadcrumbSeparator className="hidden sm:inline-flex" />
+                    {/* The parent crumb is only shown when the persona can open it.
+                        `active` already comes from the accessible nav, so this is
+                        a belt-and-braces guard against nav `module` and
+                        PATH_TO_MODULE disagreeing about a route. */}
+                    {canViewHref(active.item.href, can) ? (
+                      <>
+                        <BreadcrumbItem className="hidden sm:inline-flex">
+                          <BreadcrumbLink asChild>
+                            <Link href={active.item.href}>{active.item.title}</Link>
+                          </BreadcrumbLink>
+                        </BreadcrumbItem>
+                        <BreadcrumbSeparator className="hidden sm:inline-flex" />
+                      </>
+                    ) : null}
                     <BreadcrumbItem>
                       <BreadcrumbPage>Details</BreadcrumbPage>
                     </BreadcrumbItem>

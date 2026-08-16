@@ -17,6 +17,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { MealIcon, DishIcon } from "@/components/meal-icon";
+import { FoodQueryError } from "@/components/food/query-error";
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { useAppStore } from "@/lib/store";
@@ -121,11 +122,13 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
     return { mealType, order, state: "none", time: "—", statusLine: "Not ordered" };
   }
   const s = order.status;
-  // Cool-down semantics: wasteEditableUntil is when logging OPENS — the meal
-  // must be over (delivered + window) before leftovers can be counted.
-  const wasteOpensAt = order.wasteEditableUntil ? parseISO(order.wasteEditableUntil) : null;
-  const wasteOpen = !!wasteOpensAt && now.getTime() >= wasteOpensAt.getTime();
-  const wasteWaitMins = wasteOpensAt ? Math.max(0, differenceInMinutes(wasteOpensAt, now)) : 0;
+  // Invariant (M20): wasteEditableUntil is the CLOSING bound — waste must be
+  // logged WITHIN the window that opens on delivery, and POST /orders/:id/waste
+  // 422s once it has passed. Reading it as an opening bound locked leads out in
+  // both directions, so the deadline and the countdown must both count DOWN.
+  const wasteClosesAt = order.wasteEditableUntil ? parseISO(order.wasteEditableUntil) : null;
+  const wasteOpen = !wasteClosesAt || now.getTime() <= wasteClosesAt.getTime();
+  const wasteLeftMins = wasteClosesAt ? Math.max(0, differenceInMinutes(wasteClosesAt, now)) : 0;
   if (s === "CANCELLED" || s === "REJECTED") {
     return {
       mealType, order, state: "cancelled",
@@ -141,10 +144,10 @@ function slotFor(mealType: MealType, order: FoodOrder | null, now: Date, kitchen
       state: wasteOpen ? "action-waste" : "done",
       time: fmtTime(order.deliveredAt) || "—",
       statusLine: wasteOpen
-        ? "Meal over — record any waste now"
-        : wasteOpensAt
-          ? `Received & confirmed — waste logging opens in ${wasteWaitMins}m`
-          : "Received & confirmed",
+        ? wasteClosesAt
+          ? `Received — record any waste within ${wasteLeftMins}m`
+          : "Received — record any waste now"
+        : `Received & confirmed — the waste window closed at ${fmtTime(order.wasteEditableUntil)}`,
     };
   }
   // For everything still on its way, the tab time becomes a live delivery ETA
@@ -300,7 +303,9 @@ export default function FoodDashboard() {
   const dayDate = addDays(now, journeyDay);
   const serviceDate = format(dayDate, "yyyy-MM-dd");
 
-  const { data: dayOrders, isLoading: ordersLoading } = useQuery({
+  const {
+    data: dayOrders, isLoading: ordersLoading, isError: ordersError, refetch: refetchDayOrders,
+  } = useQuery({
     queryKey: foodKeys.orders({ serviceDate, propertyId, journey: true }),
     queryFn: () =>
       foodApi
@@ -647,9 +652,24 @@ export default function FoodDashboard() {
         persons: missingMeals[0] ? residentsFor(missingMeals[0].mealType) : baseHead,
         staffCount: missingMeals[0] ? staffFor(missingMeals[0].mealType) : 0,
         meals,
-      });
+      // Carry how many meals were ASKED for: the server can accept the batch and
+      // still create fewer (or none), and the toast below must report what
+      // actually reached the kitchen, not what was submitted.
+      }).then((res) => ({ ...res, requested: meals.length }));
     },
     onSuccess: (res) => {
+      const created = res.orders.length;
+      // A 201 that created nothing is not a placed order — never celebrate it,
+      // and keep the draft so the unit lead can retry from where they were.
+      if (created === 0) {
+        qc.invalidateQueries({ queryKey: foodKeys.nextOrders() });
+        toast({
+          title: "No meals were placed",
+          description: "The kitchen accepted the request but created no orders. Check the meals and try again.",
+          variant: "destructive",
+        });
+        return;
+      }
       // The draft served its purpose — clear it (server + local, best-effort).
       if (draftParams) void foodApi.deleteOrderDraft(draftParams).catch(() => {});
       setDishOverrides({});
@@ -663,11 +683,20 @@ export default function FoodDashboard() {
       qc.invalidateQueries({ queryKey: ["food", "order"] });
       qc.invalidateQueries({ queryKey: foodKeys.nextOrders() });
       qc.invalidateQueries({ queryKey: ["food", "order-draft"] });
+      // Partial batches are reported as partial — no confetti over a short send.
+      if (created < res.requested) {
+        toast({
+          variant: "warning",
+          title: `${created} of ${res.requested} meals placed`,
+          description: "The rest weren't created — re-open the order to send them.",
+        });
+        return;
+      }
       fire();
       toast({
         variant: "success",
         title: `${nextIsTomorrow ? "Tomorrow" : nextDayLabel}'s order sent`,
-        description: `${res.orders.length} meal${res.orders.length === 1 ? "" : "s"} on the way to the kitchen`,
+        description: `${created} meal${created === 1 ? "" : "s"} on the way to the kitchen`,
       });
     },
     onError: (e: unknown) => {
@@ -950,6 +979,10 @@ export default function FoodDashboard() {
             can't be shown here. Kitchen Summary and Dispatch have your live
             queues.
           </div>
+        ) : ordersError ? (
+          /* A failed order fetch must not read as "nothing ordered" — the meal
+             tabs would otherwise show confidently-empty slots. */
+          <FoodQueryError label="this day's orders" onRetry={() => refetchDayOrders()} />
         ) : ordersLoading ? (
           <div className="mb-4 flex flex-wrap gap-3">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -1256,22 +1289,30 @@ function AdditionalFoodDialog({
   });
   const [sourceId, setSourceId] = React.useState("");
   const [qtys, setQtys] = React.useState<Record<string, number>>({});
+  // One idempotency key per dialog open (M18). Retrying — a double-click, a
+  // flaky network — replays onto the same rows; opening the dialog again is a
+  // genuinely new top-up and gets a new key. Without it the server could only
+  // guess from content, and swallowed a real second delivery of the same food.
+  const [requestId, setRequestId] = React.useState(() => crypto.randomUUID());
   React.useEffect(() => {
-    if (open) { setSourceId(""); setQtys({}); }
+    if (open) { setSourceId(""); setQtys({}); setRequestId(crypto.randomUUID()); }
   }, [open]);
   const total = Object.values(qtys).reduce((s, n) => s + (n || 0), 0);
   const mut = useMutation({
     mutationFn: () =>
       foodApi.addAdditionalFood(order.id, {
         sourcePropertyId: sourceId,
+        requestId,
         items: order.items
           .filter((it) => (qtys[it.dishId] ?? 0) > 0)
           .map((it) => ({ dishId: it.dishId, qty: qtys[it.dishId]! })),
       }),
-    onSuccess: () => {
+    onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["food", "order"] });
       qc.invalidateQueries({ queryKey: ["food", "orders"] });
-      toast({ title: "Additional food logged", variant: "success" });
+      toast(r.duplicate
+        ? { title: "Already logged", description: "This top-up was recorded a moment ago — nothing was added twice.", variant: "warning" }
+        : { title: "Additional food logged", variant: "success" });
       onOpenChange(false);
     },
     onError: (e: any) => toast({ title: e?.message || "Couldn't log additional food", variant: "destructive" }),
@@ -1527,12 +1568,13 @@ function WasteColumn({
   saving: boolean;
 }) {
   const active = state === "action-waste" && canWaste && !wasteRecorded;
-  // Cool-down: wasteEditableUntil is when logging OPENS. While the meal is
-  // still on, show only the countdown — no dish editors.
-  const opensAt = detail?.wasteEditableUntil ? parseISO(detail.wasteEditableUntil) : null;
-  const waiting =
-    detail?.status === "DELIVERED" && !!opensAt && now.getTime() < opensAt.getTime() && !wasteRecorded;
-  const minsToOpen = opensAt ? Math.max(1, differenceInMinutes(opensAt, now)) : 0;
+  // Invariant (M20): wasteEditableUntil CLOSES the window. Editors are live
+  // until it passes; after it the server 422s, so show the missed deadline
+  // rather than a countdown that never unlocks anything.
+  const closesAt = detail?.wasteEditableUntil ? parseISO(detail.wasteEditableUntil) : null;
+  const closed =
+    detail?.status === "DELIVERED" && !!closesAt && now.getTime() > closesAt.getTime() && !wasteRecorded;
+  const minsLeft = closesAt ? Math.max(0, differenceInMinutes(closesAt, now)) : 0;
   const wasteStep = (unit: string) => (isFractionalUnit(unit) ? 0.5 : 1);
   const capOf = (i: OrderDetail["items"][number]) => num(i.receivedQty ?? i.preparedQty ?? i.orderedQty);
   const summary = (detail?.items ?? []).filter((i) => num(i.wastedQty) > 0);
@@ -1543,7 +1585,9 @@ function WasteColumn({
         label="Food waste"
         tone="var(--pop)"
         right={active ? (
-          <span className="font-mono text-[11px] font-semibold text-pop">Open now</span>
+          <span className="font-mono text-[11px] font-semibold text-pop">
+            {closesAt ? `${minsLeft} min left` : "Open now"}
+          </span>
         ) : undefined}
       />
       {wasteRecorded ? (
@@ -1602,16 +1646,16 @@ function WasteColumn({
             {saving ? "Saving…" : "Save waste ✓"}
           </button>
         </>
-      ) : waiting ? (
-        /* Cool-down running — prototype: lock, explainer, BIG centred timer.
-           No dish editors until the meal is actually over. */
+      ) : closed ? (
+        /* Window closed — lock, explainer, the deadline that was missed. The
+           server refuses the write from here on, so no dish editors. */
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-2 py-[18px] text-center">
           <Lock className="h-[26px] w-[26px] text-pop" />
           <span className="text-[13px] text-muted-foreground">
-            Waste can be logged 1 hour after delivery
+            Waste must be logged within 1 hour of delivery
           </span>
-          <span className="font-mono text-2xl font-semibold tabular-nums text-pop">
-            {minsToOpen} min
+          <span className="font-mono text-[13px] font-semibold tabular-nums text-pop">
+            The window closed at {fmtTime(detail?.wasteEditableUntil)}
           </span>
         </div>
       ) : state === "action-waste" && !canWaste ? (

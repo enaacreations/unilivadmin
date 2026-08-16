@@ -176,7 +176,6 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
   const [tagFilter, setTagFilter] = React.useState("ALL");
   const [search, setSearch] = React.useState("");
   const [showArchived, setShowArchived] = React.useState(false);
-  const [tagsExpanded, setTagsExpanded] = React.useState(false);
   const [editorOpen, setEditorOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<BankItem | null>(null);
   const [form, setForm] = React.useState<BankForm>(EMPTY_FORM);
@@ -335,19 +334,17 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
             Archived
           </label>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Pill active={tagFilter === "ALL"} onClick={() => setTagFilter("ALL")}>All</Pill>
-          {(tagsExpanded ? knownTags : knownTags.slice(0, 16)).map((t) => (
-            <Pill key={t} active={tagFilter === t} onClick={() => setTagFilter(t)}>{t}</Pill>
-          ))}
-          {knownTags.length > 16 && (
-            <button
-              onClick={() => setTagsExpanded((v) => !v)}
-              className="rounded-full border border-dashed border-border px-3 py-[6px] text-[12px] font-semibold text-muted-foreground hover:border-accent hover:text-accent-strong"
-            >
-              {tagsExpanded ? "Show fewer" : `+${knownTags.length - 16} more`}
-            </button>
-          )}
+        {/* One row at every width: the tag list scrolls sideways rather than
+            wrapping, so the filters never push the results down the page.
+            `min-w-0` lets the track shrink inside its flex parent instead of
+            forcing the whole page to scroll. */}
+        <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
+          <div className="flex w-max items-center gap-2">
+            <Pill active={tagFilter === "ALL"} onClick={() => setTagFilter("ALL")}>All</Pill>
+            {knownTags.map((t) => (
+              <Pill key={t} active={tagFilter === t} onClick={() => setTagFilter(t)}>{t}</Pill>
+            ))}
+          </div>
         </div>
       </div>
 

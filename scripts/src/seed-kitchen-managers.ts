@@ -15,16 +15,15 @@
  * and edits that kitchen's menu rotation and nothing else.
  *
  * Idempotent: users upsert-skip on any unique conflict (id / email / username),
- * and scope rows are rewritten for these user ids only. Existing accounts —
- * including the org-wide `fnbmanager@uniliv.com` — are never touched.
+ * and scope rows are RECONCILED (never deleted) for these user ids only.
+ * Existing accounts — including the org-wide `fnbmanager@uniliv.com` — are
+ * never touched.
  */
 import { db, pool } from "@workspace/db";
-import { usersTable, kitchensTable, userScopesTable } from "@workspace/db";
-import { inArray } from "drizzle-orm";
-import { randomUUID } from "crypto";
+import { usersTable, kitchensTable } from "@workspace/db";
 import bcrypt from "bcryptjs";
-
-const id = () => randomUUID();
+import { assertSeedTarget } from "./seed-guard.js";
+import { syncUserScopes, describeScopeSync } from "./user-scopes.js";
 
 /** Stable user id for a kitchen's manager, e.g. KIT-BLR-WF → user_fnb_kit_blr_wf. */
 export const kitchenManagerUserId = (kitchenCode: string) =>
@@ -77,16 +76,18 @@ export async function seedKitchenManagers(): Promise<number> {
       .onConflictDoNothing();
   }
 
-  await db.delete(userScopesTable).where(inArray(userScopesTable.userId, userIds));
-  await db.insert(userScopesTable).values(
+  // Reconcile, never DELETE: revocation is a soft `is_active` flag (H5), so
+  // deleting a manager's grant here would erase a deliberate access decision
+  // instead of the seed re-stating the one it owns. See user-scopes.ts.
+  const sync = await syncUserScopes(
+    userIds,
     kitchens.map((k, i) => ({
-      id: id(),
       userId: userIds[i]!,
       scopeLevel: "KITCHEN" as const,
       kitchenId: k.id,
     })),
   );
-  console.log(`  ✓ ${kitchens.length} kitchen-scoped F&B managers (fnb.<kitchen>@uniliv.com / Admin@123)`);
+  console.log(`  ✓ ${kitchens.length} kitchen-scoped F&B managers (fnb.<kitchen>@uniliv.com / Admin@123) — scopes: ${describeScopeSync(sync)}`);
   for (const k of kitchens) console.log(`      ${kitchenManagerSlug(k.code)}@uniliv.com → ${k.code} (${k.name})`);
   return kitchens.length;
 }
@@ -94,7 +95,10 @@ export async function seedKitchenManagers(): Promise<number> {
 // Standalone entry point. seed-food-extra imports the function instead.
 const isEntryPoint = process.argv[1]?.includes("seed-kitchen-managers");
 if (isEntryPoint) {
-  seedKitchenManagers()
+  // Guard the standalone entry point only: when seed:food-extra calls the
+  // function it has already asserted the same target for itself.
+  assertSeedTarget("seed:kitchen-managers")
+    .then(() => seedKitchenManagers())
     .then(async () => {
       console.log("✅ Kitchen F&B managers seeded");
       await pool.end();

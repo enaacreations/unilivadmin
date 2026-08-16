@@ -1,27 +1,27 @@
 import * as React from "react";
 import { useParams, useLocation, Link } from "wouter";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
-  AlertCircle, ArrowLeft, ArrowRight, Bell, ClipboardList,
-  FileBarChart, Loader2, Lock, MapPin, MessageSquare,
+  AlertCircle, ArrowLeft, ArrowRight, Bell, CameraOff, ClipboardList,
+  FileBarChart, Lock, MapPin, MessageSquare,
   Play, Settings2, Share2, ShieldAlert, TrendingUp, UserPlus,
   type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ImageLightbox } from "@/components/image-lightbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useToast } from "@/hooks/use-toast";
-import { locateOnce } from "@/hooks/use-geolocation";
 import { apiFetch } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
 import {
   AUDIT_STATE_BADGE, COMPLETED_AUDIT_STATES, RUNNABLE_STATES,
-  fmtDateTime, fmtDuration, scoreColorClass, titleCase,
+  fmtDateTime, fmtDuration, fmtGps, scoreColorClass, secondsBetween, titleCase,
   type ApiList, type ApiOne,
-  type AuditDetailRow, type AuditEventRow, type AuditState, type RunPayload,
+  type AuditDetailRow, type AuditEventRow, type AuditState, type ProofPhoto,
+  type RunPayload,
 } from "./lib";
 import { TypeBadge } from "./shared";
 import { cn } from "@/lib/utils";
@@ -48,11 +48,6 @@ function runnerLabel(state: AuditState): string {
   }
 }
 
-function gps(lat: number | null, lng: number | null): string | null {
-  if (lat == null || lng == null) return null;
-  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-}
-
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -62,17 +57,70 @@ function MetaItem({ label, children }: { label: string; children: React.ReactNod
   );
 }
 
+/**
+ * One end of the on-site presence trail: the auditor's selfie plus the exact
+ * coordinates and time it was taken. Deliberately states facts only — there is
+ * no geofence check in this system, so nothing here claims the auditor was
+ * "at the property".
+ */
+function ProofSide({
+  label, proof, at, geo, onOpen,
+}: {
+  label: string;
+  proof: ProofPhoto | null;
+  /** Fallback timestamp from the audit row (start/submit stamp). */
+  at: string | null;
+  /** Fallback coordinates from the audit row. */
+  geo: string | null;
+  onOpen: () => void;
+}) {
+  const coords = fmtGps(proof?.geoLat, proof?.geoLng) ?? geo;
+  const takenAt = proof?.capturedAt ?? at;
+  const thumb = proof?.thumbUrl ?? proof?.url ?? null;
+
+  return (
+    <div className="flex gap-3">
+      {thumb ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="shrink-0 rounded-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          title="View full size"
+        >
+          <img src={thumb} alt={`${label} photo`} className="h-16 w-16 rounded-[10px] border object-cover" />
+        </button>
+      ) : (
+        <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-[10px] border border-dashed text-muted-foreground">
+          <CameraOff className="h-5 w-5" />
+        </span>
+      )}
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="text-sm font-semibold">{label}</p>
+        {proof ? (
+          <>
+            <p className="font-mono text-xs text-muted-foreground">{coords ?? "no coordinates"}</p>
+            <p className="text-xs text-muted-foreground">{fmtDateTime(takenAt)}</p>
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Not captured{at ? ` · ${fmtDateTime(at)}` : ""}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Audit detail (FRD-EXE-01) — header, meta, Details/Activity, state-legal actions. */
 export default function AuditDetail() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const [, navigate] = useLocation();
-  const { toast } = useToast();
-  const qc = useQueryClient();
-  const { me } = usePermissions();
+  const { me, can } = usePermissions();
 
   const [tab, setTab] = React.useState("details");
-  const [starting, setStarting] = React.useState(false);
+  /** Index into `proofImages` — null closes the lightbox. */
+  const [proofIndex, setProofIndex] = React.useState<number | null>(null);
 
   const auditQuery = useQuery({
     queryKey: ["/audits", id],
@@ -115,31 +163,21 @@ export default function AuditDetail() {
         return { id: s.id, name: s.title, pct: a && a.max > 0 ? Math.round((a.earned / a.max) * 100) : null };
       })
       .filter((c): c is { id: string; name: string; pct: number } => c.pct != null);
-    const proof = run.evidence.find((e) => e.kind === "SUBMISSION_PROOF") ?? null;
     const passLine = run.version.passThresholdPct != null ? Number(run.version.passThresholdPct) : 75;
-    return { cats, proof, passLine };
+    return { cats, passLine };
   }, [runQuery.data]);
 
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["/audits", id] });
-    qc.invalidateQueries({ queryKey: ["/audits"] });
+  // Presence trail images, in start→end order, for the shared lightbox.
+  const proofImages = React.useMemo(() => {
+    const list: { key: "start" | "end"; url: string }[] = [];
+    if (audit?.startProof?.url) list.push({ key: "start", url: audit.startProof.url });
+    if (audit?.endProof?.url) list.push({ key: "end", url: audit.endProof.url });
+    return list;
+  }, [audit]);
+  const openProof = (key: "start" | "end") => {
+    const idx = proofImages.findIndex((p) => p.key === key);
+    if (idx >= 0) setProofIndex(idx);
   };
-
-  const startMut = useMutation({
-    mutationFn: async () => {
-      const geo = await locateOnce();
-      return apiFetch(`/audits/${id}/start`, {
-        method: "POST",
-        body: JSON.stringify(geo ? { geo: { lat: geo.lat, lng: geo.lng } } : {}),
-      });
-    },
-    onSuccess: () => {
-      invalidate();
-      navigate(`/audits/${id}/run`);
-    },
-    onError: (e: Error) => toast({ title: e.message || "Could not start", variant: "destructive" }),
-    onSettled: () => setStarting(false),
-  });
 
   if (auditQuery.isLoading) {
     return (
@@ -166,19 +204,20 @@ export default function AuditDetail() {
   const completed = COMPLETED_AUDIT_STATES.includes(audit.state) || audit.state === "CANCELLED";
   const runnable = isAssignee && RUNNABLE_STATES.includes(audit.state);
   const pct = audit.scorePct != null ? Number(audit.scorePct) : null;
+  // Reviewer-side content (Ops Excellence has AUDIT_REVIEW), plus the auditor
+  // who took the photos. Everyone else keeps the timestamps in the meta grid.
+  const showPresence =
+    (isAssignee || can("AUDIT_REVIEW", "view")) &&
+    !!(audit.startedAt || audit.startProof || audit.endProof);
+  const onSiteSeconds = secondsBetween(audit.startedAt, audit.submittedAt) ?? audit.durationSeconds;
 
   const footerActions: React.ReactNode[] = [];
   if (isAssignee && (audit.state === "SCHEDULED" || audit.state === "REJECTED")) {
+    // Starting now requires the live start photo, so hand off to the runner's
+    // start screen instead of firing the transition from here.
     footerActions.push(
-      <Button
-        key="start"
-        className="min-h-11"
-        disabled={starting || startMut.isPending}
-        onClick={() => { setStarting(true); startMut.mutate(); }}
-      >
-        {startMut.isPending || starting
-          ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          : <Play className="mr-2 h-4 w-4" />}
+      <Button key="start" className="min-h-11" onClick={() => navigate(`/audits/${id}/run`)}>
+        <Play className="mr-2 h-4 w-4" />
         {audit.state === "REJECTED" ? "Start rework" : "Start"}
       </Button>,
     );
@@ -273,35 +312,59 @@ export default function AuditDetail() {
             </Card>
           )}
 
-          {/* Verification */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Card>
-              <CardContent className="space-y-2 p-5 text-sm">
-                <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-success">Verification</div>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-success">✓</span>
-                  <span className="flex-1">GPS captured at submit</span>
-                  {gps(audit.submitGeoLat, audit.submitGeoLng) && (
-                    <span className="font-mono text-xs text-muted-foreground">{gps(audit.submitGeoLat, audit.submitGeoLng)}</span>
-                  )}
-                </div>
-                {scorecard.proof && (
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-success">✓</span>
-                    <span className="flex-1">Live photo at submit</span>
-                    {scorecard.proof.isLiveCapture && <span className="text-xs text-muted-foreground">taken live</span>}
-                  </div>
-                )}
-                {audit.durationSeconds != null && (
+          {audit.durationSeconds != null && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Card>
+                <CardContent className="space-y-2 p-5 text-sm">
+                  <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-success">Verification</div>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-success">✓</span>
                     <span className="flex-1">Completed in {fmtDuration(audit.durationSeconds)}</span>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
         </div>
+      )}
+
+      {/* On-site presence — the mandatory start & end selfies (FRD-EXE-14). */}
+      {showPresence && (
+        <Card>
+          <CardContent className="space-y-4 p-5">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div className="text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">
+                On-site presence
+              </div>
+              {onSiteSeconds != null && (
+                <span className="text-xs text-muted-foreground">
+                  {fmtDuration(onSiteSeconds)} between start and end
+                </span>
+              )}
+            </div>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <ProofSide
+                label="Start"
+                proof={audit.startProof}
+                at={audit.startedAt}
+                geo={fmtGps(audit.startGeoLat, audit.startGeoLng)}
+                onOpen={() => openProof("start")}
+              />
+              <ProofSide
+                label="End"
+                proof={audit.endProof}
+                at={audit.submittedAt}
+                geo={fmtGps(audit.submitGeoLat, audit.submitGeoLng)}
+                onOpen={() => openProof("end")}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Coordinates are recorded from the auditor's device at capture time and cannot be
+              edited. They are reported as captured — no distance check against the property is
+              performed.
+            </p>
+          </CardContent>
+        </Card>
       )}
 
       {/* Meta grid */}
@@ -362,9 +425,9 @@ export default function AuditDetail() {
           {audit.startedAt && (
             <MetaItem label="Started">
               {fmtDateTime(audit.startedAt)}
-              {gps(audit.startGeoLat, audit.startGeoLng) && (
+              {fmtGps(audit.startGeoLat, audit.startGeoLng) && (
                 <span className="block font-mono text-xs font-normal text-muted-foreground">
-                  {gps(audit.startGeoLat, audit.startGeoLng)}
+                  {fmtGps(audit.startGeoLat, audit.startGeoLng)}
                 </span>
               )}
             </MetaItem>
@@ -372,9 +435,9 @@ export default function AuditDetail() {
           {audit.submittedAt && (
             <MetaItem label="Submitted">
               {fmtDateTime(audit.submittedAt)}
-              {gps(audit.submitGeoLat, audit.submitGeoLng) && (
+              {fmtGps(audit.submitGeoLat, audit.submitGeoLng) && (
                 <span className="block font-mono text-xs font-normal text-muted-foreground">
-                  {gps(audit.submitGeoLat, audit.submitGeoLng)}
+                  {fmtGps(audit.submitGeoLat, audit.submitGeoLng)}
                 </span>
               )}
             </MetaItem>
@@ -475,9 +538,21 @@ export default function AuditDetail() {
         </TabsContent>
       </Tabs>
 
+      <ImageLightbox
+        images={proofImages.map((p) => p.url)}
+        index={proofIndex}
+        onIndexChange={setProofIndex}
+        onClose={() => setProofIndex(null)}
+        alt="Presence photo"
+      />
+
       {/* Sticky action dock — offset past the sidebar on desktop (layout pattern). */}
       {footerActions.length > 0 && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)] md:left-64">
+        <div className=/* Sticky, not fixed: <main> is the scroll container and the sidebar is a
+          flex sibling, so the dock spans the content column exactly. The old
+          `fixed … md:left-64` hard-coded a 256px offset against a sidebar that
+          is 248px expanded and 68px collapsed, so it was wrong at every width. */
+       "sticky bottom-0 z-20 border-t bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)]">
           <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-end gap-2 px-4 py-3 sm:px-6">
             {footerActions}
           </div>

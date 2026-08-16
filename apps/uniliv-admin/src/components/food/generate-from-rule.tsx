@@ -41,7 +41,18 @@ export function GenerateFromRule({
   const { data: rules = [] } = useCompositionRules();
 
   const params = { kitchenId, brand };
-  const { data: rows = [] } = useQuery<MenuRotationRow[]>({
+  // H1 — this query is the ONLY thing standing between the generator and a
+  // hand-built menu. Generation writes each slot with a delete-then-insert
+  // (PUT /menu-rotation/slot), and it decides what to write from "which slots
+  // look empty". A failed read used to yield [], every slot then looked empty,
+  // and the whole four-week rotation was overwritten. "I could not read the
+  // current state" must never be treated as "the current state is empty" on a
+  // destructive path — so nothing below runs unless `isSuccess` says the
+  // rotation genuinely loaded.
+  const {
+    data: rows, isError: rotationError, isSuccess: rotationLoaded, isFetching: rotationFetching,
+    refetch: refetchRotation,
+  } = useQuery<MenuRotationRow[]>({
     queryKey: foodKeys.rotation(params),
     queryFn: () => foodApi.listRotation(params),
     enabled: !!kitchenId && !!brand,
@@ -51,11 +62,13 @@ export function GenerateFromRule({
   // listRotation returns all four weeks here, so bucket by week before folding.
   const platesByWeek = React.useMemo(() => {
     const out = new Map<number, ReturnType<typeof rowsToPlates>>();
-    for (const w of ROTATION_WEEKS) out.set(w, rowsToPlates(rows.filter((r) => r.rotationWeek === w)));
+    for (const w of ROTATION_WEEKS) out.set(w, rowsToPlates((rows ?? []).filter((r) => r.rotationWeek === w)));
     return out;
   }, [rows]);
 
+  /** null = the rotation has not been read; only a number is a real answer. */
   const empties = React.useMemo(() => {
+    if (!rotationLoaded) return null;
     let n = 0;
     for (const w of ROTATION_WEEKS) {
       for (const meal of MEAL_TYPES) {
@@ -65,10 +78,15 @@ export function GenerateFromRule({
       }
     }
     return n;
-  }, [platesByWeek]);
+  }, [platesByWeek, rotationLoaded]);
 
   const generate = useMutation({
     mutationFn: async () => {
+      // Same invariant the button enforces, restated at the write: a stale click
+      // or a refetch that failed between render and click must not overwrite.
+      if (!rotationLoaded) {
+        throw new Error("The current rotation could not be read — reload before generating.");
+      }
       const writes: { week: number; day: number; meal: MealType; items: ReturnType<typeof plateToItems> }[] = [];
       let seed = 2;
       for (const w of ROTATION_WEEKS) {
@@ -113,20 +131,31 @@ export function GenerateFromRule({
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="font-display text-sm font-semibold text-primary">Generate the rotation from the menu rules</p>
-          <p className="text-xs text-muted-foreground">
-            {empties
-              ? `${empties} meal${empties === 1 ? "" : "s"} across the 4 weeks are still empty for ${brandName}.`
-              : `Every meal in all 4 weeks is filled for ${brandName}.`}
+          <p className={`text-xs ${rotationError ? "text-destructive" : "text-muted-foreground"}`}>
+            {rotationError
+              ? "Could not read the current rotation. Generating now could overwrite meals that are already planned, so it stays disabled until this loads."
+              : empties == null
+                ? "Reading the current rotation…"
+                : empties
+                  ? `${empties} meal${empties === 1 ? "" : "s"} across the 4 weeks are still empty for ${brandName}.`
+                  : `Every meal in all 4 weeks is filled for ${brandName}.`}
           </p>
         </div>
-        <Button
-          className="bg-accent text-white hover:bg-accent/90"
-          disabled={!empties || generate.isPending || !kitchenId}
-          onClick={() => generate.mutate()}
-        >
-          <Sparkles className="mr-2 h-3.5 w-3.5" />
-          {generate.isPending ? "Filling…" : "Fill every empty meal"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {rotationError && (
+            <Button variant="outline" onClick={() => refetchRotation()} disabled={rotationFetching}>
+              {rotationFetching ? "Retrying…" : "Retry"}
+            </Button>
+          )}
+          <Button
+            className="bg-accent text-white hover:bg-accent/90"
+            disabled={!rotationLoaded || !empties || generate.isPending || !kitchenId}
+            onClick={() => generate.mutate()}
+          >
+            <Sparkles className="mr-2 h-3.5 w-3.5" />
+            {generate.isPending ? "Filling…" : "Fill every empty meal"}
+          </Button>
+        </div>
       </div>
     </div>
   );

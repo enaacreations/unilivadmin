@@ -9,7 +9,8 @@
  *   1. Geographic hierarchy: zones → cities → clusters (stable ids, upsert)
  *   2. Assigns every existing property to a cluster (deterministic round-robin)
  *   3. Food-role users (stable ids/emails, bcrypt "Admin@123", upsert)
- *   4. user_scopes for each seeded user (cleaned + reinserted per run)
+ *   4. user_scopes for each seeded user (reconciled per run — soft revoke, never
+ *      DELETE; see user-scopes.ts)
  *   5. Dish catalogue (PRD §10) — upsert by stable id
  *   6. Weekly menu rotation for both brands (PRD §10.1) — replaced each run
  *   7. Per-resident quantity rules (PRD §7.9) — replaced each run
@@ -17,6 +18,29 @@
  *   9. Sample orders spanning every lifecycle state (truncated + reseeded)
  *
  * Run:  pnpm --filter @workspace/scripts run seed:food
+ *
+ * ── WHY THIS IS ONE HALF OF A PAIR ──────────────────────────────────────────
+ * This seed alone CANNOT serve an order, by design. The rotation rows it writes
+ * are BRAND-LEVEL TEMPLATES (`food_menu_rotation.kitchen_id IS NULL`), and
+ * `resolveMenu` matches an exact non-null kitchen — so every menu resolves
+ * empty until `seed:food-extra` creates the kitchens and copies the templates
+ * down to each of them.
+ *
+ * The two are deliberately NOT merged:
+ *   • They own different data. This script owns the brand-level catalogue
+ *     (dishes, templates, per-resident rules, the geo spine, food personas) and
+ *     is safe to re-run anywhere. `seed:food-extra` owns per-kitchen material
+ *     and runs `DELETE FROM food_menu_rotation WHERE kitchen_id IS NOT NULL` —
+ *     it DISCARDS hand-edited kitchen menus, which is why it is not safe on a
+ *     live environment and why `seed:kitchen-managers` exists as a separate,
+ *     env-safe entry point (see its header).
+ *   • The order is circular. Kitchens come from `seed:food-extra`, but this
+ *     script's agency↔kitchen links and the KITCHEN-scoped F&B manager anchor
+ *     want kitchens to exist; both degrade gracefully and back-fill on a re-run.
+ *     Fusing them would mean one script that has to run twice against itself.
+ * Merging them would trade a documented second command for a seed that quietly
+ * destroys production menus. The report printed at the end of this run states,
+ * from the database rather than from a comment, which half you are in.
  */
 import { db, pool } from "@workspace/db";
 import {
@@ -32,7 +56,6 @@ import {
   zonesTable,
   citiesTable,
   clustersTable,
-  userScopesTable,
   usersTable,
   propertiesTable,
   foodOrdersTable,
@@ -42,10 +65,12 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
+import { assertSeedTarget } from "./seed-guard.js";
+import { syncUserScopes, describeScopeSync, type DesiredGrant } from "./user-scopes.js";
+import { reportOrderability } from "./orderability.js";
 
 const id = () => randomUUID();
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
-const daysFromNow = (n: number) => new Date(Date.now() + n * 86_400_000);
 
 type Brand = "UNILIV" | "HUDDLE";
 type Meal = "BREAKFAST" | "LUNCH" | "SNACKS" | "DINNER";
@@ -291,11 +316,46 @@ const FOOD_USERS: SeedUser[] = [
  * the seed is a separate package and cannot import from api-server).
  * ──────────────────────────────────────────────────────────────────────────── */
 
-/** JS Date → ISO day of week (1 = Monday … 7 = Sunday). */
+/** IST is a fixed offset; no DST (mirrors api-server lib/tz.ts). */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60000;
+
+/**
+ * Instant → ISO day of week of its IST date (1 = Monday … 7 = Sunday).
+ *
+ * Read in IST, not through the host getters, for the same reason the server does:
+ * the day a plate belongs to must not change with the seeding machine's TZ, or the
+ * seeded orders carry dishes the server would never resolve for that service date.
+ */
 function isoDayOfWeek(date: Date): number {
-  const d = date.getDay();
+  const d = new Date(date.getTime() + IST_OFFSET_MS).getUTCDay();
   return d === 0 ? 7 : d;
 }
+
+/**
+ * The instant of `hh:mm` IST on the IST calendar day `n` days from today.
+ *
+ * Invariant: `food_orders.service_date` is the IST DAY START (00:00 IST =
+ * 18:30 UTC wall-clock of the previous calendar day) — that is exactly what the
+ * API writes via `ymdToIstDayStart`, and the partial unique index
+ * `uq_food_orders_property_meal_date` keys the EXACT instant. Seeding a raw
+ * `now() ± n days` instant (with a time-of-day) produced rows the real
+ * duplicate-order guard could never collide with, so the "one live order per
+ * property + meal + date" invariant was silently unenforceable against seeded
+ * data. Mirrors api-server lib/tz.ts atIst(); IST has no DST.
+ */
+function istDayOffsetAt(n: number, h = 0, min = 0): Date {
+  const shifted = new Date(Date.now() + IST_OFFSET_MS);
+  return new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate() + n, h, min, 0) -
+      IST_OFFSET_MS,
+  );
+}
+
+/** The IST day-start instant `n` days from today — the canonical service_date. */
+const istServiceDate = (n: number) => istDayOffsetAt(n);
+
+/** Plausible IST serving hour per meal, for the lifecycle timestamps around it. */
+const MEAL_HOUR_IST: Record<Meal, number> = { BREAKFAST: 8, LUNCH: 13, SNACKS: 17, DINNER: 20 };
 
 interface ComputedItem {
   dishId: string;
@@ -330,12 +390,75 @@ function computeItemsForOrder(
   });
 }
 
+/**
+ * Fail the seed when any scoped user resolves to zero properties.
+ *
+ * Replicates the server's expansion (food-service.ts resolveAccessiblePropertyIds)
+ * in one SQL statement across BOTH live spines: zone → city → cluster →
+ * properties.cluster_id, and city → kitchen → properties.kitchen_id. A grant
+ * that expands to nothing produces 200 OK with an empty array at runtime — the
+ * silent lockout that put four seeded personas out of the module for a release
+ * without anyone noticing. The seed is the only place it can be caught.
+ *
+ * LEFT JOIN on user_scopes, not JOIN: a user with NO scope rows at all is the
+ * biggest lockout there is, and an inner join drops that user from the result
+ * instead of reporting them. `users.property_id` is counted for the same reason
+ * — the resolver seeds its set with it before reading any grant, so ignoring it
+ * here would fail a property-bound user who is in fact fine. (The deploy-side
+ * twin of this check is scripts/src/backfill-user-scopes.ts.)
+ *
+ * EVERY is_active the resolver applies is applied here too, or this check can
+ * pass a grant the application resolves to nothing — which is the one failure
+ * it exists to catch:
+ *   • `s.is_active` — revocation is a soft flag (H5); activeScopesFor filters it.
+ *   • `ci.is_active` / `c.is_active` / `k.is_active` on every node the walk
+ *     TRAVERSES: expandZonesToCities and the cluster/kitchen expansions all
+ *     carry eq(isActive, true), because POST /scopes refuses to mint a grant on
+ *     a deactivated node and resolve-time applies the same rule.
+ *   • NOT on a DIRECTLY granted target (CLUSTER→cluster_id, KITCHEN→kitchen_id,
+ *     PROPERTY→property_id, CITY→city_id): the resolver takes those ids
+ *     straight off the grant row without an is_active lookup, because that
+ *     grant is governed by its own user_scopes.is_active. Adding a filter the
+ *     resolver does not have would make this check fail rows the app accepts.
+ */
+async function assertScopesResolve(userIds: string[]): Promise<void> {
+  if (!userIds.length) return;
+  const { rows } = await pool.query<{ email: string; role: string; n: string }>(
+    `SELECT u.email, u.role, count(p.id) AS n
+       FROM users u
+       LEFT JOIN user_scopes s ON s.user_id = u.id AND s.is_active
+       LEFT JOIN properties p ON
+            (p.id = u.property_id)
+         OR (s.scope_level = 'GLOBAL')
+         OR (s.scope_level = 'PROPERTY' AND p.id = s.property_id)
+         OR (s.scope_level = 'KITCHEN'  AND p.kitchen_id = s.kitchen_id)
+         OR (s.scope_level = 'CLUSTER'  AND p.cluster_id = s.cluster_id)
+         OR (s.scope_level = 'CITY'     AND (
+                p.kitchen_id IN (SELECT k.id FROM kitchens k WHERE k.city_id = s.city_id AND k.is_active)
+             OR p.cluster_id IN (SELECT c.id FROM clusters c WHERE c.city_id = s.city_id AND c.is_active)))
+         OR (s.scope_level = 'ZONE'     AND (
+                p.kitchen_id IN (SELECT k.id FROM kitchens k JOIN cities ci ON ci.id = k.city_id WHERE ci.zone_id = s.zone_id AND ci.is_active AND k.is_active)
+             OR p.cluster_id IN (SELECT c.id FROM clusters c JOIN cities ci ON ci.id = c.city_id WHERE ci.zone_id = s.zone_id AND ci.is_active AND c.is_active)))
+      WHERE u.id = ANY($1)
+      GROUP BY u.id, u.email, u.role
+     HAVING count(p.id) = 0`,
+    [userIds],
+  );
+  if (rows.length) {
+    console.error("\n❌ these seeded users resolve to ZERO properties — they would see nothing:");
+    for (const r of rows) console.error(`     ${r.email} (${r.role})`);
+    throw new Error("seeded scope grants do not resolve — fix the geo anchors above");
+  }
+  console.log(`  ✓ every seeded grant resolves to at least one property`);
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
  * Main
  * ──────────────────────────────────────────────────────────────────────────── */
 
 async function main() {
   console.log("🍽️  Seeding food ordering domain (comprehensive)...");
+  await assertSeedTarget("seed:food");
 
   // 1. Geographic hierarchy: zones → cities → clusters ──────────────────────
   await db.insert(zonesTable).values(ZONES).onConflictDoNothing({ target: zonesTable.id });
@@ -345,10 +468,24 @@ async function main() {
 
   // 2. Assign every existing property to a cluster (deterministic round-robin)
   const properties = await db
-    .select({ id: propertiesTable.id })
+    .select({ id: propertiesTable.id, name: propertiesTable.name, brand: propertiesTable.brand })
     .from(propertiesTable)
     .orderBy(propertiesTable.id);
   const propIds = properties.map((p) => p.id);
+  /**
+   * Invariant: an order's brand is the PROPERTY's brand — the API never lets a
+   * client choose it (POST /food/orders reads it from getPropertyFoodConfig), so
+   * a seeded order on a brand its property does not have is unreachable state
+   * and makes every brand-filtered view disagree with the property list.
+   * `properties.brand` is still NULL on a fresh DB (seed:food-extra fills it),
+   * so fall back to the exact rule that seed's backfill uses.
+   */
+  const brandOfProperty = new Map<string, Brand>(
+    properties.map((p) => [
+      p.id,
+      ((p.brand as Brand | null) ?? (/HUDDLE/i.test(p.name ?? "") ? "HUDDLE" : "UNILIV")) as Brand,
+    ]),
+  );
   if (propIds.length === 0) {
     throw new Error("No properties found — run the main seed (seed) first.");
   }
@@ -392,17 +529,44 @@ async function main() {
     .set({ managerId: clusterMgrId, updatedAt: new Date() })
     .where(inArray(clustersTable.id, CLUSTERS.map((c) => c.id)));
 
-  // 4. user_scopes — clean for seeded users then reinsert ───────────────────
+  // 4. user_scopes — reconciled for seeded users ────────────────────────────
+  // Grants are RE-STATED, not deleted and re-inserted: revocation is a soft
+  // `is_active` flag (H5) and a revoked row is the record of a deliberate access
+  // decision the fail-closed resolver depends on. syncUserScopes reactivates,
+  // inserts and soft-revokes exactly as POST/DELETE /api/food/scopes do.
   const seededUserIds = FOOD_USERS.map((u) => u.id);
-  await db.delete(userScopesTable).where(inArray(userScopesTable.userId, seededUserIds));
 
-  type ScopeRow = typeof userScopesTable.$inferInsert;
-  const scopeRows: ScopeRow[] = [];
-  const addScope = (row: Omit<ScopeRow, "id">) => scopeRows.push({ id: id(), ...row });
+  const scopeRows: DesiredGrant[] = [];
+  const addScope = (row: DesiredGrant) => scopeRows.push(row);
 
-  const firstZone = ZONES[0]!.id;       // zone_north
-  const firstCity = CITIES[0]!.id;      // city_delhi
-  const firstCluster = CLUSTERS[0]!.id; // cluster_delhi_central
+  // Scope anchors are derived from the cluster the FIRST property was just given
+  // by the round-robin above (i = 0 → CLUSTERS[0]), never hard-coded independently
+  // of it. The resolver expands a grant down the geo spine (zone → city → cluster →
+  // property), so an anchor with no property beneath it seeds a head who logs in
+  // and sees nothing — walking up from a real property is what keeps every seeded
+  // ZONE/CITY/CLUSTER persona non-empty whatever the main seed created.
+  const anchorCluster = CLUSTERS[0]!;
+  const anchorCity = CITIES.find((c) => c.id === anchorCluster.cityId)!;
+  const firstZone = anchorCity.zoneId;    // zone_north
+  const firstCity = anchorCity.id;        // city_delhi
+  const firstCluster = anchorCluster.id;  // cluster_delhi_central
+
+  // B3 — the F&B manager persona is KITCHEN-scoped, matching production (11 of
+  // the 12 live FNB_MANAGER accounts are). Seeding it GLOBAL made every local
+  // walkthrough take the org-wide path, so the org-wide-only config surfaces
+  // (dish portions, meal toggles, the two menu-rule switches — all brand-wide
+  // by construction) were never once exercised as a scoped caller sees them.
+  // The anchor is the kitchen with the MOST properties behind it, for the same
+  // reason the geo anchors above walk up from a real property: a KITCHEN grant
+  // resolves through properties.kitchen_id, so a kitchen with none seeds a
+  // manager who logs in and sees nothing (and trips assertScopesResolve).
+  // Kitchens come from seed:food-extra, so fall back to GLOBAL when there is
+  // none yet rather than seeding a manager who resolves to nothing.
+  const { rows: anchorKitchenRows } = await pool.query<{ id: string }>(
+    `SELECT k.id FROM kitchens k JOIN properties p ON p.kitchen_id = k.id
+      WHERE k.is_active GROUP BY k.id ORDER BY count(p.id) DESC, k.id LIMIT 1`,
+  );
+  const anchorKitchenId = anchorKitchenRows[0]?.id ?? null;
 
   for (const u of FOOD_USERS) {
     switch (u.role) {
@@ -431,8 +595,9 @@ async function main() {
         addScope({ userId: u.id, scopeLevel: "ZONE", zoneId: firstZone });
         break;
       case "FNB_MANAGER":
-        // F&B manager — global kitchen oversight.
-        addScope({ userId: u.id, scopeLevel: "GLOBAL" });
+        // F&B manager — one manager, one kitchen (see the B3 note above).
+        if (anchorKitchenId) addScope({ userId: u.id, scopeLevel: "KITCHEN", kitchenId: anchorKitchenId });
+        else addScope({ userId: u.id, scopeLevel: "GLOBAL" });
         break;
       case "FNB_SUPERVISOR":
         // F&B supervisor — bound to a single cluster's kitchen.
@@ -440,8 +605,34 @@ async function main() {
         break;
     }
   }
-  await db.insert(userScopesTable).values(scopeRows);
-  console.log(`  ✓ ${scopeRows.length} user scopes`);
+  const scopeSync = await syncUserScopes(seededUserIds, scopeRows);
+  console.log(`  ✓ ${scopeRows.length} user scopes (${describeScopeSync(scopeSync)})`);
+
+  // 4b. KITCHEN_MANAGER scopes ──────────────────────────────────────────────
+  // Kitchen managers are created by the base `seed` (seed.ts), not here, so they
+  // are not in FOOD_USERS — but they are scope-resolved like every other food
+  // role, and nothing falls open any more. Without a grant the whole Kitchen &
+  // Menu module returns zero rows and the Menu Planning property picker never
+  // populates, which reads exactly like "no data" (the C4e silent lockout).
+  // Grant the anchor CITY: that is the level whose expansion is verified below.
+  const kitchenManagers = await db
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(eq(usersTable.role, "KITCHEN_MANAGER"));
+  if (kitchenManagers.length) {
+    // Same soft-revoke reconciliation as the block above — never DELETE.
+    const kmSync = await syncUserScopes(
+      kitchenManagers.map((u) => u.id),
+      kitchenManagers.map((u) => ({ userId: u.id, scopeLevel: "CITY" as const, cityId: firstCity })),
+    );
+    console.log(`  ✓ ${kitchenManagers.length} kitchen-manager scope(s) → city ${firstCity} (${describeScopeSync(kmSync)})`);
+  }
+
+  // 4c. Assert every seeded grant resolves to at least one property ─────────
+  // A grant that expands to nothing is indistinguishable from a deliberate
+  // lockout at runtime — 200 OK, zero rows, no error. Catching it here is the
+  // only place the seed can tell the difference.
+  await assertScopesResolve([...seededUserIds, ...kitchenManagers.map((u) => u.id)]);
 
   // 5. Dishes (upsert by stable id) ─────────────────────────────────────────
   await db
@@ -589,20 +780,21 @@ async function main() {
   const STATUSES = ["PLACED", "ACCEPTED", "DISPATCHED", "DELIVERED", "CANCELLED"] as const;
   type Status = (typeof STATUSES)[number];
 
+  // No `brand` here on purpose: it is the PROPERTY's brand, not a per-plan
+  // choice — see brandOfProperty above.
   interface OrderPlan {
     status: Status;
-    brand: Brand;
     meal: Meal;
     residentsCount: number;
     serviceOffsetDays: number; // +future for upcoming, -past for delivered
   }
 
   const PLANS: OrderPlan[] = [
-    { status: "PLACED",     brand: "UNILIV", meal: "LUNCH",     residentsCount: 80, serviceOffsetDays: 1 },
-    { status: "ACCEPTED",   brand: "UNILIV", meal: "BREAKFAST", residentsCount: 60, serviceOffsetDays: 0 },
-    { status: "DISPATCHED", brand: "HUDDLE", meal: "DINNER",    residentsCount: 45, serviceOffsetDays: 0 },
-    { status: "DELIVERED",  brand: "UNILIV", meal: "LUNCH",     residentsCount: 90, serviceOffsetDays: -1 },
-    { status: "CANCELLED",  brand: "HUDDLE", meal: "SNACKS",    residentsCount: 30, serviceOffsetDays: -2 },
+    { status: "PLACED",     meal: "LUNCH",     residentsCount: 80, serviceOffsetDays: 1 },
+    { status: "ACCEPTED",   meal: "BREAKFAST", residentsCount: 60, serviceOffsetDays: 0 },
+    { status: "DISPATCHED", meal: "DINNER",    residentsCount: 45, serviceOffsetDays: 0 },
+    { status: "DELIVERED",  meal: "LUNCH",     residentsCount: 90, serviceOffsetDays: -1 },
+    { status: "CANCELLED",  meal: "SNACKS",    residentsCount: 30, serviceOffsetDays: -2 },
   ];
 
   let orderSeq = 0;
@@ -613,17 +805,20 @@ async function main() {
 
   for (const lead of unitLeads) {
     const propertyId = propIds[(lead.propertyIndex ?? 0) % propIds.length]!;
+    const brand = brandOfProperty.get(propertyId)!;
     for (const plan of PLANS) {
       orderSeq += 1;
       const orderId = id();
       const orderNumber = `ORD-${year}-${String(orderSeq).padStart(6, "0")}`;
-      const serviceDate = plan.serviceOffsetDays >= 0
-        ? daysFromNow(plan.serviceOffsetDays)
-        : daysAgo(-plan.serviceOffsetDays);
+      // service_date is the IST DAY START, never a raw now()±n instant — see
+      // istServiceDate. The lifecycle stamps hang off the meal's serving hour on
+      // that same IST day so they stay plausible relative to it.
+      const serviceDate = istServiceDate(plan.serviceOffsetDays);
+      const serviceMoment = istDayOffsetAt(plan.serviceOffsetDays, MEAL_HOUR_IST[plan.meal]);
       const createdAt = daysAgo(Math.max(1, -plan.serviceOffsetDays + 1));
 
       const computed = computeItemsForOrder(
-        rotation, plan.brand, plan.meal, serviceDate, plan.residentsCount,
+        rotation, brand, plan.meal, serviceDate, plan.residentsCount,
       );
       const totalQuantity = computed.reduce((sum, c) => sum + c.orderedQty, 0);
 
@@ -638,7 +833,7 @@ async function main() {
         : null;
       const dispatcherId = isDispatched ? "user_food_fnbsup" : null;
       const confirmerId = isDelivered ? lead.id : null;
-      const deliveredAt = isDelivered ? new Date(serviceDate.getTime() + 2 * 3_600_000) : null;
+      const deliveredAt = isDelivered ? new Date(serviceMoment.getTime() + 2 * 3_600_000) : null;
       const wasteEditableUntil = deliveredAt
         ? new Date(deliveredAt.getTime() + 3_600_000) // delivered + 1h (PRD §7.7)
         : null;
@@ -647,7 +842,7 @@ async function main() {
         id: orderId,
         orderNumber,
         propertyId,
-        brand: plan.brand,
+        brand,
         mealType: plan.meal,
         unitLeadId: lead.id,
         residentsCount: plan.residentsCount,
@@ -657,13 +852,13 @@ async function main() {
         notes: `Seeded ${plan.status} order for ${plan.meal.toLowerCase()}.`,
         deliveryPartnerId,
         dispatchedById: dispatcherId,
-        dispatchStartedAt: isDispatched ? new Date(serviceDate.getTime() - 3_600_000) : null,
-        dispatchedAt: isDispatched ? new Date(serviceDate.getTime() - 1_800_000) : null,
+        dispatchStartedAt: isDispatched ? new Date(serviceMoment.getTime() - 3_600_000) : null,
+        dispatchedAt: isDispatched ? new Date(serviceMoment.getTime() - 1_800_000) : null,
         confirmedById: confirmerId,
         deliveredAt,
         deliveryRemarks: isDelivered ? "Delivered in full, verified by unit lead." : null,
         wasteEditableUntil,
-        acceptedAt: isAccepted ? new Date(serviceDate.getTime() - 5 * 3_600_000) : null,
+        acceptedAt: isAccepted ? new Date(serviceMoment.getTime() - 5 * 3_600_000) : null,
         acceptedById: isAccepted ? "user_food_fnbsup" : null,
         cancelledAt: isCancelled ? createdAt : null,
         cancelReason: isCancelled ? "Resident count dropped; meal not required." : null,
@@ -702,11 +897,11 @@ async function main() {
       } else {
         if (isAccepted) {
           pushEvent("ACCEPTED", "Order accepted by kitchen.", "user_food_fnbsup",
-            new Date(serviceDate.getTime() - 5 * 3_600_000));
+            new Date(serviceMoment.getTime() - 5 * 3_600_000));
         }
         if (isDispatched) {
           pushEvent("DISPATCHED", "Dispatched to property.", dispatcherId!,
-            new Date(serviceDate.getTime() - 1_800_000));
+            new Date(serviceMoment.getTime() - 1_800_000));
         }
         if (isDelivered) {
           pushEvent("DELIVERED", "Delivery confirmed with item-wise proof.", lead.id, deliveredAt!);
@@ -724,6 +919,15 @@ async function main() {
   );
 
   console.log("✅ Food domain seeded.");
+
+  // Last line of the run, on purpose: whether the environment can serve an
+  // order is the only thing the operator actually needs from this output. This
+  // script TRUNCATEs food_menu_rotation and rewrites brand-level templates
+  // only, so the answer here is normally "not yet" — and now it says so, with
+  // the command that fixes it, instead of ending on "✅ seeded".
+  await reportOrderability({
+    nextCommand: "pnpm --filter @workspace/scripts run seed:food-extra",
+  });
 }
 
 main()

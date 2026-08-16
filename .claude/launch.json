@@ -30,6 +30,24 @@
       "runtimeExecutable": "sh",
       "runtimeArgs": ["-c", "_P=\"$PORT\"; set -a; . ./.env.web; set +a; export PORT=\"${_P:-$PORT}\" API_PROXY_TARGET=http://localhost:8095; exec pnpm --filter @workspace/uniliv-admin run dev"],
       "autoPort": true
+    },
+    {
+      "name": "uniliv-web-8096",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "set -a; . ./.env; set +a; export BASE_PATH=/ API_PROXY_TARGET=http://localhost:8096; exec pnpm --filter @workspace/uniliv-admin run dev"],
+      "autoPort": true
+    },
+    {
+      "name": "uniliv-api-8091",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "set -a; . ./.env; set +a; export NODE_ENV=development LOG_PRETTY=true ALLOW_DEV_OTP=true DEV_OTP=000000 DISABLE_SINGLE_SESSION=true PORT=8091; pnpm --filter @workspace/api-server run build && exec node --enable-source-maps ./apps/api-server/dist/index.mjs"],
+      "port": 8091
+    },
+    {
+      "name": "uniliv-web-local",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "set -a; . ./.env; set +a; export BASE_PATH=/ API_PROXY_TARGET=http://localhost:8091; exec pnpm --filter @workspace/uniliv-admin run dev"],
+      "autoPort": true
     }
   ]
 }

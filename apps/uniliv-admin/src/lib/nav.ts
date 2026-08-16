@@ -8,10 +8,10 @@ import {
   Network, LayoutGrid,
   DoorOpen, CalendarCheck, CalendarX, LineChart, Recycle, Database, ScrollText,
   Gauge, AlertTriangle, ListChecks, Kanban, BadgeCheck, FileBarChart,
-  CalendarClock, FileStack, Library, CookingPot,
+  CalendarClock, FileStack, CookingPot,
   type LucideIcon,
 } from "lucide-react"
-import { type Module, type UserRole } from "@/lib/permissions"
+import { moduleForPath, type Module, type Permission, type UserRole } from "@/lib/permissions"
 
 /** `module` gates the item to roles that can view it; an item without a module
  *  (e.g. the Home launcher) is visible to every signed-in user. `hideFor`
@@ -22,6 +22,32 @@ import { type Module, type UserRole } from "@/lib/permissions"
  *  launcher + palette entries are hidden. */
 export type NavItem = { title: string; href: string; icon: LucideIcon; module?: Module; hideFor?: UserRole[] }
 export type NavGroup = { title: string; items: NavItem[] }
+
+type CanFn = (module: Module, perm?: Permission) => boolean
+
+/** True when the signed-in persona may actually OPEN `href`. Resolves the route's
+ *  module exactly the way `PageGuard` does, so anything we render as a link can
+ *  never dead-end on the Forbidden screen.
+ *
+ *  `hideFor` is deliberately NOT consulted: it only folds an item out of the nav
+ *  (see the note above) — the route stays reachable, so such a link is still
+ *  legitimate. Only a missing module grant makes an href unlinkable. */
+export function canViewHref(href: string, can: CanFn): boolean {
+  const mod = moduleForPath(href)
+  return !mod || can(mod, "view")
+}
+
+/** A `PageHeader` breadcrumb entry. */
+export type Crumb = { label: string; href?: string; onClick?: () => void }
+
+/** Drops the crumbs that point at a route this persona cannot view, so a
+ *  breadcrumb never advertises — let alone links to — a screen the user has no
+ *  access to (e.g. a unit lead on /audits/register seeing a "Review Queue"
+ *  parent). Crumbs without an `href` are plain labels and always survive, so the
+ *  section root and the current page are never dropped. */
+export function scopeCrumbs<T extends Crumb>(crumbs: T[], can: CanFn): T[] {
+  return crumbs.filter((c) => !c.href || canViewHref(c.href, can))
+}
 
 export const navGroups: NavGroup[] = [
   // "Home" is the /apps module launcher — the universal landing page. The
@@ -112,22 +138,44 @@ export const navGroups: NavGroup[] = [
    *    Reports.
    *  - Oversight (CITY_HEAD / ZONAL_HEAD / SENIOR_VICE_PRESIDENT): All Audits +
    *    Reports.
-   *  - OPS_EXCELLENCE: Review Queue, All Audits, Reports, Templates
-   *    (Templates · Question bank · Schedules), Audit Admin.
+   *  - OPS_EXCELLENCE / SUPER_ADMIN: Review Queue, Templates, Schedules,
+   *    Reports, Audit Admin. Neither My Audits nor All Audits —
+   *    they hold those modules through a blanket grant rather than because
+   *    they conduct audits or watch the estate (product, 2026-08-08).
    * Reports is standalone for EVERY audit persona (PRD: each role sees its
    * permitted audit types' reports — the backend scopes the data). The old
    * oversight dashboard is retired; /audits/dashboard redirects to the Review
    * Queue. hideFor only hides nav links; routes + data access are unchanged. */
-  /* Order fixed by product (2026-07-24): Review Queue · Audit Templates ·
-   * All Audits · Reports · Settings (staff additionally see My Audits first;
-   * Schedules/Question Bank remain admin-only standalone items). */
+  /* Order fixed by product (2026-08-08): Review Queue · Schedules · Audit
+   * Templates · Reports · Settings (staff additionally see My Audits first).
+   * Day-to-day operating items lead; authoring follows. The Question Bank and
+   * the schedule calendar are tabs/views of Templates and Schedules, not nav
+   * items of their own. */
   { title: "Audits", items: [
-    { title: "My Audits", href: "/audits/my", icon: ClipboardCheck, module: "AUDIT_EXECUTION", hideFor: ["OPS_EXCELLENCE"] },
+    /* The conducting persona's OWN queue. Admin-class roles hold AUDIT_EXECUTION
+       through their blanket grant, not because they run audits — showing them a
+       personal queue mislabels them as the auditing persona. Hidden, not
+       revoked: the route stays reachable if one is ever assigned work. */
+    { title: "My Audits", href: "/audits/my", icon: ClipboardCheck, module: "AUDIT_EXECUTION",
+      hideFor: ["OPS_EXCELLENCE", "SUPER_ADMIN"] },
     { title: "Review Queue", href: "/audits/review", icon: BadgeCheck, module: "AUDIT_REVIEW" },
-    { title: "Audit Templates", href: "/audits/templates", icon: FileStack, module: "AUDIT_TEMPLATES" },
-    { title: "Reports", href: "/audits/reports", icon: FileBarChart, module: "AUDIT_REPORTS" },
+    /* The scoped, filterable register. It has always been routed and gated on
+       AUDIT_REGISTER but had no nav item, so oversight roles saw a single
+       "Reports" link. Hidden from conducting personas: their queue is My
+       Audits, and a ten-column register is not a phone surface. */
+    { title: "All Audits", href: "/audits/register", icon: ClipboardList, module: "AUDIT_REGISTER",
+      /* Conducting personas work from My Audits; admin-class roles work from the
+         Review Queue and Templates. The register is for the read-only oversight
+         roles (City / Zonal Head, SVP, AUDIT_READONLY) whose whole job is
+         looking across the estate. */
+      hideFor: ["UNIT_LEAD", "CLUSTER_MANAGER", "CUSTOMER_EXPERIENCE", "OPS_EXCELLENCE", "SUPER_ADMIN"] },
     { title: "Schedules", href: "/audits/schedules", icon: CalendarClock, module: "AUDIT_SCHEDULES", hideFor: ["OPS_EXCELLENCE"] },
-    { title: "Question Bank", href: "/audits/question-bank", icon: Library, module: "AUDIT_TEMPLATES", hideFor: ["OPS_EXCELLENCE"] },
+    { title: "Audit Templates", href: "/audits/templates", icon: FileStack, module: "AUDIT_TEMPLATES" },
+    /* No Question Bank item: it is a tab of the Audit Templates page
+       (templates.tsx renders <QuestionBankPanel embedded />), so a nav entry
+       duplicated the same surface. /audits/question-bank stays routed and
+       gated on AUDIT_TEMPLATES for direct links. */
+    { title: "Reports", href: "/audits/reports", icon: FileBarChart, module: "AUDIT_REPORTS" },
     { title: "Settings", href: "/audits/admin", icon: SlidersHorizontal, module: "AUDIT_ADMIN" },
   ]},
   /* Hidden for now (user decision 13-Jul-2026) — see the note above.

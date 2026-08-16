@@ -41,6 +41,7 @@ import {
 } from "@workspace/db";
 import { randomUUID } from "crypto";
 import { SEED_TEMPLATES, type SeedQuestion } from "./data/audit-question-bank";
+import { assertSeedTarget } from "./seed-guard.js";
 
 const id = () => randomUUID();
 
@@ -269,7 +270,10 @@ async function seedGrants() {
         eq(usersTable.isActive, true),
       ),
     );
-  const scopes = await db.select().from(userScopesTable);
+  // Live grants only. These rows are turned into audit_role_grants below, so a
+  // soft-revoked food grant (H5 revokes by flipping isActive, never by deleting)
+  // would otherwise be laundered into audit access nobody granted.
+  const scopes = await db.select().from(userScopesTable).where(eq(userScopesTable.isActive, true));
   const clusters = await db.select().from(clustersTable);
   const cities = await db.select().from(citiesTable);
 
@@ -487,6 +491,7 @@ async function seedCxUser() {
 }
 
 async function main() {
+  await assertSeedTarget("seed:audit");
   await seedConfig();
   await seedBankAndTemplates();
   await seedCxUser();

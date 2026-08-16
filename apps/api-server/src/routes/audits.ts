@@ -18,6 +18,7 @@ import {
   auditQuestionsTable,
   auditReportsTable,
   auditResponsesTable,
+  auditReviewsTable,
   auditTemplatesTable,
   auditTemplateVersionsTable,
   auditPerformanceBandsTable,
@@ -46,6 +47,8 @@ import {
 import {
   auditActor,
   allocateNumber,
+  assertLiveGeoCapture,
+  findLiveProof,
   getAuditSetting,
   getAttachmentPolicy,
   computeSubmitBlockers,
@@ -54,6 +57,7 @@ import {
   parseDataUrl,
   storeEvidence,
   AUDIT_SETTING_DEFAULTS,
+  LIVE_PROOF_MAX_AGE_MS,
 } from "../lib/audit-service.js";
 import { scoreAudit, resolveMultiplier, type RatingScaleSnapshot } from "../lib/audit-scoring.js";
 import { resolveAssignee, type AssigneeRule } from "../lib/audit-jobs.js";
@@ -62,6 +66,33 @@ const router: IRouter = Router();
 
 const ACTIVE_STATES = ["SCHEDULED", "IN_PROGRESS", "PAUSED", "REJECTED"] as const;
 const COMPLETED_STATES = ["SUBMITTED", "UNDER_REVIEW", "APPROVED", "CLOSED"] as const;
+
+/**
+ * A SQL `IN (...)` list for a FILTER clause. Compared against `state::text` so
+ * no pg-enum array cast is needed. Safe to interpolate: the inputs are the
+ * compile-time constants above, never request data.
+ */
+const stateList = (states: readonly string[]) =>
+  sql.raw(`(${states.map((s) => `'${s}'`).join(", ")})`);
+
+/**
+ * A day boundary for comparing against a `timestamp` column, built from LOCAL
+ * date parts.
+ *
+ * `new Date("2026-08-08")` parses as UTC midnight, but node-postgres formats
+ * Date values using the local offset and Postgres discards that offset for
+ * `timestamp without time zone`. In a +05:30 deployment the bound therefore
+ * arrived as 05:30, which sits ABOVE the 03:30 these columns store for a
+ * 09:00 IST occurrence — so "audits scheduled today" returned nothing.
+ * Building from local parts makes the literal the DB receives match the day
+ * the user picked. See the timestamp convention note in the schema.
+ */
+function dayBound(iso: string, edge: "start" | "end"): Date {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return edge === "start"
+    ? new Date(y!, m! - 1, d!, 0, 0, 0, 0)
+    : new Date(y!, m! - 1, d!, 23, 59, 59, 999);
+}
 
 async function enrich(rows: (typeof auditsTable.$inferSelect)[]) {
   if (rows.length === 0) return [];
@@ -117,19 +148,23 @@ router.get(
     if (q["auditType"]) conditions.push(eq(auditsTable.auditType, q["auditType"] as AuditType));
     if (q["propertyId"]) conditions.push(eq(auditsTable.propertyId, q["propertyId"]));
     if (q["assigneeId"]) conditions.push(eq(auditsTable.assigneeId, q["assigneeId"]));
-    if (q["overdue"] === "true") conditions.push(eq(auditsTable.isOverdue, true));
+    // Accept the usual truthy spellings — a silently-ignored "overdue=1"
+    // returns the unfiltered set, which reads as "nothing is overdue".
+    if (["true", "1", "yes"].includes(String(q["overdue"] ?? "").toLowerCase())) {
+      conditions.push(eq(auditsTable.isOverdue, true));
+    }
     if (q["q"]) {
       const like = "%" + q["q"] + "%";
       conditions.push(
         sql`(${auditsTable.ticketNo} ILIKE ${like} OR ${auditsTable.title} ILIKE ${like})`,
       );
     }
-    if (q["from"]) conditions.push(sql`${auditsTable.createdAt} >= ${new Date(q["from"])}`);
-    if (q["to"]) {
-      const to = new Date(q["to"]);
-      to.setHours(23, 59, 59, 999);
-      conditions.push(sql`${auditsTable.createdAt} <= ${to}`);
-    }
+    /* Filter the date the register actually SHOWS. The column is "Scheduled"
+       and the pickers sit beside it, but this ranged over createdAt — so
+       narrowing to a day when audits are scheduled returned nothing, because
+       those rows were created weeks earlier. */
+    if (q["from"]) conditions.push(sql`${auditsTable.scheduledFor} >= ${dayBound(q["from"], "start")}`);
+    if (q["to"]) conditions.push(sql`${auditsTable.scheduledFor} <= ${dayBound(q["to"], "end")}`);
     const where = conditions.length ? and(...conditions) : undefined;
 
     const sortCol = q["sort"] === "dueAt" ? auditsTable.dueAt : auditsTable.createdAt;
@@ -180,7 +215,7 @@ const oneOffSchema = z.object({
   propertyId: z.string().nullish(),
   roomId: z.string().nullish(),
   assigneeId: z.string().nullish(),
-  assigneeRule: z.enum(["UNIT_LEAD", "CLUSTER_MANAGER"]).nullish(),
+  assigneeRule: z.enum(["UNIT_LEAD", "CLUSTER_MANAGER", "CITY_HEAD", "ZONAL_HEAD"]).nullish(),
   scheduledFor: z.coerce.date().nullish(),
   dueAt: z.coerce.date().nullish(),
   reminderOffsetMinutes: z.number().int().min(0).max(600).nullish(),
@@ -473,24 +508,62 @@ router.get(
   },
 );
 
-/** "My audits" queue (FRD-REG-05): assigned open work by due date. */
+/**
+ * "My audits" queue (FRD-REG-05): the assignee's own work, by due date.
+ *
+ * `segment` drives the Pending / Completed / All tabs:
+ *   pending   — actionable now: SCHEDULED, IN_PROGRESS, PAUSED, REJECTED (rework)
+ *   completed — SUBMITTED, UNDER_REVIEW, APPROVED, CLOSED
+ *   all       — both of the above
+ *
+ * DRAFT is deliberately in none of them. The materializer pre-creates
+ * occurrences up to `lookahead_days` ahead as DRAFT, and counting work that is
+ * not yet due would inflate every "N left".
+ *
+ * `meta.counts` is aggregated in SQL rather than derived from `data`, so the
+ * per-type cards stay correct past the row limit and a type the auditor holds
+ * but has nothing pending on still renders its "0 left" card.
+ */
 router.get(
   "/my",
   authenticate,
   authorize("AUDIT_EXECUTION", "view"),
   async (req, res) => {
+    const segment = String(req.query["segment"] ?? "pending").toLowerCase();
+    if (!["pending", "completed", "all"].includes(segment)) {
+      throw httpError(400, "segment must be pending, completed or all");
+    }
+    const mine = eq(auditsTable.assigneeId, req.user!.id);
+    const states =
+      segment === "pending"
+        ? [...ACTIVE_STATES]
+        : segment === "completed"
+          ? [...COMPLETED_STATES]
+          : [...ACTIVE_STATES, ...COMPLETED_STATES];
+
     const rows = await db
       .select()
       .from(auditsTable)
-      .where(
-        and(
-          eq(auditsTable.assigneeId, req.user!.id),
-          inArray(auditsTable.state, ["SCHEDULED", "IN_PROGRESS", "PAUSED", "REJECTED"]),
-        ),
-      )
+      .where(and(mine, inArray(auditsTable.state, states)))
       .orderBy(asc(auditsTable.dueAt))
       .limit(200);
-    res.json({ success: true, data: await enrich(rows) });
+
+    const counts = await db
+      .select({
+        auditType: auditsTable.auditType,
+        pending: sql<number>`count(*) filter (where ${auditsTable.state}::text in ${stateList(ACTIVE_STATES)})::int`,
+        completed: sql<number>`count(*) filter (where ${auditsTable.state}::text in ${stateList(COMPLETED_STATES)})::int`,
+      })
+      .from(auditsTable)
+      .where(mine)
+      .groupBy(auditsTable.auditType);
+
+    res.json({
+      success: true,
+      data: await enrich(rows),
+      // Drop types whose whole history is DRAFT — nothing to show a card for yet.
+      meta: { counts: counts.filter((c) => c.pending + c.completed > 0) },
+    });
   },
 );
 
@@ -528,6 +601,33 @@ router.get(
           .where(eq(auditTemplatesTable.id, version.templateId))
       : [];
 
+    // Presence proof for reviewers (Ops Excellence): the start & end selfies as
+    // stamped on the audit. Audits that ran before the start gate shipped carry
+    // no startEvidenceId and simply report null.
+    const proofIds = [audit.startEvidenceId, audit.submissionEvidenceId].filter(
+      (x): x is string => !!x,
+    );
+    const proofRows = proofIds.length
+      ? await db.select().from(auditEvidenceTable).where(inArray(auditEvidenceTable.id, proofIds))
+      : [];
+    const resolveProof = async (evidenceId: string | null) => {
+      const row = evidenceId ? proofRows.find((e) => e.id === evidenceId) : undefined;
+      if (!row) return null;
+      return {
+        id: row.id,
+        kind: row.kind,
+        url: await evidenceUrl(row.storageKey),
+        thumbUrl: row.thumbStorageKey ? await evidenceUrl(row.thumbStorageKey) : null,
+        mime: row.mime,
+        geoLat: row.geoLat,
+        geoLng: row.geoLng,
+        geoAccuracyM: row.geoAccuracyM,
+        capturedAt: row.capturedAt,
+        isLiveCapture: row.isLiveCapture,
+        createdAt: row.createdAt,
+      };
+    };
+
     res.json({
       success: true,
       data: {
@@ -535,6 +635,8 @@ router.get(
         templateVersion: version
           ? { ...version, templateName: template?.name ?? null }
           : null,
+        startProof: await resolveProof(audit.startEvidenceId),
+        endProof: await resolveProof(audit.submissionEvidenceId),
       },
     });
   },
@@ -595,12 +697,18 @@ function scaleSnapshotOf(version: { ratingScaleSnapshot: unknown }): RatingScale
   return (version.ratingScaleSnapshot as RatingScaleSnapshot | null) ?? null;
 }
 
+/**
+ * `postSet` lands extra columns in the SAME transaction as the transition —
+ * used by /start to stamp the presence proof so the state change and its
+ * evidence pointer can never diverge.
+ */
 async function transitionOrLogDenial(
   audit: typeof auditsTable.$inferSelect,
   to: AuditState,
   actor: { id: string | null; role?: string | null },
   reason: string | null,
   geo?: { lat: number; lng: number } | null,
+  postSet?: Partial<typeof auditsTable.$inferInsert>,
 ): Promise<void> {
   if (!canTransition(AUDIT_TRANSITIONS, audit.state as AuditState, to)) {
     // FRD-EXE-03 AC: the denied attempt itself is security-logged.
@@ -623,11 +731,21 @@ async function transitionOrLogDenial(
   }
   await db.transaction(async (tx) => {
     await applyAuditTransition(tx, audit, to, { actor, reason, geo: geo ?? null });
+    if (postSet && Object.keys(postSet).length > 0) {
+      await tx.update(auditsTable).set(postSet).where(eq(auditsTable.id, audit.id));
+    }
   });
 }
 
 /* ── State actions (FRD-EXE-03, FRD-EXE-14) ────────────────────────────────── */
 
+/**
+ * Start gate: an audit only enters IN_PROGRESS behind a live, GPS-tagged start
+ * selfie captured minutes ago (same rules as the end selfie, D-9). Freshness is
+ * what makes rework re-prove presence — a proof from the earlier attempt is
+ * already stale. Existing IN_PROGRESS audits never come through here, so
+ * nothing running is retroactively blocked.
+ */
 router.post(
   "/:id/start",
   authenticate,
@@ -635,12 +753,113 @@ router.post(
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     assertAssignee(audit, req.user!.id);
-    const geo =
-      req.body?.geo && typeof req.body.geo.lat === "number" && typeof req.body.geo.lng === "number"
-        ? { lat: req.body.geo.lat, lng: req.body.geo.lng }
-        : null;
-    await transitionOrLogDenial(audit, "IN_PROGRESS", auditActor(req), "Started", geo);
+
+    const proof = await findLiveProof(audit.id, "START_PROOF", LIVE_PROOF_MAX_AGE_MS);
+    if (!proof) {
+      throw httpError(422, "START_PHOTO_REQUIRED", {
+        reason: "Capture the live geotagged start photo before starting this audit",
+      });
+    }
+
+    // FRD-EXE-14: start location/time come from the validated capture itself,
+    // never from a coordinate the client could send independently of the photo.
+    const geo = { lat: proof.geoLat!, lng: proof.geoLng! };
+    await transitionOrLogDenial(audit, "IN_PROGRESS", auditActor(req), "Started", geo, {
+      startedAt: new Date(),
+      startGeoLat: geo.lat,
+      startGeoLng: geo.lng,
+      startEvidenceId: proof.id,
+    });
     res.json({ success: true, data: await loadAudit(audit.id) });
+  },
+);
+
+/**
+ * Reassign an audit (FRD-ASG-04/05).
+ *
+ * `assigneeId` previously had exactly two writers — ad-hoc create and the
+ * materializer — and was mutable nowhere, so a leaver's open audits were stuck
+ * on them permanently and an audit the escalation chain could not place stayed
+ * orphaned. Accepts a single id or a batch, so a handover is one call.
+ *
+ * Only before submission: once an audit is SUBMITTED the answers and the
+ * on-site proof belong to whoever actually did the work, and moving the row
+ * would misattribute them.
+ */
+const REASSIGNABLE_STATES = ["DRAFT", "SCHEDULED", "IN_PROGRESS", "PAUSED", "REJECTED"];
+
+router.post(
+  "/reassign",
+  authenticate,
+  authorize("AUDIT_SCHEDULES", "edit"),
+  async (req, res) => {
+    const parsed = z
+      .object({
+        auditIds: z.array(z.string().min(1)).min(1).max(200),
+        assigneeId: z.string().min(1),
+        reason: z.string().max(500).optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) throw httpError(400, "Invalid reassignment", parsed.error.flatten());
+
+    const [assignee] = await db
+      .select({ id: usersTable.id, name: usersTable.name, isActive: usersTable.isActive })
+      .from(usersTable)
+      .where(eq(usersTable.id, parsed.data.assigneeId));
+    if (!assignee) throw httpError(404, "Assignee not found");
+    if (!assignee.isActive) throw httpError(422, "That user is deactivated");
+
+    const audits = await db
+      .select()
+      .from(auditsTable)
+      .where(inArray(auditsTable.id, parsed.data.auditIds));
+    if (audits.length === 0) throw httpError(404, "No matching audits");
+
+    const blocked = audits.filter((a) => !REASSIGNABLE_STATES.includes(a.state));
+    if (blocked.length > 0) {
+      throw httpError(409, "Submitted audits cannot be reassigned", {
+        tickets: blocked.map((a) => a.ticketNo),
+      });
+    }
+
+    const actor = auditActor(req);
+    const reason = parsed.data.reason?.trim() || "Reassigned";
+    await db.transaction(async (tx) => {
+      for (const audit of audits) {
+        if (audit.assigneeId === assignee.id) continue;
+        await tx
+          .update(auditsTable)
+          .set({ assigneeId: assignee.id, updatedAt: new Date() })
+          .where(eq(auditsTable.id, audit.id));
+        await appendAuditEvent(tx, {
+          entityType: "AUDIT",
+          entityId: audit.id,
+          auditId: audit.id,
+          actorId: actor.id,
+          actorRole: actor.role,
+          // First writer of this event kind — it existed with none.
+          kind: "ASSIGNMENT",
+          beforeJson: { assigneeId: audit.assigneeId },
+          afterJson: { assigneeId: assignee.id },
+          reason,
+        });
+      }
+    });
+
+    for (const audit of audits) {
+      if (audit.assigneeId === assignee.id) continue;
+      await notify({
+        userId: assignee.id,
+        title: `Audit ${audit.ticketNo} assigned to you`,
+        body: reason.slice(0, 180),
+        type: "AUDIT",
+        link: `/audits/${audit.id}`,
+        entityType: "AUDIT",
+        entityId: audit.id,
+      });
+    }
+
+    res.json({ success: true, data: { reassigned: audits.length, assigneeId: assignee.id } });
   },
 );
 
@@ -717,10 +936,26 @@ router.get(
       })),
     );
 
+    /* The start screen names the unit/property being audited (FRD-EXE-14), and
+       a rework needs the reviewer's reason in front of the auditor — not buried
+       in an Activity tab. This was the one audit read path that skipped
+       enrich(), so propertyName/roomNumber arrived undefined and the UI that
+       renders them silently showed nothing. */
+    const [enriched] = await enrich([audit]);
+    const [rejection] =
+      audit.state === "REJECTED"
+        ? await db
+            .select({ comments: auditReviewsTable.comments, createdAt: auditReviewsTable.createdAt })
+            .from(auditReviewsTable)
+            .where(and(eq(auditReviewsTable.auditId, audit.id), eq(auditReviewsTable.verdict, "REJECTED")))
+            .orderBy(desc(auditReviewsTable.createdAt))
+            .limit(1)
+        : [];
+
     res.json({
       success: true,
       data: {
-        audit,
+        audit: { ...(enriched ?? audit), rejectionReason: rejection?.comments ?? null },
         version: {
           id: version.id,
           versionNo: version.versionNo,
@@ -843,18 +1078,27 @@ router.post(
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     assertAssignee(audit, req.user!.id);
-    if (!["IN_PROGRESS", "PAUSED"].includes(audit.state)) {
-      throw httpError(409, "Evidence can be attached while the audit is open only");
-    }
 
     const kind = String(req.body?.kind ?? "RESPONSE").toUpperCase();
-    if (!["AUDIT", "RESPONSE", "SUBMISSION_PROOF"].includes(kind)) {
-      throw httpError(400, "kind must be AUDIT | RESPONSE | SUBMISSION_PROOF");
+    if (!["AUDIT", "RESPONSE", "START_PROOF", "SUBMISSION_PROOF"].includes(kind)) {
+      throw httpError(400, "kind must be AUDIT | RESPONSE | START_PROOF | SUBMISSION_PROOF");
     }
+    // The start selfie is taken BEFORE the audit moves to In Progress, so it
+    // has its own open-state set; everything else stays in-run only.
+    const openStates = kind === "START_PROOF" ? ["SCHEDULED", "REJECTED"] : ["IN_PROGRESS", "PAUSED"];
+    if (!openStates.includes(audit.state)) {
+      throw httpError(
+        409,
+        kind === "START_PROOF"
+          ? "The start photo is captured before the audit begins"
+          : "Evidence can be attached while the audit is open only",
+      );
+    }
+
     const parsedFile = parseDataUrl(req.body?.dataUrl);
     if (!parsedFile) throw httpError(400, "dataUrl must be a base64 image/pdf data URL");
 
-    const policyLevel = kind === "SUBMISSION_PROOF" ? "SUBMISSION" : kind;
+    const policyLevel = kind === "SUBMISSION_PROOF" || kind === "START_PROOF" ? "SUBMISSION" : kind;
     const policy = await getAttachmentPolicy(policyLevel);
     if (!policy.allowedMime.includes(parsedFile.contentType)) {
       throw httpError(422, `File type ${parsedFile.contentType} not allowed for ${policyLevel}`, { allowed: policy.allowedMime });
@@ -879,16 +1123,20 @@ router.post(
 
     const geo = req.body?.geo as { lat?: number; lng?: number; accuracyM?: number } | undefined;
     const isLiveCapture = req.body?.isLiveCapture === true;
+    // D-9 / FRD-EXE-13: both presence selfies pass the same live+GPS+fresh gate.
+    if (kind === "START_PROOF") {
+      assertLiveGeoCapture("START_PHOTO_REQUIRED", "The start photo", {
+        isLiveCapture,
+        geo,
+        capturedAt: req.body?.capturedAt,
+      });
+    }
     if (kind === "SUBMISSION_PROOF") {
-      // D-9 / FRD-EXE-13 server-side checks: live capture flag + GPS present.
-      if (!isLiveCapture) throw httpError(422, "LIVE_PHOTO_REQUIRED", { reason: "Submission proof must be a live camera capture (no gallery)" });
-      if (typeof geo?.lat !== "number" || typeof geo?.lng !== "number") {
-        throw httpError(422, "LIVE_PHOTO_REQUIRED", { reason: "Submission proof requires GPS coordinates" });
-      }
-      const capturedAt = req.body?.capturedAt ? new Date(String(req.body.capturedAt)) : null;
-      if (capturedAt && Math.abs(Date.now() - capturedAt.getTime()) > 15 * 60_000) {
-        throw httpError(422, "LIVE_PHOTO_REQUIRED", { reason: "Capture is older than 15 minutes — take a fresh photo" });
-      }
+      assertLiveGeoCapture("LIVE_PHOTO_REQUIRED", "The end photo", {
+        isLiveCapture,
+        geo,
+        capturedAt: req.body?.capturedAt,
+      });
     }
 
     const evidenceId = newId();
@@ -1029,19 +1277,9 @@ router.post(
     const targetState: AuditState = "SUBMITTED";
     const actor = auditActor(req);
 
-    // Latest valid submission proof, stamped onto the audit (FRD-EXE-13).
-    const [proof] = await db
-      .select({ id: auditEvidenceTable.id })
-      .from(auditEvidenceTable)
-      .where(
-        and(
-          eq(auditEvidenceTable.auditId, audit.id),
-          eq(auditEvidenceTable.kind, "SUBMISSION_PROOF"),
-          eq(auditEvidenceTable.isLiveCapture, true),
-        ),
-      )
-      .orderBy(desc(auditEvidenceTable.createdAt))
-      .limit(1);
+    // Latest valid end selfie, stamped onto the audit (FRD-EXE-13). The submit
+    // gate above already guarantees one exists.
+    const proof = await findLiveProof(audit.id, "SUBMISSION_PROOF");
 
     const updated = await db.transaction(async (tx) => {
       // Freeze responses with computed line scores (FRD-EXE-12).
@@ -1067,8 +1305,10 @@ router.post(
         .set({
           state: targetState,
           submittedAt: now,
-          submitGeoLat: geo?.lat ?? null,
-          submitGeoLng: geo?.lng ?? null,
+          // Prefer the selfie's own (server-validated) coordinates so the end
+          // location always matches the photo the reviewer sees.
+          submitGeoLat: proof?.geoLat ?? geo?.lat ?? null,
+          submitGeoLng: proof?.geoLng ?? geo?.lng ?? null,
           durationSeconds,
           submissionEvidenceId: proof?.id ?? null,
           maxScore: String(result.overall.maxRaw),

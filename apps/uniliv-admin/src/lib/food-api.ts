@@ -10,8 +10,11 @@ import { apiFetch } from "@/lib/api-fetch";
 
 // ─── Domain types ────────────────────────────────────────────────────────────
 // Brands are now an admin-managed master list (food_brands), so a brand is just
-// its code string. Use foodApi.listBrands() for the live set; BRANDS below is a
-// dev fallback only.
+// its code string. Read the live set with useActiveBrands() (components/food/
+// use-food-masters). L10 — the old `BRANDS = ["UNILIV","HUDDLE"]` dev fallback
+// is deleted rather than left unused: every board that filtered by it dropped
+// the rows of any brand created since, and a constant that still exists is a
+// constant the next filter will reach for.
 export type FoodBrand = string;
 export type MealType = "BREAKFAST" | "LUNCH" | "SNACKS" | "DINNER";
 export type OrderStatus = "PLACED" | "ACCEPTED" | "REJECTED" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
@@ -21,7 +24,6 @@ export const MEAL_TYPES: MealType[] = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER"]
 export const PREPARATIONS = ["VEG", "NON_VEG", "JAIN"] as const;
 export type Preparation = (typeof PREPARATIONS)[number];
 export const PREPARATION_LABEL: Record<string, string> = { VEG: "Veg", NON_VEG: "Non-veg", JAIN: "Jain" };
-export const BRANDS: FoodBrand[] = ["UNILIV", "HUDDLE"];
 export const ORDER_STATUSES: OrderStatus[] = ["PLACED", "ACCEPTED", "REJECTED", "DISPATCHED", "DELIVERED", "CANCELLED"];
 
 export interface FoodOrder {
@@ -48,8 +50,8 @@ export interface FoodOrder {
   dispatchedAt: string | null;
   deliveredAt: string | null;
   deliveryRemarks: string | null;
+  /** When the wastage window CLOSES — logging is open from delivery until here (M20). */
   wasteEditableUntil: string | null;
-  preparingAt: string | null;
   cancelledAt: string | null;
   cancelReason: string | null;
   acceptedAt: string | null;
@@ -167,11 +169,24 @@ export interface ReportsData {
   statusBreakdown: { status: string; count: number }[];
 }
 
-// WS11 — aggregated ordered-vs-delivered variance, grouped by meal type.
-export interface VarianceRow { mealType: MealType; ordered: number; received: number; wasted: number; variance: number }
+// WS11 — aggregated ordered-vs-delivered variance, grouped by meal type AND
+// unit: kilograms and plates do not add up, so there is no single "total" and
+// the server does not pretend there is (M7). `unconfirmed` is the ordered
+// quantity on DELIVERED orders nobody has counted yet — kept OUT of
+// ordered/received/variance so a trip-delivered order stops reading as a 100%
+// shortfall against the kitchen (C3).
+export interface VarianceRow {
+  mealType: MealType; unit: string | null;
+  ordered: number; received: number; wasted: number; variance: number;
+  unconfirmed: number; unconfirmedOrders: number;
+}
+export interface VarianceTotals {
+  unit: string | null; ordered: number; received: number; wasted: number; variance: number; unconfirmed: number;
+}
 export interface VarianceData {
   rows: VarianceRow[];
-  totals: { ordered: number; received: number; wasted: number; variance: number };
+  totalsByUnit: VarianceTotals[];
+  unconfirmedOrders: number;
 }
 
 // O15 — on-time delivery report (% on-time + per-day on-time/late trend).
@@ -185,8 +200,14 @@ export interface OnTimeReport {
 }
 // O16 — global on-time tolerance (minutes after configured service time).
 export interface OnTimeTolerance { minutes: number }
-// O17 — ordered-vs-received variance per service-day (bar chart, filterable by meal).
-export interface VarianceByDayRow { date: string; ordered: number; received: number; variance: number; wasted: number }
+// O17 — ordered-vs-received variance per service-day (bar chart, filterable by
+// meal). One row per (date, unit), NOT per date: a day with both KG and PLATE
+// lines emits two rows, so anything that charts or counts these must collapse
+// to days first (see collapseByDate in food-reports.tsx).
+export interface VarianceByDayRow {
+  date: string; unit: string | null;
+  ordered: number; received: number; variance: number; wasted: number; unconfirmed: number;
+}
 export interface VarianceByDayData { rows: VarianceByDayRow[] }
 
 export interface DishIngredientRow { id?: string; ingredientId: string; ingredientName?: string | null; quantity: string | number | null; unit: string | null }
@@ -238,7 +259,7 @@ export interface KitchenAgencyLink { id: string; name: string; isActive: boolean
 export interface Zone { id: string; name: string; code: string | null; isActive: boolean }
 export interface City { id: string; name: string; zoneId: string | null; isActive: boolean }
 export interface Cluster { id: string; name: string; cityId: string; managerId: string | null; isActive: boolean }
-export interface UserScope { id: string; userId: string; scopeLevel: string; zoneId: string | null; cityId: string | null; clusterId: string | null; kitchenId: string | null; propertyId: string | null }
+export interface UserScope { id: string; userId: string; scopeLevel: string; zoneId: string | null; cityId: string | null; clusterId: string | null; kitchenId: string | null; propertyId: string | null; isActive: boolean }
 export interface FoodUser { id: string; name: string; email: string; role: string; propertyId: string | null }
 /** Assignable unit-leads (UNIT_LEAD/WARDEN) for the property form's tag multi-select. */
 export interface AssignableUnitLead { id: string; name: string; email: string; role: string; propertyId: string | null }
@@ -298,6 +319,18 @@ export type DispatchDetailOrder = FoodOrder & {
 export interface DispatchDetail extends Dispatch {
   kitchen?: Kitchen | null;
   orders: DispatchDetailOrder[];
+  /** Stops on this trip the caller's scope does not reach — counted, not shown
+   *  (M22), so a partially-scoped viewer is not sold a complete-looking sheet. */
+  ordersOutOfScope?: number;
+}
+/** PATCH /dispatches/:id/status — the trip, plus how its orders actually landed. */
+export interface DispatchStatusResult extends Dispatch {
+  /** Orders this call closed. */
+  ordersDelivered?: number;
+  /** Orders left open because the caller cannot certify receipt (C3). */
+  ordersAwaitingConfirmation?: number;
+  /** Orders on the trip outside the caller's scope, left untouched. */
+  ordersOutOfScope?: number;
 }
 /** One row of a dispatch's audit trail (status changes + actions). */
 export interface DispatchEvent {
@@ -337,24 +370,51 @@ export interface MenuRuleSettings {
    */
   scope?: "GLOBAL" | "KITCHEN" | "PROPERTY";
 }
+/* ── Waste percentage: two metrics, two names, never one label ────────────────
+ * INVARIANT (mirrors the server's, apps/api-server/src/routes/food-ops.ts):
+ * no surface renders a bare "Waste %". The two denominators are different
+ * metrics on purpose and legitimately disagree on the same product:
+ *
+ *   wastePctOfReceived = wasted / received — of the food that ACTUALLY ARRIVED,
+ *     how much went in the bin. Kitchen efficiency. Served by /waste-analytics.
+ *   wastePctOfOrdered  = wasted / ordered (DELIVERED only) — of what the property
+ *     ASKED FOR, how much went in the bin. Demand forecasting. Served by
+ *     /analytics and /home-analytics.
+ *
+ * They differ exactly when received ≠ ordered — the delivery variance this
+ * module exists to report — so labelling both "Waste %" destroys one signal.
+ * Render them as "Waste % (of received)" / "Waste % (of ordered)".
+ * ───────────────────────────────────────────────────────────────────────── */
+/** Waste totals for ONE unit. There is no cross-unit total — kilograms and
+ *  plates do not add up, and reporting their sum was the M7 defect. */
+export interface WasteByUnit { unit: string | null; wasted: number; ordered: number; wastePctOfOrdered: number }
 export interface AnalyticsData {
   period: string; range: { from: string; to: string };
-  wastageTrend: { date: string; wasted: number }[];
-  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePct: number }[];
+  /** One point per (date, unit) — collapse or pivot before charting. */
+  wastageTrend: { date: string; unit: string | null; wasted: number }[];
+  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePctOfOrdered: number }[];
   delays: { date: string; delayed: number; total: number }[];
-  summary: { totalWasted: number; totalOrdered: number; wastePct: number; delayedOrders: number; deliveredOrders: number };
+  summary: { byUnit: WasteByUnit[]; delayedOrders: number; deliveredOrders: number };
 }
 // B3-17 — cross-property waste analytics (geography-scoped; OPS_EXCELLENCE/SUPER_ADMIN see all).
 export type WasteGranularity = "day" | "month";
+// Every dimension below carries `unit` in its grouping key (M7), so a property
+// or dish wasted in two units appears twice — label with the unit, or pin one
+// unit, before charting or slicing a "top 10".
+/** RECEIVED basis throughout — every percentage here is kitchen efficiency and
+ *  must be labelled "Waste % (of received)". See the invariant note above. */
 export interface WasteAnalyticsData {
   range: { from: string; to: string };
   granularity: WasteGranularity;
-  summary: { totalWasted: number; totalReceived: number; totalOrdered: number; wastePct: number; ordersWithWaste: number };
-  byProperty: { propertyId: string; name: string; city: string | null; cluster: string | null; wastedQty: number; wastePct: number }[];
-  byDish: { dishId: string | null; name: string; wastedQty: number }[];
-  byMealType: { mealType: MealType; wastedQty: number }[];
-  byMenu: { brand: string; wastedQty: number }[];
-  trend: { period: string; wastedQty: number }[];
+  summary: {
+    byUnit: { unit: string | null; totalWasted: number; totalReceived: number; totalOrdered: number; wastePctOfReceived: number }[];
+    ordersWithWaste: number;
+  };
+  byProperty: { propertyId: string; name: string; city: string | null; cluster: string | null; unit: string | null; wastedQty: number; receivedQty: number; wastePctOfReceived: number }[];
+  byDish: { dishId: string | null; name: string; unit: string | null; wastedQty: number }[];
+  byMealType: { mealType: MealType; unit: string | null; wastedQty: number }[];
+  byMenu: { brand: string; unit: string | null; wastedQty: number }[];
+  trend: { period: string; unit: string | null; wastedQty: number }[];
 }
 
 // WS7 — Unit-Lead Home dashboard analytics (aggregate across accessible properties).
@@ -365,15 +425,21 @@ export interface HomeAnalytics {
   peopleOrderedTrend: { date: string; people: number }[];
   peopleByProperty: { propertyId: string; propertyName: string; people: number }[];
   peopleComparison: { current: number; prior: number; currentLabel: string; priorLabel: string };
-  wastageTrend: { date: string; wasted: number }[];
-  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePct: number }[];
+  /** One point per (date, unit) — collapse or pivot before charting. */
+  wastageTrend: { date: string; unit: string | null; wasted: number }[];
+  topWasteItems: { dishId: string; dishName: string | null; unit: string; wasted: number; ordered: number; wastePctOfOrdered: number }[];
   orderDelays: { date: string; delayed: number; total: number }[];
   activeResidentTrend: { date: string; residents: number }[];
   occupancy: { totalBeds: number; activeGuests: number; occupancyPct: number; monthlyCollections: number };
   newSignups: { current: number; prior: number } | null;   // residents who moved in during the period
   renewals: { current: number; prior: number } | null;     // proxy: lease term completes in the period
   summary: {
-    totalPeopleOrdered: number; totalWasted: number; totalOrdered: number; wastePct: number;
+    totalPeopleOrdered: number;
+    /** `totalOrderedDelivered`, NOT `totalOrdered`, is the percentage's denominator:
+     *  totalOrdered spans every live order, and an order still in flight has wasted
+     *  nothing. Rendering wasted + totalOrdered beside the percentage shows three
+     *  numbers where the third cannot be derived from the first two. */
+    byUnit: { unit: string | null; totalWasted: number; totalOrdered: number; totalOrderedDelivered: number; wastePctOfOrdered: number }[];
     delayedOrders: number; deliveredOrders: number; activeResidents: number;
   };
 }
@@ -456,6 +522,47 @@ function qs(params: Record<string, unknown>): string {
   }
   const s = sp.toString();
   return s ? `?${s}` : "";
+}
+
+/** The whole order set behind a filter, plus whether the walk was cut short. */
+export interface AllOrders { orders: FoodOrder[]; total: number; truncated: boolean }
+
+/**
+ * Page through GET /food/orders until the server runs out of rows.
+ *
+ * Invariant: a board that offers a bulk action must hold the WHOLE set, or say
+ * plainly that it doesn't. The server clamps `limit` to 100 (lib/paginate.ts),
+ * so one request silently truncates a busy day and "Accept all" would celebrate
+ * while unfetched orders remain. Bounded at `maxPages` as a runaway stop; when
+ * that bound cuts the walk short `truncated` is true so callers can report a
+ * partial result instead of a complete one.
+ *
+ * `truncated` is derived from a SHORT PAGE, never from `all.length >= total`:
+ * this is offset paging over a live table, so an order accepted or placed
+ * between two requests shifts the window — rows get skipped or repeated and
+ * `total` itself moves. Counting to a moving total reported a complete walk
+ * over an incomplete set, which is exactly the claim the honesty banners rest
+ * on. A page shorter than the limit is the only end-of-set the server actually
+ * proves; ids are deduped so a shifted window can't inflate the count either.
+ */
+const ORDERS_PAGE_SIZE = 100;
+
+async function listAllOrders(
+  p: Record<string, unknown> = {}, maxPages = 5,
+): Promise<AllOrders> {
+  const all: FoodOrder[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  let complete = false;
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await apiFetch<Envelope<FoodOrder[]>>(`/food/orders${qs({ ...p, limit: ORDERS_PAGE_SIZE, page })}`);
+    const batch = res.data ?? [];
+    for (const o of batch) if (!seen.has(o.id)) { seen.add(o.id); all.push(o); }
+    total = Math.max(total, res.meta?.total ?? 0);
+    if (batch.length < ORDERS_PAGE_SIZE) { complete = true; break; }
+  }
+  // Never report fewer than what is in hand — `total` can lag a concurrent insert.
+  return { orders: all, total: Math.max(total, all.length), truncated: !complete };
 }
 
 // ─── Query-key factory (stable, structured) ──────────────────────────────────
@@ -556,6 +663,7 @@ export const foodApi = {
   // or CSV e.g. "PLACED,ACCEPTED"), plus propertyId/brand/mealType/from/to/search/page/limit.
   listOrders: (p: Record<string, unknown> = {}) =>
     apiFetch<Envelope<FoodOrder[]>>(`/food/orders${qs(p)}`),
+  listAllOrders: (p: Record<string, unknown> = {}, maxPages = 5) => listAllOrders(p, maxPages),
   getOrder: (id: string) =>
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}`).then((r) => r.data),
   // WS9 — standalone tracking lookup by human order number OR raw id (scoped to accessible properties).
@@ -604,8 +712,11 @@ export const foodApi = {
   recordWaste: (id: string, items: { itemId: string; wastedQty: number }[]) =>
     apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}/waste`, { method: "POST", body: JSON.stringify({ items }) }).then((r) => r.data),
   // Additional Food — log top-up sourced from another property after receipt.
-  addAdditionalFood: (orderId: string, body: { sourcePropertyId: string; items: { dishId: string; qty: number }[] }) =>
-    apiFetch<Envelope<{ requestId: string }>>(`/food/orders/${orderId}/additional-food`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.data),
+  // `requestId` is the idempotency key: mint ONE per dialog open and send it on
+  // every retry, so a double-click replays onto the same rows instead of
+  // double-counting food that arrived once (M18). `duplicate` says which happened.
+  addAdditionalFood: (orderId: string, body: { sourcePropertyId: string; requestId: string; items: { dishId: string; qty: number }[] }) =>
+    apiFetch<Envelope<{ requestId: string; duplicate: boolean }>>(`/food/orders/${orderId}/additional-food`, { method: "POST", body: JSON.stringify(body) }).then((r) => r.data),
   propertyOptions: () =>
     apiFetch<Envelope<{ id: string; name: string; city: string | null }[]>>(`/food/property-options`).then((r) => r.data),
 
@@ -724,15 +835,31 @@ export const foodApi = {
     apiFetch<Envelope<{ agencyId: string; kitchenIds: string[] }>>(`/food/agencies/${agencyId}/kitchens`, { method: "PUT", body: JSON.stringify({ kitchenIds }) }).then((r) => r.data),
   getKitchenAgencies: (kitchenId: string) => apiFetch<Envelope<KitchenAgencyLink[]>>(`/food/kitchens/${kitchenId}/agencies`).then((r) => r.data),
 
+  // ─── Org spine: zone → city → cluster → properties.clusterId ───────────────
+  // Every one of these rows is load-bearing for access, not a reporting tag:
+  // resolveAccessiblePropertyIds walks exactly this chain (skipping any node
+  // whose isActive is false), so an edit here is an access change. The delete
+  // endpoints hard-delete and answer 409 with a `details` string naming what is
+  // still attached — surface it rather than a generic failure.
   listZones: () => apiFetch<Envelope<Zone[]>>(`/food/zones`).then((r) => r.data),
   createZone: (b: Record<string, unknown>) => apiFetch<Envelope<Zone>>(`/food/zones`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateZone: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Zone>>(`/food/zones/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteZone: (id: string) => apiFetch<Envelope<unknown>>(`/food/zones/${id}`, { method: "DELETE" }),
   listCities: (zoneId?: string) => apiFetch<Envelope<City[]>>(`/food/cities${qs({ zoneId })}`).then((r) => r.data),
   createCity: (b: Record<string, unknown>) => apiFetch<Envelope<City>>(`/food/cities`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
+  updateCity: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<City>>(`/food/cities/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteCity: (id: string) => apiFetch<Envelope<unknown>>(`/food/cities/${id}`, { method: "DELETE" }),
   listClusters: (cityId?: string) => apiFetch<Envelope<Cluster[]>>(`/food/clusters${qs({ cityId })}`).then((r) => r.data),
   createCluster: (b: Record<string, unknown>) => apiFetch<Envelope<Cluster>>(`/food/clusters`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
-  assignCluster: (propertyId: string, clusterId: string) => apiFetch<Envelope<unknown>>(`/food/properties/${propertyId}/assign-cluster`, { method: "POST", body: JSON.stringify({ clusterId }) }),
+  updateCluster: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<Cluster>>(`/food/clusters/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  deleteCluster: (id: string) => apiFetch<Envelope<unknown>>(`/food/clusters/${id}`, { method: "DELETE" }),
+  // `clusterId` is nullable only for org-wide callers — the server refuses to
+  // strand a property for a scoped one. No UI offers the clear.
+  assignCluster: (propertyId: string, clusterId: string | null) => apiFetch<Envelope<unknown>>(`/food/properties/${propertyId}/assign-cluster`, { method: "POST", body: JSON.stringify({ clusterId }) }),
 
-  listScopes: (userId?: string) => apiFetch<Envelope<UserScope[]>>(`/food/scopes${qs({ userId })}`).then((r) => r.data),
+  /** Live grants only; pass includeRevoked to see the revocation history too. */
+  listScopes: (userId?: string, includeRevoked?: boolean) =>
+    apiFetch<Envelope<UserScope[]>>(`/food/scopes${qs({ userId, includeRevoked: includeRevoked ? "true" : undefined })}`).then((r) => r.data),
   createScope: (b: Record<string, unknown>) => apiFetch<Envelope<UserScope>>(`/food/scopes`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
   deleteScope: (id: string) => apiFetch<Envelope<unknown>>(`/food/scopes/${id}`, { method: "DELETE" }),
 
@@ -746,7 +873,8 @@ export const foodApi = {
   // Dispatch trips
   listDispatches: () => apiFetch<Envelope<Dispatch[]>>(`/food/dispatches`).then((r) => r.data),
   getDispatch: (id: string) => apiFetch<Envelope<DispatchDetail>>(`/food/dispatches/${id}`).then((r) => r.data),
-  // Vehicle ids currently on a LOADING/IN_TRANSIT trip (to disable in-use vehicles in the picker).
+  // Vehicle ids currently on an ACTIVE trip — LOADING/IN_TRANSIT/PARTIAL (to
+  // disable in-use vehicles in the picker). A PARTIAL trip still has the van out.
   getActiveVehicles: () => apiFetch<Envelope<{ vehicleIds: string[] }>>(`/food/dispatches/active-vehicles`).then((r) => r.data.vehicleIds),
   // Audit trail for one dispatch, newest-first.
   getDispatchEvents: (id: string) => apiFetch<Envelope<DispatchEvent[]>>(`/food/dispatches/${id}/events`).then((r) => r.data),
@@ -756,8 +884,14 @@ export const foodApi = {
   createDispatch: (b: Record<string, unknown>) => apiFetch<Envelope<Dispatch & { dispatchedCount: number }>>(`/food/dispatches`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
   // Status transition. A 422 (`Cannot move from X to Y`) propagates as a thrown Error
   // whose message is the server's transition explanation. `note` is optional audit text.
+  //
+  // Completing the TRIP no longer closes its orders for a caller who cannot
+  // certify receipt (C3), so the response reports the split: how many stops
+  // actually closed, how many are waiting on the receiving property, and how
+  // many were outside the caller's scope. Ignoring these makes "Trip marked
+  // Delivered" a lie — the orders can all still be open.
   updateDispatchStatus: (id: string, status: DispatchStatus, note?: string) =>
-    apiFetch<Envelope<Dispatch>>(`/food/dispatches/${id}/status`, {
+    apiFetch<Envelope<DispatchStatusResult>>(`/food/dispatches/${id}/status`, {
       method: "PATCH",
       body: JSON.stringify(note !== undefined ? { status, note } : { status }),
     }).then((r) => r.data),
@@ -769,7 +903,7 @@ export const foodApi = {
     }).then((r) => r.data),
   // Cancel a dispatch, reverting its DISPATCHED orders back to ACCEPTED.
   cancelDispatch: (id: string, reason?: string) =>
-    apiFetch<Envelope<Dispatch & { revertedCount: number }>>(`/food/dispatches/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
+    apiFetch<Envelope<Dispatch & { revertedCount: number; deliveredCount: number }>>(`/food/dispatches/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
   // Mark a single order on a dispatch delivered (or undo). markTripDelivered rolls the
   // whole trip to DELIVERED/PARTIAL once all active orders are delivered. Returns the
   // (possibly transitioned) dispatch.

@@ -9,7 +9,9 @@ import {
   pgEnum,
   json,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -316,12 +318,55 @@ export const paymentsTable = pgTable("payments", {
   mode: paymentModeEnum("mode").notNull(),
   status: paymentStatusEnum("status").default("PENDING").notNull(),
   razorpayOrderId: text("razorpay_order_id"),
+  /**
+   * The COLLECTION key for a dues settlement — not always a provider payment id.
+   * `payment.captured` and `payment_link.paid` describe the same collection but
+   * do not agree on a provider id, so the webhook stores `link:<notes.linkRef>`
+   * for link-settled dues and the payment id otherwise. Either way the value is
+   * one-per-collection, which is exactly what the unique index below enforces.
+   * webhooks.ts is the only reader.
+   */
   razorpayPayId: text("razorpay_pay_id"),
   reference: text("reference"),
   notes: text("notes"),
+  /**
+   * Property the money was collected AT, snapshotted at payment time — the same
+   * snapshot `wallet_transactions.property_id` already keeps. Collections
+   * analytics join payments → residents and filter on `residents.propertyId`, so
+   * without this an inter-property transfer silently re-attributes every past
+   * collection to the destination property. NOT NULL because every insert site
+   * now stamps it and a read-time `coalesce(payments, residents)` fallback is
+   * not index-usable. No FK, matching the core-to-food decoupling used by
+   * `properties.clusterId` above.
+   *
+   * DEPLOY: `push` cannot introduce this column on a populated table — a NOT
+   * NULL ADD COLUMN with no default is rejected outright. On any database with
+   * existing payments, run
+   *   `pnpm --filter @workspace/scripts run backfill:payment-property`
+   * FIRST: it adds the column nullable, populates it from the resident's
+   * property, and fails loudly on anything it cannot attribute. Only then does
+   * `push` have a change it can make (SET NOT NULL). See DEPLOYMENT.md.
+   */
+  propertyId: text("property_id").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * The dues-settlement idempotency guard, enforced by the database rather than
+   * by a SELECT-then-INSERT that two concurrent Razorpay deliveries both pass —
+   * the same role uq_wallet_transactions_reference plays on the top-up side.
+   * Without it, `payment.captured` and `payment_link.paid` arriving together
+   * insert two SUCCESS rows and settle two batches of ledger entries for money
+   * collected once. Partial: only provider-settled rows carry a collection key.
+   * This index IS the one-collection-one-row invariant — see razorpayPayId above
+   * for why the value is a collection key rather than always a payment id.
+   */
+  razorpayPayUniq: uniqueIndex("uq_payments_razorpay_pay_id")
+    .on(t.razorpayPayId)
+    .where(sql`razorpay_pay_id is not null`),
+  /** Every collections figure filters (property, status) over a date window. */
+  collectedAtIdx: index("idx_payments_property_status_created").on(t.propertyId, t.status, t.createdAt),
+}));
 
 export const complaintsTable = pgTable("complaints", {
   id: text("id").primaryKey(),

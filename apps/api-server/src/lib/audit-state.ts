@@ -34,9 +34,16 @@ export type TemplateVersionLifecycle =
   | "ARCHIVED";
 
 /**
- * Audit lifecycle (spec §4.1, trimmed to the PRD v1.0 review flow):
- * every submit routes to SUBMITTED; reviewers approve/reject directly from
- * SUBMITTED; CLOSED→IN_PROGRESS is the OE-only reopen (guarded by callers).
+ * Audit lifecycle (spec §4.1, trimmed to the PRD v1.0 review flow).
+ *
+ * Every submit routes to SUBMITTED; reviewers approve or reject from there.
+ *
+ * REJECTED is the single "send it back" state: a review rejection AND an
+ * Operations Excellence reopen of a finished audit both land there, and it is
+ * a resting state the audit actually commits to — the auditor's Rework bucket.
+ * The only way out is POST /audits/:id/start, which demands a fresh geotagged
+ * start photo, so every rework re-proves presence exactly like a first run.
+ *
  * PAUSED / UNDER_REVIEW / CANCELLED are orphaned states kept only so legacy
  * rows can exit them — nothing enters them anymore.
  */
@@ -48,10 +55,13 @@ export const AUDIT_TRANSITIONS: Record<AuditState, AuditState[]> = {
   SUBMITTED: ["APPROVED", "REJECTED"],
   UNDER_REVIEW: ["APPROVED", "REJECTED"], // legacy escape only
   REJECTED: ["IN_PROGRESS"],
-  APPROVED: ["CLOSED"],
-  CLOSED: ["IN_PROGRESS"],
+  APPROVED: ["CLOSED", "REJECTED"],
+  CLOSED: ["REJECTED"],
   CANCELLED: [],
 };
+
+/** States a finished audit can be reopened from (OE only, guarded by callers). */
+export const REOPENABLE_STATES: AuditState[] = ["SUBMITTED", "UNDER_REVIEW", "APPROVED", "CLOSED"];
 
 /**
  * TemplateVersion lifecycle (spec §5.7). Published versions are immutable.
@@ -124,17 +134,23 @@ export async function applyAuditTransition(
   const now = new Date();
   const set: Record<string, unknown> = { state: to, updatedAt: now };
 
-  if (to === "IN_PROGRESS" && from === "SCHEDULED") {
+  if (to === "IN_PROGRESS") {
+    /* Every entry into IN_PROGRESS comes through /start, which has already
+       validated a fresh geotagged start photo — so a rework re-stamps the
+       start time and location instead of inheriting the first attempt's.
+       Leaving them stale also inflated durationSeconds on every rework. */
     set["startedAt"] = now;
     if (ctx.geo) {
       set["startGeoLat"] = ctx.geo.lat;
       set["startGeoLng"] = ctx.geo.lng;
     }
   }
-  if (to === "IN_PROGRESS" && from === "CLOSED") {
-    // OE reopen (FRD-REV-06): caller has verified authority + reason.
+  if (to === "REJECTED" && (from === "APPROVED" || from === "CLOSED")) {
+    // OE reopen of a finished audit (FRD-REV-06): caller verified authority
+    // and reason. Clear the completion stamps so the row reads as open again.
     set["reopenCount"] = audit.reopenCount + 1;
     set["closedAt"] = null;
+    set["approvedAt"] = null;
   }
   if (to === "SUBMITTED" || (to === "APPROVED" && from === "SUBMITTED")) {
     // Atomic submit stamps submittedAt/geo/duration itself (it owns scoring);

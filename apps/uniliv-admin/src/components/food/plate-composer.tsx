@@ -41,7 +41,7 @@ const PICKER_PREVIEW = 6;
 export function PlateComposer({
   open, onOpenChange, day, meal, week, brand, brandName, slots, ruleMissing,
   dishes, dishById, initialPlate, nearby, serviceTime, onSave, isSaving, onGoToRules,
-  clashBlocks = true,
+  clashBlocks = true, canEdit = true,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -68,6 +68,9 @@ export function PlateComposer({
    * harmless": a warning that survives its own off-switch reads as a bug.
    */
   clashBlocks?: boolean;
+  /** Mirrors the server's FOOD_SETTINGS:edit gate (M16) — read-only principals
+   *  can open and read a plate, but every control that changes it is inert. */
+  canEdit?: boolean;
 }) {
   const [draft, setDraft] = React.useState<PlateEntry[]>(initialPlate);
   const [search, setSearch] = React.useState<Record<string, string>>({});
@@ -135,8 +138,11 @@ export function PlateComposer({
               </SheetDescription>
             </div>
             <div className="flex items-center gap-1 pr-7">
+              {/* M16 — every control that edits the draft follows the save gate.
+                  Only Save knew about canEdit, so a view-only principal could
+                  rebuild the whole plate and then find no way to keep it. */}
               <Button
-                variant="outline" size="icon" className="h-8 w-8"
+                variant="outline" size="icon" className="h-8 w-8" disabled={!canEdit}
                 title="Clear plate" onClick={() => setDraft([])}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -260,7 +266,7 @@ export function PlateComposer({
                             </p>
                           </div>
                           <Button
-                            variant="ghost" size="icon" className="h-7 w-7 shrink-0"
+                            variant="ghost" size="icon" className="h-7 w-7 shrink-0" disabled={!canEdit}
                             title={`Remove ${dish?.name ?? "dish"}`} onClick={() => removeDish(id)}
                           >
                             <X className="h-3.5 w-3.5" />
@@ -286,7 +292,7 @@ export function PlateComposer({
                                 : (sd.ingredients ?? []).find((g) => used.has(g.ingredientId));
                               return (
                                 <button
-                                  key={sd.id} type="button" disabled={!!hit}
+                                  key={sd.id} type="button" disabled={!!hit || !canEdit}
                                   onClick={() => toggleSide(id, sd.id)}
                                   className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
                                     on ? "border-accent bg-accent text-white"
@@ -306,8 +312,8 @@ export function PlateComposer({
                   })}
                 </div>
 
-                {/* picker */}
-                {canAdd && (
+                {/* picker — an add affordance, so it follows the save gate too. */}
+                {canAdd && canEdit && (
                   <div className="px-3.5 pb-3">
                     <div className="relative mb-2">
                       <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
@@ -380,7 +386,7 @@ export function PlateComposer({
                     <PrepDot dish={dishById.get(id)} />
                     <span className="flex-1 text-sm font-medium">{dishById.get(id)?.name ?? id}</span>
                     <Button
-                      variant="ghost" size="icon" className="h-7 w-7"
+                      variant="ghost" size="icon" className="h-7 w-7" disabled={!canEdit}
                       title="Remove" onClick={() => removeDish(id)}
                     >
                       <X className="h-3.5 w-3.5" />
@@ -431,7 +437,7 @@ export function PlateComposer({
 
         {/* ── footer ─────────────────────────────────────────────────────── */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-t bg-card px-6 py-3.5">
-          {!ruleMissing && (
+          {!ruleMissing && canEdit && (
             <Button
               variant="outline" size="sm"
               onClick={() => setDraft((d) => fillPlate(d, slots, brand, dishById, dishes, 7))}
@@ -443,7 +449,7 @@ export function PlateComposer({
             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             {/* Clearing is the one write the server still accepts without a rule,
                 so it's the only action offered — a partial removal would 422. */}
-            {ruleMissing ? (
+            {!canEdit ? null : ruleMissing ? (
               <Button
                 variant="destructive"
                 disabled={draft.length === 0 || isSaving}

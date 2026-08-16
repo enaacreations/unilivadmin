@@ -4,7 +4,7 @@ import { propertiesTable, residentsTable, usersTable, foodCutoffsTable, property
 import { eq, sql, ilike, or, and, inArray, asc } from "drizzle-orm";
 import { putObject, getObjectUrl, deleteObject, isStorageConfigured } from "@workspace/storage";
 import { authenticate } from "../middlewares/auth.js";
-import { authorize } from "../middlewares/authorize.js";
+import { authorize, authorizeAny } from "../middlewares/authorize.js";
 import { pick, assertPropertyAccess } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -12,6 +12,37 @@ import { resolveKitchenForPincode, isActiveBrand, resolveAccessiblePropertyIds }
 import { writeAuditLog } from "../lib/wallet-service.js";
 
 const router = Router();
+
+/**
+ * Flags a pincode→kitchen mapping that would put a property under a kitchen in
+ * a DIFFERENT city.
+ *
+ * kitchen_pincodes is operator-entered and importable, and both write paths
+ * derive kitchenId from it while trusting it completely. A single mistyped row
+ * therefore silently reassigns a property to another city's kitchen — which
+ * changes who cooks for it, who can see its orders, and which kitchen scope its
+ * F&B staff need — with nothing in the response to say so.
+ *
+ * Deliberately a WARNING, not a 400. properties.city and kitchens.city are two
+ * independent free-text columns ("New Delhi" vs "Delhi" is live today), so an
+ * equality test has real false positives and a hard refusal would block
+ * legitimate edits. This records the reassignment where an operator can find it;
+ * the mapping table itself is the place to fix a genuinely wrong row.
+ */
+function warnKitchenCityMismatch(
+  log: { warn: (obj: unknown, msg: string) => void },
+  propertyCity: unknown,
+  kitchen: { id: string; code: string; city: string | null },
+): void {
+  const norm = (v: unknown) => String(v ?? "").trim().toLowerCase();
+  const pCity = norm(propertyCity);
+  const kCity = norm(kitchen.city);
+  if (!pCity || !kCity || pCity === kCity) return;
+  log.warn(
+    { propertyCity: String(propertyCity), kitchenCity: kitchen.city, kitchenId: kitchen.id, kitchenCode: kitchen.code },
+    "Pincode-derived kitchen is in a different city than the property; check kitchen_pincodes",
+  );
+}
 
 /** Client-writable property columns (never id/createdAt/updatedAt). */
 const PROPERTY_FIELDS = [
@@ -202,6 +233,16 @@ async function heroImageUrlMap(propertyIds: string[]): Promise<Record<string, st
   return out;
 }
 
+// This was widened with authorizeAny(["PROPERTIES", "MENU_PLANNING"]) so Menu
+// Planning's own personas (KITCHEN_MANAGER, FNB_MANAGER) could seed their
+// property picker without holding the PROPERTIES cell — which would also have
+// unlocked the unscoped staff roster at /assignable-unit-leads below. Menu
+// Planning has since been removed product-wide and MENU_PLANNING with it, so
+// the widening has no beneficiary left and the narrower gate is restored.
+// Do not widen this back without checking /assignable-unit-leads too.
+//
+// The handler's own resolveAccessiblePropertyIds narrowing is unchanged, so a
+// property-bound caller keeps seeing only their own.
 router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
@@ -299,6 +340,7 @@ router.post("/", authenticate, authorize("PROPERTIES", "create"), async (req, re
       res.status(400).json({ success: false, error: "Kitchen does not match the kitchen mapped to this pincode." });
       return;
     }
+    warnKitchenCityMismatch(req.log, body.city, kitchen);
 
     // Property code: use the provided override (editable) if non-empty, else
     // auto-generate PROP-<CITY3>-<NNN> with a per-city sequence (unique-checked).
@@ -416,6 +458,9 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
         res.status(400).json({ success: false, error: "Kitchen does not match the kitchen mapped to this pincode." });
         return;
       }
+      // Same check as create — the city being compared is the one the property
+      // will HAVE after this request, not the one it had before.
+      warnKitchenCityMismatch(req.log, body.city !== undefined ? body.city : existing.city, kitchen);
       body.kitchenId = kitchen.id; // always persist the server-derived kitchen
     } else {
       // No pincode/kitchen change in this request — don't touch the column.

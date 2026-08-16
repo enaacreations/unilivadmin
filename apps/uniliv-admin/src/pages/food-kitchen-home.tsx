@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { MealIcon, DishIcon } from "@/components/meal-icon";
+import { FoodQueryError } from "@/components/food/query-error";
 import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 import {
@@ -636,7 +637,10 @@ export default function FoodKitchenHome() {
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const summaryParams = { date };
-  const { data: summary, isLoading: summaryLoading } = useQuery({
+  // The cook plan. A failed read empties `dishes`, and the panel then tells the
+  // kitchen there is nothing to cook — the most consequential false empty on
+  // this page.
+  const { data: summary, isLoading: summaryLoading, isError: summaryError } = useQuery({
     queryKey: foodKeys.kitchenSummary(summaryParams),
     queryFn: () => foodApi.kitchenSummary(summaryParams),
   });
@@ -662,26 +666,21 @@ export default function FoodKitchenHome() {
 
   // The live pipeline for the day. serviceDate is the exact-day filter the
   // server supports; the status list matches the operational clamp for F&B.
-  // The server caps `limit` at 100, so page through until meta.total is
-  // covered — otherwise a big day silently truncates and "Accept all" would
-  // celebrate while unfetched PLACED orders remain. Bounded at 5 pages as a
-  // runaway stop (500 live orders in one day means something else is wrong).
-  const ordersParams = { serviceDate: date, status: "PLACED,ACCEPTED,DISPATCHED", limit: 100 };
-  const { data: orders = [], isLoading: ordersLoading } = useQuery({
+  // The server caps `limit` at 100, so listAllOrders pages through until
+  // meta.total is covered — otherwise a big day silently truncates and "Accept
+  // all" would celebrate while unfetched PLACED orders remain. Bounded at 5
+  // pages (500 live orders in one day means something else is wrong).
+  const ordersParams = { serviceDate: date, status: "PLACED,ACCEPTED,DISPATCHED" };
+  const {
+    data: ordersPage, isLoading: ordersLoading, isError: ordersError, refetch: refetchOrders,
+  } = useQuery({
     queryKey: foodKeys.orders(ordersParams),
-    queryFn: async () => {
-      const all: FoodOrder[] = [];
-      for (let page = 1; page <= 5; page++) {
-        const res = await foodApi.listOrders({ ...ordersParams, page });
-        const batch = res.data ?? [];
-        all.push(...batch);
-        const total = res.meta?.total ?? all.length;
-        if (batch.length === 0 || all.length >= total) break;
-      }
-      return all;
-    },
+    queryFn: () => foodApi.listAllOrders(ordersParams),
     refetchInterval: 60_000,
   });
+  const orders: FoodOrder[] = ordersPage?.orders ?? [];
+  const ordersTruncated = ordersPage?.truncated ?? false;
+  const ordersTotal = ordersPage?.total ?? orders.length;
 
   const { data: lookups } = useQuery({ queryKey: foodKeys.lookups(), queryFn: () => foodApi.lookups() });
   const agencies = lookups?.agencies ?? [];
@@ -867,7 +866,11 @@ export default function FoodKitchenHome() {
     // the user carries it through cook and send before moving on.
     await invalidate();
     setBusy(null);
-    if (fail === 0) {
+    if (fail === 0 && ordersTruncated) {
+      // The board holds only part of the day, so this ran on a subset — report
+      // that plainly instead of celebrating a complete run.
+      toast({ title: `${ok} order${ok === 1 ? "" : "s"} accepted`, description: `This board shows ${orders.length} of ${ordersTotal} live orders — repeat to work through the rest.`, variant: "warning" });
+    } else if (fail === 0) {
       fire();
       toast({ title: `${label} accepted`, description: `${ok} order${ok === 1 ? "" : "s"} moved to the kitchen queue.`, variant: "success" });
     } else {
@@ -892,7 +895,9 @@ export default function FoodKitchenHome() {
   // standalone Kitchen Summary page.
   const [summaryOpen, setSummaryOpen] = React.useState(false);
   React.useEffect(() => { setSummaryOpen(false); }, [selected?.mealType, day]);
-  const { data: sheetItems, isLoading: sheetLoading } = useQuery({
+  // "No dish breakdown on this order" is a statement about the order; a failed
+  // read is not one.
+  const { data: sheetItems, isLoading: sheetLoading, isError: sheetError } = useQuery({
     queryKey: ["food", "kitchen-items", sheetOrder?.id],
     queryFn: () => foodApi.kitchenItems(sheetOrder!.id),
     enabled: !!sheetOrder,
@@ -1088,9 +1093,21 @@ export default function FoodKitchenHome() {
         </div>
       )}
 
+      {/* More live orders exist than this board holds — the Accept/Dispatch
+          actions therefore cover a subset, so say it before they are used. */}
+      {ordersTruncated && (
+        <div className="rounded-[12px] border border-warning/40 bg-warning-soft px-4 py-3 text-[13px] text-warning">
+          Showing {orders.length} of {ordersTotal} live orders for this day. Accept and dispatch
+          apply only to what is listed here — repeat to work through the rest.
+        </div>
+      )}
+
       {/* Hero: what needs a hand — the whole day on the picker, the scope's
-          orders once inside. */}
-      {ordersLoading ? (
+          orders once inside. A failed read is NOT an empty board: say it failed
+          rather than rendering "nothing waiting". */}
+      {ordersError ? (
+        <FoodQueryError label="the day's orders" onRetry={() => refetchOrders()} />
+      ) : ordersLoading ? (
         <Skeleton className="h-24 w-full rounded-[14px]" />
       ) : heroPlaced.length > 0 ? (
         <section className="rounded-[14px] bg-brand-gradient p-[2px]">
@@ -1342,7 +1359,11 @@ export default function FoodKitchenHome() {
                   </div>
                 }
               />
-              {selected.dishes.length === 0 ? (
+              {summaryError ? (
+                <div className="rounded-[9px] border border-destructive/40 bg-destructive/5 px-3 py-5 text-center text-[13px] text-destructive">
+                  Could not load the cook plan — do not treat this as nothing to cook.
+                </div>
+              ) : selected.dishes.length === 0 ? (
                 <div className="rounded-[9px] border border-dashed border-border px-3 py-5 text-center text-[13px] text-muted-foreground">
                   {exportDishes.length > 0
                     ? `All of ${shortMeal(selected.mealType).toLowerCase()} has gone out — the day's totals are still downloadable above.`
@@ -1567,6 +1588,10 @@ export default function FoodKitchenHome() {
                   />
                   {sheetLoading ? (
                     <Skeleton className="h-24 w-full" />
+                  ) : sheetError ? (
+                    <div className="py-3 text-center text-[13px] text-destructive">
+                      Could not load the dish breakdown.
+                    </div>
                   ) : !sheetItems?.length ? (
                     <div className="py-3 text-center text-[13px] text-muted-foreground">
                       No dish breakdown on this order.
@@ -1636,7 +1661,11 @@ export default function FoodKitchenHome() {
               </SheetHeader>
 
               <div className="mt-4 flex flex-col gap-3">
-                {exportDishes.length === 0 ? (
+                {summaryError ? (
+                  <div className="rounded-[12px] border border-destructive/40 bg-destructive/5 px-4 py-8 text-center text-[13px] text-destructive">
+                    Could not load the cook plan — do not treat this as nothing to cook.
+                  </div>
+                ) : exportDishes.length === 0 ? (
                   <div className="rounded-[12px] border border-dashed border-border px-4 py-8 text-center text-[13px] text-muted-foreground">
                     No cook plan for {shortMeal(selected.mealType).toLowerCase()} {dayLabel.toLowerCase()} — it fills in as orders land.
                   </div>

@@ -23,6 +23,7 @@ import {
 import { MEAL_SHORT, componentLabel } from "./menu-lib";
 import { DishDrawer, DISH_COMPONENTS, DISH_UNITS, draftFromDish, type DishDraft } from "./dish-drawer";
 import { PrepDot } from "./plate-composer";
+import { FoodQueryError } from "./query-error";
 import { useActiveBrands, useDishCatalogue, useIngredients } from "./use-food-masters";
 
 /**
@@ -42,11 +43,17 @@ const DISH_BULK_COLUMNS: BulkColumn[] = [
   { key: "isActive", label: "isActive", hint: "true / false. Blank = true" },
 ];
 
-export function DishesCatalogue() {
+/**
+ * `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16). PageGuard only
+ * checks view, and AUDIT_READONLY holds FOOD_SETTINGS:view through ALL_MODULES,
+ * so without this every create/edit/delete control here was armed for a
+ * principal whose every click 403s.
+ */
+export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canEdit?: boolean; orgWideConfig?: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const brands = useActiveBrands();
-  const { data: dishes = [], isLoading } = useDishCatalogue();
+  const { data: dishes = [], isLoading, isError: dishesError, refetch: refetchDishes } = useDishCatalogue();
   const { data: ingredients = [] } = useIngredients();
 
   const [search, setSearch] = React.useState("");
@@ -74,12 +81,16 @@ export function DishesCatalogue() {
 
   // Portion rules and rotation usage are read once for the whole catalogue —
   // both are per-dish badges, and a query each would be an N+1 on render.
-  const { data: portionRules = [] } = useQuery<PerResidentRule[]>({
+  const { data: portionRules = [], isError: portionsError } = useQuery<PerResidentRule[]>({
     queryKey: foodKeys.rules({}), queryFn: () => foodApi.listRules(),
   });
-  const { data: rotation = [] } = useQuery<MenuRotationRow[]>({
+  // If this fails, EVERY dish would read "Not in the rotation" and the delete
+  // dialog would drop its "it is on N plates" warning — a false all-clear on a
+  // destructive action. `usageKnown` keeps the two apart.
+  const { data: rotation = [], isError: rotationError } = useQuery<MenuRotationRow[]>({
     queryKey: foodKeys.rotation({}), queryFn: () => foodApi.listRotation(),
   });
+  const usageKnown = !rotationError;
 
   const usage = React.useMemo(() => {
     const m = new Map<string, number>();
@@ -127,7 +138,10 @@ export function DishesCatalogue() {
         <div className="min-w-0">
           <h2 className="font-display text-lg font-semibold text-primary">Dishes</h2>
           <p className="text-sm text-muted-foreground">
-            {dishes.length} dish{dishes.length === 1 ? "" : "es"} · {usage.size} used in the rotation
+            {dishes.length} dish{dishes.length === 1 ? "" : "es"}
+            {usageKnown ? ` · ${usage.size} used in the rotation` : " · rotation usage unavailable"}
+            {/* No portion badge on a card must not be read as "no portion set". */}
+            {portionsError && " · portions unavailable"}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -138,21 +152,28 @@ export function DishesCatalogue() {
               placeholder="Search name or ingredient" aria-label="Search dishes" className="pl-9"
             />
           </div>
-          <ImportExportMenu
-            resource="dishes"
-            columns={DISH_BULK_COLUMNS}
-            exportRows={exportRows}
-            onImported={() => {
-              qc.invalidateQueries({ queryKey: ["food", "dishes"] });
-              qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
-            }}
-          />
-          <Button
-            className="bg-accent text-white hover:bg-accent/90"
-            onClick={() => setDraft(draftFromDish(null, brands.map((b) => b.code), []))}
-          >
-            <Plus className="mr-2 h-4 w-4" /> New dish
-          </Button>
+          {/* Gated with the rest: the menu's import half POSTs /bulk/dishes,
+              which a view-only principal cannot call. Export goes with it
+              rather than leaving a menu whose only live item is a download. */}
+          {canEdit && (
+            <ImportExportMenu
+              resource="dishes"
+              columns={DISH_BULK_COLUMNS}
+              exportRows={exportRows}
+              onImported={() => {
+                qc.invalidateQueries({ queryKey: ["food", "dishes"] });
+                qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
+              }}
+            />
+          )}
+          {canEdit && (
+            <Button
+              className="bg-accent text-white hover:bg-accent/90"
+              onClick={() => setDraft(draftFromDish(null, brands.map((b) => b.code), []))}
+            >
+              <Plus className="mr-2 h-4 w-4" /> New dish
+            </Button>
+          )}
         </div>
       </div>
 
@@ -169,7 +190,9 @@ export function DishesCatalogue() {
         ))}
       </div>
 
-      {isLoading ? (
+      {dishesError ? (
+        <FoodQueryError label="the dish catalogue" onRetry={() => refetchDishes()} />
+      ) : isLoading ? (
         <p className="py-10 text-center text-sm text-muted-foreground">Loading the catalogue…</p>
       ) : filtered.length === 0 ? (
         <p className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">
@@ -193,15 +216,17 @@ export function DishesCatalogue() {
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5">
-                    <Button variant="ghost" size="icon" className="h-7 w-7" title="Edit dish" onClick={() => openEdit(d)}>
+                    <Button variant="ghost" size="icon" className="h-7 w-7" title={canEdit ? "Edit dish" : "View dish"} onClick={() => openEdit(d)}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
-                    <Button
-                      variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
-                      title="Delete dish" onClick={() => setDelTarget(d)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    {canEdit && (
+                      <Button
+                        variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                        title="Delete dish" onClick={() => setDelTarget(d)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -241,8 +266,10 @@ export function DishesCatalogue() {
                       {d.lockedPersons > 0 ? `Fixed ${d.lockedPersons} ppl` : "Non-editable"}
                     </span>
                   )}
-                  <span className={`text-[10px] ${uses ? "text-muted-foreground" : "text-warning"}`}>
-                    {uses ? `In ${uses} plate${uses === 1 ? "" : "s"}` : "Not in the rotation"}
+                  <span className={`text-[10px] ${uses || !usageKnown ? "text-muted-foreground" : "text-warning"}`}>
+                    {!usageKnown
+                      ? "Rotation usage unknown"
+                      : uses ? `In ${uses} plate${uses === 1 ? "" : "s"}` : "Not in the rotation"}
                   </span>
                 </div>
               </div>
@@ -253,6 +280,7 @@ export function DishesCatalogue() {
 
       <DishDrawer
         open={!!draft} onOpenChange={(o) => !o && setDraft(null)}
+        canEdit={canEdit} orgWideConfig={orgWideConfig}
         draft={draft} setDraft={setDraft}
         dishes={dishes} ingredients={ingredients} brands={brands}
         onSaved={() => setDraft(null)}
@@ -265,9 +293,11 @@ export function DishesCatalogue() {
       >
         <p className="text-sm text-muted-foreground">
           Delete <span className="font-medium text-foreground">{delTarget?.name}</span>?
-          {(usage.get(delTarget?.id ?? "") ?? 0) > 0 && (
+          {!usageKnown ? (
+            <> The rotation could not be read, so it is not known whether any plate still uses it.</>
+          ) : (usage.get(delTarget?.id ?? "") ?? 0) > 0 ? (
             <> It is currently on {usage.get(delTarget!.id)} rotation plate(s), which will lose it.</>
-          )}
+          ) : null}
         </p>
       </FormModal>
     </div>

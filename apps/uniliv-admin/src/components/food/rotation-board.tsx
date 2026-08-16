@@ -16,11 +16,14 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AlertTriangle, Check, CheckCircle2, CircleAlert, ClipboardPaste, Copy,
-  FileDown, FileText, Plus, SlidersHorizontal, Sparkles,
+  AlertTriangle, Check, CheckCircle2, ChevronDown, CircleAlert, ClipboardPaste, Copy,
+  Download, FileDown, FileText, Plus, SlidersHorizontal, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { type BulkColumn } from "@/components/bulk-upload-dialog";
 import { ImportExportMenu } from "@/components/import-export-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -41,6 +44,7 @@ import {
 } from "./menu-lib";
 import { GenerateFromRule } from "./generate-from-rule";
 import { PlateComposer, PrepDot } from "./plate-composer";
+import { FoodQueryError } from "./query-error";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
 
 /**
@@ -88,9 +92,12 @@ function Segmented<T extends string | number>({
   );
 }
 
+/** `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16) — a view-only
+ *  principal reads the week but cannot duplicate, auto-fill, paste or save a plate. */
 export function RotationBoard({
-  onGoToRules, kitchenId, onKitchenChange, brand, onBrandChange,
+  canEdit = true, onGoToRules, kitchenId, onKitchenChange, brand, onBrandChange,
 }: {
+  canEdit?: boolean;
   onGoToRules?: (focus: { brand: string; meal: MealType }) => void;
   /**
    * Kitchen + brand are owned by the Service Set page and shared with the Menu
@@ -106,16 +113,22 @@ export function RotationBoard({
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  const { data: kitchens = [] } = useKitchens();
+  const { data: kitchens = [], isError: kitchensError, refetch: refetchKitchens } = useKitchens();
   const brands = useActiveBrands();
   const { data: dishes = [] } = useDishCatalogue();
-  const { data: rules = [] } = useCompositionRules();
+  // Rules drive the per-cell verdict AND the auto-fill. With none loaded every
+  // non-empty plate scores "complete" and the header reads "All good" for a week
+  // that was never actually checked.
+  const { data: rules = [], isError: rulesError, refetch: refetchRules } = useCompositionRules();
 
   // F&B managers run exactly one kitchen: no picker, pinned to their own
   // kitchen (listKitchens is unscoped, so "first kitchen" would be wrong).
   const { role } = usePermissions();
   const kitchenBound = role === "FNB_MANAGER";
-  const { data: lookups } = useQuery<FoodLookups>({
+  // For a kitchen-bound role this decides WHICH kitchen the board is for, and
+  // the defaulting effect below waits on it — so a failed read leaves the board
+  // sitting on an empty grid forever with nothing said. Report it instead.
+  const { data: lookups, isError: lookupsError, refetch: refetchLookups } = useQuery<FoodLookups>({
     queryKey: foodKeys.lookups(),
     queryFn: () => foodApi.lookups(),
     enabled: kitchenBound,
@@ -152,7 +165,15 @@ export function RotationBoard({
   });
 
   const params = { kitchenId, brand, rotationWeek: week };
-  const { data: rows = [], isLoading } = useQuery<MenuRotationRow[]>({
+  // H1 (same invariant as the Menu Rules generator) — every whole-week action
+  // here is a delete-then-insert driven by `plates`, which is derived from this
+  // query. A failed read yields an empty board, and "Copy W1 → W2" would then
+  // write 28 EMPTY plates over a filled week, "paste a day" would blank the
+  // target, and auto-fill would rebuild plates that already existed. Nothing
+  // destructive runs unless `weekLoaded` says the week genuinely loaded.
+  const {
+    data: rows = [], isLoading, isError: weekError, isSuccess: weekLoaded, refetch: refetchWeek,
+  } = useQuery<MenuRotationRow[]>({
     queryKey: foodKeys.rotation(params),
     queryFn: () => foodApi.listRotation(params),
     enabled: !!kitchenId && !!brand,
@@ -179,7 +200,9 @@ export function RotationBoard({
   // Not gated on flagRepeats any more: the import/export menu exports the whole
   // cycle, so these rows are needed whether or not repeat-flagging is on.
   const cycleParams = { kitchenId, brand };
-  const { data: cycleRows = [] } = useQuery<MenuRotationRow[]>({
+  // If this fails, cellRepeats finds nothing and every cell reads clean — a
+  // silent all-clear on a check that never ran. Say so rather than imply it.
+  const { data: cycleRows = [], isError: cycleError } = useQuery<MenuRotationRow[]>({
     queryKey: foodKeys.rotation(cycleParams),
     queryFn: () => foodApi.listRotation(cycleParams),
     enabled: !!kitchenId && !!brand,
@@ -314,7 +337,19 @@ export function RotationBoard({
   const anyRule = MEAL_TYPES.some((m) => slotsFor(m).length > 0);
 
   // ── whole-week actions ─────────────────────────────────────────────────────
+  /** Shared refusal for the three actions that write from `plates`. */
+  const refuseUnread = () => {
+    if (weekLoaded) return false;
+    toast({
+      title: "The current week could not be read",
+      description: "Reload before copying or filling — writing now could overwrite plates that are already planned.",
+      variant: "destructive",
+    });
+    return true;
+  };
+
   const autoFillWeek = () => {
+    if (refuseUnread()) return;
     const writes: SlotWrite[] = [];
     let seed = 1;
     for (const meal of MEAL_TYPES) {
@@ -331,6 +366,7 @@ export function RotationBoard({
   };
 
   const duplicateWeek = () => {
+    if (refuseUnread()) return;
     const to = week === 4 ? 1 : week + 1;
     const writes: SlotWrite[] = [];
     for (const meal of MEAL_TYPES) {
@@ -344,6 +380,7 @@ export function RotationBoard({
   const onDayAction = (day: number) => {
     if (clipboard == null) { setClipboard(day); return; }
     if (clipboard === day) { setClipboard(null); return; }
+    if (refuseUnread()) return;
     const writes: SlotWrite[] = MEAL_TYPES.map((meal) => ({
       dayOfWeek: day, mealType: meal, plate: plates.get(plateKey(clipboard, meal)) ?? [],
     }));
@@ -366,6 +403,23 @@ export function RotationBoard({
     }
   };
 
+  // "No kitchens yet" is advice to go and create one — never give it because a
+  // fetch failed.
+  if (kitchensError) {
+    return <FoodQueryError label="the kitchens" onRetry={() => refetchKitchens()} />;
+  }
+  if (kitchenBound && lookupsError) {
+    return <FoodQueryError label="your kitchen" onRetry={() => refetchLookups()} />;
+  }
+  if (rulesError) {
+    return (
+      <FoodQueryError
+        label="the menu rules"
+        hint="Without them the board cannot tell a complete plate from an incomplete one, so the week is not shown."
+        onRetry={() => refetchRules()}
+      />
+    );
+  }
   if (!kitchens.length) {
     return (
       <p className="rounded-md border border-dashed py-10 text-center text-sm text-muted-foreground">
@@ -375,7 +429,8 @@ export function RotationBoard({
     );
   }
 
-  const busy = bulkWrite.isPending;
+  // Every whole-week write reads `plates`, so an unread week disables them all.
+  const busy = bulkWrite.isPending || !weekLoaded;
 
   return (
     <div className="space-y-4">
@@ -403,29 +458,54 @@ export function RotationBoard({
               onChange={(v) => { setBrand(v); setSel(null); }}
             />
           )}
-          {/* One control for both directions. The printable week report keeps
-              its place here as an extra group — it is a different artefact from
-              the round-trippable export above it, and is deliberately labelled
-              so the two CSVs are not mistaken for each other. */}
-          <ImportExportMenu
-            resource="menu"
-            columns={MENU_BULK_COLUMNS}
-            exportRows={menuExportRows}
-            onImported={() => qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] })}
-          >
-            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Printable report
-            </DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => runExport("csv")}>
-              <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> Week {week} · CSV
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => runExport("pdf")}>
-              <FileText className="mr-2 h-4 w-4 text-destructive" /> Week {week} · PDF
-            </DropdownMenuItem>
-          </ImportExportMenu>
-          <Button variant="outline" disabled={busy} onClick={duplicateWeek}>
-            <Copy className="mr-2 h-3.5 w-3.5" /> Copy W{week} → W{week === 4 ? 1 : week + 1}
-          </Button>
+          {/* One control for both directions, for anyone who can write. The
+              printable week report keeps its place here as an extra group — it
+              is a different artefact from the round-trippable export above it,
+              and is deliberately labelled so the two CSVs are not mistaken for
+              each other. */}
+          {canEdit ? (
+            <ImportExportMenu
+              resource="menu"
+              columns={MENU_BULK_COLUMNS}
+              exportRows={menuExportRows}
+              onImported={() => qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] })}
+            >
+              <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Printable report
+              </DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => runExport("csv")}>
+                <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> Week {week} · CSV
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => runExport("pdf")}>
+                <FileText className="mr-2 h-4 w-4 text-destructive" /> Week {week} · PDF
+              </DropdownMenuItem>
+            </ImportExportMenu>
+          ) : (
+            /* No import half to offer, so a read-only principal keeps the plain
+               week report rather than losing the export outright. */
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline">
+                  <Download className="mr-2 h-4 w-4" /> Export <ChevronDown className="ml-2 h-4 w-4 opacity-70" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40">
+                <DropdownMenuLabel>Export week {week}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => runExport("csv")}>
+                  <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => runExport("pdf")}>
+                  <FileText className="mr-2 h-4 w-4 text-destructive" /> PDF
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          {canEdit && (
+            <Button variant="outline" disabled={busy} onClick={duplicateWeek}>
+              <Copy className="mr-2 h-3.5 w-3.5" /> Copy W{week} → W{week === 4 ? 1 : week + 1}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -436,17 +516,20 @@ export function RotationBoard({
           options={ROTATION_WEEKS.map((w) => ({ value: w, label: `W${w}` }))}
           onChange={(v) => { setWeek(v); setSel(null); setClipboard(null); }}
         />
+        {/* The roll-up counts an unread week as 28 empty meals — a number, not a
+            reading. Withhold it until the week is actually in hand. */}
         <div className="flex min-w-52 flex-1 items-center gap-3">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
             <div
               className={`h-full transition-all ${summary.complete === summary.total ? "bg-success" : "bg-accent"}`}
-              style={{ width: `${Math.round((summary.complete / summary.total) * 100)}%` }}
+              style={{ width: weekLoaded ? `${Math.round((summary.complete / summary.total) * 100)}%` : "0%" }}
             />
           </div>
           <span className="whitespace-nowrap text-sm font-medium">
-            {summary.complete} of {summary.total} meals complete
+            {weekLoaded ? `${summary.complete} of ${summary.total} meals complete` : "Reading the week…"}
           </span>
         </div>
+        {weekLoaded && (
         <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${
           summary.warning ? "bg-warning-soft text-warning"
             : summary.empty ? "bg-muted text-muted-foreground"
@@ -459,14 +542,23 @@ export function RotationBoard({
             : summary.empty ? `${summary.empty} empty`
             : "All good"}
         </span>
-        <Button
-          variant="secondary" size="sm" disabled={busy || !anyRule}
-          title={anyRule ? undefined : "Define a menu rule first"}
-          onClick={autoFillWeek}
-        >
-          <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-          {summary.empty ? `Auto-fill ${summary.empty} gap${summary.empty === 1 ? "" : "s"}` : "Top up the week"}
-        </Button>
+        )}
+        {/* Never let a check that failed to run pass for a check that passed. */}
+        {cycleError && (
+          <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-warning-soft px-2.5 py-0.5 text-xs font-medium text-warning">
+            <AlertTriangle className="h-3 w-3" /> Repeats not checked
+          </span>
+        )}
+        {canEdit && (
+          <Button
+            variant="secondary" size="sm" disabled={busy || !anyRule}
+            title={anyRule ? undefined : "Define a menu rule first"}
+            onClick={autoFillWeek}
+          >
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+            {weekLoaded && summary.empty ? `Auto-fill ${summary.empty} gap${summary.empty === 1 ? "" : "s"}` : "Top up the week"}
+          </Button>
+        )}
       </div>
 
       {clipboard != null && (
@@ -485,7 +577,16 @@ export function RotationBoard({
       )}
 
       {/* ── board ────────────────────────────────────────────────────────── */}
-      {isLoading ? (
+      {weekError ? (
+        <FoodQueryError
+          label={`week ${week}`}
+          hint="An empty board here would be indistinguishable from a week nobody has planned yet."
+          onRetry={() => refetchWeek()}
+        />
+      ) : !weekLoaded ? (
+        // Not just `isLoading`: a query that is pending, paused (offline) or
+        // disabled has also not been read, and an all-empty grid would pass for
+        // a week nobody has planned.
         <p className="py-10 text-center text-sm text-muted-foreground">Loading the week…</p>
       ) : (
         <div className="grid gap-2 overflow-x-auto" style={{ gridTemplateColumns: "104px repeat(7, minmax(120px, 1fr))" }}>
@@ -499,7 +600,7 @@ export function RotationBoard({
                   {DAY_SHORT[day]}
                 </p>
                 <button
-                  type="button" disabled={busy} onClick={() => onDayAction(day)}
+                  type="button" disabled={busy || !canEdit} onClick={() => onDayAction(day)}
                   title={!copying ? `Copy ${DAY_LABEL[day]}`
                     : isSource ? "Cancel copy"
                     : `Paste ${DAY_LABEL[clipboard!]} here`}
@@ -566,6 +667,7 @@ export function RotationBoard({
             : new Map<string, string>()}
           clashBlocks={clashBlocks}
           serviceTime={serviceTime(sel.meal)}
+          canEdit={canEdit}
           isSaving={saveSlot.isPending}
           onSave={(plate) => saveSlot.mutate({ day: sel.day, meal: sel.meal, plate })}
           {...(onGoToRules

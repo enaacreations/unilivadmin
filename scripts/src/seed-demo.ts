@@ -7,7 +7,14 @@
  *
  * Runs AFTER the base seeds (seed.ts, seed-food.ts, seed-food-extra.ts) which
  * already created the 5 base properties, food brands, kitchens, kitchen_pincodes,
- * dishes / rotation / rules / cut-offs, ~50 residents, etc. This script is:
+ * dishes / rotation / rules / cut-offs, ~50 residents, etc.
+ *
+ * That ordering is a HARD PREREQUISITE, not a preference: on a fresh database
+ * this aborts with an FK error on kitchen_pincodes → kitchen_kit_pun_hinj,
+ * because seed:food-extra is what creates the kitchens. The error names the
+ * constraint, not the missing step — run the food seeds first.
+ *
+ * This script is:
  *
  *   • AUGMENT-ON-TOP — it never truncates or wipes base data.
  *   • IDEMPOTENT     — every row uses a STABLE prefixed id (demo_*) and inserts
@@ -36,6 +43,7 @@ import {
   dishesTable, foodOrdersTable, foodOrderItemsTable, foodOrderEventsTable,
 } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { assertSeedTarget } from "./seed-guard.js";
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Density / window configuration
@@ -138,6 +146,7 @@ const fullName = (seed: string) => {
  * ──────────────────────────────────────────────────────────────────────────── */
 async function main() {
   console.log("🌱 Seeding realistic 18-month DEMO data (augment-on-top, idempotent)...");
+  await assertSeedTarget("seed:demo");
 
   const ADMIN_ID = "b6193468-fe90-4e58-91ed-ca23f0232533"; // existing admin (createdBy refs)
   // Fallback: resolve admin dynamically if the hard-coded id is missing.
@@ -544,6 +553,9 @@ async function main() {
       paymentRows.push({
         id: `demo_pay_${res.id}_${ym}`,
         residentId: res.id,
+        // Property the money was collected AT (M10) — snapshotted at payment
+        // time, so a later transfer cannot re-attribute the collection.
+        propertyId: res.propId,
         amount: String(res.rent),
         mode: PAY_MODES[(ledgerRows.length) % PAY_MODES.length]!,
         status: payStatus,

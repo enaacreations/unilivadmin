@@ -7,6 +7,7 @@ import {
   ChevronRight, Download, FileDown, FileText, PackageX, Plus, Search,
 } from "lucide-react";
 import { PropertyScopeBanner } from "@/components/property-scope-banner";
+import { FoodQueryError } from "@/components/food/query-error";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -19,10 +20,11 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  foodApi, foodKeys, orderPeople, MEAL_TYPES, BRANDS, ORDER_STATUSES, MEAL_LABEL, ORDER_STATUS_PILL, orderStatusPill,
+  foodApi, foodKeys, orderPeople, MEAL_TYPES, ORDER_STATUSES, MEAL_LABEL, ORDER_STATUS_PILL, orderStatusPill,
   fmtQty, serviceDayKey, groupLabel,
   type FoodOrder,
 } from "@/lib/food-api";
+import { useActiveBrands } from "@/components/food/use-food-masters";
 import { useQueryParam } from "@/lib/nav-helpers";
 import { useScopedColumns } from "@/lib/use-scoped-columns";
 import { usePermissions } from "@/lib/use-permissions";
@@ -168,6 +170,10 @@ export default function FoodOrders() {
   // Deep-link can also pre-apply a status filter (e.g. ?status=DELIVERED).
   React.useEffect(() => { if (paramStatus) setStatus(paramStatus); }, [paramStatus]);
   const [brand, setBrand] = React.useState<string>(ALL);
+  // L10 — the live brand master, not the hardcoded two-brand fallback: a brand
+  // added in the Brands tab was missing from this filter, so its orders could
+  // not be isolated at all.
+  const brandOptions = useActiveBrands();
   const [mealType, setMealType] = React.useState<string>(ALL);
   const [from, setFrom] = React.useState<string>("");
   const [to, setTo] = React.useState<string>("");
@@ -198,16 +204,21 @@ export default function FoodOrders() {
       brand: brand === ALL ? undefined : brand,
       mealType: mealType === ALL ? undefined : mealType,
       search: search || undefined,
-      limit: 100,
     }),
     [status, from, to, propertyId, brand, mealType, search],
   );
 
-  const { data: res, isLoading } = useQuery({
+  // The server clamps `limit` to 100, so page the whole filtered set — the day
+  // groups and the CSV/PDF export below both read this array and must not ship
+  // the first page as if it were the answer.
+  const { data: res, isLoading, isError, refetch } = useQuery({
     queryKey: foodKeys.orders(params),
-    queryFn: () => foodApi.listOrders(params),
+    queryFn: () => foodApi.listAllOrders(params),
   });
-  const orders: FoodOrder[] = res?.data ?? [];
+  const orders: FoodOrder[] = res?.orders ?? [];
+  /** More orders match the filters than the paging bound fetched. */
+  const truncated = res?.truncated ?? false;
+  const totalOrders = res?.total ?? orders.length;
 
   // Name of the property the page is currently scoped to (URL param or filter),
   // for the scope banner. Falls back gracefully until lookups resolve.
@@ -241,7 +252,13 @@ export default function FoodOrders() {
       { accessorKey: "residentsCount", header: "Residents", text: (o) => String(o.residentsCount) },
       { accessorKey: "staffCount", header: "Staff", text: (o) => String(o.staffCount ?? 0) },
       { accessorKey: "people", header: "Total", text: (o) => String(orderPeople(o)) },
-      { accessorKey: "totalQuantity", header: "Quantity", text: (o) => fmtQty(o.totalQuantity) },
+      // M7: totalQuantity is sum(orderedQty) across the order's items, and those
+      // items carry different units (KG + PLATE), so this number is a
+      // line-weighted total and NOT a quantity in any one unit. The server's own
+      // orders export reports "Quantity (by unit)" from the item rows; the list
+      // endpoint only carries the scalar, so the honest move here is to name it
+      // for what it is rather than let the two files disagree silently.
+      { accessorKey: "totalQuantity", header: "Total qty (mixed units)", text: (o) => fmtQty(o.totalQuantity) },
       {
         accessorKey: "serviceDate",
         header: "Service Date",
@@ -407,7 +424,7 @@ export default function FoodOrders() {
           <SelectTrigger className="h-9 w-[112px] text-[13px]"><SelectValue placeholder="Brand" /></SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL}>All Brands</SelectItem>
-            {BRANDS.map((b) => (<SelectItem key={b} value={b}>{b}</SelectItem>))}
+            {brandOptions.map((b) => (<SelectItem key={b.code} value={b.code}>{b.name}</SelectItem>))}
           </SelectContent>
         </Select>
         <Select value={mealType} onValueChange={setMealType}>
@@ -428,8 +445,19 @@ export default function FoodOrders() {
         )}
       </div>
 
+      {/* The list (and any export taken from it) covers only part of the match —
+          state the shortfall rather than present it as the full result. */}
+      {truncated && (
+        <div className="rounded-[12px] border border-warning/40 bg-warning-soft px-4 py-3 text-[13px] text-warning">
+          Showing the most recent {orders.length} of {totalOrders} matching orders. Narrow the
+          filters (or the date range) to see the rest — exports cover only what is listed here.
+        </div>
+      )}
+
       {/* Day-grouped orders */}
-      {isLoading ? (
+      {isError ? (
+        <FoodQueryError label="orders" onRetry={() => refetch()} />
+      ) : isLoading ? (
         <div className="overflow-hidden rounded-[14px] border border-border bg-card">
           {[0, 1, 2].map((i) => (
             <div key={i} className="flex items-center gap-3 border-b border-border px-[18px] py-4 last:border-b-0">

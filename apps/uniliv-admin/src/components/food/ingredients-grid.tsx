@@ -18,6 +18,7 @@ import { type BulkColumn } from "@/components/bulk-upload-dialog";
 import { ImportExportMenu } from "@/components/import-export-menu";
 import { useToast } from "@/hooks/use-toast";
 import { foodApi, type Ingredient } from "@/lib/food-api";
+import { FoodQueryError } from "./query-error";
 import { useDishCatalogue, useIngredients } from "./use-food-masters";
 
 const ING_UNITS = ["G", "KG", "ML", "LITRE", "PCS", "PLATE", "SERVING"];
@@ -31,11 +32,17 @@ const INGREDIENT_BULK_COLUMNS: BulkColumn[] = [
 
 type IngDraft = { id: string | null; name: string; unit: string; isActive: boolean };
 
-export function IngredientsGrid() {
+/** `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16) — see
+ *  DishesCatalogue for why a view-only principal reaches this tab at all. */
+export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: ingredients = [], isLoading } = useIngredients();
-  const { data: dishes = [] } = useDishCatalogue();
+  const { data: ingredients = [], isLoading, isError, refetch } = useIngredients();
+  // A failed catalogue read empties `usage`, so every ingredient would be
+  // labelled "unused" — the flag people delete on — and the delete dialog would
+  // drop its "used by N dishes" warning.
+  const { data: dishes = [], isError: dishesError } = useDishCatalogue();
+  const usageKnown = !dishesError;
 
   const [search, setSearch] = React.useState("");
   const [draft, setDraft] = React.useState<IngDraft | null>(null);
@@ -102,22 +109,29 @@ export function IngredientsGrid() {
               placeholder="Search ingredients" aria-label="Search ingredients" className="pl-9"
             />
           </div>
-          <ImportExportMenu
-            resource="ingredients"
-            columns={INGREDIENT_BULK_COLUMNS}
-            exportRows={exportRows}
-            onImported={invalidate}
-          />
-          <Button
-            className="bg-accent text-white hover:bg-accent/90"
-            onClick={() => setDraft({ id: null, name: "", unit: "KG", isActive: true })}
-          >
-            <Plus className="mr-2 h-4 w-4" /> Add ingredient
-          </Button>
+          {/* Gated with the rest — the import half POSTs /bulk/ingredients. */}
+          {canEdit && (
+            <ImportExportMenu
+              resource="ingredients"
+              columns={INGREDIENT_BULK_COLUMNS}
+              exportRows={exportRows}
+              onImported={invalidate}
+            />
+          )}
+          {canEdit && (
+            <Button
+              className="bg-accent text-white hover:bg-accent/90"
+              onClick={() => setDraft({ id: null, name: "", unit: "KG", isActive: true })}
+            >
+              <Plus className="mr-2 h-4 w-4" /> Add ingredient
+            </Button>
+          )}
         </div>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <FoodQueryError label="the ingredients" onRetry={() => refetch()} />
+      ) : isLoading ? (
         <p className="py-10 text-center text-sm text-muted-foreground">Loading ingredients…</p>
       ) : rows.length === 0 ? (
         <p className="rounded-md border border-dashed py-8 text-center text-sm text-muted-foreground">
@@ -136,23 +150,25 @@ export function IngredientsGrid() {
                 {!r.isActive && (
                   <span className="rounded-full bg-muted px-1.5 py-px text-[10px] text-muted-foreground">Inactive</span>
                 )}
-                <span className={`whitespace-nowrap text-[11px] ${uses ? "text-muted-foreground" : "text-warning"}`}>
-                  {uses ? `in ${uses} dish${uses === 1 ? "" : "es"}` : "unused"}
+                <span className={`whitespace-nowrap text-[11px] ${uses || !usageKnown ? "text-muted-foreground" : "text-warning"}`}>
+                  {!usageKnown ? "usage unknown" : uses ? `in ${uses} dish${uses === 1 ? "" : "es"}` : "unused"}
                 </span>
-                <div className="flex shrink-0 items-center gap-0.5">
-                  <Button
-                    variant="ghost" size="icon" className="h-7 w-7" title="Edit ingredient"
-                    onClick={() => setDraft({ id: r.id, name: r.name, unit: r.unit, isActive: r.isActive })}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
-                    title="Delete ingredient" onClick={() => setDelTarget(r)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
+                {canEdit && (
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <Button
+                      variant="ghost" size="icon" className="h-7 w-7" title="Edit ingredient"
+                      onClick={() => setDraft({ id: r.id, name: r.name, unit: r.unit, isActive: r.isActive })}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
+                      title="Delete ingredient" onClick={() => setDelTarget(r)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -230,7 +246,9 @@ export function IngredientsGrid() {
       >
         <p className="text-sm text-muted-foreground">
           Delete <span className="font-medium text-foreground">{delTarget?.name}</span>?
-          {delUses > 0 && <> It is used by {delUses} dish{delUses === 1 ? "" : "es"}, which will lose it.</>}
+          {!usageKnown
+            ? <> The dish catalogue could not be read, so it is not known which dishes still use it.</>
+            : delUses > 0 ? <> It is used by {delUses} dish{delUses === 1 ? "" : "es"}, which will lose it.</> : null}
         </p>
       </FormModal>
     </div>
