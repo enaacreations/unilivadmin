@@ -723,20 +723,17 @@ export default function FoodKitchenHome() {
       : null);
 
   // ── Property roster for the picker ────────────────────────────────────────
-  // A definite kitchen scope — picked from the switcher, or a kitchen-bound
-  // login — has a known roster, so quiet properties stay listed and read as
-  // quiet rather than going missing. Without one, an org-wide login would get
-  // the entire portfolio, so it sees who actually ordered. Either way anything
-  // with an order today is present, so no work can hide from the picker.
+  // Only properties with live orders for the day appear — in every scope alike
+  // (all kitchens, one picked kitchen, or a kitchen-bound login), so the picker
+  // mirrors the day's real workload instead of padding a picked kitchen with
+  // quiet "No orders" cards. `kitchenOrders` is already narrowed to the kitchen
+  // scope, so membership needs no kitchen check of its own — and it follows the
+  // ORDER's kitchen, so a mid-day reassignment stays with whoever cooks it.
   const propertyRoster = React.useMemo(() => {
     const ordered = new Set(kitchenOrders.map((o) => o.propertyId));
     const all = lookups?.properties ?? [];
-    const scopeKitchens = kitchen ? [kitchen] : myKitchenIds ?? null;
-    const mine = scopeKitchens == null
-      ? all.filter((p) => ordered.has(p.id))
-      : all.filter((p) => (p.kitchenId != null && scopeKitchens.includes(p.kitchenId)) || ordered.has(p.id));
-    return [...mine].sort((a, b) => a.name.localeCompare(b.name));
-  }, [lookups?.properties, myKitchenIds, kitchen, kitchenOrders]);
+    return all.filter((p) => ordered.has(p.id)).sort((a, b) => a.name.localeCompare(b.name));
+  }, [lookups?.properties, kitchenOrders]);
 
   // Property ids the kitchen selection covers — the cook plan is reported per
   // property, so narrowing it needs the roster, not the kitchen id.
@@ -1196,7 +1193,7 @@ export default function FoodKitchenHome() {
             ) : propertyCards.length === 0 ? (
               <div className="rounded-[12px] border border-dashed border-border px-4 py-8 text-center text-[13px] text-muted-foreground">
                 {selectedKitchenName
-                  ? `No properties are served by ${selectedKitchenName} yet — assign some in Organization.`
+                  ? `No properties ordered from ${selectedKitchenName} ${dayLabel.toLowerCase()} — cards appear as orders land.`
                   : `No properties ordered ${dayLabel.toLowerCase()} — cards appear as orders land.`}
               </div>
             ) : (
