@@ -30,8 +30,8 @@ import { cn } from "@/lib/utils";
 import { useConfetti } from "@/components/ui/confetti";
 import { CameraCapture, type CaptureMeta } from "@/components/audits/camera-capture";
 import {
-  AUDIT_STATE_BADGE, NON_SCORED_TYPES,
-  scoreColorClass, titleCase,
+  AUDIT_STATE_BADGE, LIVE_PROOF_MAX_AGE_MS, NON_SCORED_TYPES,
+  fmtGps, scoreColorClass, titleCase,
   type ApiError, type ApiOne,
   type RunEvidence, type RunPayload, type RunQuestion, type RunSection,
   type ScaleSnapshot, type SubmitBlocker, type SubmitCheck,
@@ -531,7 +531,9 @@ function QuestionCard({
                     <button
                       type="button"
                       onClick={() => onDeleteEvidence(e.id)}
-                      className="absolute -right-1.5 -top-1.5 hidden rounded-full border bg-card p-0.5 text-muted-foreground shadow group-hover:block"
+                      /* Always visible: `group-hover` never fires on a touch device, so an
+                         auditor who attached the wrong photo had no way to remove it. */
+                      className="absolute -right-2 -top-2 rounded-full border bg-card p-1.5 text-muted-foreground shadow transition-colors hover:text-destructive"
                       aria-label="Delete evidence"
                     >
                       <X className="h-3 w-3" />
@@ -796,19 +798,42 @@ export default function AuditRunner() {
       ),
     [run?.evidence],
   );
+  /** Start selfie for THIS attempt — the server applies the same freshness
+   *  window, so a proof left over from a rejected run doesn't unlock Start. */
+  const startProof = React.useMemo(() => {
+    const cutoff = Date.now() - LIVE_PROOF_MAX_AGE_MS;
+    return (
+      (run?.evidence ?? [])
+        .filter(
+          (e) =>
+            e.kind === "START_PROOF" &&
+            e.isLiveCapture &&
+            e.geoLat != null &&
+            new Date(e.createdAt).getTime() >= cutoff,
+        )
+        .sort((x, y) => new Date(y.createdAt).getTime() - new Date(x.createdAt).getTime())[0] ?? null
+    );
+  }, [run?.evidence]);
 
   /* — State transitions from the runner — */
   const [transitionBusy, setTransitionBusy] = React.useState(false);
   const startAudit = async () => {
     setTransitionBusy(true);
     try {
-      const body: Record<string, unknown> = {};
-      const geo = await locateOnce();
-      if (geo) body["geo"] = { lat: geo.lat, lng: geo.lng };
-      await apiFetch(`/audits/${id}/start`, { method: "POST", body: JSON.stringify(body) });
+      // Start location is taken from the selfie server-side (FRD-EXE-14), so
+      // there is nothing to send here.
+      await apiFetch(`/audits/${id}/start`, { method: "POST", body: JSON.stringify({}) });
       invalidateRun();
     } catch (e) {
-      toast({ title: (e as Error).message || "Action failed", variant: "destructive" });
+      const err = e as ApiError;
+      const reason = (err.details as { reason?: string } | undefined)?.reason;
+      toast({
+        title: err.message === "START_PHOTO_REQUIRED" ? "Start photo required" : err.message || "Action failed",
+        description: reason,
+        variant: "destructive",
+      });
+      // A stale capture is the usual cause — refetch so the step re-arms.
+      invalidateRun();
     } finally {
       setTransitionBusy(false);
     }
@@ -817,6 +842,7 @@ export default function AuditRunner() {
   /* — Camera targets — */
   const [cameraTarget, setCameraTarget] = React.useState<
     | { kind: "response"; question: RunQuestion }
+    | { kind: "start" }
     | { kind: "submission" }
     | null
   >(null);
@@ -824,6 +850,22 @@ export default function AuditRunner() {
   const uploadEvidence = async (dataUrl: string, thumbDataUrl: string, meta: CaptureMeta) => {
     if (!cameraTarget) return;
     try {
+      if (cameraTarget.kind === "start") {
+        await apiFetch(`/audits/${id}/evidence`, {
+          method: "POST",
+          body: JSON.stringify({
+            dataUrl,
+            thumbDataUrl,
+            kind: "START_PROOF",
+            isLiveCapture: meta.source === "live-camera",
+            capturedAt: meta.capturedAt,
+            geo: meta.geo ?? undefined,
+          }),
+        });
+        toast({ title: "Start photo captured" });
+        invalidateRun();
+        return;
+      }
       if (cameraTarget.kind === "submission") {
         await apiFetch(`/audits/${id}/evidence`, {
           method: "POST",
@@ -963,10 +1005,10 @@ export default function AuditRunner() {
     onError: (e: ApiError) => {
       qc.invalidateQueries({ queryKey: ["/audits", id, "submit-check"] });
       toast({
-        title: e.message === "LIVE_PHOTO_REQUIRED" ? "Live photo required" : "Submission blocked",
+        title: e.message === "LIVE_PHOTO_REQUIRED" ? "End photo required" : "Submission blocked",
         description:
           e.message === "LIVE_PHOTO_REQUIRED"
-            ? "Capture the live geotagged photo below, then submit."
+            ? "Capture the live geotagged end photo below, then submit."
             : e.message,
         variant: "destructive",
       });
@@ -1007,10 +1049,14 @@ export default function AuditRunner() {
   );
 
   return (
-    <div className="mx-auto max-w-3xl pb-40">
+    <div className="mx-auto max-w-3xl pb-6">
       {confetti}
-      {/* Compact sticky header — title inline, ticket shown once, progress inside */}
-      <div className="sticky top-0 z-30 -mx-4 mb-4 border-b bg-background px-4 py-3 shadow-[0_4px_10px_-6px_rgba(36,26,21,0.25)] sm:-mx-6 sm:px-6">
+      {/* Compact sticky header — title inline, ticket shown once, progress inside.
+          `main` is the scrollport and carries p-4/sm:p-6; sticky `top` resolves
+          against its CONTENT box, so a plain top-0 parks the bar 16/24px down and
+          question cards scroll through the gap. Offset top by the scrollport
+          padding and add it back as pt- so the visible bar is unchanged. */}
+      <div className="sticky -top-4 z-30 -mx-4 mb-4 border-b bg-background px-4 pb-3 pt-7 shadow-[0_4px_10px_-6px_rgba(36,26,21,0.25)] sm:-top-6 sm:-mx-6 sm:px-6 sm:pt-9">
         <div className="mx-auto max-w-3xl">
           <div className="flex items-center gap-2">
             <Link
@@ -1071,17 +1117,63 @@ export default function AuditRunner() {
               </span>
             </div>
           </div>
+          {/* Start selfie — the gate. Nothing else on this screen unlocks the
+              question list; the server re-checks the same capture. */}
+          <div className={`rounded-[14px] border p-4 ${startProof ? "border-border bg-card" : "border-primary/40 bg-card ring-1 ring-primary/20"}`}>
+            <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+              Required before you begin
+            </div>
+            <div className="flex items-center gap-3">
+              {startProof ? (
+                <img
+                  src={startProof.thumbUrl ?? startProof.url ?? undefined}
+                  alt="Start photo"
+                  className="h-[52px] w-[52px] shrink-0 rounded-[11px] border object-cover"
+                />
+              ) : (
+                <span className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-[11px] bg-primary/10 text-primary">
+                  <Camera className="h-5 w-5" />
+                </span>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-[13.5px] font-bold">Start photo with location</div>
+                <div className="text-[11.5px] text-muted-foreground">
+                  {startProof
+                    ? `Captured · ${fmtGps(startProof.geoLat, startProof.geoLng) ?? "location attached"}`
+                    : "Required: a live photo with your location proves you were on site."}
+                </div>
+              </div>
+              <Button
+                variant={startProof ? "outline" : "default"}
+                size="sm"
+                className="min-h-11 shrink-0"
+                disabled={transitionBusy}
+                onClick={() => setCameraTarget({ kind: "start" })}
+              >
+                {startProof ? "Retake" : "Capture"}
+              </Button>
+            </div>
+            {!startProof && (
+              <p className="mt-2.5 text-[11.5px] text-muted-foreground">
+                Camera and location permission are both needed. If either is blocked, allow it for
+                this site in your browser settings and tap Capture again.
+              </p>
+            )}
+          </div>
           {/* Auto-captured */}
           <div className="rounded-[14px] border border-border bg-card p-4">
             <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
-              Auto-captured before you begin
+              Auto-captured when you start
             </div>
             <div className="flex items-center gap-3 border-b border-dashed border-border py-2.5">
-              <span className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[11px] bg-success text-[17px] text-white">📍</span>
+              <span className={`flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[11px] text-[17px] text-white ${startProof ? "bg-success" : "bg-muted-foreground"}`}>📍</span>
               <div className="flex-1">
                 <div className="text-[13.5px] font-bold">Location (GPS)</div>
-                {/* TODO(backend): GPS-matches-property verification not surfaced by the run payload yet. */}
-                <div className="font-mono text-[11.5px] text-muted-foreground">Captured & stamped the moment you start</div>
+                <div className="font-mono text-[11.5px] text-muted-foreground">
+                  {startProof
+                    ? fmtGps(startProof.geoLat, startProof.geoLng) ?? "Taken from your start photo"
+                    : "Taken from your start photo"}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-3 py-2.5">
@@ -1092,19 +1184,34 @@ export default function AuditRunner() {
               </div>
             </div>
           </div>
+          {/* Why it came back — the reviewer's own words, in front of the
+              auditor before they redo the work rather than buried in a tab. */}
+          {audit.state === "REJECTED" && audit.rejectionReason && (
+            <div className="rounded-[12px] bg-destructive/10 px-3.5 py-[11px]">
+              <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-destructive">
+                Sent back for rework
+              </div>
+              <p className="mt-1 text-[12.5px] leading-snug text-foreground/90">{audit.rejectionReason}</p>
+            </div>
+          )}
           <div className="rounded-[12px] bg-info-soft px-3.5 py-[11px] text-[12px] font-semibold text-info">
             🔒 {audit.state === "REJECTED"
-              ? "This audit was rejected — start the rework. Location and start time are re-stamped."
-              : "Location and start time are attached to this audit and can't be edited later."}
+              ? "This audit was rejected — start the rework. A fresh start photo, location and start time are re-stamped."
+              : "The start photo, location and start time are attached to this audit and can't be edited later."}
           </div>
           <Button
             className="h-[50px] w-full rounded-[12px] text-[15px] font-bold"
-            disabled={transitionBusy}
+            disabled={transitionBusy || !startProof}
             onClick={() => void startAudit()}
           >
             {transitionBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             {audit.state === "REJECTED" ? "Start rework →" : "Start audit →"}
           </Button>
+          {!startProof && (
+            <p className="-mt-1.5 text-center text-[11.5px] text-muted-foreground">
+              Capture the start photo to unlock the questions.
+            </p>
+          )}
         </div>
       )}
       {!editable && !(isAssignee && ["SCHEDULED", "REJECTED"].includes(audit.state)) && (
@@ -1193,7 +1300,11 @@ export default function AuditRunner() {
 
       {/* Bottom submit dock (scoring is server-side at submit) */}
       {!notStarted && (
-      <div className="fixed inset-x-0 bottom-0 z-20 border-t bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)] md:left-64">
+      <div className=/* Sticky, not fixed: <main> is the scroll container and the sidebar is a
+          flex sibling, so the dock spans the content column exactly. The old
+          `fixed … md:left-64` hard-coded a 256px offset against a sidebar that
+          is 248px expanded and 68px collapsed, so it was wrong at every width. */
+       "sticky bottom-0 z-20 border-t bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_20px_-12px_rgba(0,0,0,0.25)]">
         <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-3 sm:px-6">
           <div className="min-w-0 flex-1">
             <p className="truncate text-right text-xs text-muted-foreground">
@@ -1307,11 +1418,11 @@ export default function AuditRunner() {
                 <div className="rounded-md border p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium">Live geotagged photo</p>
+                      <p className="text-sm font-medium">End photo with location</p>
                       <p className="text-xs text-muted-foreground">
                         {hasSubmissionProof && !onlyLivePhoto
                           ? "Captured — you're good to go."
-                          : "Required proof of presence, captured in-app with GPS."}
+                          : "Required: a live photo with your location closes out the visit."}
                       </p>
                     </div>
                     {onlyLivePhoto ? (
@@ -1357,7 +1468,13 @@ export default function AuditRunner() {
       <CameraCapture
         open={cameraTarget != null}
         onOpenChange={(o) => { if (!o) setCameraTarget(null); }}
-        purpose={cameraTarget?.kind === "submission" ? "submission-proof" : "evidence"}
+        // Both presence selfies use the strict mode: GPS mandatory, shutter
+        // locked until it fixes, no gallery fallback.
+        purpose={
+          cameraTarget?.kind === "submission" || cameraTarget?.kind === "start"
+            ? "submission-proof"
+            : "evidence"
+        }
         auditorName={me?.name ?? "Auditor"}
         onCapture={uploadEvidence}
       />

@@ -17,36 +17,31 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 import {
-  DAYS_OF_WEEK, FREQUENCIES, FREQUENCY_LABELS, REMINDER_OPTIONS,
-  type ApiList, type ApiOne, type Frequency, type ScheduleDetail, type TemplateRow,
+  ASSIGNABLE_ROLES, ASSIGNABLE_ROLE_HINTS, ASSIGNABLE_ROLE_LABELS, legacyScheduleToRule, REMINDER_OPTIONS,
+  type ApiList, type ApiOne, type AssignableRole, type RecurrenceRule, type ScheduleDetail, type TemplateRow,
 } from "./lib";
+import { RecurrenceEditor } from "./recurrence-editor";
 import { TypeBadge } from "./shared";
 
 interface FormState {
   title: string;
   templateId: string;
-  frequency: Frequency;
-  intervalDays: string;
-  dayOfWeek: string;
-  cron: string;
   timeOfDay: string;
   windowStart: string;
   windowEnd: string;
   reminder: string; // "none" | minutes as string
   assigneeKind: "ROLE_AT_TARGET" | "USER";
-  assigneeRole: "UNIT_LEAD" | "CLUSTER_MANAGER";
+  assigneeRole: AssignableRole;
   assigneeUserId: string;
   propertyIds: string[]; // PROPERTY targets
   roomIds: string[]; // ROOM targets
+  /** Authoritative cadence; the frequency/interval/cron fields above are legacy. */
+  recurrence: RecurrenceRule;
 }
 
 const EMPTY: FormState = {
   title: "",
   templateId: "",
-  frequency: "MONTHLY",
-  intervalDays: "1",
-  dayOfWeek: "1",
-  cron: "",
   timeOfDay: "09:00",
   windowStart: "",
   windowEnd: "",
@@ -56,6 +51,7 @@ const EMPTY: FormState = {
   assigneeUserId: "",
   propertyIds: [],
   roomIds: [],
+  recurrence: { freq: "MONTHLY", interval: 1, byMonthDay: new Date().getDate(), end: { kind: "NEVER" } },
 };
 
 const dateOnly = (iso: string | null | undefined): string =>
@@ -128,10 +124,6 @@ export default function ScheduleForm() {
     setForm({
       title: s.title,
       templateId: s.templateId,
-      frequency: s.frequency,
-      intervalDays: s.intervalDays != null ? String(s.intervalDays) : "1",
-      dayOfWeek: s.dayOfWeek != null ? String(s.dayOfWeek) : "1",
-      cron: s.cron ?? "",
       timeOfDay: s.timeOfDay,
       windowStart: dateOnly(s.windowStart),
       windowEnd: dateOnly(s.windowEnd),
@@ -141,6 +133,7 @@ export default function ScheduleForm() {
       assigneeUserId: s.assigneeRule.kind === "USER" ? s.assigneeRule.userId : "",
       propertyIds: s.targets.filter((t) => t.targetType === "PROPERTY").map((t) => t.propertyId!).filter(Boolean),
       roomIds: s.targets.filter((t) => t.targetType === "ROOM").map((t) => t.roomId!).filter(Boolean),
+      recurrence: s.recurrenceJson ?? legacyScheduleToRule(s),
     });
     const labels: Record<string, string> = {};
     for (const t of s.targets) {
@@ -164,13 +157,11 @@ export default function ScheduleForm() {
       ...(!editId || templateTouched
         ? { templateVersionId: selectedTemplate?.latestVersionId }
         : {}),
-      frequency: form.frequency,
-      intervalDays: form.frequency === "EVERY_N_DAYS" ? Number(form.intervalDays) : null,
-      dayOfWeek: form.frequency === "WEEKLY" ? Number(form.dayOfWeek) : null,
-      cron: form.frequency === "CRON" ? form.cron.trim() : null,
+      // The rule is authoritative — the server derives the legacy cadence
+      // columns and the window end from it.
+      recurrence: form.recurrence,
       timeOfDay: form.timeOfDay,
       windowStart: form.windowStart,
-      windowEnd: form.windowEnd || null,
       reminderOffsetMinutes: form.reminder === "none" ? null : Number(form.reminder),
       assigneeRule:
         form.assigneeKind === "USER"
@@ -204,15 +195,11 @@ export default function ScheduleForm() {
         ? "Pick a time of day."
         : !form.windowStart
           ? "Pick a window start date."
-          : form.frequency !== "CRON" && !form.windowEnd
-            ? "Recurring schedules need a window end date."
-            : form.frequency === "CRON" && !form.cron.trim()
-              ? "Enter a cron expression (5 fields)."
-              : form.assigneeKind === "USER" && !form.assigneeUserId
-                ? "Pick an assignee."
-                : targetCount === 0
-                  ? "Pick at least one target."
-                  : null;
+          : form.assigneeKind === "USER" && !form.assigneeUserId
+            ? "Pick an assignee."
+            : targetCount === 0
+              ? "Pick at least one target."
+              : null;
 
   if (editId && detailQuery.isLoading) {
     return (
@@ -298,56 +285,14 @@ export default function ScheduleForm() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Frequency</Label>
-                <Select value={form.frequency} onValueChange={(v) => set("frequency", v as Frequency)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {FREQUENCIES.map((f) => (
-                      <SelectItem key={f} value={f}>{FREQUENCY_LABELS[f]}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="col-span-2 space-y-2">
+                <Label>Repeats</Label>
+                <RecurrenceEditor
+                  value={form.recurrence}
+                  onChange={(r) => set("recurrence", r)}
+                  startDate={form.windowStart ? new Date(form.windowStart) : new Date()}
+                />
               </div>
-              {form.frequency === "EVERY_N_DAYS" && (
-                <div className="space-y-2">
-                  <Label>Interval (days)</Label>
-                  <Select value={form.intervalDays} onValueChange={(v) => set("intervalDays", v)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {[1, 2, 3, 4, 5, 6].map((n) => (
-                        <SelectItem key={n} value={String(n)}>
-                          {n === 1 ? "Every day" : `Every ${n} days`}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              {form.frequency === "WEEKLY" && (
-                <div className="space-y-2">
-                  <Label>Day of week</Label>
-                  <Select value={form.dayOfWeek} onValueChange={(v) => set("dayOfWeek", v)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {DAYS_OF_WEEK.map((d, i) => (
-                        <SelectItem key={d} value={String(i)}>{d}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              {form.frequency === "CRON" && (
-                <div className="space-y-2">
-                  <Label>Cron expression</Label>
-                  <Input
-                    value={form.cron}
-                    onChange={(e) => set("cron", e.target.value)}
-                    placeholder="0 9 * * 1"
-                    className="font-mono"
-                  />
-                </div>
-              )}
               <div className="space-y-2">
                 <Label>Time of day</Label>
                 <Input
@@ -357,19 +302,11 @@ export default function ScheduleForm() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>Window start</Label>
+                <Label>Starts</Label>
                 <Input
                   type="date"
                   value={form.windowStart}
                   onChange={(e) => set("windowStart", e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Window end{form.frequency === "CRON" ? " (optional)" : ""}</Label>
-                <Input
-                  type="date"
-                  value={form.windowEnd}
-                  onChange={(e) => set("windowEnd", e.target.value)}
                 />
               </div>
               <div className="space-y-2">
@@ -407,8 +344,11 @@ export default function ScheduleForm() {
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="UNIT_LEAD">Unit Lead of the target</SelectItem>
-                    <SelectItem value="CLUSTER_MANAGER">Cluster Manager of the target</SelectItem>
+                    {ASSIGNABLE_ROLES.map((r) => (
+                      <SelectItem key={r} value={r}>
+                        {ASSIGNABLE_ROLE_LABELS[r]} — {ASSIGNABLE_ROLE_HINTS[r]}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               ) : (

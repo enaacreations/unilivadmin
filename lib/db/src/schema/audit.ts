@@ -11,6 +11,7 @@ import {
   index,
   uniqueIndex,
   bigserial,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { usersTable, propertiesTable, roomsTable } from "./core";
 import { auditRatingScalesTable } from "./audit-config";
@@ -81,6 +82,11 @@ export const auditStateEnum = pgEnum("audit_state", [
 
 export const auditResultEnum = pgEnum("audit_result", ["PASS", "FAIL"]);
 
+/**
+ * Legacy cadence buckets. Superseded by `audit_schedules.recurrence_json` (see
+ * `RecurrenceRule` below) but still written on every row: the column is NOT NULL
+ * and older readers derive their label from it. New code must read the rule.
+ */
 export const auditScheduleFrequencyEnum = pgEnum("audit_schedule_frequency", [
   "EVERY_N_DAYS",
   "WEEKLY",
@@ -90,15 +96,78 @@ export const auditScheduleFrequencyEnum = pgEnum("audit_schedule_frequency", [
   "HALF_YEARLY",
   "ANNUALLY",
   "CRON",
+  /** "Does not repeat" — appended at the tail because pg enums only grow there. */
+  "NONE",
 ]);
 
-/** NC / CAPA are orphaned values (pg enum — never shrunk); no longer written. */
+/**
+ * Where a schedule applies, expressed against the org hierarchy
+ * (Zone → City → Cluster → Property → Room) rather than a frozen list of ids.
+ *
+ * The rule is re-resolved at EVERY occurrence, so a property added to a cluster
+ * next month is audited automatically and a removed one drops out. That is the
+ * whole point: `audit_schedule_targets` snapshots the expansion once, which
+ * meant scope silently drifted out of date the moment the estate changed.
+ *
+ * The template's `targetType` still decides what an audit covers: a ROOM
+ * template scoped at CLUSTER level fans out to every room of every property in
+ * that cluster; a PROPERTY template produces one audit per property.
+ *
+ * `ORG` means the whole estate and ignores `ids`.
+ */
+export interface AuditScopeRule {
+  level: "ORG" | "ZONE" | "CITY" | "CLUSTER" | "PROPERTY" | "ROOM";
+  ids: string[];
+}
+
+/**
+ * Calendar-style recurrence rule (RFC 5545 subset), stored on the schedule.
+ *
+ * `NONE` is a genuine single occurrence at `windowStart` — the "Does not repeat"
+ * option — so a one-off audit is a cadence, not a separate creation path.
+ *
+ * Day-of-month policy is CLAMP, not RFC's SKIP: "day 31" fires on 28 Feb rather
+ * than skipping February. That matches what the pre-rule engine did, so legacy
+ * schedules keep generating identical occurrences. Use `byMonthDay: -1` when
+ * "last day of the month" is what is actually meant.
+ */
+export interface RecurrenceRule {
+  freq: "NONE" | "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY" | "CRON";
+  /** Every N days/weeks/months/years. Ignored for NONE and CRON. */
+  interval: number;
+  /** WEEKLY: the days to fire on (0=Sun…6=Sat). MONTHLY+bySetPos: which weekday. */
+  byWeekday?: number[];
+  /** MONTHLY/YEARLY day-of-month, 1–31, or -1 for the last day of the month. */
+  byMonthDay?: number | null;
+  /** MONTHLY nth-weekday: 1–4, or -1 for the last. Pairs with byWeekday[0]. */
+  bySetPos?: number | null;
+  /** YEARLY month, 1–12. */
+  byMonth?: number | null;
+  /** CRON: 5-field expression, evaluated by the module's own matcher. */
+  cron?: string | null;
+  end:
+    | { kind: "NEVER" }
+    /** Inclusive local date, YYYY-MM-DD — the series stops at end of that day. */
+    | { kind: "ON"; date: string }
+    /** Total occurrences generated from windowStart, before exclusions. */
+    | { kind: "AFTER"; count: number };
+  /** Local YYYY-MM-DD dates to skip. Excluded dates still consume an AFTER slot. */
+  exdates?: string[];
+}
+
+/**
+ * NC / CAPA are orphaned values (pg enum — never shrunk); no longer written.
+ * START_PROOF / SUBMISSION_PROOF are the mandatory geotagged selfies at the
+ * two ends of a run (D-9); START_PROOF is appended last because pg enums only
+ * grow at the tail under `drizzle-kit push`.
+ */
 export const auditEvidenceKindEnum = pgEnum("audit_evidence_kind", [
   "AUDIT",
   "RESPONSE",
   "NC",
   "CAPA",
   "SUBMISSION_PROOF",
+  "START_PROOF",
 ]);
 
 export const auditEventKindEnum = pgEnum("audit_event_kind", [
@@ -210,9 +279,7 @@ export const auditSectionsTable = pgTable(
   "audit_sections",
   {
     id: text("id").primaryKey(),
-    templateVersionId: text("template_version_id")
-      .notNull()
-      .references(() => auditTemplateVersionsTable.id, { onDelete: "cascade" }),
+    templateVersionId: text("template_version_id").notNull(),
     title: text("title").notNull(),
     description: text("description"),
     orderIndex: integer("order_index").notNull(),
@@ -221,6 +288,19 @@ export const auditSectionsTable = pgTable(
   },
   (table) => [
     index("audit_sections_template_version_id_idx").on(table.templateVersionId),
+    /**
+     * Named explicitly: drizzle's derived name
+     * (`audit_sections_template_version_id_audit_template_versions_id_fk`) is 66
+     * chars, so Postgres truncates it to 63 in the catalogue and every `push`
+     * then re-emits DROP + ADD for a constraint that never changed. `push says
+     * nothing to do` is the drift signal this repo relies on, so it has to stay
+     * true.
+     */
+    foreignKey({
+      columns: [table.templateVersionId],
+      foreignColumns: [auditTemplateVersionsTable.id],
+      name: "audit_sections_template_version_id_fk",
+    }).onDelete("cascade"),
   ],
 );
 
@@ -271,15 +351,26 @@ export const auditQuestionsTable = pgTable(
 export const auditSchedulesTable = pgTable("audit_schedules", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
-  templateVersionId: text("template_version_id")
-    .notNull()
-    .references(() => auditTemplateVersionsTable.id),
+  templateVersionId: text("template_version_id").notNull(),
   /** Denormalized from the template; service rejects CX schedules (C-3). */
   auditType: auditTypeEnum("audit_type").notNull(),
+  /** Legacy bucket, kept populated for older readers; `recurrenceJson` wins. */
   frequency: auditScheduleFrequencyEnum("frequency").notNull(),
   intervalDays: integer("interval_days"),
   dayOfWeek: integer("day_of_week"),
   cron: text("cron"),
+  /**
+   * The calendar recurrence rule. Null on rows written before the rule model,
+   * which the engine maps from the legacy columns at read time — so this stays
+   * nullable rather than backfilled, and `drizzle-kit push` adds it losslessly.
+   */
+  recurrenceJson: json("recurrence_json").$type<RecurrenceRule>(),
+  /**
+   * Hierarchical scope, re-resolved at every occurrence. Null on schedules
+   * written before the scope model — those keep using their frozen
+   * `audit_schedule_targets` rows, so nothing existing changes behaviour.
+   */
+  scopeJson: json("scope_json").$type<AuditScopeRule>(),
   /** Local time-of-day per occurrence, "HH:mm" in org timezone. */
   timeOfDay: text("time_of_day").notNull(),
   windowStart: timestamp("window_start").notNull(),
@@ -295,7 +386,14 @@ export const auditSchedulesTable = pgTable("audit_schedules", {
   createdBy: text("created_by"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => [
+  /** Named explicitly for the same 63-char truncation reason as audit_sections above. */
+  foreignKey({
+    columns: [table.templateVersionId],
+    foreignColumns: [auditTemplateVersionsTable.id],
+    name: "audit_schedules_template_version_id_fk",
+  }),
+]);
 
 export const auditScheduleTargetsTable = pgTable(
   "audit_schedule_targets",
@@ -360,11 +458,14 @@ export const auditsTable = pgTable(
     startedAt: timestamp("started_at"),
     startGeoLat: doublePrecision("start_geo_lat"),
     startGeoLng: doublePrecision("start_geo_lng"),
+    /** Live geotagged start photo slot — the mandatory start-of-run selfie.
+     *  Null on audits started before the start gate shipped. */
+    startEvidenceId: text("start_evidence_id"),
     submittedAt: timestamp("submitted_at"),
     submitGeoLat: doublePrecision("submit_geo_lat"),
     submitGeoLng: doublePrecision("submit_geo_lng"),
     durationSeconds: integer("duration_seconds"),
-    /** Live geotagged submission photo slot (D-9 / FRD-EXE-13). */
+    /** Live geotagged submission (end) photo slot (D-9 / FRD-EXE-13). */
     submissionEvidenceId: text("submission_evidence_id"),
     approvedAt: timestamp("approved_at"),
     closedAt: timestamp("closed_at"),

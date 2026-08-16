@@ -3,6 +3,8 @@ import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { AlertCircle, Check, ListChecks, Plus, RefreshCw, RotateCcw } from "lucide-react";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -10,12 +12,153 @@ import { apiFetch } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
 import { ScheduleCreateDialog } from "./schedule-create-dialog";
 import {
-  scoreColorClass, type ApiOne, type ApiPage, type AuditRow, type AuditType,
-  type DashboardSummary,
+  AUDIT_STATE_BADGE, fmtDateTime, scoreColorClass, titleCase,
+  type ApiOne, type ApiPage, type AuditRow, type AuditType, type DashboardSummary,
 } from "./lib";
 import { cn } from "@/lib/utils";
 
 const TYPE_CHIP: Record<AuditType, string> = { UL: "bg-accent/10 text-accent-strong", CM: "bg-info-soft text-info", CX: "bg-muted text-muted-foreground" };
+
+/** "3d" / "5h" / "12m" — the compact age shown in the queue's right-hand column. */
+function shortAge(iso: string | null): string {
+  if (!iso) return "—";
+  return formatDistanceToNow(new Date(iso)).replace(/ (day|hour|minute)s?.*/, (_m, u) => (u === "day" ? "d" : u === "hour" ? "h" : "m"));
+}
+
+function scorePct(a: AuditRow): number | null {
+  return a.scorePct != null ? Math.round(Number(a.scorePct)) : null;
+}
+
+/** Score + verdict pair. Renders spans only so it is legal inside the accordion
+ *  trigger (a <button>) as well as inside a plain row. */
+function ScoreBlock({ value, label, tone }: { value: number | null; label: string; tone: string }) {
+  return (
+    <span className="shrink-0 text-right">
+      <span className={cn("block font-display text-[17px] font-extrabold tabular-nums", value == null ? "text-muted-foreground" : scoreColorClass(value))}>{value ?? "—"}</span>
+      <span className={cn("block text-[10px] font-bold uppercase tracking-[0.06em]", tone)}>{label}</span>
+    </span>
+  );
+}
+
+/** One audit = one row. The flat presentation used for CM/CX (one audit per
+ *  property) and for any UL property that only has a single room in the queue. */
+function QueueRow({ audit, onOpen }: { audit: AuditRow; onOpen: () => void }) {
+  const pct = scorePct(audit);
+  const fail = audit.result === "FAIL";
+  return (
+    <div className="flex items-center gap-3 rounded-[11px] border border-border bg-card px-3.5 py-3">
+      <span className={cn("flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] font-mono text-[10.5px] font-bold", TYPE_CHIP[audit.auditType])}>{audit.auditType}</span>
+      <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <div className="truncate text-[13.5px] font-bold">{audit.propertyName ?? audit.title} <span className="text-muted-foreground">›</span></div>
+        <div className="truncate font-mono text-[11px] text-muted-foreground">{audit.ticketNo}{audit.roomNumber ? ` · Room ${audit.roomNumber}` : ""} · {audit.assigneeName ?? "—"} · click to review</div>
+      </button>
+      <ScoreBlock value={pct} label={fail ? "Fail" : pct != null ? "Pass" : "—"} tone={fail ? "text-destructive" : pct != null ? "text-success" : "text-muted-foreground"} />
+      <span className="w-9 shrink-0 text-right font-mono text-[11px] text-muted-foreground" title={fmtDateTime(audit.submittedAt)}>{shortAge(audit.submittedAt)}</span>
+    </div>
+  );
+}
+
+/** A UL property collapsed into one row: a 40-room property otherwise fans out
+ *  into 40 near-identical rows. The header carries the roll-up a reviewer
+ *  triages on (how many pending, how many failing, the worst score, the oldest
+ *  submission); expanding lists the rooms, each opening its own review screen. */
+function PropertyGroup({ audits, onOpen }: { audits: AuditRow[]; onOpen: (id: string) => void }) {
+  const pcts = audits.map(scorePct).filter((p): p is number => p != null);
+  const lowest = pcts.length ? Math.min(...pcts) : null;
+  const failCount = audits.filter((a) => a.result === "FAIL").length;
+  const oldest = audits.reduce<string | null>(
+    (acc, a) => (a.submittedAt && (acc == null || a.submittedAt < acc) ? a.submittedAt : acc),
+    null,
+  );
+  // Fail-first inside the group: the rooms that need a decision most are the
+  // ones the reviewer should see the moment the property is expanded.
+  const rooms = React.useMemo(
+    () => [...audits].sort((a, b) => {
+      const failDelta = Number(b.result === "FAIL") - Number(a.result === "FAIL");
+      if (failDelta !== 0) return failDelta;
+      return (scorePct(a) ?? 101) - (scorePct(b) ?? 101);
+    }),
+    [audits],
+  );
+  return (
+    <Accordion type="single" collapsible>
+      <AccordionItem value="rooms" className="overflow-hidden rounded-[11px] border border-border bg-card">
+        <AccordionTrigger className="gap-3 px-3.5 py-3 hover:no-underline">
+          <span className={cn("flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] font-mono text-[10.5px] font-bold", TYPE_CHIP.UL)}>UL</span>
+          <span className="min-w-0 flex-1 text-left">
+            <span className="block truncate text-[13.5px] font-bold">{audits[0]?.propertyName ?? audits[0]?.title}</span>
+            <span className="block truncate font-mono text-[11px] font-normal text-muted-foreground">
+              {audits.length} rooms pending review{failCount > 0 ? ` · ${failCount} failing` : pcts.length ? " · all passing" : ""}
+            </span>
+          </span>
+          <ScoreBlock
+            value={lowest}
+            label={failCount > 0 ? `${failCount} fail` : "Lowest"}
+            tone={failCount > 0 ? "text-destructive" : "text-muted-foreground"}
+          />
+          <span className="w-9 shrink-0 text-right font-mono text-[11px] font-normal text-muted-foreground" title={fmtDateTime(oldest)}>{shortAge(oldest)}</span>
+        </AccordionTrigger>
+        <AccordionContent className="pb-0">
+          <div className="border-t border-border">
+            {rooms.map((a) => {
+              const pct = scorePct(a);
+              const fail = a.result === "FAIL";
+              return (
+                <div key={a.id} className="flex items-center gap-3 border-b border-border/60 py-2.5 pl-[60px] pr-3.5 last:border-b-0 hover:bg-muted/40">
+                  <button type="button" onClick={() => onOpen(a.id)} className="min-w-0 flex-1 text-left">
+                    {/* roomNumber is only populated once the queue endpoint joins rooms;
+                        the ticket number keeps the row identifiable until then. */}
+                    <div className="truncate text-[13px] font-bold">{a.roomNumber ? `Room ${a.roomNumber}` : a.ticketNo} <span className="text-muted-foreground">›</span></div>
+                    <div className="truncate font-mono text-[11px] text-muted-foreground">{a.ticketNo} · {a.assigneeName ?? "—"} · click to review</div>
+                  </button>
+                  <Badge variant={AUDIT_STATE_BADGE[a.state]} className="shrink-0">{titleCase(a.state)}</Badge>
+                  <ScoreBlock value={pct} label={fail ? "Fail" : pct != null ? "Pass" : "—"} tone={fail ? "text-destructive" : pct != null ? "text-success" : "text-muted-foreground"} />
+                  <span className="w-9 shrink-0 text-right font-mono text-[11px] text-muted-foreground" title={fmtDateTime(a.submittedAt)}>{shortAge(a.submittedAt)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
+  );
+}
+
+type QueueEntry =
+  | { kind: "audit"; key: string; audits: [AuditRow] }
+  | { kind: "group"; key: string; audits: AuditRow[] };
+
+/**
+ * Collapse UL rows into one entry per property, leaving CM/CX flat.
+ * UL audits target a ROOM (one audit per room), so a property fans out into
+ * dozens of rows; CM/CX target the PROPERTY itself — one audit each — so
+ * grouping them would only add a click. Grouping also applies under the "All"
+ * filter, otherwise a single property's UL rows bury every CM/CX row.
+ * A group is emitted at the position of its oldest member, which preserves the
+ * server's oldest-first ordering across both shapes.
+ */
+function buildEntries(rows: AuditRow[]): QueueEntry[] {
+  const entries: QueueEntry[] = [];
+  const groups = new Map<string, AuditRow[]>();
+  for (const a of rows) {
+    if (a.auditType !== "UL") {
+      entries.push({ kind: "audit", key: a.id, audits: [a] });
+      continue;
+    }
+    let bucket = groups.get(a.propertyId);
+    if (!bucket) {
+      bucket = [];
+      groups.set(a.propertyId, bucket);
+      entries.push({ kind: "group", key: `property-${a.propertyId}`, audits: bucket });
+    }
+    bucket.push(a);
+  }
+  // A property with a single room in the queue reads better as a plain row.
+  return entries.map((e): QueueEntry => {
+    const only = e.kind === "group" && e.audits.length === 1 ? e.audits[0] : undefined;
+    return only ? { kind: "audit", key: only.id, audits: [only] } : e;
+  });
+}
 
 /** Review queue: single-decision list — each row opens the review workspace at
  *  /audits/review/:id where the decision is made. Rendered standalone at
@@ -46,6 +189,7 @@ export function ReviewQueuePanel({ embedded = false }: { embedded?: boolean }) {
     () => (typeFilter === "ALL" ? rows : rows.filter((r) => r.auditType === typeFilter)),
     [rows, typeFilter],
   );
+  const entries = React.useMemo(() => buildEntries(visibleRows), [visibleRows]);
 
   const kpis = summaryQuery.data?.data?.kpis;
 
@@ -101,24 +245,13 @@ export function ReviewQueuePanel({ embedded = false }: { embedded?: boolean }) {
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {visibleRows.map((a) => {
-            const pct = a.scorePct != null ? Math.round(Number(a.scorePct)) : null;
-            const fail = a.result === "FAIL";
-            return (
-              <div key={a.id} className="flex items-center gap-3 rounded-[11px] border border-border bg-card px-3.5 py-3">
-                <span className={cn("flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] font-mono text-[10.5px] font-bold", TYPE_CHIP[a.auditType])}>{a.auditType}</span>
-                <button type="button" onClick={() => navigate(`/audits/review/${a.id}`)} className="min-w-0 flex-1 text-left">
-                  <div className="truncate text-[13.5px] font-bold">{a.propertyName ?? a.title} <span className="text-muted-foreground">›</span></div>
-                  <div className="truncate font-mono text-[11px] text-muted-foreground">{a.ticketNo}{a.roomNumber ? ` · Room ${a.roomNumber}` : ""} · {a.assigneeName ?? "—"} · click to review</div>
-                </button>
-                <div className="shrink-0 text-right">
-                  <div className={cn("font-display text-[17px] font-extrabold tabular-nums", pct == null ? "text-muted-foreground" : scoreColorClass(pct))}>{pct ?? "—"}</div>
-                  <div className={cn("text-[10px] font-bold uppercase tracking-[0.06em]", fail ? "text-destructive" : pct != null ? "text-success" : "text-muted-foreground")}>{fail ? "Fail" : pct != null ? "Pass" : "—"}</div>
-                </div>
-                <span className="w-9 shrink-0 text-right font-mono text-[11px] text-muted-foreground">{a.submittedAt ? formatDistanceToNow(new Date(a.submittedAt)).replace(/ (day|hour|minute)s?.*/, (m, u) => (u === "day" ? "d" : u === "hour" ? "h" : "m")) : "—"}</span>
-              </div>
-            );
-          })}
+          {entries.map((e) =>
+            e.kind === "group" ? (
+              <PropertyGroup key={e.key} audits={e.audits} onOpen={(id) => navigate(`/audits/review/${id}`)} />
+            ) : (
+              <QueueRow key={e.key} audit={e.audits[0]} onOpen={() => navigate(`/audits/review/${e.audits[0].id}`)} />
+            ),
+          )}
         </div>
       )}
     </div>
@@ -185,12 +318,12 @@ export default function ReviewQueue() {
         <div className="flex flex-wrap items-center gap-2">
           {showPrevious && (
             <Button variant="outline" onClick={() => navigate("/audits/register")}>
-              <ListChecks className="mr-1.5 h-4 w-4" /> Previous audits
+              <ListChecks className="mr-1.5 h-4 w-4" /> Audits
             </Button>
           )}
           {showSchedules && (
             <Button onClick={() => setScheduleOpen(true)}>
-              <Plus className="mr-1.5 h-4 w-4" /> New schedule
+              <Plus className="mr-1.5 h-4 w-4" /> Schedule Audit
             </Button>
           )}
         </div>

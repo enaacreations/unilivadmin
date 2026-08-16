@@ -231,16 +231,31 @@ router.get(
 
     const data = await Promise.all(
       templates.map(async (t) => {
-        const [latest] = await db
-          .select()
+        // Latest version drives the authoring surface; latest PUBLISHED version
+        // drives every consumer that must bind to immutable content (schedules,
+        // ad-hoc audits). Forking a draft must not hide the published version.
+        const versions = await db
+          .select({
+            id: auditTemplateVersionsTable.id,
+            versionNo: auditTemplateVersionsTable.versionNo,
+            lifecycle: auditTemplateVersionsTable.lifecycle,
+          })
           .from(auditTemplateVersionsTable)
           .where(eq(auditTemplateVersionsTable.templateId, t.id))
-          .orderBy(desc(auditTemplateVersionsTable.versionNo))
-          .limit(1);
+          .orderBy(desc(auditTemplateVersionsTable.versionNo));
+        const latest = versions[0];
+        const published = versions.find((v) => v.lifecycle === "PUBLISHED");
+        // Schedules pin a specific version, so count across every version of the
+        // template — otherwise forking a draft drops the count to zero.
         const [schedules] = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(auditSchedulesTable)
-          .where(and(eq(auditSchedulesTable.templateVersionId, latest?.id ?? ""), eq(auditSchedulesTable.status, "ACTIVE")));
+          .where(
+            and(
+              sql`${auditSchedulesTable.templateVersionId} IN (SELECT id FROM audit_template_versions WHERE template_id = ${t.id})`,
+              eq(auditSchedulesTable.status, "ACTIVE"),
+            ),
+          );
         const [audits] = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(auditsTable)
@@ -252,6 +267,8 @@ router.get(
           latestVersionNo: latest?.versionNo ?? null,
           latestVersionId: latest?.id ?? null,
           lifecycle: latest?.lifecycle ?? null,
+          publishedVersionNo: published?.versionNo ?? null,
+          publishedVersionId: published?.id ?? null,
           activeSchedules: schedules?.count ?? 0,
           auditsGenerated: audits?.count ?? 0,
         };

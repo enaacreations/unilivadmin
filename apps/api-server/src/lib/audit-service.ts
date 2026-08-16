@@ -2,7 +2,7 @@
  * Audit & Inspection — shared domain services: numbering allocation, module
  * settings, actor helpers, submit gate, evidence storage, auto-close.
  */
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Request } from "express";
 import {
   db,
@@ -76,10 +76,77 @@ export interface SubmitBlocker {
   prompt?: string;
 }
 
+/* ── Presence proof: the start & end selfies (D-9 / FRD-EXE-13/14) ─────────── */
+
+/** A capture older than this is not "live" any more — retake it. */
+export const LIVE_PROOF_MAX_AGE_MS = 15 * 60_000;
+
+export type LiveProofKind = "START_PROOF" | "SUBMISSION_PROOF";
+
+/**
+ * Server-side checks shared by both selfies: captured in-app (no gallery),
+ * GPS present, and a client capture time inside the freshness window. The two
+ * ends use distinct error codes so the client can point at the right step.
+ */
+export function assertLiveGeoCapture(
+  code: "START_PHOTO_REQUIRED" | "LIVE_PHOTO_REQUIRED",
+  label: string,
+  input: {
+    isLiveCapture: boolean;
+    geo?: { lat?: unknown; lng?: unknown } | undefined;
+    capturedAt?: unknown;
+  },
+): void {
+  if (!input.isLiveCapture) {
+    throw httpError(422, code, { reason: `${label} must be a live camera capture (no gallery)` });
+  }
+  if (typeof input.geo?.lat !== "number" || typeof input.geo?.lng !== "number") {
+    throw httpError(422, code, { reason: `${label} requires GPS coordinates` });
+  }
+  const capturedAt = input.capturedAt ? new Date(String(input.capturedAt)) : null;
+  if (capturedAt && Math.abs(Date.now() - capturedAt.getTime()) > LIVE_PROOF_MAX_AGE_MS) {
+    throw httpError(422, code, { reason: "Capture is older than 15 minutes — take a fresh photo" });
+  }
+}
+
+/**
+ * Newest live geotagged proof of a kind. `maxAgeMs` bounds how old the stored
+ * row may be: the start gate passes it so a proof left over from an earlier
+ * attempt (e.g. before a rejection) can never unlock a fresh run, while
+ * read-only lookups pass nothing and just resolve whatever was stamped.
+ */
+export async function findLiveProof(
+  auditId: string,
+  kind: LiveProofKind,
+  maxAgeMs?: number,
+): Promise<typeof auditEvidenceTable.$inferSelect | null> {
+  const rows = await db
+    .select()
+    .from(auditEvidenceTable)
+    .where(
+      and(
+        eq(auditEvidenceTable.auditId, auditId),
+        eq(auditEvidenceTable.kind, kind),
+        eq(auditEvidenceTable.isLiveCapture, true),
+      ),
+    )
+    .orderBy(desc(auditEvidenceTable.createdAt));
+  const cutoff = maxAgeMs != null ? Date.now() - maxAgeMs : null;
+  return (
+    rows.find(
+      (e) =>
+        e.geoLat != null &&
+        e.geoLng != null &&
+        (cutoff == null || e.createdAt.getTime() >= cutoff),
+    ) ?? null
+  );
+}
+
 /**
  * The submission gate (FRD-EXE-11/13): named, tappable list of everything
  * blocking submit — unanswered mandatory questions, missing mandatory
- * evidence, and the live geotagged submission photo (D-9).
+ * evidence, and the live geotagged END selfie (D-9). The START selfie is
+ * gated at /start instead, so audits already running keep submitting.
  */
 export async function computeSubmitBlockers(audit: {
   id: string;
@@ -119,8 +186,8 @@ export async function computeSubmitBlockers(audit: {
     }
   }
 
-  // Live geotagged submission photo (FRD-EXE-13): captured live, with GPS,
-  // during the current in-progress session.
+  // Live geotagged END selfie (FRD-EXE-13): captured live, with GPS, during
+  // the current in-progress session.
   const proof = evidence
     .filter(
       (e) =>

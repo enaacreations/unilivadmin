@@ -10,7 +10,7 @@
  * — retries and missed windows can never duplicate, and restarts catch up
  * because enumeration resumes from the watermark.
  */
-import { and, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   db,
   auditsTable,
@@ -18,9 +18,12 @@ import {
   auditScheduleTargetsTable,
   auditTemplateVersionsTable,
   auditTemplatesTable,
+  citiesTable,
   clustersTable,
   propertiesTable,
+  userScopesTable,
   usersTable,
+  type RecurrenceRule,
 } from "@workspace/db";
 import { logger } from "./logger.js";
 import { newId } from "./id.js";
@@ -33,6 +36,17 @@ import {
   maybeAutoCloseAudit,
   AUDIT_SETTING_DEFAULTS,
 } from "./audit-service.js";
+import { enumerateFromRule, legacyToRule } from "./audit-recurrence.js";
+import { resolveScheduleTargets } from "./audit-scope.js";
+
+// Cron helpers moved to audit-recurrence.ts; re-exported so existing importers
+// (and the schedule routes) keep working against one implementation.
+export {
+  cronFieldMatches,
+  cronMatches,
+  isValidCron,
+  atTimeOfDay,
+} from "./audit-recurrence.js";
 
 /* ── Occurrence enumeration ────────────────────────────────────────────────── */
 
@@ -45,137 +59,29 @@ export interface ScheduleLike {
   timeOfDay: string;
   windowStart: Date;
   windowEnd: Date | null;
-}
-
-function atTimeOfDay(day: Date, timeOfDay: string): Date {
-  const [h, m] = timeOfDay.split(":").map(Number);
-  const d = new Date(day);
-  d.setHours(h ?? 9, m ?? 0, 0, 0);
-  return d;
-}
-
-/** Minimal 5-field cron matcher: minute hour dom month dow (* , - / lists). */
-export function cronFieldMatches(field: string, value: number, min: number, max: number): boolean {
-  for (const part of field.split(",")) {
-    const [rangePart, stepPart] = part.split("/");
-    const step = stepPart ? Number(stepPart) : 1;
-    let lo = min;
-    let hi = max;
-    if (rangePart !== "*" && rangePart !== "") {
-      if (rangePart!.includes("-")) {
-        const [a, b] = rangePart!.split("-").map(Number);
-        lo = a!;
-        hi = b!;
-      } else {
-        lo = hi = Number(rangePart);
-      }
-    }
-    if (value >= lo && value <= hi && (value - lo) % step === 0) return true;
-  }
-  return false;
-}
-
-export function cronMatches(expr: string, date: Date): boolean {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return false;
-  const [minute, hour, dom, month, dow] = fields;
-  return (
-    cronFieldMatches(minute!, date.getMinutes(), 0, 59) &&
-    cronFieldMatches(hour!, date.getHours(), 0, 23) &&
-    cronFieldMatches(dom!, date.getDate(), 1, 31) &&
-    cronFieldMatches(month!, date.getMonth() + 1, 1, 12) &&
-    cronFieldMatches(dow!, date.getDay(), 0, 6)
-  );
-}
-
-export function isValidCron(expr: string): boolean {
-  const fields = expr.trim().split(/\s+/);
-  return (
-    fields.length === 5 &&
-    fields.every((f) => /^(\*|\d+)(-\d+)?(\/\d+)?(,(\*|\d+)(-\d+)?(\/\d+)?)*$/.test(f))
-  );
+  /** Null on rows written before the rule model — mapped from the columns above. */
+  recurrenceJson?: RecurrenceRule | null;
 }
 
 /**
- * All occurrence datetimes with fromExclusive < t <= toInclusive, respecting
- * the schedule window. Times are in server-local time, which the deployment
- * pins to the org timezone (NFR-07).
+ * All occurrence datetimes with fromExclusive < t <= toInclusive.
+ *
+ * The recurrence rule is the source of truth; pre-rule rows are mapped from
+ * their legacy cadence columns so their occurrences do not shift. Times are
+ * server-local, which the deployment pins to the org timezone (NFR-07).
  */
 export function enumerateOccurrences(
   schedule: ScheduleLike,
   fromExclusive: Date,
   toInclusive: Date,
 ): Date[] {
-  const windowEnd = schedule.windowEnd;
+  const rule = schedule.recurrenceJson ?? legacyToRule(schedule);
+  // Legacy rows are bounded by windowEnd; a rule carries its own end condition,
+  // and windowEnd is only a denormalised date for those — clamping on it would
+  // clip occurrences on the final day.
+  const windowEnd = schedule.recurrenceJson ? null : schedule.windowEnd;
   const hardEnd = windowEnd && windowEnd < toInclusive ? windowEnd : toInclusive;
-  if (schedule.windowStart > hardEnd) return [];
-
-  const out: Date[] = [];
-  const push = (d: Date) => {
-    if (d > fromExclusive && d <= hardEnd && d >= schedule.windowStart) out.push(d);
-  };
-
-  if (schedule.frequency === "CRON" && schedule.cron) {
-    // Scan minute-by-minute — bounded by the look-ahead window (days), so at
-    // most ~10k iterations per week of horizon.
-    const cursor = new Date(Math.max(schedule.windowStart.getTime(), fromExclusive.getTime()));
-    cursor.setSeconds(0, 0);
-    for (let t = cursor.getTime(); t <= hardEnd.getTime(); t += 60_000) {
-      const d = new Date(t);
-      if (cronMatches(schedule.cron, d)) push(d);
-    }
-    return out;
-  }
-
-  const first = atTimeOfDay(schedule.windowStart, schedule.timeOfDay);
-  const stepDays =
-    schedule.frequency === "EVERY_N_DAYS"
-      ? Math.min(Math.max(schedule.intervalDays ?? 1, 1), 6)
-      : schedule.frequency === "WEEKLY"
-        ? 7
-        : schedule.frequency === "FORTNIGHTLY"
-          ? 14
-          : null;
-  const stepMonths =
-    schedule.frequency === "MONTHLY"
-      ? 1
-      : schedule.frequency === "QUARTERLY"
-        ? 3
-        : schedule.frequency === "HALF_YEARLY"
-          ? 6
-          : schedule.frequency === "ANNUALLY"
-            ? 12
-            : null;
-
-  if (stepDays != null) {
-    let d = new Date(first);
-    if (schedule.frequency === "WEEKLY" && schedule.dayOfWeek != null) {
-      // Align to the configured day-of-week at/after windowStart.
-      while (d.getDay() !== schedule.dayOfWeek) d = new Date(d.getTime() + 86_400_000);
-      d = atTimeOfDay(d, schedule.timeOfDay);
-    }
-    for (; d <= hardEnd; d = atTimeOfDay(new Date(d.getTime() + stepDays * 86_400_000), schedule.timeOfDay)) {
-      push(d);
-    }
-    return out;
-  }
-
-  if (stepMonths != null) {
-    const anchorDay = first.getDate();
-    let cursor = new Date(first);
-    while (cursor <= hardEnd) {
-      push(cursor);
-      const next = new Date(cursor);
-      next.setDate(1); // avoid month-length rollover (31 Jan + 1mo)
-      next.setMonth(next.getMonth() + stepMonths);
-      const daysInMonth = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-      next.setDate(Math.min(anchorDay, daysInMonth));
-      cursor = atTimeOfDay(next, schedule.timeOfDay);
-    }
-    return out;
-  }
-
-  return out;
+  return enumerateFromRule(rule, schedule.timeOfDay, schedule.windowStart, fromExclusive, hardEnd);
 }
 
 /* ── Assignee resolution (FRD-ASG-02) ──────────────────────────────────────── */
@@ -183,16 +89,18 @@ export function enumerateOccurrences(
 export interface AssigneeRule {
   kind: "USER" | "ROLE_AT_TARGET";
   userId?: string;
-  role?: "UNIT_LEAD" | "CLUSTER_MANAGER";
+  /** Any rung of the escalation chain — see ESCALATION_CHAIN below. */
+  role?: EscalationRole;
 }
 
-/** Resolve the accountable assignee for a target at materialization time. */
-export async function resolveAssignee(
-  rule: AssigneeRule,
-  propertyId: string,
-): Promise<string | null> {
-  if (rule.kind === "USER") return rule.userId ?? null;
-  if (rule.role === "UNIT_LEAD") {
+/**
+ * Who a role resolves to at a property, one rung at a time.
+ *
+ * UNIT_LEAD reads users.propertyId; CLUSTER_MANAGER reads the cluster's owner;
+ * CITY_HEAD and ZONAL_HEAD read the `user_scopes` grants the org hierarchy uses.
+ */
+async function holderOfRole(role: EscalationRole, propertyId: string): Promise<string | null> {
+  if (role === "UNIT_LEAD") {
     const [user] = await db
       .select({ id: usersTable.id })
       .from(usersTable)
@@ -203,22 +111,118 @@ export async function resolveAssignee(
           eq(usersTable.isActive, true),
         ),
       )
+      // Deterministic pick when a property has more than one — nothing in the
+      // schema forbids it, and an arbitrary winner makes assignment unstable.
+      .orderBy(asc(usersTable.id))
       .limit(1);
     return user?.id ?? null;
   }
-  if (rule.role === "CLUSTER_MANAGER") {
-    const [prop] = await db
-      .select({ clusterId: propertiesTable.clusterId })
-      .from(propertiesTable)
-      .where(eq(propertiesTable.id, propertyId));
-    if (!prop?.clusterId) return null;
+
+  const [prop] = await db
+    .select({ clusterId: propertiesTable.clusterId })
+    .from(propertiesTable)
+    .where(eq(propertiesTable.id, propertyId));
+  if (!prop?.clusterId) return null;
+
+  if (role === "CLUSTER_MANAGER") {
     const [cluster] = await db
       .select({ managerId: clustersTable.managerId })
       .from(clustersTable)
       .where(eq(clustersTable.id, prop.clusterId));
     return cluster?.managerId ?? null;
   }
-  return null;
+
+  const [cluster] = await db
+    .select({ cityId: clustersTable.cityId })
+    .from(clustersTable)
+    .where(eq(clustersTable.id, prop.clusterId));
+  if (!cluster?.cityId) return null;
+
+  if (role === "CITY_HEAD") {
+    const [row] = await db
+      .select({ id: usersTable.id })
+      .from(userScopesTable)
+      .innerJoin(usersTable, eq(usersTable.id, userScopesTable.userId))
+      .where(
+        and(
+          eq(userScopesTable.cityId, cluster.cityId),
+          eq(userScopesTable.isActive, true),
+          eq(usersTable.role, "CITY_HEAD"),
+          eq(usersTable.isActive, true),
+        ),
+      )
+      .orderBy(asc(usersTable.id))
+      .limit(1);
+    return row?.id ?? null;
+  }
+
+  // ZONAL_HEAD — the city's zone.
+  const [city] = await db
+    .select({ zoneId: citiesTable.zoneId })
+    .from(citiesTable)
+    .where(eq(citiesTable.id, cluster.cityId));
+  if (!city?.zoneId) return null;
+  const [row] = await db
+    .select({ id: usersTable.id })
+    .from(userScopesTable)
+    .innerJoin(usersTable, eq(usersTable.id, userScopesTable.userId))
+    .where(
+      and(
+        eq(userScopesTable.zoneId, city.zoneId),
+        eq(userScopesTable.isActive, true),
+        eq(usersTable.role, "ZONAL_HEAD"),
+        eq(usersTable.isActive, true),
+      ),
+    )
+    .orderBy(asc(usersTable.id))
+    .limit(1);
+  return row?.id ?? null;
+}
+
+export type EscalationRole = "UNIT_LEAD" | "CLUSTER_MANAGER" | "CITY_HEAD" | "ZONAL_HEAD";
+
+/** Escalation order — each rung falls back to the next one up. */
+const ESCALATION_CHAIN: EscalationRole[] = ["UNIT_LEAD", "CLUSTER_MANAGER", "CITY_HEAD", "ZONAL_HEAD"];
+
+export interface AssigneeResolution {
+  userId: string | null;
+  /** The role that actually produced the assignee, if any. */
+  role: EscalationRole | null;
+  /** True when the configured role had no holder and we walked up the chain. */
+  escalated: boolean;
+}
+
+/**
+ * Resolve the accountable assignee, escalating up the org hierarchy when the
+ * configured role has no holder at that property.
+ *
+ * An unresolvable assignee used to be written as NULL with no warning and no
+ * event: the audit got a ticket number, went overdue, and appeared in nobody's
+ * queue — every notify call is guarded on assigneeId. Escalating keeps the work
+ * owned by someone; the caller records the fallback on the audit trail.
+ */
+export async function resolveAssigneeDetailed(
+  rule: AssigneeRule,
+  propertyId: string,
+): Promise<AssigneeResolution> {
+  if (rule.kind === "USER") {
+    return { userId: rule.userId ?? null, role: null, escalated: false };
+  }
+  const start = ESCALATION_CHAIN.indexOf((rule.role ?? "UNIT_LEAD") as EscalationRole);
+  const chain = start >= 0 ? ESCALATION_CHAIN.slice(start) : ESCALATION_CHAIN;
+  for (const [i, role] of chain.entries()) {
+    const userId = await holderOfRole(role, propertyId);
+    if (userId) return { userId, role, escalated: i > 0 };
+  }
+  return { userId: null, role: null, escalated: false };
+}
+
+/** Resolve the accountable assignee for a target at materialization time. */
+export async function resolveAssignee(
+  rule: AssigneeRule,
+  propertyId: string,
+): Promise<string | null> {
+  return (await resolveAssigneeDetailed(rule, propertyId)).userId;
 }
 
 /* ── Materializer (FRD-SCH-04) ─────────────────────────────────────────────── */
@@ -262,11 +266,6 @@ async function materializeSchedule(
     return;
   }
 
-  const targets = await db
-    .select()
-    .from(auditScheduleTargetsTable)
-    .where(eq(auditScheduleTargetsTable.scheduleId, schedule.id));
-
   const [version] = await db
     .select({
       id: auditTemplateVersionsTable.id,
@@ -279,6 +278,22 @@ async function materializeSchedule(
     .select({ targetType: auditTemplatesTable.targetType })
     .from(auditTemplatesTable)
     .where(eq(auditTemplatesTable.id, version.templateId));
+
+  /* Scope is resolved HERE, on every materialization run — not read from a
+     snapshot taken when the schedule was created. A property added to a cluster
+     (or a room added to a property) is therefore audited from its next
+     occurrence, with no edit to the schedule. Pre-scope schedules fall back to
+     their stored target rows, so their behaviour is unchanged. */
+  const targets = await resolveScheduleTargets(
+    schedule,
+    (template?.targetType as "PROPERTY" | "ROOM") ?? "PROPERTY",
+  );
+  if (targets.length === 0) {
+    logger.warn(
+      { scheduleId: schedule.id, scope: schedule.scopeJson },
+      "audit schedule resolved to zero targets — nothing generated this run",
+    );
+  }
 
   // Generated audits carry a snapshot of the LATEST published template content
   // (product decision 2026-07-24): resolve the template's newest PUBLISHED
@@ -306,7 +321,23 @@ async function materializeSchedule(
       if (!propertyId) continue;
       const targetId = target.roomId ?? propertyId;
       const occurrenceKey = `${schedule.id}:${occurrence.toISOString()}:${targetId}`;
-      const assigneeId = await resolveAssignee(rule, propertyId);
+      /* Escalates up the org chain when the configured role has no holder here.
+         An unassigned audit is invisible: every notify call is guarded on
+         assigneeId, and /audits/my filters on it — so it would go overdue in
+         nobody's queue. Both the fallback and the give-up are recorded. */
+      const resolution = await resolveAssigneeDetailed(rule, propertyId);
+      const assigneeId = resolution.userId;
+      if (resolution.escalated) {
+        logger.info(
+          { scheduleId: schedule.id, propertyId, from: rule.role, to: resolution.role },
+          "audit assignee escalated — configured role had no holder at this property",
+        );
+      } else if (!assigneeId) {
+        logger.warn(
+          { scheduleId: schedule.id, propertyId, role: rule.role },
+          "audit has no assignee — nobody in the escalation chain covers this property",
+        );
+      }
       const state = occurrence <= now ? "SCHEDULED" : "DRAFT";
 
       await db.transaction(async (tx) => {

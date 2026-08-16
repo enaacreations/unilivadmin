@@ -107,53 +107,6 @@ function ModuleTile({ m }: { m: ModuleCard }) {
   );
 }
 
-// Cycling gradient palette for workspace tiles (used when a single-module
-// persona's launcher explodes its group into one tile per workspace, so the
-// grid stays colourful instead of seven identical warm tiles).
-const WORKSPACE_TINTS: Array<[string, string, string, string]> = [
-  ["#FF9A3D", "#F2603C", "#FF9A3D", "#C2459A"],
-  ["#7C5CFF", "#C2459A", "#9B82FF", "#C2459A"],
-  ["#0EA5A5", "#3666CF", "#2CB9B9", "#3666CF"],
-  ["#16A34A", "#0EA5A5", "#34C58A", "#0EA5A5"],
-  ["#3666CF", "#6FA0F0", "#6FA0F0", "#7C5CFF"],
-  ["#E85D75", "#C2459A", "#E85D75", "#C2459A"],
-  ["#D97706", "#E8602C", "#E5A13D", "#E8602C"],
-];
-
-/** One tile per workspace (nav item) — used for single-module personas (F&B
- *  manager, unit lead) so the launcher shows their actual workspaces, not one
- *  lonely module tile. Same visual language as ModuleTile. */
-function WorkspaceTile({ item, index }: { item: NavItem; index: number }) {
-  const Icon = item.icon;
-  const [gradFrom, gradTo, tint, tint2] = WORKSPACE_TINTS[index % WORKSPACE_TINTS.length];
-  return (
-    <Link href={item.href}>
-      <button
-        type="button"
-        className="flex aspect-square w-full cursor-pointer flex-col items-center justify-center gap-3.5 rounded-[18px] p-5 text-center transition-[transform,box-shadow] duration-150 hover:-translate-y-[3px] hover:shadow-[0_10px_28px_rgba(36,26,21,0.10)]"
-        style={{
-          background: `linear-gradient(135deg, color-mix(in srgb, ${tint} 26%, var(--card)) 0%, color-mix(in srgb, ${tint} 8%, var(--card)) 55%, color-mix(in srgb, ${tint2} 18%, var(--card)) 100%)`,
-          border: `1px solid color-mix(in srgb, ${tint} 45%, var(--border))`,
-          boxShadow: `0 4px 14px color-mix(in srgb, ${tint} 14%, transparent)`,
-        }}
-      >
-        <span
-          className="flex h-[58px] w-[58px] shrink-0 items-center justify-center rounded-2xl text-white"
-          style={{
-            background: `linear-gradient(135deg, ${gradFrom} 0%, ${gradTo} 100%)`,
-            boxShadow: `0 6px 16px color-mix(in srgb, ${tint} 35%, transparent)`,
-          }}
-        >
-          <Icon className="h-[30px] w-[30px]" />
-        </span>
-        <span className="font-display text-base font-bold tracking-[-0.012em] text-foreground">
-          {item.title}
-        </span>
-      </button>
-    </Link>
-  );
-}
-
 /** Time-of-day greeting. Instead of a per-minute tick (1,440 pointless
  *  re-renders/day), schedule exactly ONE timeout for the next boundary
  *  (noon / 5 pm / midnight) and re-render only when the greeting changes. */
@@ -217,9 +170,6 @@ export default function AppLauncher() {
       .filter((m) => m.items.length > 0);
   }, [can, role]);
 
-  // A persona with exactly one module group → show its workspaces as the tiles.
-  const solo = modules.length === 1 ? modules[0] : null;
-
   return (
     <div className="flex animate-fade-up flex-col gap-7">
       {/* Personal hero — greeting + where the user works. */}
@@ -243,13 +193,13 @@ export default function AppLauncher() {
         </div>
       </section>
 
-      {/* Module grid. When the persona has just one module group (F&B manager,
-          unit lead), explode it into one tile per workspace so the launcher
-          isn't a single lonely tile. */}
+      {/* Module grid — always one tile per module group, for every persona
+          (PO, 03-Aug-2026): the launcher shows domains, never individual
+          workspaces, so a single-module persona just gets a single tile. */}
       <section>
         <div className="mb-3 flex items-center gap-3">
           <h2 className="flex-1 font-display text-base font-bold tracking-[-0.012em]">
-            {solo ? "Your workspaces" : "Your modules"}
+            Your modules
           </h2>
         </div>
 
@@ -267,11 +217,7 @@ export default function AppLauncher() {
           />
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
-            {solo
-              ? solo.items.map((item, i) => (
-                  <WorkspaceTile key={item.href} item={item} index={i} />
-                ))
-              : modules.map((m) => <ModuleTile key={m.title} m={m} />)}
+            {modules.map((m) => <ModuleTile key={m.title} m={m} />)}
           </div>
         )}
       </section>

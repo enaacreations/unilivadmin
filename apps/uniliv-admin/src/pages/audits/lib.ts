@@ -98,6 +98,11 @@ export interface TemplateRow {
   latestVersionNo: number;
   latestVersionId: string;
   lifecycle: Lifecycle;
+  /** Latest PUBLISHED version — what schedules and ad-hoc audits must bind to.
+   *  Null until the template has ever been published. Stays populated while a
+   *  newer draft is being authored, so forking never hides the live version. */
+  publishedVersionNo: number | null;
+  publishedVersionId: string | null;
   activeSchedules: number;
   auditsGenerated: number;
   updatedAt: string;
@@ -209,7 +214,7 @@ export interface BankItem {
 
 export const FREQUENCIES = [
   "EVERY_N_DAYS", "WEEKLY", "FORTNIGHTLY", "MONTHLY",
-  "QUARTERLY", "HALF_YEARLY", "ANNUALLY", "CRON",
+  "QUARTERLY", "HALF_YEARLY", "ANNUALLY", "CRON", "NONE",
 ] as const;
 export type Frequency = (typeof FREQUENCIES)[number];
 
@@ -222,15 +227,175 @@ export const FREQUENCY_LABELS: Record<Frequency, string> = {
   HALF_YEARLY: "Half-yearly",
   ANNUALLY: "Annually",
   CRON: "Cron expression",
+  NONE: "Does not repeat",
 };
 
 export const DAYS_OF_WEEK = [
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 ] as const;
 
+/* ── Recurrence rule (mirrors RecurrenceRule in lib/db/src/schema/audit.ts) ── */
+
+export type RecurrenceFreq = "NONE" | "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY" | "CRON";
+
+export type RecurrenceEnd =
+  | { kind: "NEVER" }
+  | { kind: "ON"; date: string }
+  | { kind: "AFTER"; count: number };
+
+export interface RecurrenceRule {
+  freq: RecurrenceFreq;
+  interval: number;
+  byWeekday?: number[];
+  /** 1–31, or -1 for the last day of the month. */
+  byMonthDay?: number | null;
+  /** 1–4, or -1 for the last. Pairs with byWeekday[0]. */
+  bySetPos?: number | null;
+  byMonth?: number | null;
+  cron?: string | null;
+  end: RecurrenceEnd;
+  exdates?: string[];
+}
+
+const ORDINAL_WORDS: Record<number, string> = {
+  1: "first", 2: "second", 3: "third", 4: "fourth", [-1]: "last",
+};
+
+/** Local YYYY-MM-DD — the form the rule stores dates in. */
+export function toDateKey(d: Date): string {
+  return [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, "0"),
+    String(d.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+/** Which occurrence of its weekday a date is: 1st–4th, or -1 for the last. */
+export function weekdayPositionInMonth(d: Date): number {
+  const nth = Math.ceil(d.getDate() / 7);
+  const isLastOfKind = d.getDate() + 7 > new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return isLastOfKind && nth >= 4 ? -1 : nth;
+}
+
+export const RECURRENCE_NEVER: RecurrenceEnd = { kind: "NEVER" };
+
+/** The six Google-Calendar presets, anchored on the schedule's start date. */
+export function recurrencePresets(start: Date): { key: string; label: string; rule: RecurrenceRule }[] {
+  const wd = start.getDay();
+  const pos = weekdayPositionInMonth(start);
+  return [
+    { key: "NONE", label: "Does not repeat", rule: { freq: "NONE", interval: 1, end: RECURRENCE_NEVER } },
+    { key: "DAILY", label: "Daily", rule: { freq: "DAILY", interval: 1, end: RECURRENCE_NEVER } },
+    {
+      key: "WEEKLY",
+      label: `Weekly on ${DAYS_OF_WEEK[wd]}`,
+      rule: { freq: "WEEKLY", interval: 1, byWeekday: [wd], end: RECURRENCE_NEVER },
+    },
+    {
+      key: "MONTHLY",
+      label: `Monthly on the ${ORDINAL_WORDS[pos]} ${DAYS_OF_WEEK[wd]}`,
+      rule: { freq: "MONTHLY", interval: 1, bySetPos: pos, byWeekday: [wd], end: RECURRENCE_NEVER },
+    },
+    {
+      key: "YEARLY",
+      label: `Annually on ${start.toLocaleDateString(undefined, { month: "long", day: "numeric" })}`,
+      rule: {
+        freq: "YEARLY",
+        interval: 1,
+        byMonth: start.getMonth() + 1,
+        byMonthDay: start.getDate(),
+        end: RECURRENCE_NEVER,
+      },
+    },
+    {
+      key: "WEEKDAYS",
+      label: "Every weekday (Monday to Friday)",
+      rule: { freq: "WEEKLY", interval: 1, byWeekday: [1, 2, 3, 4, 5], end: RECURRENCE_NEVER },
+    },
+  ];
+}
+
+/** The preset key a rule corresponds to, or null when it is a custom rule. */
+export function matchRecurrencePreset(rule: RecurrenceRule, start: Date): string | null {
+  if (rule.end.kind !== "NEVER" || rule.exdates?.length) return null;
+  const norm = (r: RecurrenceRule) =>
+    JSON.stringify({
+      freq: r.freq,
+      interval: r.interval,
+      byWeekday: [...(r.byWeekday ?? [])].sort((a, b) => a - b),
+      byMonthDay: r.byMonthDay ?? null,
+      bySetPos: r.bySetPos ?? null,
+      byMonth: r.byMonth ?? null,
+    });
+  const mine = norm(rule);
+  return recurrencePresets(start).find((p) => norm(p.rule) === mine)?.key ?? null;
+}
+
+/** Human sentence for a rule — mirrors describeRule on the API side. */
+export function describeRecurrence(rule: RecurrenceRule): string {
+  const n = rule.interval > 1 ? `${rule.interval} ` : "";
+  let base: string;
+  switch (rule.freq) {
+    case "NONE":
+      return "Does not repeat";
+    case "CRON":
+      return `Cron: ${rule.cron ?? "—"}`;
+    case "DAILY":
+      base = rule.interval > 1 ? `Every ${rule.interval} days` : "Daily";
+      break;
+    case "WEEKLY": {
+      const isWeekdays =
+        rule.byWeekday?.length === 5 && [1, 2, 3, 4, 5].every((d) => rule.byWeekday?.includes(d));
+      base = isWeekdays
+        ? "Every weekday (Monday to Friday)"
+        : `Every ${n}week${rule.interval > 1 ? "s" : ""} on ${(rule.byWeekday ?? [])
+            .map((d) => DAYS_OF_WEEK[d]?.slice(0, 3))
+            .join(", ") || "—"}`;
+      break;
+    }
+    case "MONTHLY":
+      base =
+        rule.bySetPos != null && rule.byWeekday?.length
+          ? `Every ${n}month on the ${ORDINAL_WORDS[rule.bySetPos] ?? "?"} ${DAYS_OF_WEEK[rule.byWeekday[0]!]}`
+          : `Every ${n}month on day ${rule.byMonthDay === -1 ? "last" : (rule.byMonthDay ?? "?")}`;
+      break;
+    case "YEARLY":
+      base = `Every ${n}year`;
+      break;
+    default:
+      base = "Custom";
+  }
+  if (rule.end.kind === "ON") return `${base}, until ${rule.end.date}`;
+  if (rule.end.kind === "AFTER") return `${base}, ${rule.end.count} times`;
+  return base;
+}
+
+/**
+ * Roles a schedule can auto-assign to. Whoever holds the role at each target
+ * property conducts that property's audit, resolved at every occurrence — and
+ * this is also the escalation order, so an unfilled role falls to the next.
+ */
+export const ASSIGNABLE_ROLES = ["UNIT_LEAD", "CLUSTER_MANAGER", "CITY_HEAD", "ZONAL_HEAD"] as const;
+export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
+
+export const ASSIGNABLE_ROLE_LABELS: Record<AssignableRole, string> = {
+  UNIT_LEAD: "Unit Lead",
+  CLUSTER_MANAGER: "Cluster Manager",
+  CITY_HEAD: "City Head",
+  ZONAL_HEAD: "Zonal Head",
+};
+
+/** Where each role is resolved from — shown so the choice is not a guess. */
+export const ASSIGNABLE_ROLE_HINTS: Record<AssignableRole, string> = {
+  UNIT_LEAD: "the Unit Lead assigned to that property",
+  CLUSTER_MANAGER: "the manager of that property's cluster",
+  CITY_HEAD: "the City Head covering that property's city",
+  ZONAL_HEAD: "the Zonal Head covering that property's zone",
+};
+
 export type AssigneeRule =
   | { kind: "USER"; userId: string }
-  | { kind: "ROLE_AT_TARGET"; role: "UNIT_LEAD" | "CLUSTER_MANAGER" };
+  | { kind: "ROLE_AT_TARGET"; role: AssignableRole };
 
 export type ScheduleStatus = "ACTIVE" | "PAUSED" | "ENDED";
 
@@ -248,6 +413,10 @@ export interface ScheduleRow {
   intervalDays: number | null;
   dayOfWeek: number | null;
   cron: string | null;
+  /** Null on schedules written before the rule model. */
+  recurrenceJson: RecurrenceRule | null;
+  /** Human scope ("2 clusters"); null for pre-scope schedules with stored targets. */
+  scopeLabel?: string | null;
   timeOfDay: string;
   windowStart: string;
   windowEnd: string | null;
@@ -275,10 +444,17 @@ export interface ScheduleDetail extends ScheduleRow {
   targets: ScheduleTarget[];
 }
 
-/** "Monthly", "Every 2 days", "Weekly (Mon)", or the raw cron string. */
+/**
+ * "Monthly", "Every 2 days", "Weekly (Mon)", or the raw cron string.
+ *
+ * Prefers the recurrence rule when the row has one — the legacy `frequency`
+ * bucket cannot express e.g. Mon+Wed+Fri, and would flatten it to "Weekly".
+ */
 export function humanFrequency(
-  s: Pick<ScheduleRow, "frequency" | "intervalDays" | "dayOfWeek" | "cron">,
+  s: Pick<ScheduleRow, "frequency" | "intervalDays" | "dayOfWeek" | "cron"> &
+    Partial<Pick<ScheduleRow, "recurrenceJson">>,
 ): string {
+  if (s.recurrenceJson) return describeRecurrence(s.recurrenceJson);
   switch (s.frequency) {
     case "EVERY_N_DAYS":
       return s.intervalDays === 1 ? "Daily" : `Every ${s.intervalDays ?? "?"} days`;
@@ -321,6 +497,14 @@ export interface CalendarProjection {
   auditType: AuditType;
   occurrence: string;
   targetCount: number;
+}
+
+/** An occurrence the planner skipped — absent from `projected` by construction. */
+export interface CalendarSkip {
+  scheduleId: string;
+  title: string;
+  /** Local YYYY-MM-DD. */
+  date: string;
 }
 
 /** Chip colour classes per audit state (calendar + legend). */
@@ -391,9 +575,13 @@ export interface AuditRow {
   startedAt: string | null;
   startGeoLat: number | null;
   startGeoLng: number | null;
+  /** Mandatory start selfie; null on audits started before the start gate. */
+  startEvidenceId: string | null;
   submittedAt: string | null;
   submitGeoLat: number | null;
   submitGeoLng: number | null;
+  /** Mandatory end selfie (D-9). */
+  submissionEvidenceId: string | null;
   durationSeconds: number | null;
   approvedAt: string | null;
   closedAt: string | null;
@@ -410,6 +598,21 @@ export interface AuditRow {
   assigneeRole: string | null;
 }
 
+/** A presence selfie resolved to a signed URL (GET /audits/:id). */
+export interface ProofPhoto {
+  id: string;
+  kind: "START_PROOF" | "SUBMISSION_PROOF";
+  url: string | null;
+  thumbUrl: string | null;
+  mime: string;
+  geoLat: number | null;
+  geoLng: number | null;
+  geoAccuracyM: string | null;
+  capturedAt: string | null;
+  isLiveCapture: boolean;
+  createdAt: string;
+}
+
 export interface AuditDetailRow extends AuditRow {
   templateVersion: {
     id: string;
@@ -417,6 +620,9 @@ export interface AuditDetailRow extends AuditRow {
     templateId: string;
     templateName: string | null;
   } | null;
+  /** Null when the audit predates the start gate, or hasn't been submitted. */
+  startProof: ProofPhoto | null;
+  endProof: ProofPhoto | null;
 }
 
 /** Paginated list envelope with the buildMeta() shape. */
@@ -498,7 +704,7 @@ export interface RunResponse {
 
 export interface RunEvidence {
   id: string;
-  kind: "AUDIT" | "RESPONSE" | "NC" | "CAPA" | "SUBMISSION_PROOF";
+  kind: "AUDIT" | "RESPONSE" | "NC" | "CAPA" | "START_PROOF" | "SUBMISSION_PROOF";
   responseId: string | null;
   url: string | null;
   thumbUrl: string | null;
@@ -519,7 +725,9 @@ export interface AttachmentPolicy {
 }
 
 export interface RunPayload {
-  audit: AuditRow;
+  /** `rejectionReason` is the latest REJECTED review comment, present only
+   *  while the audit is in REJECTED so the auditor sees why before reworking. */
+  audit: AuditRow & { rejectionReason?: string | null };
   version: {
     id: string;
     versionNo: number;
@@ -623,6 +831,25 @@ export function scoreColorClass(pct: number | null | undefined): string {
   if (pct >= 75) return "text-lime-600";
   if (pct >= 50) return "text-amber-600";
   return "text-red-600";
+}
+
+/** Mirrors the server's freshness window for the start/end selfies. */
+export const LIVE_PROOF_MAX_AGE_MS = 15 * 60_000;
+
+/** "12.97160, 77.59460" — plain coordinates; we never claim a geofence match. */
+export function fmtGps(lat: number | null | undefined, lng: number | null | undefined): string | null {
+  if (lat == null || lng == null) return null;
+  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+/** Whole seconds between two ISO timestamps, or null if either is missing. */
+export function secondsBetween(
+  from: string | null | undefined,
+  to: string | null | undefined,
+): number | null {
+  if (!from || !to) return null;
+  const ms = new Date(to).getTime() - new Date(from).getTime();
+  return Number.isFinite(ms) ? Math.max(0, Math.round(ms / 1000)) : null;
 }
 
 /** "1h 24m" from seconds. */
@@ -904,4 +1131,38 @@ export function sectionPoints(questions: { type: QuestionType; weight: number }[
     (sum, q) => sum + (NON_SCORED_TYPES.has(q.type) ? 0 : q.weight),
     0,
   );
+}
+
+/**
+ * Map a pre-rule schedule row onto an equivalent rule, mirroring `legacyToRule`
+ * on the API side so the editor shows the same cadence the engine will run.
+ */
+export function legacyScheduleToRule(
+  s: Pick<ScheduleRow, "frequency" | "intervalDays" | "dayOfWeek" | "cron" | "windowStart" | "windowEnd">,
+): RecurrenceRule {
+  const start = new Date(s.windowStart);
+  const end: RecurrenceEnd = s.windowEnd
+    ? { kind: "ON", date: toDateKey(new Date(s.windowEnd)) }
+    : { kind: "NEVER" };
+  const day = start.getDate();
+  switch (s.frequency) {
+    case "EVERY_N_DAYS":
+      return { freq: "DAILY", interval: Math.max(1, s.intervalDays ?? 1), end };
+    case "WEEKLY":
+      return { freq: "WEEKLY", interval: 1, byWeekday: [s.dayOfWeek ?? start.getDay()], end };
+    case "FORTNIGHTLY":
+      return { freq: "WEEKLY", interval: 2, byWeekday: [start.getDay()], end };
+    case "MONTHLY":
+      return { freq: "MONTHLY", interval: 1, byMonthDay: day, end };
+    case "QUARTERLY":
+      return { freq: "MONTHLY", interval: 3, byMonthDay: day, end };
+    case "HALF_YEARLY":
+      return { freq: "MONTHLY", interval: 6, byMonthDay: day, end };
+    case "ANNUALLY":
+      return { freq: "YEARLY", interval: 1, byMonth: start.getMonth() + 1, byMonthDay: day, end };
+    case "CRON":
+      return { freq: "CRON", interval: 1, cron: s.cron, end };
+    default:
+      return { freq: "NONE", interval: 1, end };
+  }
 }

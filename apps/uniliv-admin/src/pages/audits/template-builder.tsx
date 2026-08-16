@@ -26,7 +26,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
 import { cn } from "@/lib/utils";
 import {
-  EVIDENCE_RULES, NON_SCORED_TYPES, QUESTION_TYPES,
+  EVIDENCE_RULES, NON_SCORED_TYPES,
   sectionPoints, titleCase,
   type ApiError, type ApiList, type ApiOne, type BankItem,
   type BuilderQuestion, type BuilderSection, type QuestionType,
@@ -174,19 +174,13 @@ function Inspector({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-2">
-          <Label>Type</Label>
-          <Select
-            value={q.type}
-            disabled={readOnly}
-            onValueChange={(v) => setQ({ type: v })}
-          >
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {QUESTION_TYPES.map((t) => (
-                <SelectItem key={t} value={t}>{titleCase(t)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <Label>Response type</Label>
+          {/* Owned by the Question Bank and copied in on insert — never editable
+              here, so one bank item can't mean different things per template. */}
+          <div className="flex h-10 items-center rounded-md border border-input bg-muted/40 px-3 text-sm text-muted-foreground">
+            {QTYPE_LABEL[q.type]}
+          </div>
+          <p className="text-xs text-muted-foreground">Set in the Question Bank.</p>
         </div>
         <div className="space-y-2">
           <Label>Weight</Label>
@@ -198,7 +192,7 @@ function Inspector({
             onChange={(e) => setQ({ weight: Math.max(0, Math.trunc(Number(e.target.value) || 0)) })}
           />
           {NON_SCORED_TYPES.has(q.type) && (
-            <p className="text-xs text-muted-foreground">Not scored.</p>
+            <p className="text-xs text-muted-foreground">Info only — carries no score.</p>
           )}
         </div>
       </div>
@@ -790,11 +784,6 @@ export default function TemplateBuilder() {
     openInspector();
   };
 
-  const addBlank = (s: BuilderSection) => {
-    setSelectedSectionId(s.id);
-    addQuestionMut.mutate({ sid: s.id, body: { prompt: "New question", type: "RATING", weight: 5 } });
-  };
-
   const openBank = (s: BuilderSection) => {
     setSelectedSectionId(s.id);
     setBankOpen(true);
@@ -946,13 +935,12 @@ export default function TemplateBuilder() {
                       >
                         {q.prompt || <span className="text-muted-foreground">Untitled question</span>}
                       </button>
-                      <button
-                        onClick={() => openQuestion(s, q)}
-                        className="shrink-0 rounded-full border border-border bg-background px-2.5 py-1 text-[10.5px] font-bold text-muted-foreground hover:border-accent"
-                        title="Response type — edit in details"
+                      <span
+                        className="shrink-0 rounded-full border border-dashed border-border bg-muted/40 px-2.5 py-1 text-[10.5px] font-bold text-muted-foreground"
+                        title="Response type — set in the Question Bank"
                       >
                         {QTYPE_LABEL[q.type]}
-                      </button>
+                      </span>
                       <button
                         onClick={() => onQuestionChange(q.id, { mandatory: !q.mandatory })}
                         disabled={readOnly}
@@ -972,7 +960,7 @@ export default function TemplateBuilder() {
                           <button className={cn(STEP, "h-[22px] w-[22px]")} disabled={readOnly} onClick={() => stepWeight(q, 1)}>+</button>
                         </span>
                       ) : (
-                        <span className="shrink-0 text-[10px] font-semibold text-muted-foreground">Not scored</span>
+                        <span className="shrink-0 text-[10px] font-semibold text-muted-foreground">Info only</span>
                       )}
                       {!readOnly && (
                         <button className="shrink-0 text-muted-foreground/60 hover:text-destructive" onClick={() => setDeleteQuestionId(q.id)} title="Remove question">
@@ -991,9 +979,6 @@ export default function TemplateBuilder() {
                   <div className="mt-2.5 flex flex-wrap items-center gap-2">
                     <Button variant="outline" size="sm" disabled={addQuestionMut.isPending} onClick={() => openBank(s)}>
                       <Library className="mr-1 h-4 w-4" /> Add from bank
-                    </Button>
-                    <Button variant="ghost" size="sm" disabled={addQuestionMut.isPending} onClick={() => addBlank(s)}>
-                      <Plus className="mr-1 h-4 w-4" /> Blank question
                     </Button>
                     <span className="flex-1" />
                     <button className="text-[11.5px] font-semibold text-muted-foreground hover:text-destructive" onClick={() => setDeleteSectionId(s.id)}>

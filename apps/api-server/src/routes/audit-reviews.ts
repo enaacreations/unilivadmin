@@ -24,7 +24,7 @@ import { httpError, isSuperAdmin } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { notify } from "../lib/notification-service.js";
-import { applyAuditTransition } from "../lib/audit-state.js";
+import { applyAuditTransition, REOPENABLE_STATES, type AuditState } from "../lib/audit-state.js";
 import {
   auditActor,
   evidenceUrl,
@@ -211,7 +211,15 @@ router.post(
   },
 );
 
-/** Reject with mandatory comment; audit returns to In Progress, answers kept. */
+/**
+ * Reject with a mandatory comment. The audit RESTS in REJECTED — the auditor's
+ * Rework bucket — with answers preserved. It leaves only via /audits/:id/start,
+ * which demands a fresh geotagged start photo, so a rework re-proves presence.
+ *
+ * This used to collapse REJECTED→IN_PROGRESS inside the same transaction, which
+ * meant no row ever committed as REJECTED: every rework affordance in the app
+ * was unreachable and the start gate was silently skipped on the second attempt.
+ */
 router.post(
   "/:id/reject",
   authenticate,
@@ -224,12 +232,6 @@ router.post(
 
     await db.transaction(async (tx) => {
       await applyAuditTransition(tx, audit, "REJECTED", { actor, reason: comment });
-      // FRD-REV-02 AC: the audit returns to the auditor In Progress with
-      // answers preserved — REJECTED is a routing state in the trail.
-      await applyAuditTransition(tx, { ...audit, state: "REJECTED" }, "IN_PROGRESS", {
-        actor,
-        reason: "Returned to auditor for rework",
-      });
       await tx.insert(auditReviewsTable).values({
         id: newId(),
         auditId: audit.id,
@@ -245,7 +247,7 @@ router.post(
         title: `Audit ${audit.ticketNo} rejected — rework needed`,
         body: comment.slice(0, 180),
         type: "AUDIT",
-        link: `/audits/${audit.id}/run`,
+        link: `/audits/${audit.id}`,
         entityType: "AUDIT",
         entityId: audit.id,
       });
@@ -255,9 +257,18 @@ router.post(
 );
 
 /**
- * Reopen a CLOSED audit (FRD-REV-06): Operations Excellence only, mandatory
+ * Reopen a finished audit (FRD-REV-06): Operations Excellence only, mandatory
  * reason, prior report revision preserved; resubmission produces revision+1.
- * AC matrix: non-OE → 403 · missing reason → 422 · valid → IN_PROGRESS.
+ *
+ * Accepts any finished state — SUBMITTED, UNDER_REVIEW, APPROVED or CLOSED.
+ * It used to accept CLOSED alone while the review UI offered the button for
+ * APPROVED too, so that path 409'd. Note approve auto-closes immediately, which
+ * made APPROVED a narrow but real window.
+ *
+ * The audit lands in REJECTED, not IN_PROGRESS: a reopen is the same "send it
+ * back" as a rejection, so it shows in the auditor's Rework bucket and re-entry
+ * goes through the start gate.
+ * AC matrix: non-OE → 403 · missing reason → 422 · valid → REJECTED.
  */
 router.post(
   "/:id/reopen",
@@ -270,12 +281,16 @@ router.post(
     const audit = await loadAudit(req.params["id"] as string);
     const reason = String(req.body?.reason ?? "").trim();
     if (!reason) throw httpError(422, "A reason is required to reopen (FRD-REV-06)");
-    if (audit.state !== "CLOSED") {
-      throw httpError(409, "ILLEGAL_TRANSITION", { from: audit.state, to: "IN_PROGRESS" });
+    if (!REOPENABLE_STATES.includes(audit.state as AuditState)) {
+      throw httpError(409, "ILLEGAL_TRANSITION", {
+        from: audit.state,
+        to: "REJECTED",
+        allowed: REOPENABLE_STATES,
+      });
     }
 
     await db.transaction(async (tx) => {
-      await applyAuditTransition(tx, audit, "IN_PROGRESS", {
+      await applyAuditTransition(tx, audit, "REJECTED", {
         actor: auditActor(req),
         reason: `Reopened: ${reason}`,
       });
