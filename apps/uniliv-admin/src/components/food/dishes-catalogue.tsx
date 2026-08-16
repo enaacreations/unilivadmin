@@ -152,20 +152,18 @@ export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canE
               placeholder="Search name or ingredient" aria-label="Search dishes" className="pl-9"
             />
           </div>
-          {/* Gated with the rest: the menu's import half POSTs /bulk/dishes,
-              which a view-only principal cannot call. Export goes with it
-              rather than leaving a menu whose only live item is a download. */}
-          {canEdit && (
-            <ImportExportMenu
-              resource="dishes"
-              columns={DISH_BULK_COLUMNS}
-              exportRows={exportRows}
-              onImported={() => {
-                qc.invalidateQueries({ queryKey: ["food", "dishes"] });
-                qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
-              }}
-            />
-          )}
+          {/* Export is a read and stays; the import half POSTs /bulk/dishes,
+              which a view-only principal cannot call. */}
+          <ImportExportMenu
+            resource="dishes"
+            columns={DISH_BULK_COLUMNS}
+            exportRows={exportRows}
+            canImport={canEdit}
+            onImported={() => {
+              qc.invalidateQueries({ queryKey: ["food", "dishes"] });
+              qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
+            }}
+          />
           {canEdit && (
             <Button
               className="bg-accent text-white hover:bg-accent/90"

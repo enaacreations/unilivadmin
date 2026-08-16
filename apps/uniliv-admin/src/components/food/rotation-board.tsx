@@ -16,14 +16,11 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AlertTriangle, Check, CheckCircle2, ChevronDown, CircleAlert, ClipboardPaste, Copy,
-  Download, FileDown, FileText, Plus, SlidersHorizontal, Sparkles,
+  AlertTriangle, Check, CheckCircle2, CircleAlert, ClipboardPaste, Copy,
+  FileDown, FileText, Plus, SlidersHorizontal, Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
-  DropdownMenuSeparator, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenuItem, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { type BulkColumn } from "@/components/bulk-upload-dialog";
 import { ImportExportMenu } from "@/components/import-export-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -458,49 +455,29 @@ export function RotationBoard({
               onChange={(v) => { setBrand(v); setSel(null); }}
             />
           )}
-          {/* One control for both directions, for anyone who can write. The
-              printable week report keeps its place here as an extra group — it
-              is a different artefact from the round-trippable export above it,
-              and is deliberately labelled so the two CSVs are not mistaken for
-              each other. */}
-          {canEdit ? (
-            <ImportExportMenu
-              resource="menu"
-              columns={MENU_BULK_COLUMNS}
-              exportRows={menuExportRows}
-              onImported={() => qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] })}
-            >
-              <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Printable report
-              </DropdownMenuLabel>
-              <DropdownMenuItem onClick={() => runExport("csv")}>
-                <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> Week {week} · CSV
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => runExport("pdf")}>
-                <FileText className="mr-2 h-4 w-4 text-destructive" /> Week {week} · PDF
-              </DropdownMenuItem>
-            </ImportExportMenu>
-          ) : (
-            /* No import half to offer, so a read-only principal keeps the plain
-               week report rather than losing the export outright. */
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline">
-                  <Download className="mr-2 h-4 w-4" /> Export <ChevronDown className="ml-2 h-4 w-4 opacity-70" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
-                <DropdownMenuLabel>Export week {week}</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => runExport("csv")}>
-                  <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> CSV
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => runExport("pdf")}>
-                  <FileText className="mr-2 h-4 w-4 text-destructive" /> PDF
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          {/* One control for both directions; `canImport` drops the upload half
+              for a read-only principal and leaves the downloads. The printable
+              week report keeps its place here as an extra group — it is a
+              different artefact from the round-trippable export above it, and is
+              deliberately labelled so the two CSVs are not mistaken for each
+              other. It survives in both modes, being a read. */}
+          <ImportExportMenu
+            resource="menu"
+            columns={MENU_BULK_COLUMNS}
+            exportRows={menuExportRows}
+            canImport={canEdit}
+            onImported={() => qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] })}
+          >
+            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Printable report
+            </DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => runExport("csv")}>
+              <FileDown className="mr-2 h-4 w-4 text-muted-foreground" /> Week {week} · CSV
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => runExport("pdf")}>
+              <FileText className="mr-2 h-4 w-4 text-destructive" /> Week {week} · PDF
+            </DropdownMenuItem>
+          </ImportExportMenu>
           {canEdit && (
             <Button variant="outline" disabled={busy} onClick={duplicateWeek}>
               <Copy className="mr-2 h-3.5 w-3.5" /> Copy W{week} → W{week === 4 ? 1 : week + 1}

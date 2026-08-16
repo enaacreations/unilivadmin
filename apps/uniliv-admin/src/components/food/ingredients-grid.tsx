@@ -109,15 +109,14 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
               placeholder="Search ingredients" aria-label="Search ingredients" className="pl-9"
             />
           </div>
-          {/* Gated with the rest — the import half POSTs /bulk/ingredients. */}
-          {canEdit && (
-            <ImportExportMenu
-              resource="ingredients"
-              columns={INGREDIENT_BULK_COLUMNS}
-              exportRows={exportRows}
-              onImported={invalidate}
-            />
-          )}
+          {/* Export is a read and stays; the import half POSTs /bulk/ingredients. */}
+          <ImportExportMenu
+            resource="ingredients"
+            columns={INGREDIENT_BULK_COLUMNS}
+            exportRows={exportRows}
+            canImport={canEdit}
+            onImported={invalidate}
+          />
           {canEdit && (
             <Button
               className="bg-accent text-white hover:bg-accent/90"
