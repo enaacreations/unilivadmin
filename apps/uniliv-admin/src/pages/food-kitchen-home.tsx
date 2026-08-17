@@ -89,32 +89,94 @@ type Slot = {
 /** Column micro-heading (same primitive as Food Overview's ColumnHead). */
 /** Kitchen summary downloads (generated client-side as real .xlsx via SheetJS
  *  from the same cook-plan data on screen — no server round-trip). */
-function xlsxName(kind: string, meal: MealType, day: string) {
-  return `${kind}-${meal.toLowerCase()}-${day.replace(/[^\w]+/g, "-").toLowerCase()}.xlsx`;
+function xlsxName(...parts: string[]) {
+  return parts.map((p) => p.replace(/[^\w]+/g, "-").toLowerCase()).filter(Boolean).join("-") + ".xlsx";
 }
-/** Full summary = item-wise "what dish, how much to cook" for the whole meal. */
-function downloadFullSummary(dishes: KitchenSummaryDish[], meal: MealType, day: string) {
-  const aoa: (string | number)[][] = [
-    ["Dish", "Quantity", "Unit"],
-    ...dishes.map((d) => [d.dishName, d.displayQty, d.displayUnit]),
-  ];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Cook plan");
-  XLSX.writeFile(wb, xlsxName("cook-plan", meal, day));
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/**
+ * The Full-summary worksheet, one block per dish: the dish with its cook
+ * quantity and property split, then one row per ingredient it calls for —
+ * names only, no amounts (the ingredient scaling model is still being settled
+ * with ops) — with the other dishes that share the ingredient. Dish-level
+ * cells are merged across the block so the sheet prints as readable groups.
+ * Replaces the old cook-plan, chef-summary and ingredients sheets.
+ */
+function fullSummarySheet(
+  dishes: KitchenSummaryDish[],
+  ingredientsByDish: Map<string, DishIngredientRow[]>,
+): XLSX.WorkSheet {
+  // Ingredient name → every dish in this plan that lists it ("Used in").
+  const usedIn = new Map<string, string[]>();
+  for (const d of dishes) {
+    for (const r of ingredientsByDish.get(d.dishId) ?? []) {
+      const name = r.ingredientName ?? "Ingredient";
+      const ds = usedIn.get(name) ?? [];
+      if (!ds.includes(d.dishName)) ds.push(d.dishName);
+      usedIn.set(name, ds);
+    }
+  }
+  const aoa: (string | number)[][] = [["Dish", "Quantity", "Unit", "Property", "Ingredients", "Used in"]];
+  const merges: XLSX.Range[] = [];
+  for (const d of dishes) {
+    const rows = ingredientsByDish.get(d.dishId) ?? [];
+    // byProperty.qty is already in displayUnit; one property needs no split.
+    const property = d.byProperty.length === 1
+      ? d.byProperty[0].propertyName
+      : d.byProperty.map((bp) => `${bp.propertyName} — ${fmtQty(bp.qty, d.displayUnit || undefined)}`).join(", ");
+    const start = aoa.length;
+    if (rows.length === 0) {
+      aoa.push([d.dishName, round3(d.displayQty), d.displayUnit.toLowerCase(), property, "—", "—"]);
+      continue;
+    }
+    rows.forEach((r, i) => {
+      const name = r.ingredientName ?? "Ingredient";
+      aoa.push([
+        i === 0 ? d.dishName : "",
+        i === 0 ? round3(d.displayQty) : "",
+        i === 0 ? d.displayUnit.toLowerCase() : "",
+        i === 0 ? property : "",
+        name,
+        (usedIn.get(name) ?? [d.dishName]).join(", "),
+      ]);
+    });
+    if (rows.length > 1) {
+      for (let c = 0; c <= 3; c++) merges.push({ s: { r: start, c }, e: { r: start + rows.length - 1, c } });
+    }
+  }
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!merges"] = merges;
+  ws["!cols"] = [{ wch: 26 }, { wch: 10 }, { wch: 8 }, { wch: 34 }, { wch: 32 }, { wch: 26 }];
+  return ws;
 }
-/** Chef summary = property × dish matrix: rows are properties, columns are the
- *  meal's dishes with their per-property quantities. */
-function downloadChefSummary(dishes: KitchenSummaryDish[], meal: MealType, day: string) {
-  const props = new Map<string, string>(); // propertyId -> name (first appearance order)
-  dishes.forEach((d) => d.byProperty.forEach((bp) => { if (!props.has(bp.propertyId)) props.set(bp.propertyId, bp.propertyName); }));
-  const header = ["Property", ...dishes.map((d) => (d.displayUnit ? `${d.dishName} (${d.displayUnit})` : d.dishName))];
-  const rows: (string | number)[][] = [...props.entries()].map(([pid, pname]) => [
-    pname,
-    ...dishes.map((d) => d.byProperty.find((bp) => bp.propertyId === pid)?.qty ?? 0),
-  ]);
+
+/** Full summary for one meal on the board — a single Full-summary sheet. */
+function downloadFullSummary(
+  dishes: KitchenSummaryDish[],
+  ingredientsByDish: Map<string, DishIngredientRow[]>,
+  meal: MealType,
+  day: string,
+) {
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([header, ...rows]), "Chef summary");
-  XLSX.writeFile(wb, xlsxName("chef-summary", meal, day));
+  XLSX.utils.book_append_sheet(wb, fullSummarySheet(dishes, ingredientsByDish), "Full summary");
+  XLSX.writeFile(wb, xlsxName("full-summary", meal, day));
+}
+
+/** Full summary for a whole day (the picker's property cards and combined
+ *  card) — one sheet per meal that has dishes, named by meal. Sheet names use
+ *  shortMeal because the long SNACKS label contains "/", which Excel forbids
+ *  in sheet names. `scopeName` (a property or kitchen name) tags the file. */
+function downloadFullSummaryDay(
+  byMeal: { meal: MealType; dishes: KitchenSummaryDish[] }[],
+  ingredientsByDish: Map<string, DishIngredientRow[]>,
+  scopeName: string,
+  day: string,
+) {
+  const wb = XLSX.utils.book_new();
+  for (const m of byMeal) {
+    XLSX.utils.book_append_sheet(wb, fullSummarySheet(m.dishes, ingredientsByDish), shortMeal(m.meal));
+  }
+  XLSX.writeFile(wb, xlsxName("full-summary", scopeName, day));
 }
 
 /** One ingredient's total for a meal, plus the dishes that call for it. */
@@ -161,37 +223,54 @@ export function buildIngredientLines(
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Ingredients summary = what to pull from the store for this meal. */
-function downloadIngredients(lines: IngredientLine[], meal: MealType, day: string) {
-  const aoa: (string | number)[][] = [
-    ["Ingredient", "Quantity", "Unit", "Used in"],
-    ...lines.map((l) => [l.name, l.qty, l.unit, l.dishes.join(", ")]),
-  ];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Ingredients");
-  XLSX.writeFile(wb, xlsxName("ingredients", meal, day));
-}
-
-/** Dispatch manifest = one row per order on the board, sent or still to go. */
-function downloadDispatchBoard(
-  rows: { o: FoodOrder; partner: string; status: string; sentAt: string }[],
+/**
+ * Dispatch list = one block per order on the board (sent or still to go), one
+ * row per dish on it: what's in the van, how much, and where it's headed.
+ * Dish lines come from the order's kitchen items (prepared qty wins over
+ * ordered, matching the board's accordion); order-level cells are merged
+ * across the block.
+ */
+async function downloadDispatchList(
+  rows: { o: FoodOrder; partner: string }[],
+  fetchItems: (orderId: string) => Promise<KitchenItem[]>,
   meal: MealType,
   day: string,
 ) {
-  const aoa: (string | number)[][] = [
-    ["Property", "Order", "People", "Partner", "Status", "Dispatched at"],
-    ...rows.map((r) => [
+  const itemsByOrder = await Promise.all(rows.map((r) => fetchItems(r.o.id).catch(() => [] as KitchenItem[])));
+  const aoa: (string | number)[][] = [["Dish", "Quantity", "Unit", "Property", "Order", "People", "Partner"]];
+  const merges: XLSX.Range[] = [];
+  rows.forEach((r, idx) => {
+    const orderCells: (string | number)[] = [
       r.o.propertyName ?? "Property",
       r.o.orderNumber,
       orderPeople(r.o),
       r.partner,
-      r.status,
-      r.sentAt,
-    ]),
-  ];
+    ];
+    const items = itemsByOrder[idx];
+    const start = aoa.length;
+    if (items.length === 0) {
+      aoa.push(["—", "", "", ...orderCells]);
+      return;
+    }
+    items.forEach((it, i) => {
+      const qty = it.preparedQty ?? it.orderedQty;
+      aoa.push([
+        it.dishName ?? "Item",
+        qty == null ? "" : round3(qty),
+        it.unit.toLowerCase(),
+        ...(i === 0 ? orderCells : ["", "", "", ""]),
+      ]);
+    });
+    if (items.length > 1) {
+      for (let c = 3; c <= 6; c++) merges.push({ s: { r: start, c }, e: { r: start + items.length - 1, c } });
+    }
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!merges"] = merges;
+  ws["!cols"] = [{ wch: 26 }, { wch: 10 }, { wch: 8 }, { wch: 26 }, { wch: 18 }, { wch: 8 }, { wch: 20 }];
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Dispatch board");
-  XLSX.writeFile(wb, xlsxName("dispatch-board", meal, day));
+  XLSX.utils.book_append_sheet(wb, ws, "Dispatch list");
+  XLSX.writeFile(wb, xlsxName("dispatch-list", meal, day));
 }
 
 function ColumnHead({ icon, label, tone, right }: {
@@ -508,13 +587,15 @@ function DayStepper({ day, setDay, dayLabel, dayDate }: {
 
 /** One property on the picker: who they are, where the day stands, a four-meal
  *  strip, and the two ways in — accept their waiting orders outright, or open
- *  their kitchen and work the meal. */
-function PropertyCard({ card, canKitchen, busy, onOpen, onAccept }: {
+ *  their kitchen and work the meal. `onDownload` (when the day has dishes)
+ *  saves the property's whole-day Full summary. */
+function PropertyCard({ card, canKitchen, busy, onOpen, onAccept, onDownload }: {
   card: PropertyCardData;
   canKitchen: boolean;
   busy: string | null;
   onOpen: () => void;
   onAccept: () => void;
+  onDownload?: (() => void) | null;
 }) {
   const tint = STATE_TINT[card.state];
   const actionable = card.state === "accept" || card.state === "dispatch";
@@ -537,16 +618,27 @@ function PropertyCard({ card, canKitchen, busy, onOpen, onAccept }: {
             <span className="font-mono tabular-nums">{card.people} people today</span>
           </div>
         </div>
-        <span
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold"
-          style={{ background: `color-mix(in srgb, ${tint} 16%, var(--card))`, color: tint }}
-        >
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
           <span
-            className={cn("h-[7px] w-[7px] rounded-full", actionable && "animate-pulse-dot")}
-            style={{ background: tint }}
-          />
-          {stateShort(card.state, card.placed.length)}
-        </span>
+            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold"
+            style={{ background: `color-mix(in srgb, ${tint} 16%, var(--card))`, color: tint }}
+          >
+            <span
+              className={cn("h-[7px] w-[7px] rounded-full", actionable && "animate-pulse-dot")}
+              style={{ background: tint }}
+            />
+            {stateShort(card.state, card.placed.length)}
+          </span>
+          {onDownload && (
+            <button
+              type="button"
+              onClick={onDownload}
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+            >
+              <Download className="h-3 w-3" /> Full summary
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Four-meal strip — where each meal of this property's day stands */}
@@ -818,18 +910,14 @@ export default function FoodKitchenHome() {
     return ids ? dishesForProperties(all, ids) : all;
   }, [daySummary, selected?.mealType, scope, kitchenPropertyIds]);
 
-  // People per property for this meal, across every live status — the basis the
-  // per-person ingredient rates scale by.
-  const peopleByProperty = React.useMemo(() => {
-    const m = new Map<string, number>();
-    for (const o of selected?.live ?? []) m.set(o.propertyId, (m.get(o.propertyId) ?? 0) + orderPeople(o));
-    return m;
-  }, [selected?.live]);
-
-  const ingredientLines = React.useMemo(
-    () => buildIngredientLines(exportDishes, ingredientsByDish, peopleByProperty),
-    [exportDishes, ingredientsByDish, peopleByProperty],
-  );
+  // A slice of the whole day from the same dispatched-inclusive total — the
+  // picker's Full summary downloads (one sheet per meal with dishes). `ids`
+  // narrows to some properties; null/undefined means everything on the page.
+  const dayMealsFor = (ids?: Set<string> | null) =>
+    MEAL_TYPES.map((mealType) => {
+      const all = daySummary?.meals.find((m) => m.mealType === mealType)?.dishes ?? [];
+      return { meal: mealType, dishes: ids ? dishesForProperties(all, ids) : all };
+    }).filter((m) => m.dishes.length > 0);
 
   // Hero counts follow the view: the picker totals the whole kitchen day, the
   // scoped board totals just what's in scope.
@@ -994,16 +1082,34 @@ export default function FoodKitchenHome() {
 
   // Everything on the board, ready and gone, as a downloadable manifest.
   const dispatchExportRows = [
-    ...dispatchable.map((o) => ({
-      o, partner: partnerNameOf(o) || "—", status: "Ready to send", sentAt: "",
-    })),
+    ...dispatchable.map((o) => ({ o, partner: partnerNameOf(o) || "—" })),
     ...dispatchedForMeal.map((o) => ({
       o,
       partner: o.deliveryPartnerName ?? agencies.find((a) => a.id === o.deliveryPartnerId)?.name ?? "—",
-      status: "Dispatched",
-      sentAt: o.dispatchedAt ? format(parseISO(o.dispatchedAt), "dd MMM, h:mm a") : "",
     })),
   ];
+
+  // The dispatch list needs each order's dish lines — fetched through the query
+  // cache so rows already opened on the board don't refetch.
+  const [exporting, setExporting] = React.useState(false);
+  const exportDispatchList = async () => {
+    if (exporting || dispatchExportRows.length === 0) return;
+    setExporting(true);
+    try {
+      await downloadDispatchList(
+        dispatchExportRows,
+        (orderId) => qc.fetchQuery({
+          queryKey: ["food", "kitchen-items", orderId],
+          queryFn: () => foodApi.kitchenItems(orderId),
+          staleTime: 60_000,
+        }),
+        selected.mealType,
+        dayLabel,
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const loading = ordersLoading || summaryLoading;
   const tint = STATE_TINT[selected?.state ?? "quiet"];
@@ -1156,43 +1262,62 @@ export default function FoodKitchenHome() {
       {/* ── Property picker ─────────────────────────────────────────────── */}
       {scope == null ? (
         <>
-          {/* Combined view — work every property's orders on one board */}
-          <button
-            type="button"
-            onClick={() => setScope(ALL_SCOPE)}
-            className="flex w-full flex-wrap items-center gap-4 rounded-[14px] border border-border bg-card px-[22px] py-4 text-left transition-colors hover:border-accent"
-          >
-            <div className="min-w-[240px] flex-1">
-              <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">
-                Combined summary
+          {/* Combined view — work every property's orders on one board. The
+              card is a div wrapping the original full-size open button, so the
+              day's Full summary download can float in the top-right corner
+              without nesting buttons or changing the card's footprint. */}
+          <div className="relative w-full rounded-[14px] border border-border bg-card transition-colors hover:border-accent">
+            <button
+              type="button"
+              onClick={() => setScope(ALL_SCOPE)}
+              className="flex w-full flex-wrap items-center gap-4 px-[22px] py-4 text-left"
+            >
+              {/* pr clears the floating download pill on narrow cards, where
+                  the wrapped title would otherwise run underneath it. */}
+              <div className="min-w-[240px] flex-1 pr-28 sm:pr-0">
+                <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-accent-strong">
+                  Combined summary
+                </div>
+                <div className="font-display text-[17px] font-bold tracking-[-0.012em]">
+                  All properties — one kitchen day
+                </div>
+                <div className="mt-0.5 text-[13px] text-muted-foreground">
+                  Accept, cook and dispatch everything together.
+                </div>
               </div>
-              <div className="font-display text-[17px] font-bold tracking-[-0.012em]">
-                All properties — one kitchen day
-              </div>
-              <div className="mt-0.5 text-[13px] text-muted-foreground">
-                Accept, cook and dispatch everything together.
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {combinedSlots.map((s) => {
-                const t = STATE_TINT[s.state];
-                return (
-                  <span
-                    key={s.mealType}
-                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-bold"
-                    style={{ background: `color-mix(in srgb, ${t} 16%, var(--card))`, color: t }}
-                  >
+              <div className="flex flex-wrap gap-2">
+                {combinedSlots.map((s) => {
+                  const t = STATE_TINT[s.state];
+                  return (
                     <span
-                      className={cn("h-[7px] w-[7px] rounded-full", s.state === "accept" && "animate-pulse-dot")}
-                      style={{ background: t }}
-                    />
-                    {shortMeal(s.mealType)} · {stateShort(s.state, s.placed.length)}
-                  </span>
-                );
-              })}
-            </div>
-            <span className="font-display text-[15px] font-bold text-accent-strong">Open →</span>
-          </button>
+                      key={s.mealType}
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-bold"
+                      style={{ background: `color-mix(in srgb, ${t} 16%, var(--card))`, color: t }}
+                    >
+                      <span
+                        className={cn("h-[7px] w-[7px] rounded-full", s.state === "accept" && "animate-pulse-dot")}
+                        style={{ background: t }}
+                      />
+                      {shortMeal(s.mealType)} · {stateShort(s.state, s.placed.length)}
+                    </span>
+                  );
+                })}
+              </div>
+              <span className="font-display text-[15px] font-bold text-accent-strong">Open →</span>
+            </button>
+            {(() => {
+              const dayMeals = dayMealsFor(kitchenPropertyIds);
+              return dayMeals.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => downloadFullSummaryDay(dayMeals, ingredientsByDish, selectedKitchenName ?? "All properties", dayLabel)}
+                  className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+                >
+                  <Download className="h-3 w-3" /> Full summary
+                </button>
+              ) : null;
+            })()}
+          </div>
 
           <section>
             <div className="mb-3 flex items-baseline gap-2.5">
@@ -1215,16 +1340,22 @@ export default function FoodKitchenHome() {
               </div>
             ) : (
               <div className="grid gap-3.5 sm:grid-cols-2">
-                {propertyCards.map((card) => (
-                  <PropertyCard
-                    key={card.id}
-                    card={card}
-                    canKitchen={canKitchen}
-                    busy={busy}
-                    onOpen={() => setScope(card.id)}
-                    onAccept={() => acceptProperty(card)}
-                  />
-                ))}
+                {propertyCards.map((card) => {
+                  const dayMeals = dayMealsFor(new Set([card.id]));
+                  return (
+                    <PropertyCard
+                      key={card.id}
+                      card={card}
+                      canKitchen={canKitchen}
+                      busy={busy}
+                      onOpen={() => setScope(card.id)}
+                      onAccept={() => acceptProperty(card)}
+                      onDownload={dayMeals.length > 0
+                        ? () => downloadFullSummaryDay(dayMeals, ingredientsByDish, card.name, dayLabel)
+                        : null}
+                    />
+                  );
+                })}
               </div>
             )}
           </section>
@@ -1321,40 +1452,19 @@ export default function FoodKitchenHome() {
                         {selected.people} people
                       </span>
                     )}
-                    {/* Downloads (real .xlsx). They read the DAY'S TOTAL, not the
-                        remaining cook plan, so they stay available before
-                        accepting, after accepting, and after everything has been
-                        dispatched — when the plan above is empty. */}
+                    {/* Download (real .xlsx): dish + quantity + property split +
+                        ingredients + used-in, one sheet. It reads the DAY'S
+                        TOTAL, not the remaining cook plan, so it stays available
+                        before accepting, after accepting, and after everything
+                        has been dispatched — when the plan above is empty. */}
                     {exportDishes.length > 0 && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => downloadFullSummary(exportDishes, selected.mealType, dayLabel)}
-                          className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
-                        >
-                          <Download className="h-3 w-3" /> Full summary
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => downloadChefSummary(exportDishes, selected.mealType, dayLabel)}
-                          className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
-                        >
-                          <Download className="h-3 w-3" /> Chef summary
-                        </button>
-                        {/* Raw store issue for this meal — per-person rates × the
-                            people eating each dish. Hidden when no dish in the
-                            plan has an ingredient list, so it never downloads a
-                            header-only sheet. */}
-                        {ingredientLines.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => downloadIngredients(ingredientLines, selected.mealType, dayLabel)}
-                            className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
-                          >
-                            <Download className="h-3 w-3" /> Ingredients
-                          </button>
-                        )}
-                      </>
+                      <button
+                        type="button"
+                        onClick={() => downloadFullSummary(exportDishes, ingredientsByDish, selected.mealType, dayLabel)}
+                        className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+                      >
+                        <Download className="h-3 w-3" /> Full summary
+                      </button>
                     )}
                   </div>
                 }
@@ -1383,9 +1493,9 @@ export default function FoodKitchenHome() {
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-[13px] font-semibold">{d.dishName}</div>
                           <div className="text-[11px] text-muted-foreground">
-                            {d.byProperty.length > 1
-                              ? `across ${d.byProperty.length} properties`
-                              : d.byProperty[0]?.propertyName ?? "—"}
+                            {d.byProperty.length === 0
+                              ? "—"
+                              : `${d.byProperty.length} propert${d.byProperty.length === 1 ? "y" : "ies"}`}
                           </div>
                         </div>
                         <span className="shrink-0 text-right font-mono text-[13px] font-semibold tabular-nums">
@@ -1451,16 +1561,17 @@ export default function FoodKitchenHome() {
                       {dispatchedTotal} of {boardTotal} dispatched
                     </span>
                   )}
-                  {/* The board as a manifest: who it's for, how many people, the
-                      partner, and whether it has left. Stays available once
+                  {/* The board as a manifest: every dish on every order, who
+                      it's for, and the partner taking it. Stays available once
                       everything is out, which is when it's usually wanted. */}
                   {dispatchExportRows.length > 0 && (
                     <button
                       type="button"
-                      onClick={() => downloadDispatchBoard(dispatchExportRows, selected.mealType, dayLabel)}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
+                      onClick={exportDispatchList}
+                      disabled={exporting}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      <Download className="h-3 w-3" /> Dispatch list
+                      <Download className="h-3 w-3" /> {exporting ? "Preparing…" : "Dispatch list"}
                     </button>
                   )}
                 </div>

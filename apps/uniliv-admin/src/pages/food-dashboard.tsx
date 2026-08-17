@@ -1116,7 +1116,7 @@ export default function FoodDashboard() {
                   No {shortMeal(selected.mealType)} order for {dayLabel.toLowerCase()}.
                 </div>
               ) : (
-                <div className="grid items-stretch gap-3 md:grid-cols-3">
+                <div className="grid items-stretch gap-3 min-[1100px]:grid-cols-3">
                   <TrackColumn detail={detail ?? null} order={selected.order} />
                   <ReceiveColumn
                     detail={detail ?? null}
@@ -1471,7 +1471,7 @@ function ReceiveColumn({
           <button
             type="button"
             onClick={onAck}
-            className="h-10 rounded-[9px] bg-warning px-4 text-[13px] font-bold text-white transition-[filter] hover:brightness-105"
+            className="w-fit max-w-full whitespace-nowrap rounded-[9px] bg-warning px-2.5 py-2 text-[13px] font-bold text-white transition-[filter] hover:brightness-105"
           >
             I've received this order ✓
           </button>
