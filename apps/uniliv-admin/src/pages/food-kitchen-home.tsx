@@ -13,7 +13,6 @@ import {
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
-import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useConfetti } from "@/components/ui/confetti";
 import { MealIcon, DishIcon } from "@/components/meal-icon";
@@ -21,7 +20,7 @@ import { FoodQueryError } from "@/components/food/query-error";
 import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 import {
-  foodApi, foodKeys, orderPeople, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty, isFractionalUnit,
+  foodApi, foodKeys, orderPeople, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty,
   type FoodOrder, type MealType, type KitchenSummaryDish, type KitchenItem, type DishIngredientRow,
 } from "@/lib/food-api";
 import { useDishCatalogue } from "@/components/food/use-food-masters";
@@ -320,26 +319,24 @@ function ColumnEmpty({ text }: { text: string }) {
 
 /**
  * One Dispatch-board row: property + per-property partner picker, expandable
- * into an inline dish-quantity editor (the old "Quantities" modal, now inside
- * the row's accordion). Dispatched orders stay on the board as a read-only
- * "done" row showing partner · batch · time.
+ * into the order's dish breakdown. The quantities are what the property ordered
+ * and are READ-ONLY here — once an order is placed it goes out as ordered, so
+ * the board is a manifest, not an editor. Dispatched orders stay on the board
+ * as a "done" row showing partner · batch · time.
  */
 function DispatchRow({
-  o, done, doneText, canDispatch, busy, isPicked, onToggle, partners, partnerId, onPartner, onSaved,
+  o, done, doneText, canDispatch, isPicked, onToggle, partners, partnerId, onPartner,
 }: {
   o: FoodOrder;
   done: boolean;
   doneText: string;
   canDispatch: boolean;
-  busy: string | null;
   isPicked: boolean;
   onToggle: () => void;
   partners: { id: string; name: string }[];
   partnerId: string;
   onPartner: (id: string) => void;
-  onSaved: () => void | Promise<void>;
 }) {
-  const { toast } = useToast();
   const [open, setOpen] = React.useState(false);
   const { data: items, isLoading } = useQuery({
     queryKey: ["food", "kitchen-items", o.id],
@@ -347,39 +344,7 @@ function DispatchRow({
     enabled: open,
     staleTime: 60_000,
   });
-  const [draft, setDraft] = React.useState<Record<string, string>>({});
-  const [reason, setReason] = React.useState("");
-  React.useEffect(() => {
-    if (items) {
-      setDraft(Object.fromEntries(items.map((it) => [it.id, String(it.preparedQty ?? it.orderedQty ?? 0)])));
-      setReason("");
-    }
-  }, [items]);
-  const [saving, setSaving] = React.useState(false);
   const noPartner = !done && partners.length === 0;
-  const dirty = !!items && items.some((it) => draft[it.id] != null && Number(draft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0));
-
-  const save = async () => {
-    if (!items || saving) return;
-    if (Object.values(draft).some((v) => !Number.isFinite(Number(v)) || Number(v) < 0)) {
-      toast({ title: "Quantities must be zero or more", variant: "destructive" }); return;
-    }
-    const changed = items
-      .filter((it) => draft[it.id] != null && Number(draft[it.id]) !== (it.preparedQty ?? it.orderedQty ?? 0))
-      .map((it) => ({ id: it.id, preparedQty: Number(draft[it.id]) }));
-    if (!changed.length) return;
-    if (!reason.trim()) { toast({ title: "Add a reason for the quantity change", variant: "destructive" }); return; }
-    setSaving(true);
-    try {
-      await foodApi.updateKitchenItems(o.id, changed, reason.trim());
-      toast({ title: "Quantities updated", variant: "success" });
-      setReason("");
-      await onSaved();
-    } catch (e: any) {
-      toast({ title: e?.message || "Could not save quantities", variant: "destructive" });
-    }
-    setSaving(false);
-  };
 
   return (
     <div
@@ -450,7 +415,7 @@ function DispatchRow({
         </button>
       </div>
 
-      {/* accordion content: the order's dishes (editable while ready, read-only once sent) */}
+      {/* accordion content: the order's dishes, exactly as ordered — read-only */}
       {open && (
         <div className="border-t border-border/70 px-3 py-2.5">
           {isLoading ? (
@@ -458,63 +423,18 @@ function DispatchRow({
           ) : !items?.length ? (
             <div className="py-2 text-center text-[12px] text-muted-foreground">No dish breakdown on this order.</div>
           ) : (
-            <>
-              {items.map((it) => {
-                const changed = draft[it.id] != null && Number(draft[it.id]) !== (it.orderedQty ?? 0);
-                return (
-                  <div key={it.id} className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-0">
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                      <DishIcon name={it.dishName ?? ""} meal={o.mealType} size={26} />
-                      <span className="min-w-0 truncate text-[13px]">{it.dishName ?? "Item"}</span>
-                    </span>
-                    {done ? (
-                      <span className="shrink-0 font-mono text-[12.5px] font-semibold tabular-nums">
-                        {fmtQty(it.preparedQty ?? it.orderedQty ?? 0)}{" "}
-                        <span className="text-[10px] font-bold uppercase text-muted-foreground">{it.unit}</span>
-                      </span>
-                    ) : (
-                      <span className="flex shrink-0 items-center gap-1.5">
-                        {changed && it.orderedQty != null && (
-                          <span className="font-mono text-[11px] tabular-nums text-muted-foreground line-through">{fmtQty(it.orderedQty)}</span>
-                        )}
-                        <Input
-                          type="number"
-                          min={0}
-                          step={isFractionalUnit(it.unit) ? 0.5 : 1}
-                          value={draft[it.id] ?? ""}
-                          onChange={(e) => setDraft((d) => ({ ...d, [it.id]: e.target.value }))}
-                          className="h-8 w-20 text-right font-mono text-[12.5px] tabular-nums"
-                        />
-                        <span className="w-9 text-[10px] font-bold uppercase tracking-[.06em] text-muted-foreground">{it.unit}</span>
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-              {!done && canDispatch && (
-                <div className="mt-2 space-y-2">
-                  {/* Any send-quantity change needs a mandatory reason (logged). */}
-                  {dirty && (
-                    <Input
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                      placeholder="Reason for the quantity change (required)"
-                      className="h-8 w-full text-[12.5px]"
-                    />
-                  )}
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={save}
-                      disabled={saving || !dirty || !reason.trim() || !!busy}
-                      className="h-8 rounded-full bg-accent px-4 text-[12px] font-bold text-white transition-[filter] hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {saving ? "Saving…" : "Save quantities"}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
+            items.map((it) => (
+              <div key={it.id} className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-0">
+                <span className="flex min-w-0 flex-1 items-center gap-2">
+                  <DishIcon name={it.dishName ?? ""} meal={o.mealType} size={26} />
+                  <span className="min-w-0 truncate text-[13px]">{it.dishName ?? "Item"}</span>
+                </span>
+                <span className="shrink-0 font-mono text-[12.5px] font-semibold tabular-nums">
+                  {fmtQty(it.preparedQty ?? it.orderedQty ?? 0)}{" "}
+                  <span className="text-[10px] font-bold uppercase text-muted-foreground">{it.unit}</span>
+                </span>
+              </div>
+            ))
           )}
         </div>
       )}
@@ -1602,13 +1522,11 @@ export default function FoodKitchenHome() {
                         done={false}
                         doneText=""
                         canDispatch={canDispatch}
-                        busy={busy}
                         isPicked={picked.has(o.id)}
                         onToggle={() => toggleRow(o.id)}
                         partners={partnersFor(o)}
                         partnerId={partnerIdOf(o)}
                         onPartner={(v) => setRowPartner((p) => ({ ...p, [o.id]: v }))}
-                        onSaved={invalidate}
                       />
                     ))}
                     {dispatchedForMeal.map((o) => (
@@ -1618,13 +1536,11 @@ export default function FoodKitchenHome() {
                         done
                         doneText={doneLabel(o)}
                         canDispatch={canDispatch}
-                        busy={busy}
                         isPicked={false}
                         onToggle={() => {}}
                         partners={[]}
                         partnerId=""
                         onPartner={() => {}}
-                        onSaved={invalidate}
                       />
                     ))}
                   </div>

@@ -226,16 +226,14 @@ export const isSuperAdminRole = (role: UserRole | undefined): boolean =>
   role === "SUPER_ADMIN" || role === "OPS_EXCELLENCE";
 
 /**
- * Where a freshly signed-in user lands. Most roles get the app launcher
- * (/apps) — a permission-filtered grid of their modules. F&B managers work out
- * of Kitchen Summary all day, so we drop them straight onto it as their default
- * dashboard (the launcher is still reachable from the logo / Home).
+ * Where a freshly signed-in user lands: the app launcher (/apps), for every
+ * persona — a permission-filtered grid with one card per module, never per
+ * page. F&B managers used to skip it and land inside Kitchen Home, which put
+ * the Food module's internal pages in front of them before the module itself;
+ * those pages are reachable from inside Food, so the first view is now the
+ * same one-card launcher everyone else (Ops Excellence included) gets.
  */
-export function homeForRole(role: UserRole | undefined): string {
-  // F&B managers land on Kitchen Home — the journey dashboard where they
-  // accept, cook and dispatch the day's meals (Kitchen Summary remains the
-  // detailed cook-plan sheet, one click away).
-  if (role === "FNB_MANAGER") return "/food/kitchen-home";
+export function homeForRole(_role: UserRole | undefined): string {
   return "/apps";
 }
 
