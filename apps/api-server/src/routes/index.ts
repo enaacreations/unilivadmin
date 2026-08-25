@@ -35,6 +35,7 @@ import { auditSchedulesRouter } from "./audit-schedules.js";
 import { auditReviewsRouter } from "./audit-reviews.js";
 import { auditReportsRouter, auditSharedPublicRouter } from "./audit-reports.js";
 import { auditAdminRouter } from "./audit-admin.js";
+import { formDraftsRouter } from "./form-drafts.js";
 
 const router: IRouter = Router();
 
@@ -88,6 +89,7 @@ router.use("/food", foodOpsRouter);
 router.use("/geocode", geocodeRouter);
 router.use("/bulk", bulkRouter); // auth + authorize applied per-route inside
 router.use("/masters", mastersRouter); // auth + authorize(FOOD_SETTINGS) applied per-route inside
+router.use("/form-drafts", formDraftsRouter); // user-owned autosaved forms; authenticate only, no RBAC module
 // Audit & Inspection module (PRD v1.0) — auth + authorize per-route inside.
 router.use("/audits", auditsRouter);
 router.use("/audit/templates", auditTemplatesRouter);

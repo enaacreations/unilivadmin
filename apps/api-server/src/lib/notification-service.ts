@@ -358,3 +358,36 @@ export async function notifyOrderEvent(
     email: { subject: m.subject, text: m.text },
   });
 }
+
+/**
+ * A placed order was CHANGED before the cut-off (PUT /food/orders/:id).
+ *
+ * This is the one order message that does not go to the unit lead: they are the
+ * one who just made the change. It goes to the kitchen side, because the numbers
+ * they were given to cook have moved and nothing else tells them — the cook plan
+ * simply reads differently the next time it is opened.
+ *
+ * `userIds` comes from resolveKitchenNotifyUserIds(); an empty list is a no-op,
+ * so a kitchen with no scoped login costs nothing and never throws.
+ */
+export async function notifyOrderEdited(
+  userIds: string[],
+  ctx: OrderNotifyContext & { changeSummary: string },
+): Promise<void> {
+  if (!userIds.length) return;
+  const meal = titleize(ctx.mealType);
+  const ref = `${ctx.orderNumber} (${meal})`;
+  const where = ctx.propertyName ? ` at ${ctx.propertyName}` : "";
+  await notifyAll(userIds, {
+    title: "Order updated",
+    body: `${ref}${where} was updated — ${ctx.changeSummary}.`,
+    type: "FOOD_ORDER",
+    link: link(ctx.orderId),
+    entityType: "FOOD_ORDER",
+    entityId: ctx.orderId,
+    email: {
+      subject: `Order ${ctx.orderNumber} updated`,
+      text: `${ref}${where} was updated before the cut-off.\n\n${ctx.changeSummary}.\n\nCook to the order's current quantities.`,
+    },
+  });
+}

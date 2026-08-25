@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api-fetch";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 
 export const VENDOR_CATEGORIES = [
   "Groceries",
@@ -82,6 +84,13 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, vendor]);
 
+  const draft = useFormDraft(form, {
+    key: `vendor-form:${vendor?.id ?? "new"}`,
+    enabled: open,
+    extra: categories,
+    onRestoreExtra: (cats) => setCategories((cats as string[] | undefined) ?? []),
+  });
+
   const onSubmit = form.handleSubmit(async (v) => {
     setSaving(true);
     try {
@@ -96,6 +105,7 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: Props) 
       }
       qc.invalidateQueries({ queryKey: ["vendors"] });
       qc.invalidateQueries({ queryKey: [`/api/vendors/${vendor?.id}`] });
+      draft.clearDraft();
       onSaved?.();
       onOpenChange(false);
     } catch (e: any) {
@@ -119,6 +129,12 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: Props) 
       saveLabel={vendor?.id ? "Save Changes" : "Create Vendor"}
     >
       <div className="space-y-4">
+        <DraftRestoredNotice
+          show={draft.restored}
+          savedAt={draft.restoredAt}
+          onDiscard={draft.discardDraft}
+          onDismiss={draft.dismissRestored}
+        />
         <div className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
             <Label>Name *</Label>

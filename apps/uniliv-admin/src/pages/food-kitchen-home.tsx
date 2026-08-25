@@ -20,7 +20,7 @@ import { FoodQueryError } from "@/components/food/query-error";
 import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 import {
-  foodApi, foodKeys, orderPeople, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty,
+  foodApi, foodKeys, orderPeople, dishPeople, MEAL_TYPES, MEAL_LABEL, ORDER_STATUS_PILL, shortMeal, fmtQty,
   type FoodOrder, type MealType, type KitchenSummaryDish, type KitchenItem, type DishIngredientRow,
 } from "@/lib/food-api";
 import { useDishCatalogue } from "@/components/food/use-food-masters";
@@ -224,10 +224,14 @@ export function buildIngredientLines(
 
 /**
  * Dispatch list = one block per order on the board (sent or still to go), one
- * row per dish on it: what's in the van, how much, and where it's headed.
- * Dish lines come from the order's kitchen items (prepared qty wins over
+ * row per dish on it: what's in the van, how much, who it feeds, and where it's
+ * headed. Dish lines come from the order's kitchen items (prepared qty wins over
  * ordered, matching the board's accordion); order-level cells are merged
  * across the block.
+ *
+ * The two head counts are deliberately distinct columns: a dish can be ordered
+ * for fewer people than the meal (a pinned sweet for 5 of 40), so the per-dish
+ * count does NOT have to sum to the order's — hence both are labelled.
  */
 async function downloadDispatchList(
   rows: { o: FoodOrder; partner: string }[],
@@ -236,7 +240,9 @@ async function downloadDispatchList(
   day: string,
 ) {
   const itemsByOrder = await Promise.all(rows.map((r) => fetchItems(r.o.id).catch(() => [] as KitchenItem[])));
-  const aoa: (string | number)[][] = [["Dish", "Quantity", "Unit", "Property", "Order", "People", "Partner"]];
+  const aoa: (string | number)[][] = [
+    ["Dish", "Quantity", "Unit", "People (dish)", "Property", "Order", "People (order)", "Partner"],
+  ];
   const merges: XLSX.Range[] = [];
   rows.forEach((r, idx) => {
     const orderCells: (string | number)[] = [
@@ -248,7 +254,7 @@ async function downloadDispatchList(
     const items = itemsByOrder[idx];
     const start = aoa.length;
     if (items.length === 0) {
-      aoa.push(["—", "", "", ...orderCells]);
+      aoa.push(["—", "", "", "", ...orderCells]);
       return;
     }
     items.forEach((it, i) => {
@@ -257,16 +263,20 @@ async function downloadDispatchList(
         it.dishName ?? "Item",
         qty == null ? "" : round3(qty),
         it.unit.toLowerCase(),
+        dishPeople(it, r.o),
         ...(i === 0 ? orderCells : ["", "", "", ""]),
       ]);
     });
     if (items.length > 1) {
-      for (let c = 3; c <= 6; c++) merges.push({ s: { r: start, c }, e: { r: start + items.length - 1, c } });
+      for (let c = 4; c <= 7; c++) merges.push({ s: { r: start, c }, e: { r: start + items.length - 1, c } });
     }
   });
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!merges"] = merges;
-  ws["!cols"] = [{ wch: 26 }, { wch: 10 }, { wch: 8 }, { wch: 26 }, { wch: 18 }, { wch: 8 }, { wch: 20 }];
+  ws["!cols"] = [
+    { wch: 26 }, { wch: 10 }, { wch: 8 }, { wch: 13 },
+    { wch: 26 }, { wch: 18 }, { wch: 14 }, { wch: 20 },
+  ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Dispatch list");
   XLSX.writeFile(wb, xlsxName("dispatch-list", meal, day));
@@ -429,9 +439,16 @@ function DispatchRow({
                   <DishIcon name={it.dishName ?? ""} meal={o.mealType} size={26} />
                   <span className="min-w-0 truncate text-[13px]">{it.dishName ?? "Item"}</span>
                 </span>
-                <span className="shrink-0 font-mono text-[12.5px] font-semibold tabular-nums">
-                  {fmtQty(it.preparedQty ?? it.orderedQty ?? 0)}{" "}
-                  <span className="text-[10px] font-bold uppercase text-muted-foreground">{it.unit}</span>
+                <span className="flex shrink-0 items-center gap-2.5">
+                  {/* Who this dish feeds — not always the whole order (a pinned
+                      dish can be for 5 of 40), so it is stated per line. */}
+                  <span className="font-mono text-[12px] tabular-nums text-muted-foreground">
+                    {dishPeople(it, o)} ppl
+                  </span>
+                  <span className="font-mono text-[12.5px] font-semibold tabular-nums">
+                    {fmtQty(it.preparedQty ?? it.orderedQty ?? 0)}{" "}
+                    <span className="text-[10px] font-bold uppercase text-muted-foreground">{it.unit}</span>
+                  </span>
                 </span>
               </div>
             ))
@@ -898,9 +915,10 @@ export default function FoodKitchenHome() {
   // Clicking a property NAME opens a right-side sheet with that order's dish
   // breakdown, so the kitchen sees exactly what was asked before acting.
   const [sheetOrder, setSheetOrder] = React.useState<FoodOrder | null>(null);
-  // "Full summary" opens the selected meal's complete cook plan (every dish with
+  // "View summary" opens the selected meal's complete cook plan (every dish with
   // its per-property split) inline in a sheet, instead of routing to the
-  // standalone Kitchen Summary page.
+  // standalone Kitchen Summary page. (The neighbouring "Full summary" buttons
+  // download the .xlsx — the labels are kept distinct on purpose.)
   const [summaryOpen, setSummaryOpen] = React.useState(false);
   React.useEffect(() => { setSummaryOpen(false); }, [selected?.mealType, day]);
   // "No dish breakdown on this order" is a statement about the order; a failed
@@ -1355,7 +1373,7 @@ export default function FoodKitchenHome() {
                 onClick={() => setSummaryOpen(true)}
                 className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
               >
-                <Soup className="h-3.5 w-3.5" /> Full summary
+                <Soup className="h-3.5 w-3.5" /> View summary
               </button>
             </div>
 

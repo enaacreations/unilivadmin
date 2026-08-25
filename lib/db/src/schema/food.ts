@@ -329,7 +329,34 @@ export const dishesTable = pgTable("dishes", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * One dish per (name, course). The catalogue is keyed on the name people
+   * read, so the index folds case and surrounding whitespace: "Aloo Gobi",
+   * "aloo gobi" and "Aloo Gobi " are one dish. Course is the other half of the
+   * identity — "Rice" the RICE and "Rice" the DESSERT are genuinely two dishes.
+   *
+   * Deliberately covers RETIRED rows too (no `.where(is_active)`): the tables
+   * are soft-deleted, so a retired row is still joined by name in every report,
+   * and letting a second copy in would make the catalogue ambiguous for good.
+   *
+   * The handlers pre-check this and answer a 409 that names the existing dish —
+   * this index is what closes the gap the pre-check cannot: two concurrent
+   * creates of the same name. Run `pnpm --filter @workspace/scripts run
+   * dedupe:food` before pushing to a database that already holds data.
+   *
+   * `component` is wrapped in a redundant-looking `sql` for the same class of
+   * reason as `brands`' $defaultFn above: drizzle-kit cannot diff an index that
+   * MIXES an expression key with a plain column key, so the natural spelling
+   * (`.on(sql\`lower(trim(name))\`, t.component)`) made every `push` re-emit
+   * DROP + CREATE forever and destroyed "push says nothing to do" as a drift
+   * signal. With both keys as expressions the differ matches and push converges.
+   * The emitted DDL is byte-identical either way. Verified: push is a genuine
+   * no-op on the second run with this spelling, and re-emits with the other.
+   */
+  nameComponentUniq: uniqueIndex("uq_dish_name_component")
+    .on(sql`lower(trim(${t.name}))`, sql`${t.component}`),
+}));
 
 /**
  * Side-dish options for a dish — "Paratha comes with curd / chutney / bhaji".
@@ -367,7 +394,18 @@ export const ingredientsTable = pgTable("ingredients", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (t) => ({ nameIdx: index("idx_raw_materials_name").on(t.name) }));
+}, (t) => ({
+  nameIdx: index("idx_raw_materials_name").on(t.name),
+  /**
+   * One row per raw material, matched the same way `uq_dish_name_component`
+   * matches a dish (case- and whitespace-folded, retired rows included).
+   *
+   * This one is load-bearing beyond tidiness: the shared-ingredient block
+   * compares dishes by ingredient ID, so a second "Aloo" row means two aloo
+   * dishes no longer share an ingredient and the check silently stops firing.
+   */
+  nameUniq: uniqueIndex("uq_ingredient_name").on(sql`lower(trim(${t.name}))`),
+}));
 
 /** Per-dish ingredient list (dish ↔ ingredient, with optional quantity). */
 export const dishIngredientsTable = pgTable("dish_ingredients", {
@@ -700,17 +738,40 @@ export type NewKitchenPincode = typeof kitchenPincodesTable.$inferInsert;
  * Display/visibility overlay on the meal-type enum (Persona st.27 "configurable
  * order types"). Lets ops relabel SNACKS → "High Tea / Evening Snacks" and
  * enable/disable meals without an invasive enum→FK migration.
+ *
+ * Scoped the same way as foodCutoffsTable and foodMealWindowsTable: a null
+ * `propertyId` is the organisation-wide default for that meal, and a row naming
+ * a property overrides it there. Previously `mealType` was globally unique, so
+ * relabelling SNACKS or switching BREAKFAST off was all-or-nothing across every
+ * property — a hostel serving an early breakfast could not say so without
+ * moving the whole network.
  */
 export const foodMealConfigTable = pgTable("food_meal_config", {
   id: text("id").primaryKey(),
-  mealType: mealTypeEnum("meal_type").notNull().unique(),
+  mealType: mealTypeEnum("meal_type").notNull(),
+  /** Null → the org-wide default for this meal; a property row overrides it. */
+  propertyId: text("property_id").references(() => propertiesTable.id),
   displayLabel: text("display_label").notNull(),
   brand: text("brand"),
   sortOrder: integer("sort_order").default(0).notNull(),
   isEnabled: boolean("is_enabled").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => ({
+  /**
+   * Paired partial indexes, exactly as food_cutoffs does it and for the same
+   * reason: Postgres treats NULLs as distinct, so a plain unique on
+   * (meal_type, property_id) would let `(BREAKFAST, NULL)` be inserted twice
+   * and leave the org-wide default ambiguous. The global row is uniqued on
+   * meal_type alone under a `property_id is null` predicate instead.
+   */
+  mealPropIdx: uniqueIndex("uq_food_meal_config_meal_prop")
+    .on(t.mealType, t.propertyId)
+    .where(sql`property_id is not null`),
+  mealGlobalIdx: uniqueIndex("uq_food_meal_config_meal_global")
+    .on(t.mealType)
+    .where(sql`property_id is null`),
+}));
 
 /**
  * Per-meal SERVICE windows (planned service/delivery time + lead time for delay

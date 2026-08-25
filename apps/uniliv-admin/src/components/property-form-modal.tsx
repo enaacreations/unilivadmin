@@ -30,6 +30,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import {
   PORTFOLIO_TYPES,
   PORTFOLIO_TYPE_LABELS,
@@ -145,14 +147,7 @@ export function PropertyFormModal({
   // Unit-leads tagged to this property (users.propertyId set on submit).
   const [unitLeadIds, setUnitLeadIds] = React.useState<string[]>([]);
 
-  const {
-    register,
-    handleSubmit,
-    reset,
-    watch,
-    setValue,
-    formState: { errors },
-  } = useForm<FormValues>({
+  const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
       name: "",
@@ -170,6 +165,14 @@ export function PropertyFormModal({
       cutoffTime: "",
     },
   });
+  const {
+    register,
+    handleSubmit,
+    reset,
+    watch,
+    setValue,
+    formState: { errors },
+  } = form;
 
   const createMut = useCreateProperty();
   const updateMut = useUpdateProperty();
@@ -244,6 +247,29 @@ export function PropertyFormModal({
       }
     }
   }, [open, property, detail, reset]);
+
+  // On edit the reset above re-runs when `detail` lands, so hold the draft
+  // restore until then — otherwise the record's own values would overwrite it.
+  const draft = useFormDraft(form, {
+    key: `property-form:${property?.id ?? "new"}`,
+    enabled: open,
+    ready: !property?.id || !!detail,
+    extra: { amenities, coords, attrs, unitLeadIds },
+    onRestoreExtra: (e) => {
+      const saved = e as
+        | {
+            amenities?: string[];
+            coords?: { lat?: number; lng?: number };
+            attrs?: PortfolioAttributes;
+            unitLeadIds?: string[];
+          }
+        | undefined;
+      setAmenities(saved?.amenities ?? []);
+      setCoords(saved?.coords ?? {});
+      setAttrs(saved?.attrs ?? {});
+      setUnitLeadIds(saved?.unitLeadIds ?? []);
+    },
+  });
 
   // Kitchen is auto-derived (read-only) from the pincode via kitchen_pincodes.
   const pincode = watch("pincode");
@@ -385,6 +411,7 @@ export function PropertyFormModal({
         });
         queryClient.invalidateQueries({ queryKey: foodKeys.propertyDetail(property.id) });
       }
+      draft.clearDraft();
       onOpenChange(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed to save", variant: "destructive" });
@@ -411,6 +438,12 @@ export function PropertyFormModal({
       saveLabel={isEdit ? "Save Changes" : "Create Property"}
     >
       <div className="space-y-4">
+        <DraftRestoredNotice
+          show={draft.restored}
+          savedAt={draft.restoredAt}
+          onDiscard={draft.discardDraft}
+          onDismiss={draft.dismissRestored}
+        />
         <div>
           <Label>Name *</Label>
           <Input data-testid="input-property-name" {...register("name")} />

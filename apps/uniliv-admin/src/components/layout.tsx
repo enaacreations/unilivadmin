@@ -24,6 +24,7 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { usePermissions } from "@/lib/use-permissions"
 import { moduleForPath } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
+import { clearLocalDrafts } from "@/lib/form-drafts"
 import { navGroups, canViewHref, type NavGroup, type NavItem } from "@/lib/nav"
 import { CommandPalette, type CommandNavItem } from "@/components/command-palette"
 
@@ -378,6 +379,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
       onSettled: () => {
         setToken(null)
         queryClient.clear() // drop all user-scoped cache so the next login starts clean
+        // Local form drafts are keyed by user id, but on a shared machine they
+        // would still sit in this browser's storage after sign-out. The server
+        // copy survives — that is what restores the draft on the next login.
+        clearLocalDrafts()
         setLocation("/login")
       },
     })

@@ -4,6 +4,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Plus, AlertTriangle, Package, PackageX, Clock, Boxes, Search, Bell, ClipboardCheck } from "lucide-react";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { DataTable } from "@/components/data-table";
@@ -93,6 +95,8 @@ export default function Inventory() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createOpen]);
 
+  const draft = useFormDraft(form, { key: "inventory-item-form:new", enabled: createOpen });
+
   const [saving, setSaving] = React.useState(false);
   const onCreate = form.handleSubmit(async (v) => {
     setSaving(true);
@@ -103,6 +107,7 @@ export default function Inventory() {
       toast({ title: "Inventory item created" });
       qc.invalidateQueries({ queryKey: ["inventory"] });
       qc.invalidateQueries({ queryKey: ["inventory-stats"] });
+      draft.clearDraft();
       setCreateOpen(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -178,6 +183,7 @@ export default function Inventory() {
       {/* Add item modal */}
       <FormModal open={createOpen} onOpenChange={setCreateOpen} title="Add Inventory Item" onSave={onCreate} isSaving={saving} saveLabel="Create Item">
         <div className="space-y-4">
+          <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
               <Label>Name *</Label>

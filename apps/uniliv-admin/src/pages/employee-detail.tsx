@@ -16,6 +16,8 @@ import {
 import { useParams } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { apiFetch } from "@/lib/api-fetch";
@@ -586,6 +588,8 @@ function LeaveTab({ employeeId }: { employeeId: string }) {
 
   React.useEffect(() => { if (applyOpen) aForm.reset(); /* eslint-disable-next-line */ }, [applyOpen]);
 
+  const draft = useFormDraft(aForm, { key: `leave-apply-form:${employeeId}`, enabled: applyOpen });
+
   const submitApply = aForm.handleSubmit(async (v) => {
     try {
       const days = workingDaysBetween(v.fromDate, v.toDate);
@@ -595,6 +599,7 @@ function LeaveTab({ employeeId }: { employeeId: string }) {
       });
       toast({ title: "Leave applied" });
       qc.invalidateQueries({ queryKey: getGetLeavesQueryKey({ employeeId }) });
+      draft.clearDraft();
       setApplyOpen(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -697,6 +702,7 @@ function LeaveTab({ employeeId }: { employeeId: string }) {
         saveLabel="Submit"
       >
         <div className="space-y-4">
+          <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
           <div>
             <Label>Type *</Label>
             <Select value={aForm.watch("type")} onValueChange={(v) => aForm.setValue("type", v)}>

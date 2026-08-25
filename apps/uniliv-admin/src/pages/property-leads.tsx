@@ -1,6 +1,8 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import L from "leaflet";
@@ -65,10 +67,13 @@ export default function PropertyLeads() {
 
   const form = useForm<z.infer<typeof schema>>({ resolver: zodResolver(schema), defaultValues: { name: "", address: "", city: "", stage: "SCOUTING" } });
 
+  const draft = useFormDraft(form, { key: "property-lead-form:new", enabled: open });
+
   const onCreate = form.handleSubmit(async (values) => {
     try {
       await apiFetch("/property-leads", { method: "POST", body: JSON.stringify(values) });
       toast({ title: "Property lead added" });
+      draft.clearDraft();
       setOpen(false); form.reset();
       qc.invalidateQueries({ queryKey: ["plead"] });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
@@ -136,6 +141,7 @@ export default function PropertyLeads() {
 
       <FormModal open={open} onOpenChange={setOpen} title="Add Property Lead" onSave={onCreate}>
         <form className="space-y-3">
+          <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
           <div><Label>Name / Property *</Label><Input {...form.register("name")} /></div>
           <div><Label>Address *</Label><Textarea rows={2} {...form.register("address")} /></div>
           <div className="grid grid-cols-2 gap-3"><div><Label>City *</Label><Input {...form.register("city")} /></div><div><Label>Stage</Label>

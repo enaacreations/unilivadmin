@@ -12,11 +12,16 @@
  * built, and the failure message names the index, not the offending rows.
  *
  * Idempotent and safe to re-run: it collapses each duplicate group to a single
- * surviving row, so a second run finds nothing. On the local dev database it is
- * a no-op today (verified: zero duplicate groups across every key below) — it
- * exists for the seeded/e2e databases and for re-verification after a seed.
+ * surviving row, so a second run finds nothing.
  *
- * CONFIG duplicates are collapsed (`--yes`); MONEY and ORDER duplicates are only
+ * Three dispositions, by what the rows ARE:
+ *   CONFIG    — collapsed by DELETE (`--yes`). Nothing points at them.
+ *   CATALOGUE — dishes and ingredients, MERGED (`--yes`): references repointed
+ *               to the survivor, then the loser deleted. See MERGES below; a
+ *               plain DELETE here would cascade away order history or fail.
+ *   MONEY/ORDER — reported only, with their rows printed.
+ *
+ * MONEY and ORDER duplicates are only
  * reported, with their rows printed. Payments, wallet transactions and live
  * orders are business records: a duplicate live order must be CANCELLED through
  * the API so the event log records who did it, a duplicate wallet transaction
@@ -228,6 +233,219 @@ function detailRowsSql(c: Check): string {
      LIMIT 100`;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * Catalogue merges — dishes and ingredients
+ *
+ * These two CANNOT go through CHECKS above, and the difference matters: the
+ * generic path DELETEs the surplus rows, but a duplicate dish is pointed at by
+ * orders, rotation slots and portion rules. Deleting it either destroys history
+ * through ON DELETE CASCADE (dish_ingredients, dish_side_options,
+ * food_order_plan_dishes) or fails outright on the ON DELETE NO ACTION tables
+ * (food_order_items, food_menu_rotation, per_resident_rules,
+ * food_additional_order_items). Both outcomes are wrong: the point of collapsing
+ * a duplicate dish is that the two rows were always the SAME dish, so everything
+ * pointing at either must end up pointing at one.
+ *
+ * So each group is MERGED: every reference is repointed to the survivor, then
+ * the loser is deleted. Repointing can itself collide with a unique index on the
+ * referencing table (two rotation slots for the same day now naming one dish),
+ * so each repoint moves only the rows that do not collide and deletes the rest —
+ * those are the duplicate the merge exists to remove, now visible as such.
+ *
+ * Survivor rule: ACTIVE beats retired (a retired row is one someone already
+ * withdrew), then most-referenced (moving the fewest rows keeps the most history
+ * attached to the id it has always had), then oldest — the original the rest of
+ * the catalogue grew up around. Deliberately NOT the CHECKS keeper rule
+ * ("newest updated wins"): that suits an edit-in-place config surface, but the
+ * newest row here is typically the accidental re-entry.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+type Repoint = {
+  table: string;
+  column: string;
+  /**
+   * Columns that, together with `column`, carry a unique index on this table.
+   * A repoint that would collide on it deletes the losing row instead of moving
+   * it. Empty means nothing to collide with.
+   */
+  uniqueWith?: string[];
+  /** Extra rows to drop after repointing (self-reference nonsense, say). */
+  cleanup?: (survivor: string) => string;
+};
+
+/** Every FK into `dishes`, with the unique index each repoint can trip over. */
+const DISH_REPOINTS: Repoint[] = [
+  { table: "dish_ingredients", column: "dish_id", uniqueWith: ["ingredient_id"] },
+  // (dish_id, side_dish_id) is unique, and BOTH columns point at dishes — so the
+  // second repoint can also leave a dish as its own side, which cleanup drops.
+  { table: "dish_side_options", column: "dish_id", uniqueWith: ["side_dish_id"] },
+  {
+    table: "dish_side_options",
+    column: "side_dish_id",
+    uniqueWith: ["dish_id"],
+    cleanup: (s) => `DELETE FROM dish_side_options WHERE dish_id = '${s}' AND side_dish_id = '${s}'`,
+  },
+  { table: "food_additional_order_items", column: "dish_id" },
+  {
+    table: "food_menu_rotation",
+    column: "dish_id",
+    uniqueWith: ["kitchen_id", "brand", "rotation_week", "day_of_week", "meal_type"],
+  },
+  { table: "food_order_items", column: "dish_id" },
+  {
+    table: "food_order_plan_dishes",
+    column: "dish_id",
+    uniqueWith: ["property_id", "service_date", "meal_type"],
+  },
+  { table: "per_resident_rules", column: "dish_id", uniqueWith: ["brand", "meal_type", "property_id"] },
+];
+
+const INGREDIENT_REPOINTS: Repoint[] = [
+  { table: "dish_ingredients", column: "ingredient_id", uniqueWith: ["dish_id"] },
+];
+
+type MergeTarget = {
+  label: string;
+  table: string;
+  /** SQL expression the unique index groups on — the identity being collapsed. */
+  keyExpr: string;
+  repoints: Repoint[];
+};
+
+const MERGES: MergeTarget[] = [
+  {
+    label: "dishes (name + course)",
+    table: "dishes",
+    keyExpr: "lower(trim(name)), component",
+    repoints: DISH_REPOINTS,
+  },
+  {
+    label: "ingredients (name)",
+    table: "ingredients",
+    keyExpr: "lower(trim(name))",
+    repoints: INGREDIENT_REPOINTS,
+  },
+];
+
+/**
+ * Repoint targets that actually exist here.
+ *
+ * `food_order_plan_dishes` / `food_order_plan_meals` are in this list but NOT in
+ * the drizzle schema: they are leftovers of a removed feature that still carry a
+ * live FK to `dishes` on databases provisioned before it went away. The merge
+ * has to move their rows there, and must be a no-op once someone drops them —
+ * so membership is resolved against the catalog rather than assumed.
+ */
+async function presentRepoints(repoints: Repoint[]): Promise<Repoint[]> {
+  const { rows } = await pool.query(
+    `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY($1)`,
+    [[...new Set(repoints.map((r) => r.table))]],
+  );
+  const present = new Set(rows.map((r) => r.tablename));
+  return repoints.filter((r) => present.has(r.table));
+}
+
+/** Total inbound references to a row, used to rank survivors. */
+function refCountExpr(repoints: Repoint[]): string {
+  if (!repoints.length) return "0";
+  return repoints
+    .map((r) => `(SELECT count(*) FROM ${r.table} x WHERE x.${r.column} = t.id)`)
+    .join(" + ");
+}
+
+/**
+ * Duplicate groups as [survivor, losers[]]. One query, so the survivor choice is
+ * made once and every repoint below agrees with it.
+ */
+async function mergeGroups(m: MergeTarget): Promise<Array<{ key: string; survivor: string; losers: string[] }>> {
+  const repoints = await presentRepoints(m.repoints);
+  const { rows } = await pool.query(`
+    SELECT key, (array_agg(id ORDER BY rank))[1] AS survivor,
+           (array_agg(id ORDER BY rank))[2:] AS losers,
+           (array_agg(name ORDER BY rank))[1] AS name
+      FROM (
+        SELECT t.id, t.name, concat_ws(' / ', ${m.keyExpr}) AS key,
+               row_number() OVER (
+                 PARTITION BY ${m.keyExpr}
+                 ORDER BY t.is_active DESC, (${refCountExpr(repoints)}) DESC, t.created_at, t.id
+               ) AS rank,
+               count(*) OVER (PARTITION BY ${m.keyExpr}) AS n
+          FROM ${m.table} t
+      ) s
+     WHERE n > 1
+     GROUP BY key
+     ORDER BY key`);
+  return rows.map((r) => ({ key: r.key, survivor: r.survivor, losers: r.losers ?? [] }));
+}
+
+/**
+ * Repoint one FK from `loser` to `survivor`, dropping the rows that would
+ * violate `uniqueWith`. Returns [moved, dropped].
+ */
+async function repoint(r: Repoint, survivor: string, loser: string): Promise<[number, number]> {
+  const conflict = (r.uniqueWith ?? [])
+    .map((c) => `d.${c} IS NOT DISTINCT FROM t.${c}`)
+    .join(" AND ");
+  // The colliding rows go FIRST: once the survivor's own row is the only one
+  // left for that key, the UPDATE below can move the remainder unconditionally.
+  const dropped = conflict
+    ? await pool.query(
+        `DELETE FROM ${r.table} t
+          WHERE t.${r.column} = $1
+            AND EXISTS (SELECT 1 FROM ${r.table} d WHERE d.${r.column} = $2 AND ${conflict})`,
+        [loser, survivor],
+      )
+    : { rowCount: 0 };
+  const moved = await pool.query(
+    `UPDATE ${r.table} SET ${r.column} = $1 WHERE ${r.column} = $2`,
+    [survivor, loser],
+  );
+  if (r.cleanup) await pool.query(r.cleanup(survivor));
+  return [moved.rowCount ?? 0, dropped.rowCount ?? 0];
+}
+
+/** Merge every duplicate group of one catalogue table. Returns rows removed. */
+async function runMerge(m: MergeTarget, execute: boolean): Promise<number> {
+  const groups = await mergeGroups(m);
+  if (groups.length === 0) {
+    console.log(`  ✓ ${m.label.padEnd(42)} clean`);
+    return 0;
+  }
+  console.log(`  ✗ ${m.label.padEnd(42)} ${groups.length} duplicate group(s)`);
+
+  let removed = 0;
+  const repoints = await presentRepoints(m.repoints);
+  for (const g of groups) {
+    console.log(`      "${g.key}" — keep ${g.survivor}, merge ${g.losers.length}: ${g.losers.join(", ")}`);
+    if (!execute) continue;
+    // One transaction per GROUP: a half-merged dish (references moved, row still
+    // present) is worse than an un-merged one, and keeping the unit small means
+    // one unmergeable group cannot roll back the ones that already worked.
+    await pool.query("BEGIN");
+    try {
+      for (const loser of g.losers) {
+        for (const r of repoints) {
+          const [moved, dropped] = await repoint(r, g.survivor, loser);
+          if (moved || dropped) {
+            console.log(
+              `        ${r.table}.${r.column}: ${moved} moved` + (dropped ? `, ${dropped} duplicate dropped` : ""),
+            );
+          }
+        }
+        await pool.query(`DELETE FROM ${m.table} WHERE id = $1`, [loser]);
+        removed++;
+      }
+      await pool.query("COMMIT");
+      console.log(`        ✓ merged`);
+    } catch (err) {
+      await pool.query("ROLLBACK");
+      console.log(`        ✗ rolled back: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+  return removed;
+}
+
 async function main() {
   const execute = process.argv.includes("--yes");
   const dbName = (await pool.query("SELECT current_database() AS d")).rows[0].d;
@@ -276,7 +494,22 @@ async function main() {
     console.log(`      ✓ removed ${del.rowCount} surplus row(s)`);
   }
 
-  if (execute) console.log(`\nRemoved ${removed} surplus config row(s).`);
+  // Catalogue rows are MERGED, not deleted — see the MERGES block above for why.
+  // Run after CHECKS: collapsing the rotation/portion duplicates first means
+  // fewer rows for the repoints below to move, and fewer collisions to resolve.
+  let merged = 0;
+  for (const m of MERGES) {
+    const n = await runMerge(m, execute);
+    merged += n;
+    if (!execute && n === 0) {
+      // runMerge reports groups but changes nothing in report mode; count the
+      // groups it found so the exit code below still says "push will fail".
+      const groups = await mergeGroups(m);
+      blocking += groups.reduce((s, g) => s + g.losers.length, 0);
+    }
+  }
+
+  if (execute) console.log(`\nRemoved ${removed} surplus config row(s), merged ${merged} duplicate catalogue row(s).`);
 
   if (blocking > 0) {
     console.log(

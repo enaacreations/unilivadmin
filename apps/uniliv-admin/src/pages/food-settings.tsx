@@ -2,7 +2,7 @@ import * as React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Pencil, Trash2, UtensilsCrossed, CalendarRange, Building2, Globe,
-  ListChecks, Clock, Boxes, SlidersHorizontal,
+  Clock, Boxes, SlidersHorizontal, RotateCcw,
 } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
@@ -87,15 +87,18 @@ type SettingsTab = {
 
 // Ordered the way a service set is actually built: the raw materials, then the
 // dishes made from them, then the rule a plate must satisfy, then the rotation
-// built against that rule. Meal Types and Cut-offs are configured once and
-// rarely revisited, so they sit after the four that get daily use.
+// built against that rule. Meals & Cut-offs is configured once and rarely
+// revisited, so it sits after the four that get daily use.
 const TABS: SettingsTab[] = [
   { value: "ingredients", label: "Ingredients", icon: Boxes, catalogue: true },
   { value: "dishes", label: "Dishes", icon: UtensilsCrossed, catalogue: true },
   { value: "composition", label: "Menu Rules", icon: SlidersHorizontal, catalogue: true },
   { value: "rotation", label: "Menu", icon: CalendarRange },
-  { value: "meals", label: "Meal Types", icon: ListChecks },
-  { value: "cutoffs", label: "Cut-offs & Service", icon: Clock },
+  // Was two tabs — "Meal Types" and "Cut-offs & Service". Both configure the
+  // same handful of meal slots (what they're called, when ordering for them
+  // closes, when they're served), so setting one up meant bouncing between
+  // tabs. One tab, three sections, same order as the questions get asked.
+  { value: "meals", label: "Meals & Cut-offs", icon: Clock },
   // Org-wide defaults — Super Admin only (see canFoodDefaults).
   { value: "food-defaults", label: "Food Defaults", icon: Globe, gated: true },
 ];
@@ -199,7 +202,7 @@ export default function FoodSettings() {
 
         {/* The four menu-building tabs mount lazily — the rotation board and the
             plate composer each pull the whole dish catalogue, which is wasted
-            work on a visit to, say, Meal Types. */}
+            work on a visit to, say, Meals & Cut-offs. */}
         {/* Two independent gates, and they answer different questions.
             `canCatalogue` (FOOD_CATALOGUE:view) decides whether the three
             definitional tabs EXIST for this role at all. `canEdit`
@@ -232,8 +235,12 @@ export default function FoodSettings() {
               : undefined}
           />
         </TabsContent>
-        <TabsContent value="meals"><MealTypesTab canEdit={canEdit} orgWideConfig={orgWideConfig} /></TabsContent>
-        <TabsContent value="cutoffs"><CutoffWindowsTab properties={properties} propName={propName} canEdit={canEdit} /></TabsContent>
+        <TabsContent value="meals">
+          <MealsAndCutoffsTab
+            properties={properties} propName={propName}
+            canEdit={canEdit} orgWideConfig={orgWideConfig}
+          />
+        </TabsContent>
         {canFoodDefaults && (
           <TabsContent value="food-defaults"><FoodDefaultsTab /></TabsContent>
         )}
@@ -243,47 +250,113 @@ export default function FoodSettings() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 6) MEAL TYPES
+// 6) MEALS & CUT-OFFS
+// Three sections that all describe the same handful of meal slots, read in the
+// order they get decided: what the slots ARE, when ordering for them CLOSES,
+// and when each one is SERVED. They were two separate tabs, which put a meal's
+// name and its service time a tab apart.
 // ════════════════════════════════════════════════════════════════════════════
+function MealsAndCutoffsTab({
+  properties, propName, canEdit, orgWideConfig,
+}: {
+  properties: FoodLookups["properties"];
+  propName: (id?: string | null) => string;
+  canEdit: boolean;
+  orgWideConfig: boolean;
+}) {
+  // space-y-8 rather than the sections' own space-y-4: three stacked sections
+  // need a bigger gap between them than between a heading and its table, or
+  // the seams disappear and it reads as one very long list.
+  return (
+    <div className="space-y-8">
+      <MealTypesSection properties={properties} propName={propName} canEdit={canEdit} orgWideConfig={orgWideConfig} />
+      <CutoffConfigPanel properties={properties} propName={propName} canEdit={canEdit} />
+      <ServiceTimesSection properties={properties} propName={propName} canEdit={canEdit} />
+    </div>
+  );
+}
+
+// ─── 6a) Meal types — the slots themselves ───────────────────────────────────
 type MealConfigForm = { displayLabel: string; sortOrder: number; isEnabled: boolean };
 
-function MealTypesTab({ canEdit, orgWideConfig }: { canEdit: boolean; orgWideConfig: boolean }) {
-  // H4: food_meal_config is an org-wide singleton — switching BREAKFAST off here
-  // takes it off the ordering screen for every property on every brand — so
-  // PUT /food/meal-config/:mealType now 403s a kitchen- or property-scoped
-  // caller. Fold that into the edit gate rather than firing a request that fails.
-  canEdit = canEdit && orgWideConfig;
+function MealTypesSection({
+  properties, propName, canEdit, orgWideConfig,
+}: {
+  properties: FoodLookups["properties"];
+  propName: (id?: string | null) => string;
+  canEdit: boolean;
+  orgWideConfig: boolean;
+}) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  // "" = the organisation-wide default row; otherwise a property's override.
+  // Same sentinel the cut-off and service-time scope pickers below use.
+  const [scopeId, setScopeId] = React.useState("");
   const [editing, setEditing] = React.useState<MealConfig | null>(null);
   const [form, setForm] = React.useState<MealConfigForm>({ displayLabel: "", sortOrder: 0, isEnabled: true });
+  const [resetTarget, setResetTarget] = React.useState<MealConfig | null>(null);
 
+  // H4, narrowed: the GLOBAL row still moves every property that has not
+  // overridden it, so writing it still takes org-wide authority and the server
+  // still 403s a scoped caller. A property override moves only that property,
+  // so it needs no more than FOOD_SETTINGS:edit — which is the whole point of
+  // this picker. Gate each scope on what it can actually reach.
+  const canEditScope = canEdit && (scopeId !== "" || orgWideConfig);
+
+  const params = scopeId ? { propertyId: scopeId } : {};
   const { data: configs = [], isLoading, isError, refetch } = useQuery<MealConfig[]>({
-    queryKey: foodKeys.mealConfig(),
-    queryFn: () => foodApi.mealConfig(),
+    queryKey: foodKeys.mealConfig(params),
+    queryFn: () => foodApi.mealConfig(params),
   });
-  const rows = [...configs].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  // What is IN FORCE at the selected scope: the property's own row wins, else
+  // the org default it inherits. Mirrors the server's pickMealConfig, minus the
+  // enabled filter — a disabled meal must stay visible here or there would be no
+  // way to switch it back on.
+  const rows = React.useMemo(() => {
+    const byMeal = new Map<string, MealConfig>();
+    for (const c of configs) {
+      if (c.propertyId !== null && c.propertyId !== scopeId) continue;
+      const cur = byMeal.get(c.mealType);
+      if (!cur || c.propertyId === scopeId) byMeal.set(c.mealType, c);
+    }
+    return [...byMeal.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+  }, [configs, scopeId]);
+  const isOverride = (c: MealConfig) => c.propertyId !== null;
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["food", "meal-config"] });
+
+  // `propertyId` decides which row the write lands on, so it goes on every
+  // mutation. Sending it for an INHERITED row is what creates the override —
+  // the server seeds the new row from the org default, so a bare toggle keeps
+  // the label and ordering that were already in force.
+  const scopeBody = () => ({ propertyId: scopeId || null });
 
   const saveMut = useMutation({
     mutationFn: (v: MealConfigForm & { mealType: string }) =>
       foodApi.updateMealConfig(v.mealType, {
+        ...scopeBody(),
         displayLabel: v.displayLabel.trim(),
         sortOrder: v.sortOrder,
         isEnabled: v.isEnabled,
       }),
-    onSuccess: () => { toast({ title: "Meal type updated" }); invalidate(); setEditing(null); },
+    onSuccess: () => { toast({ title: scopeId ? "Property meal type saved" : "Meal type updated" }); invalidate(); setEditing(null); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
   const toggleMut = useMutation({
     mutationFn: (c: MealConfig) =>
       foodApi.updateMealConfig(c.mealType, {
+        ...scopeBody(),
         displayLabel: c.displayLabel,
         sortOrder: c.sortOrder,
         isEnabled: !c.isEnabled,
       }),
     onSuccess: () => { toast({ title: "Meal type updated" }); invalidate(); },
+    onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
+  });
+  const resetMut = useMutation({
+    mutationFn: (c: MealConfig) => foodApi.deleteMealConfigOverride(c.mealType, c.propertyId!),
+    onSuccess: () => { toast({ title: "Reverted to the organisation default" }); invalidate(); setResetTarget(null); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
 
@@ -308,7 +381,7 @@ function MealTypesTab({ canEdit, orgWideConfig }: { canEdit: boolean; orgWideCon
           <Switch
             checked={row.original.isEnabled}
             onCheckedChange={() => toggleMut.mutate(row.original)}
-            disabled={toggleMut.isPending || !canEdit}
+            disabled={toggleMut.isPending || !canEditScope}
           />
           <span className={`text-xs font-medium ${row.original.isEnabled ? "text-success" : "text-muted-foreground"}`}>
             {row.original.isEnabled ? "Enabled" : "Disabled"}
@@ -316,32 +389,99 @@ function MealTypesTab({ canEdit, orgWideConfig }: { canEdit: boolean; orgWideCon
         </div>
       ),
     },
-    { id: "actions", header: () => <div className="text-right">Actions</div>, cell: ({ row }: any) => <RowActions onEdit={canEdit ? () => openEdit(row.original) : undefined} /> },
+    // Only meaningful inside a property: at org scope every row is the default
+    // BY DEFINITION, so a column saying so on every line is pure noise.
+    ...(scopeId ? [{
+      id: "scope", header: "Source",
+      cell: ({ row }: any) => isOverride(row.original)
+        ? <Badge variant="outline" className="text-[10px]"><Building2 className="h-3 w-3 mr-1" /> This property</Badge>
+        : <Badge variant="secondary" className="text-[10px]"><Globe className="h-3 w-3 mr-1" /> Inherited</Badge>,
+    }] : []),
+    {
+      id: "actions", header: () => <div className="text-right">Actions</div>,
+      cell: ({ row }: any) => (
+        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+          {canEditScope && (
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(row.original)} title="Edit">
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {/* Reset only exists for a row this property actually owns — an
+              inherited row has nothing to revert to. */}
+          {canEditScope && isOverride(row.original) && (
+            <Button
+              variant="ghost" size="icon" className="h-8 w-8"
+              onClick={() => setResetTarget(row.original)}
+              title="Revert to the organisation default"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      ),
+    },
   ];
 
   return (
     <div className="space-y-4">
       <SectionHeader
         title="Meal Types"
-        description={
-          orgWideConfig
-            ? "Customise the label, ordering and availability of each meal slot. Meal types are fixed; only their presentation can be edited."
-            : "Meal slots apply to every property in the organisation, so only an org-wide administrator can change them. Read-only here."
-        }
+        description="Customise the label, ordering and availability of each meal slot — for the whole organisation, or for one property. Meal types are fixed; only their presentation can be edited."
       />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Select value={scopeId || "__GLOBAL__"} onValueChange={(v) => setScopeId(v === "__GLOBAL__" ? "" : v)}>
+          <SelectTrigger className="w-64"><SelectValue placeholder="Scope" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__GLOBAL__">Organisation default (all properties)</SelectItem>
+            {properties.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {scopeId
+            ? <>Editing <span className="font-medium text-foreground">{propName(scopeId)}</span>. Changing an inherited row creates an override for this property only; everywhere else keeps the organisation default.</>
+            : <>Applies everywhere except properties that have set their own — pick a property above to give it different meals.</>}
+        </p>
+      </div>
+
+      {/* Read-only at org scope is a real state (F&B Manager can set their own
+          properties but not move the network), and silently disabled controls
+          look broken — say which it is. */}
+      {!scopeId && canEdit && !orgWideConfig && (
+        <p className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <Globe className="h-3.5 w-3.5 shrink-0" />
+          The organisation default applies to every property, so only an org-wide administrator can change it. Pick a property above to configure the meals you do control.
+        </p>
+      )}
+
       {/* An empty table here reads as "this org serves no meals" — never render
           a failed read as the configured state. */}
       {isError
         ? <FoodQueryError label="the meal types" onRetry={() => refetch()} />
         : <DataTable columns={cols as any} data={rows} isLoading={isLoading} />}
 
-      <FormModal open={!!editing} onOpenChange={(o) => !o && setEditing(null)} title="Edit Meal Type" onSave={submit} isSaving={saveMut.isPending} saveLabel="Save Changes">
+      <FormModal
+        open={!!editing} onOpenChange={(o) => !o && setEditing(null)}
+        title={scopeId ? `Edit Meal Type — ${propName(scopeId)}` : "Edit Meal Type"}
+        onSave={submit} isSaving={saveMut.isPending} saveLabel="Save Changes"
+      >
         <div className="space-y-4">
           {editing && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="text-[10px] font-mono uppercase tracking-wider">{editing.mealType}</Badge>
               <span className="text-xs text-muted-foreground">System meal type</span>
+              {scopeId
+                ? <Badge variant="secondary" className="text-[10px]"><Building2 className="h-3 w-3 mr-1" /> {propName(scopeId)}</Badge>
+                : <Badge variant="secondary" className="text-[10px]"><Globe className="h-3 w-3 mr-1" /> All properties</Badge>}
             </div>
+          )}
+          {/* Saying so BEFORE the save, not after: the row on screen is the org
+              default, and the fields are pre-filled from it, so without this the
+              dialog looks like it is editing the thing it is about to fork. */}
+          {editing && scopeId && !isOverride(editing) && (
+            <p className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              This meal currently follows the organisation default. Saving creates an override for {propName(scopeId)} — no other property is affected.
+            </p>
           )}
           <div>
             <Label>Display Label *</Label>
@@ -354,28 +494,31 @@ function MealTypesTab({ canEdit, orgWideConfig }: { canEdit: boolean; orgWideCon
           <div className="flex items-center justify-between border-t pt-3">
             <div>
               <Label className="mb-0">Enabled</Label>
-              <p className="text-xs text-muted-foreground">Disabled meal types are hidden from ordering.</p>
+              <p className="text-xs text-muted-foreground">Disabled meal types are hidden from ordering{scopeId ? ` at ${propName(scopeId)}` : ""}.</p>
             </div>
             <Switch checked={form.isEnabled} onCheckedChange={(v) => setForm({ ...form, isEnabled: v })} />
           </div>
         </div>
       </FormModal>
+
+      <FormModal
+        open={!!resetTarget} onOpenChange={(o) => !o && setResetTarget(null)}
+        title="Revert to organisation default"
+        onSave={() => resetTarget && resetMut.mutate(resetTarget)}
+        isSaving={resetMut.isPending} saveLabel="Revert"
+      >
+        <p className="text-sm text-muted-foreground">
+          {resetTarget && (
+            <>Remove the <span className="font-medium text-foreground">{MEAL_LABEL[resetTarget.mealType] ?? resetTarget.mealType}</span> override at{" "}
+            <span className="font-medium text-foreground">{propName(resetTarget.propertyId)}</span>? It will follow the organisation default again.</>
+          )}
+        </p>
+      </FormModal>
     </div>
   );
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// 7) CUT-OFF WINDOWS
-// ════════════════════════════════════════════════════════════════════════════
-type WindowForm = {
-  brand: FoodBrand; mealType: MealType; serviceTime: string;
-  leadTimeMinutes: number; propertyId: string;
-};
-const emptyWindow: WindowForm = {
-  brand: "UNILIV", mealType: "BREAKFAST", serviceTime: "",
-  leadTimeMinutes: 0, propertyId: "",
-};
-
+// ─── 6b) Cut-off — when ordering closes ──────────────────────────────────────
 // Single cut-off time per brand (applies to ALL meals; optional per-property override).
 type CutoffForm = { brand: FoodBrand; cutoffTime: string; propertyId: string };
 function CutoffConfigPanel({ properties, propName, canEdit }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string; canEdit: boolean }) {
@@ -496,7 +639,17 @@ function CutoffConfigPanel({ properties, propName, canEdit }: { properties: Food
   );
 }
 
-function CutoffWindowsTab({ properties, propName, canEdit }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string; canEdit: boolean }) {
+// ─── 6c) Service times — when each meal is served ────────────────────────────
+type WindowForm = {
+  brand: FoodBrand; mealType: MealType; serviceTime: string;
+  leadTimeMinutes: number; propertyId: string;
+};
+const emptyWindow: WindowForm = {
+  brand: "UNILIV", mealType: "BREAKFAST", serviceTime: "",
+  leadTimeMinutes: 0, propertyId: "",
+};
+
+function ServiceTimesSection({ properties, propName, canEdit }: { properties: FoodLookups["properties"]; propName: (id?: string | null) => string; canEdit: boolean }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   // The live brand master, not the two-brand dev fallback: a service time is
@@ -567,9 +720,7 @@ function CutoffWindowsTab({ properties, propName, canEdit }: { properties: FoodL
   ];
 
   return (
-    <div className="space-y-6">
-      <CutoffConfigPanel properties={properties} propName={propName} canEdit={canEdit} />
-
+    <div className="space-y-4">
       <SectionHeader
         title="Service Times" description="Per-meal service/delivery time + lead time (used for ETAs & delay analytics). The cut-off above applies to all meals."
         action={canEdit ? <Button className="bg-accent hover:bg-accent/90 text-white" onClick={openCreate}><Plus className="h-4 w-4 mr-2" /> Add Service Time</Button> : undefined}

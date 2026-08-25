@@ -26,6 +26,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { ChevronLeft, ChevronRight, Check, X, FileText } from "lucide-react";
 import jsPDF from "jspdf";
 
@@ -104,6 +106,41 @@ export function ResidentFormModal({ open, onOpenChange }: ResidentFormModalProps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  /**
+   * The wizard is one draft, not three. It hangs off form1 (always mounted) and
+   * carries everything the other two steps own through `extra` — the later
+   * steps' field values, the chip lists, the current step, and the data1/data2
+   * snapshots the submit body is assembled from. Subscribing to form2/form3 via
+   * watch() is what makes a keystroke on step 2 or 3 reach the autosave.
+   */
+  const step2Values = form2.watch();
+  const step3Values = form3.watch();
+  const draft = useFormDraft(form1, {
+    key: "resident-form:new",
+    enabled: open,
+    extra: { step, dietary, allergies, data1, data2, step2Values, step3Values },
+    onRestoreExtra: (e) => {
+      const saved = e as
+        | {
+            step?: number;
+            dietary?: string[];
+            allergies?: string[];
+            data1?: any;
+            data2?: any;
+            step2Values?: any;
+            step3Values?: any;
+          }
+        | undefined;
+      setStep(saved?.step ?? 1);
+      setDietary(saved?.dietary ?? []);
+      setAllergies(saved?.allergies ?? []);
+      setData1(saved?.data1 ?? {});
+      setData2(saved?.data2 ?? {});
+      if (saved?.step2Values) form2.reset(saved.step2Values);
+      if (saved?.step3Values) form3.reset(saved.step3Values);
+    },
+  });
+
   const next1 = form1.handleSubmit((v) => {
     setData1(v);
     setStep(2);
@@ -132,6 +169,7 @@ export function ResidentFormModal({ open, onOpenChange }: ResidentFormModalProps
       await createMut.mutateAsync({ data: body });
       toast({ title: "Resident created" });
       qc.invalidateQueries({ queryKey: getGetResidentsQueryKey() });
+      draft.clearDraft();
       onOpenChange(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -192,6 +230,13 @@ export function ResidentFormModal({ open, onOpenChange }: ResidentFormModalProps
       title="Add Resident"
       showFooter={false}
     >
+      <DraftRestoredNotice
+        show={draft.restored}
+        savedAt={draft.restoredAt}
+        onDiscard={draft.discardDraft}
+        onDismiss={draft.dismissRestored}
+      />
+
       <Stepper />
 
       {step === 1 && (

@@ -14,6 +14,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { useStateDraft } from "@/hooks/use-state-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import type { CompositionSlot, Dish, MealType } from "@/lib/food-api";
 import { MEAL_LABEL, DAY_LABEL } from "@/lib/food-api";
 import {
@@ -40,7 +42,7 @@ const PICKER_PREVIEW = 6;
 
 export function PlateComposer({
   open, onOpenChange, day, meal, week, brand, brandName, slots, ruleMissing,
-  dishes, dishById, initialPlate, nearby, serviceTime, onSave, isSaving, onGoToRules,
+  dishes, dishById, initialPlate, nearby, serviceTime, onSave, isSaving, onGoToRules, draftKey,
   clashBlocks = true, canEdit = true,
 }: {
   open: boolean;
@@ -71,6 +73,12 @@ export function PlateComposer({
   /** Mirrors the server's FOOD_SETTINGS:edit gate (M16) — read-only principals
    *  can open and read a plate, but every control that changes it is inert. */
   canEdit?: boolean;
+  /**
+   * Autosave identity for this cell, supplied by the parent because a cell is
+   * only unique WITHIN a kitchen and this drawer never sees the kitchen id.
+   * Null switches autosave off.
+   */
+  draftKey?: string | null;
 }) {
   const [draft, setDraft] = React.useState<PlateEntry[]>(initialPlate);
   const [search, setSearch] = React.useState<Record<string, string>>({});
@@ -85,6 +93,14 @@ export function PlateComposer({
     // initialPlate is a fresh array each render — key off the cell identity instead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, day, meal, week, brand]);
+
+  // Declared after the re-seed above so the baseline it snapshots is the plate
+  // this cell actually opened with, not the previous cell's leftovers.
+  const plateDraft = useStateDraft(draft, {
+    key: draftKey ?? null,
+    enabled: open,
+    onRestore: setDraft,
+  });
 
   const verdict = React.useMemo(() => plateVerdict(draft, slots, dishById), [draft, slots, dishById]);
   const onPlate = allPlateDishIds(draft);
@@ -168,6 +184,12 @@ export function PlateComposer({
 
         {/* ── slots ──────────────────────────────────────────────────────── */}
         <div className="flex-1 space-y-2.5 overflow-y-auto bg-background px-6 py-4">
+          <DraftRestoredNotice
+            show={plateDraft.restored}
+            savedAt={plateDraft.restoredAt}
+            onDiscard={plateDraft.discardDraft}
+            onDismiss={plateDraft.dismissRestored}
+          />
           {/* No rule → clear-only. Dishes can't be added (the server refuses
               too), but whatever is already here stays visible and removable so
               a plate built before the rule existed never gets stranded. */}
@@ -453,7 +475,7 @@ export function PlateComposer({
               <Button
                 variant="destructive"
                 disabled={draft.length === 0 || isSaving}
-                onClick={() => onSave([])}
+                onClick={() => { plateDraft.clearDraft(); onSave([]); }}
               >
                 {isSaving ? "Clearing…" : "Clear plate"}
               </Button>
@@ -461,7 +483,7 @@ export function PlateComposer({
               <Button
                 className="bg-accent text-white hover:bg-accent/90"
                 disabled={blocked || isSaving}
-                onClick={() => onSave(draft)}
+                onClick={() => { plateDraft.clearDraft(); onSave(draft); }}
               >
                 {isSaving ? "Saving…" : saveLabel}
               </Button>

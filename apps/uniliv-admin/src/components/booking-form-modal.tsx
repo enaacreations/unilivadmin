@@ -26,6 +26,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import type { PortfolioAttributes } from "@/lib/portfolio-types";
 
 const schema = z
@@ -94,15 +96,7 @@ export function BookingFormModal({
   const tomorrow = new Date();
   tomorrow.setDate(today.getDate() + 1);
 
-  const {
-    register,
-    control,
-    handleSubmit,
-    reset,
-    watch,
-    setValue,
-    formState: { errors },
-  } = useForm<FormValues>({
+  const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
       guestName: "",
@@ -118,6 +112,15 @@ export function BookingFormModal({
       notes: "",
     },
   });
+  const {
+    register,
+    control,
+    handleSubmit,
+    reset,
+    watch,
+    setValue,
+    formState: { errors },
+  } = form;
 
   React.useEffect(() => {
     if (!open) return;
@@ -152,6 +155,18 @@ export function BookingFormModal({
     }
   }, [open, booking, reset, defaultNightly]);
 
+  // A restore can change ratePeriod, which trips the rate-defaulting effect
+  // below and would overwrite the rate the user actually typed. Skip that one
+  // run; genuine period switches after it still re-default as before.
+  const skipRateDefaultRef = React.useRef(false);
+  const draft = useFormDraft(form, {
+    key: `booking-form:${booking?.id ?? `new:${property?.id ?? "none"}`}`,
+    enabled: open,
+    onRestore: () => {
+      skipRateDefaultRef.current = true;
+    },
+  });
+
   const ratePeriod = watch("ratePeriod");
   const ratePerPeriod = Number(watch("ratePerPeriod") || 0);
   const checkInDate = watch("checkInDate");
@@ -162,6 +177,10 @@ export function BookingFormModal({
 
   React.useEffect(() => {
     if (isEdit) return;
+    if (skipRateDefaultRef.current) {
+      skipRateDefaultRef.current = false;
+      return;
+    }
     setValue(
       "ratePerPeriod",
       ratePeriod === "WEEKLY" ? defaultWeekly : defaultNightly,
@@ -209,6 +228,7 @@ export function BookingFormModal({
           to: "",
         }).slice(0, -1),
       });
+      draft.clearDraft();
       onOpenChange(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -225,6 +245,12 @@ export function BookingFormModal({
       saveLabel={isEdit ? "Save Changes" : "Create Booking"}
     >
       <div className="space-y-4">
+        <DraftRestoredNotice
+          show={draft.restored}
+          savedAt={draft.restoredAt}
+          onDiscard={draft.discardDraft}
+          onDismiss={draft.dismissRestored}
+        />
         <div>
           <Label>Guest Name *</Label>
           <Input data-testid="input-booking-guest-name" {...register("guestName")} />

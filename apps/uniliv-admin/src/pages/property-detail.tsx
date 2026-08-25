@@ -84,6 +84,8 @@ import {
   type PortfolioAttributes,
 } from "@/lib/portfolio-types";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -213,14 +215,7 @@ function RoomFormModal({
   const isEdit = !!room;
   const createMut = useCreateRoom();
   const updateMut = useUpdateRoom();
-  const {
-    register,
-    handleSubmit,
-    reset,
-    setValue,
-    watch,
-    formState: { errors },
-  } = useForm<RoomForm>({
+  const form = useForm<RoomForm>({
     resolver: zodResolver(roomSchema),
     defaultValues: {
       number: "",
@@ -231,6 +226,14 @@ function RoomFormModal({
       status: "VACANT",
     },
   });
+  const {
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    watch,
+    formState: { errors },
+  } = form;
 
   React.useEffect(() => {
     if (open) {
@@ -256,6 +259,11 @@ function RoomFormModal({
     }
   }, [open, room, reset]);
 
+  const draft = useFormDraft(form, {
+    key: `room-form:${propertyId}:${room?.id ?? "new"}`,
+    enabled: open,
+  });
+
   const onSubmit = async (values: RoomForm) => {
     try {
       const body: any = { ...values, propertyId, wing: values.wing || undefined };
@@ -267,6 +275,7 @@ function RoomFormModal({
         toast({ title: "Room created" });
       }
       qc.invalidateQueries({ queryKey: getGetRoomsQueryKey({ propertyId }) });
+      draft.clearDraft();
       onOpenChange(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -283,6 +292,7 @@ function RoomFormModal({
       saveLabel={isEdit ? "Save Changes" : "Create Room"}
     >
       <div className="space-y-4">
+        <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label>Room Number *</Label>

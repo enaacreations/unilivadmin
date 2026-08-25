@@ -19,6 +19,7 @@ import {
   perResidentRuleTable,
   foodOrdersTable,
   foodMealWindowsTable,
+  usersTable,
   menuCompositionRuleTable,
   menuCompositionSlotTable,
   menuRuleOverrideTable,
@@ -402,6 +403,46 @@ export async function resolveAccessibleKitchenIds(
   // to nothing mean nothing. Never fall open, or revoking a grant escalates.
   return ids.size === 0 ? [] : [...ids];
 }
+
+/**
+ * The kitchen-side users to tell when an order they are going to cook changes
+ * after it was placed.
+ *
+ * This is a deliberately NARROW inverse of resolveAccessibleKitchenIds: only
+ * holders of a live KITCHEN grant on this exact kitchen, and only in the roles
+ * that actually work a kitchen queue. The F&B model is one login per kitchen
+ * (see the comment on resolveAccessibleKitchenIds), so that grant is precisely
+ * "the people who run this kitchen".
+ *
+ * The wider spines (CITY / ZONE / CLUSTER grants, which DO confer access) are
+ * intentionally not walked here. Access answers "may you see it"; this answers
+ * "should you be interrupted about it", and paging a zonal head about a unit
+ * lead correcting a headcount is noise, not oversight — the edit is on the order
+ * timeline for anyone who looks.
+ *
+ * Returns `[]` when nobody matches; callers must treat that as "notify nobody",
+ * never as "notify everybody".
+ */
+export async function resolveKitchenNotifyUserIds(
+  kitchenId: string | null | undefined,
+): Promise<string[]> {
+  if (!kitchenId) return [];
+  const rows = await db
+    .select({ id: usersTable.id })
+    .from(userScopesTable)
+    .innerJoin(usersTable, eq(usersTable.id, userScopesTable.userId))
+    .where(and(
+      eq(userScopesTable.scopeLevel, "KITCHEN"),
+      eq(userScopesTable.kitchenId, kitchenId),
+      eq(userScopesTable.isActive, true),
+      eq(usersTable.isActive, true),
+      inArray(usersTable.role, KITCHEN_SIDE_ROLES as unknown as never[]),
+    ));
+  return [...new Set(rows.map((r) => r.id))];
+}
+
+/** Roles that run a kitchen queue — the audience for kitchen-side alerts. */
+const KITCHEN_SIDE_ROLES = ["FNB_MANAGER", "FNB_SUPERVISOR", "KITCHEN_MANAGER"] as const;
 
 /**
  * Throws 403 unless the caller may act on `kitchenId`. A no-op for unrestricted

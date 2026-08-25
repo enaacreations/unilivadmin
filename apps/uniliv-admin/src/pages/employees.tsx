@@ -9,6 +9,8 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Plus, Users, UserCheck, UserPlus, UserMinus, Search } from "lucide-react";
@@ -141,6 +143,15 @@ export default function Employees() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createOpen]);
 
+  // The active tab rides along so a resumed form reopens on the section the
+  // user was actually filling in, not back on "personal".
+  const draft = useFormDraft(form, {
+    key: "employee-form:new",
+    enabled: createOpen,
+    extra: tab,
+    onRestoreExtra: (t) => setTab((t as string | undefined) ?? "personal"),
+  });
+
   const onSubmit = form.handleSubmit(async (v) => {
     try {
       const body: Record<string, unknown> = {
@@ -165,6 +176,7 @@ export default function Employees() {
       toast({ title: "Employee created" });
       qc.invalidateQueries({ queryKey: ["employees-stats"] });
       qc.invalidateQueries({ queryKey: getGetEmployeesQueryKey() });
+      draft.clearDraft();
       setCreateOpen(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -318,6 +330,7 @@ export default function Employees() {
         isSaving={createMut.isPending}
         saveLabel="Create Employee"
       >
+        <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList className="grid grid-cols-4 w-full">
             <TabsTrigger value="personal">Personal</TabsTrigger>

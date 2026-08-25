@@ -95,6 +95,10 @@ export interface FoodOrderItem {
   dishName?: string;
   component?: string;
   unit: string;
+  /** People THIS line was ordered for — a dish can be ordered for fewer than the
+   *  meal. Null on legacy rows; `dishPeople()` reads it with the documented
+   *  fallback to the order's own headcount. */
+  personsCount: number | null;
   orderedQty: string;
   preparedQty: string | null;
   receivedQty: string | null;
@@ -149,7 +153,22 @@ export interface WastePendingRow {
 export interface KitchenItem {
   id: string; dishId: string | null; dishName: string | null; unit: string;
   orderedQty: number | null; preparedQty: number | null;
+  /** People THIS dish line is for — a dish can be ordered for fewer than the
+   *  meal (a pinned sweet for 5 of 40). Null on legacy rows placed before
+   *  per-dish head counts existed; use `dishPeople()` to read it with the
+   *  documented fallback to the order's own headcount. */
+  personsCount: number | null;
 }
+
+/** People a single dish line feeds. `personsCount` is what the unit lead entered
+ *  for that dish; legacy rows have none, and the schema's documented default
+ *  there is the order's own headcount (food_order_items.persons_count), so fall
+ *  back to it rather than showing a blank on a packing list. */
+export const dishPeople = (
+  it: { personsCount?: number | null },
+  order: { residentsCount?: number | null; staffCount?: number | null },
+): number => it.personsCount ?? orderPeople(order);
+
 export interface KitchenSummaryDish {
   dishId: string;
   dishName: string;
@@ -342,7 +361,8 @@ export interface DispatchEvent {
   actorName?: string | null;
   createdAt: string;
 }
-export interface MealConfig { id: string; mealType: MealType; displayLabel: string; brand: FoodBrand | null; sortOrder: number; isEnabled: boolean }
+/** `propertyId: null` is the org-wide default row; a property row overrides it there. */
+export interface MealConfig { id: string; mealType: MealType; propertyId: string | null; displayLabel: string; brand: FoodBrand | null; sortOrder: number; isEnabled: boolean }
 export interface MealWindow { id: string; brand: FoodBrand; propertyId: string | null; mealType: MealType; cutoffTime: string | null; serviceTime: string | null; leadTimeMinutes: number; isActive: boolean }
 export interface FoodCutoffConfig { id: string; brand: string; propertyId: string | null; cutoffTime: string; isActive: boolean }
 export interface Cutoff { mealType: MealType; cutoffTime: string | null; serviceTime: string | null; cutoffAt: string | null; isPastCutoff: boolean }
@@ -611,7 +631,7 @@ export const foodKeys = {
   agencyKitchens: (id: string) => ["food", "agency-kitchens", id] as const,
   kitchenAgencies: (id: string) => ["food", "kitchen-agencies", id] as const,
   kitchens: (p: Record<string, unknown> = {}) => ["food", "kitchens", p] as const,
-  mealConfig: () => ["food", "meal-config"] as const,
+  mealConfig: (p: Record<string, unknown> = {}) => ["food", "meal-config", p] as const,
   mealWindows: (p: Record<string, unknown> = {}) => ["food", "meal-windows", p] as const,
   cutoffConfig: (p: Record<string, unknown> = {}) => ["food", "cutoff-config", p] as const,
   cutoffs: (p: Record<string, unknown>) => ["food", "cutoffs", p] as const,
@@ -693,6 +713,20 @@ export const foodApi = {
           : { residentsCount, staffCount },
       ),
     }).then((r) => r.data),
+  // Dish-level edit of a placed order — the payload the ordering grid produces,
+  // so a correction goes through the same screen (and the same server-side menu +
+  // portion-rule validation) as the original order. The list sent IS the order's
+  // new line-up: a dish left out is dropped, a dish added back is inserted.
+  // PLACED-only and pre-cut-off, enforced server-side.
+  editOrderItems: (
+    id: string,
+    body: {
+      residentsCount: number;
+      staffCount: number;
+      items: Array<{ dishId: string; personsCount: number; orderedQty: number }>;
+    },
+  ) =>
+    apiFetch<Envelope<OrderDetail>>(`/food/orders/${id}`, { method: "PUT", body: JSON.stringify(body) }).then((r) => r.data),
   cancelOrder: (id: string, reason?: string) =>
     apiFetch<Envelope<FoodOrder>>(`/food/orders/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }).then((r) => r.data),
   // Kitchen items: ordered vs prepared per dish — the pre-dispatch review on
@@ -919,8 +953,14 @@ export const foodApi = {
   placeOrderBatch: (b: Record<string, unknown>) => apiFetch<Envelope<{ batch: OrderBatch; orders: FoodOrder[] }>>(`/food/order-batches`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
 
   // Meal config + cut-off windows
-  mealConfig: () => apiFetch<Envelope<MealConfig[]>>(`/food/meal-config`).then((r) => r.data),
+  // Pass `propertyId` to narrow to one property's rows plus the org defaults they
+  // override; omit it for every row (which properties have diverged).
+  mealConfig: (p: Record<string, unknown> = {}) => apiFetch<Envelope<MealConfig[]>>(`/food/meal-config${qs(p)}`).then((r) => r.data),
+  // `propertyId` in the body picks the scope written: absent/null edits the
+  // org-wide default, set upserts that property's override.
   updateMealConfig: (mealType: string, b: Record<string, unknown>) => apiFetch<Envelope<MealConfig>>(`/food/meal-config/${mealType}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),
+  /** Drops a property's override so the meal falls back to the org-wide default. */
+  deleteMealConfigOverride: (mealType: string, propertyId: string) => apiFetch<Envelope<{ id: string }>>(`/food/meal-config/${mealType}${qs({ propertyId })}`, { method: "DELETE" }).then((r) => r.data),
   listMealWindows: (p: Record<string, unknown> = {}) => apiFetch<Envelope<MealWindow[]>>(`/food/meal-windows${qs(p)}`).then((r) => r.data),
   createMealWindow: (b: Record<string, unknown>) => apiFetch<Envelope<MealWindow>>(`/food/meal-windows`, { method: "POST", body: JSON.stringify(b) }).then((r) => r.data),
   updateMealWindow: (id: string, b: Record<string, unknown>) => apiFetch<Envelope<MealWindow>>(`/food/meal-windows/${id}`, { method: "PUT", body: JSON.stringify(b) }).then((r) => r.data),

@@ -48,7 +48,7 @@ import {
   measurementUnitEnum,
   agencyVehicleTypeEnum,
 } from "@workspace/db";
-import { and, eq, or, ilike, sql, desc, asc, gte, lte, lt, inArray, notInArray, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, ne, or, ilike, sql, desc, asc, gte, lte, lt, inArray, notInArray, isNull, isNotNull } from "drizzle-orm";
 import type { AnyColumn } from "drizzle-orm";
 import { canTransition } from "../lib/order-transitions.js";
 import { z } from "zod";
@@ -66,6 +66,8 @@ import {
   assertKitchenAccess,
   assertMayRetireDish,
   resolveMenu,
+  resolveRulesByDish,
+  resolveKitchenNotifyUserIds,
   computeOrderItems,
   nextOrderNumber,
   convertForDisplay,
@@ -85,14 +87,14 @@ import {
   ingredientClashError,
   findPortionRuleUsage,
 } from "../lib/food-service.js";
-import { notifyOrderEvent } from "../lib/notification-service.js";
+import { notifyOrderEvent, notifyOrderEdited } from "../lib/notification-service.js";
 import {
   toCsv, toPdf, toMenuRotationPdf, fileDateStamp, sanitizeForFilename,
   type RotationExportRow,
 } from "../lib/export-service.js";
 // Shared order cut-off enforcement (single source of truth lives in food-ops.ts,
 // alongside resolveCutoff()/atTime()) so /orders and /order-batches stay consistent.
-import { checkOrderCutoff, createDispatchForOrders, reconcileDispatchForOrder, residentsCapForProperty, enumParamError, type TxClient } from "./food-ops.js";
+import { checkOrderCutoff, createDispatchForOrders, reconcileDispatchForOrder, residentsCapForProperty, enumParamError, ORDER_QTY_TOLERANCE, DISH_PERSONS_TOLERANCE, type TxClient } from "./food-ops.js";
 import { ymdToIstDayStart, istDayYmd, todayIstYmd, istParts } from "../lib/tz.js";
 import { writeAuditLog } from "../lib/wallet-service.js";
 
@@ -1425,15 +1427,24 @@ foodRouter.get("/property-options", authenticate, authorize("FOOD_CONFIRM_DELIVE
   } catch (err) { fail(req, res, err); }
 });
 
-// Edit an order. The ONLY editable input is the people count (`residentsCount`) —
-// the number of residents the meal is being prepared for, which is the per-person
-// basis that drives every item's quantity. Item quantities / totalQuantity supplied
-// by the client are IGNORED; the existing lines are rescaled SERVER-SIDE from the
-// new headcount, so the order stays internally consistent. Unlike place-order this
-// does NOT re-resolve the menu — the dish set is fixed once the order exists (see
-// the recompute block below). `notes` is also editable. Allowed while PLACED /
-// ACCEPTED / DISPATCHED (never once CANCELLED / DELIVERED / REJECTED) — but the
-// people counts specifically are frozen once the kitchen accepts (see below).
+// Edit an order. Two shapes, and which one the client sends decides how the
+// lines move:
+//
+//  1. COUNTS ONLY (`residentsCount` / `staffCount`) — the historical shape. The
+//     existing lines are rescaled SERVER-SIDE from the new headcount and the menu
+//     is deliberately NOT re-resolved: the dish set is fixed, only the quantities
+//     move (see the recompute block below).
+//  2. DISH-LEVEL (`items`) — the same grid the order was placed from, so a unit
+//     lead corrects "8 people, and only 5 of them want the paneer" in one pass.
+//     Here the menu IS re-resolved, because the client is editing the very grid
+//     that resolution produces and every line has to be validated against the
+//     standing portion rules exactly as placement validates them. The submitted
+//     list is the order's new line-up: dishes left out are dropped, dishes added
+//     back are inserted, and surviving rows are updated in place.
+//
+// `notes` is editable in both. Counts-only is allowed while PLACED / ACCEPTED /
+// DISPATCHED; a dish-level edit is PLACED-only and pre-cut-off, because it moves
+// the same commitment the kitchen has already been handed.
 const updateOrderSchema = z.object({
   residentsCount: z.coerce.number().nullish(),
   // Staff eating the same meal. Items are recomputed on the TOTAL (residents +
@@ -1441,6 +1452,14 @@ const updateOrderSchema = z.object({
   // the order's current value for that count untouched.
   staffCount: z.coerce.number().nullish(),
   notes: zText.nullish(),
+  // Dish-level edit. `orderedQty` is checked against — never trusted over — the
+  // quantity the portion rule derives for `personsCount` (same 120% tolerance the
+  // placement grid gets); `unit` is never taken from the body at all.
+  items: z.array(z.object({
+    dishId: zId,
+    personsCount: z.coerce.number().int().min(0).nullish(),
+    orderedQty: z.coerce.number().min(0),
+  })).optional(),
 }).passthrough();
 
 foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"), async (req, res) => {
@@ -1461,6 +1480,11 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
     const update: Record<string, unknown> = { updatedAt: new Date() };
 
     const wantsCountEdit = b.residentsCount != null || b.staffCount != null;
+    // A dish-level edit rewrites the very lines the kitchen cooks from, so it
+    // lives under exactly the same two gates as a count edit below (PLACED only,
+    // before the cut-off) — hence one flag covering both.
+    const wantsItemEdit = Array.isArray(b.items);
+    const wantsQuantityEdit = wantsCountEdit || wantsItemEdit;
 
     // orderedQty is the commitment the kitchen was given at accept, and nothing
     // downstream re-reads it from the kitchen's side: preparedQty is backfilled
@@ -1472,10 +1496,10 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
     // while the order is still PLACED. What genuinely changed after accept belongs
     // in preparedQty (PATCH /orders/:id/kitchen-items) or, post-delivery, in
     // Additional Food. `notes` stays editable for the whole window above.
-    if (wantsCountEdit && order.status !== "PLACED") {
+    if (wantsQuantityEdit && order.status !== "PLACED") {
       res.status(422).json({
         success: false,
-        error: `People counts can only be changed while the order is still Placed (it is ${order.status}). Ask the kitchen to adjust send quantities, or log Additional Food after delivery.`,
+        error: `${wantsItemEdit ? "Dishes and people counts" : "People counts"} can only be changed while the order is still Placed (it is ${order.status}). Ask the kitchen to adjust send quantities, or log Additional Food after delivery.`,
       });
       return;
     }
@@ -1485,7 +1509,7 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
     // `order.status === "PLACED"`, which meant a later status skipped the check
     // entirely; with counts now PLACED-only this is belt-and-braces, and it stays
     // correct if the status gate above is ever widened.
-    if (wantsCountEdit) {
+    if (wantsQuantityEdit) {
       const cutoffError = await checkOrderCutoff(order.brand, order.propertyId, order.serviceDate);
       if (cutoffError) { res.status(422).json({ success: false, error: `This order can no longer be edited — ${cutoffError}` }); return; }
     }
@@ -1529,10 +1553,102 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
     }
     if (b.notes !== undefined) update["notes"] = b.notes ?? null;
 
+    /* ── dish-level plan ────────────────────────────────────────────────────
+     * The submitted grid is validated against the CURRENT menu and the standing
+     * portion rules with exactly the checks placement applies (food-ops.ts POST
+     * /order-batches): dish must be on the resolved menu, must have an active
+     * portion rule, a pinned dish keeps its pinned count, a per-dish head count
+     * cannot exceed 120% of the number eating the meal, the quantity cannot
+     * exceed 120% of what the rule derives, and the UNIT comes from the rule —
+     * never the body. The two paths must not drift into different definitions of
+     * a legal line, which is the whole reason this mirrors that loop rather than
+     * inventing a lighter check for edits.
+     *
+     * Re-resolving the menu is correct HERE (and wrong for the counts-only path
+     * below): the client is editing the very grid that resolution produces, so
+     * it is choosing from today's menu, not silently inheriting a rotation change
+     * it never saw.
+     *
+     * Nothing is written until the whole plan checks out.
+     * ──────────────────────────────────────────────────────────────────────── */
+    type PlannedItem = { dishId: string; personsCount: number; orderedQty: number; unit: string };
+    let plannedItems: PlannedItem[] | null = null;
+    const skippedItems: string[] = [];
+    if (wantsItemEdit) {
+      const menu = await resolveMenu(order.kitchenId, order.brand, order.mealType, order.serviceDate);
+      const onMenu = new Map(menu.map((m) => [m.dishId, m]));
+      const rulesByDish = await resolveRulesByDish(order.brand, order.mealType, menu.map((m) => m.dishId));
+      // An unbounded per-dish count defeats the quantity bound below by
+      // inflating what that bound is computed FROM. Fewer people than the
+      // meal's headcount is ordinary — not everyone wants the paneer — and a
+      // 20% buffer above it is allowed (guests, second helpings), same as
+      // placement.
+      const { cap: capNow } = await residentsCapForProperty(order.propertyId);
+      const personsCeiling = people > 0 ? Math.ceil(people * DISH_PERSONS_TOLERANCE) : capNow;
+      const rows: PlannedItem[] = [];
+      const seen = new Set<string>();
+      for (const it of b.items as Array<{ dishId: string; personsCount?: number | null; orderedQty: number }>) {
+        const md = onMenu.get(it.dishId);
+        if (!md) { skippedItems.push("a dish is no longer on the resolved menu"); continue; }
+        // Two rows for one dish would make "the submitted list IS the new
+        // line-up" ambiguous — last-write-wins is a silent choice, so refuse.
+        if (seen.has(it.dishId)) {
+          res.status(400).json({ success: false, error: `${md.dishName} is listed twice.` }); return;
+        }
+        seen.add(it.dishId);
+        const rule = rulesByDish.get(md.dishId);
+        if (!rule) { skippedItems.push(`${md.dishName} has no active portion rule`); continue; }
+        const pinned = md.isQtyLocked && md.lockedPersons != null;
+        const personsCount = pinned
+          ? md.lockedPersons!
+          : (it.personsCount != null ? Math.max(0, Number(it.personsCount)) : people);
+        if (!pinned && personsCount > personsCeiling) {
+          res.status(422).json({
+            success: false,
+            error: people > 0
+              ? `${md.dishName} is ordered for ${personsCount} people — at most ${personsCeiling} (20% above the ${people} eating this meal).`
+              : `${md.dishName} is ordered for ${personsCount} people, more than the ${personsCeiling} limit.`,
+          });
+          return;
+        }
+        const derivedQty = personsCount * rule.qty;
+        const oq = pinned ? derivedQty : Number(it.orderedQty);
+        // A zero-quantity line is how the grid says "not this dish" — drop it
+        // rather than writing a line the kitchen would read as nothing to cook.
+        if (!Number.isFinite(oq) || oq <= 0) continue;
+        const ceiling = Math.round(derivedQty * ORDER_QTY_TOLERANCE * 1000) / 1000;
+        if (!pinned && oq > ceiling) {
+          res.status(422).json({
+            success: false,
+            error: `${md.dishName} (${oq}) exceeds the ${ceiling} limit — at most 120% of the ${derivedQty} the portion rule sets for ${personsCount} people.`,
+          });
+          return;
+        }
+        const unit = rule.unit || md.unit;
+        if (!(MEASUREMENT_UNITS as readonly string[]).includes(unit)) {
+          res.status(422).json({ success: false, error: `${md.dishName} has an unknown unit "${unit}" — fix its portion rule before ordering.` });
+          return;
+        }
+        rows.push({ dishId: it.dishId, personsCount, orderedQty: Math.round(oq * 1000) / 1000, unit });
+      }
+      // An order with no lines is not an order (M4) — the same rule placement
+      // enforces. Emptying the grid is calling the meal off, which is a
+      // cancellation and a different decision with a different audit trail.
+      if (!rows.length) {
+        res.status(422).json({
+          success: false,
+          error: "An order has to keep at least one dish. To call the whole meal off, cancel the order instead.",
+          details: skippedItems,
+        });
+        return;
+      }
+      plannedItems = rows;
+    }
+
     // Header + item rescale + the totalQuantity that summarises them are ONE unit
     // of work (M4): committed separately, a failure mid-rescale left an order
     // whose header said one headcount and whose lines said another.
-    const updated = await db.transaction(async (tx) => {
+    const { row: updated, changeNote } = await db.transaction(async (tx) => {
       // Conditional write (M1): `order` was read outside this transaction, so its
       // status is a snapshot. Pinning the UPDATE to that status means a concurrent
       // accept/reject/cancel makes this edit match zero rows instead of silently
@@ -1542,7 +1658,90 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
         .where(and(eq(foodOrdersTable.id, id), eq(foodOrdersTable.status, order.status)))
         .returning();
       if (!row) throw new HandlerAbort(422, { error: "This order changed while you were editing it — reload and try again." });
-      if (!recompute) return row;
+
+      // What the timeline (and the kitchen's notification) will say. Built from
+      // what actually moved, so a no-op save writes no event at all.
+      const changes: string[] = [];
+      if (update["residentsCount"] !== undefined || update["staffCount"] !== undefined) {
+        changes.push(`${prevPeople} → ${people} people`);
+      }
+
+      /* ── dish-level: the submitted list IS the order's new line-up ────────
+       * Rows are updated in place rather than deleted and rebuilt so a surviving
+       * line keeps its identity (and its preparedQty / receivedQty / wastedQty —
+       * all still null here, since this path is PLACED-only, but the invariant
+       * shouldn't depend on that staying true).
+       * ─────────────────────────────────────────────────────────────────────── */
+      if (plannedItems) {
+        const existing = await tx.select().from(foodOrderItemsTable).where(eq(foodOrderItemsTable.orderId, id));
+        const leftover = new Map(existing.map((r) => [r.dishId, r]));
+        let added = 0;
+        let changedLines = 0;
+        for (const p of plannedItems) {
+          const cur = leftover.get(p.dishId);
+          if (cur) {
+            leftover.delete(p.dishId);
+            // A line that is genuinely unchanged is left alone: the grid always
+            // submits every dish, so writing all of them would stamp updatedAt
+            // across the order and make "6 dishes" appear on the timeline for a
+            // save that only moved the headcount.
+            if (Number(cur.orderedQty) === p.orderedQty && cur.personsCount === p.personsCount && cur.unit === p.unit) continue;
+            changedLines++;
+            await tx.update(foodOrderItemsTable).set({
+              personsCount: p.personsCount,
+              orderedQty: String(p.orderedQty),
+              unit: p.unit as never,
+              updatedAt: new Date(),
+            }).where(eq(foodOrderItemsTable.id, cur.id));
+          } else {
+            added++;
+            await tx.insert(foodOrderItemsTable).values({
+              id: newId(),
+              orderId: id,
+              dishId: p.dishId,
+              unit: p.unit as never,
+              personsCount: p.personsCount,
+              orderedQty: String(p.orderedQty),
+              updatedAt: new Date(),
+            });
+          }
+        }
+        const dropped = [...leftover.values()];
+        if (dropped.length) {
+          await tx.delete(foodOrderItemsTable).where(inArray(foodOrderItemsTable.id, dropped.map((r) => r.id)));
+        }
+        if (added || dropped.length || changedLines) {
+          const parts = [`${plannedItems.length} dish${plannedItems.length === 1 ? "" : "es"} on the order`];
+          if (added) parts.push(`${added} added`);
+          if (dropped.length) parts.push(`${dropped.length} removed`);
+          if (changedLines) parts.push(`${changedLines} adjusted`);
+          changes.push(parts.join(", "));
+        }
+      }
+      if (b.notes !== undefined) changes.push("notes");
+
+      const note = changes.length ? `Order edited — ${changes.join("; ")}` : null;
+      // Audit trail (append-only, like every other lifecycle write here). The
+      // status is unchanged — an edit is not a transition — so the row carries
+      // the order's current status and says what moved in its note.
+      if (note) {
+        await tx.insert(foodOrderEventsTable).values({
+          id: newId(), orderId: id, status: row.status, note, actorId: req.user!.id,
+        });
+      }
+
+      // A dish-level edit already wrote every line explicitly; only the
+      // counts-only path rescales. Neither runs when nothing moved.
+      if (!plannedItems && !recompute) return { row, changeNote: note };
+      if (plannedItems) {
+        // total_quantity follows the lines just written (M11).
+        const [agg] = await tx.select({ total: sql<string | null>`sum(${foodOrderItemsTable.orderedQty})` })
+          .from(foodOrderItemsTable).where(eq(foodOrderItemsTable.orderId, id));
+        const [withTotal] = await tx.update(foodOrdersTable)
+          .set({ totalQuantity: agg?.total ?? null, updatedAt: new Date() })
+          .where(eq(foodOrdersTable.id, id)).returning();
+        return { row: withTotal!, changeNote: note };
+      }
 
       // Rescale the items this order ALREADY has — never re-resolve the menu.
       //
@@ -1590,10 +1789,34 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
       const [withTotal] = await tx.update(foodOrdersTable)
         .set({ totalQuantity: agg?.total ?? null, updatedAt: new Date() })
         .where(eq(foodOrdersTable.id, id)).returning();
-      return withTotal!;
+      return { row: withTotal!, changeNote: note };
     });
 
-    res.json({ success: true, data: { ...updated, totalQuantity: updated.totalQuantity != null ? Number(updated.totalQuantity) : null } });
+    // Tell the kitchen the numbers they were handed have moved. Best-effort and
+    // OUTSIDE the transaction: a notify failure must never roll back an edit that
+    // is already committed (same rule as placement).
+    if (changeNote && wantsQuantityEdit) {
+      try {
+        const recipients = await resolveKitchenNotifyUserIds(order.kitchenId);
+        const [prop] = await db.select({ name: propertiesTable.name })
+          .from(propertiesTable).where(eq(propertiesTable.id, order.propertyId));
+        await notifyOrderEdited(recipients, {
+          unitLeadId: order.unitLeadId,
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          propertyName: prop?.name ?? null,
+          mealType: order.mealType,
+          brand: order.brand,
+          changeSummary: changeNote.replace(/^Order edited — /, ""),
+        });
+      } catch (err) { req.log.error({ err, orderId: order.id }, "order-edit notify failed"); }
+    }
+
+    res.json({
+      success: true,
+      data: { ...updated, totalQuantity: updated.totalQuantity != null ? Number(updated.totalQuantity) : null },
+      ...(skippedItems.length ? { meta: { skipped: skippedItems } } : {}),
+    });
   } catch (err) {
     fail(req, res, err);
   }
@@ -1680,6 +1903,11 @@ foodRouter.get("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITCHE
         dishId: r.it.dishId,
         dishName: r.dishName,
         unit: r.it.unit,
+        // The per-dish head count the unit lead entered — a dish can be ordered
+        // for fewer people than the meal (a pinned sweet for 5 of 40). The
+        // dispatch board and its list show it per line; null on legacy rows,
+        // where the documented default is the order's own headcount.
+        personsCount: r.it.personsCount,
         orderedQty: r.it.orderedQty != null ? Number(r.it.orderedQty) : null,
         preparedQty: r.it.preparedQty != null ? Number(r.it.preparedQty) : null,
       })),
@@ -1846,6 +2074,21 @@ const confirmDeliverySchema = z.object({
   remarks: zText.nullish(),
 }).passthrough();
 
+/**
+ * Surplus ceiling for receivedQty. A delivery may legitimately arrive OVER what
+ * the kitchen booked out — a crate topped up at the last minute, a dish sent in
+ * a bigger vessel, or simply a higher count on the dock — and that surplus is a
+ * number nothing downstream can reconstruct later, so the receive path has to
+ * accept it. These bounds therefore exist ONLY to reject an order-of-magnitude
+ * keying slip (400 keyed for 40), which would otherwise skew every waste
+ * percentage computed on a `received` basis. They are deliberately generous:
+ * blocking a real surplus pushes the lead into under-reporting, which is the
+ * failure this ceiling used to cause when it sat at "what was sent" (H7).
+ */
+const RECEIVED_SURPLUS_MULTIPLE = 10;
+/** Floor so tiny lines (0.5 kg of a garnish) keep usable headroom. */
+const RECEIVED_SURPLUS_MIN_CAP = 10;
+
 foodRouter.post("/orders/:id/confirm-delivery", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "edit"), async (req, res) => {
   try {
     if (!validateBody(confirmDeliverySchema, req, res)) return;
@@ -1864,17 +2107,24 @@ foodRouter.post("/orders/:id/confirm-delivery", authenticate, authorize("FOOD_CO
       const it = itemById.get(inp.itemId);
       if (!it) { res.status(400).json({ success: false, error: `Unknown itemId ${inp.itemId}` }); return; }
       const rq = Number(inp.receivedQty);
-      // The ceiling is what could physically have arrived, i.e. the LARGER of
-      // ordered and prepared — the kitchen is allowed to cook more than ordered
-      // (preparedQty has no upper bound) and the receive UI prefills/caps from
-      // prepared. Capping at ordered alone (H7) made every over-prepared
-      // delivery unsubmittable and pushed the lead into under-reporting, which
-      // then minted a shortfall complaint for food that arrived in surplus.
-      // Surplus is recorded as-is and surfaces in the variance report; the
-      // shortfall logic below still measures against ordered.
-      const cap = Math.max(Number(it.orderedQty), Number(it.preparedQty ?? 0));
+      // What was booked out is the LARGER of ordered and prepared — the kitchen
+      // may cook more than ordered (preparedQty has no upper bound) and the
+      // receive UI prefills from prepared. Received is NOT bounded by it: the
+      // delivery may arrive over as easily as under, and both directions have
+      // to be recordable. Only the typo ceiling above applies. Surplus is stored
+      // as-is and surfaces as a negative variance in the reports; the shortfall
+      // logic below still measures against ordered, so a surplus raises nothing.
+      const sent = Math.max(Number(it.orderedQty), Number(it.preparedQty ?? 0));
+      const cap = Math.max(sent * RECEIVED_SURPLUS_MULTIPLE, RECEIVED_SURPLUS_MIN_CAP);
       if (!Number.isFinite(rq) || rq < 0 || rq > cap) {
-        res.status(400).json({ success: false, error: `receivedQty for ${inp.itemId} must be between 0 and ${cap}` });
+        // This lands in a toast the lead reads at the gate, so it names the dish
+        // rather than an opaque line id. One query, on the error path only.
+        const [dish] = await db.select({ name: dishesTable.name }).from(dishesTable).where(eq(dishesTable.id, it.dishId));
+        const label = dish?.name || "this item";
+        res.status(400).json({
+          success: false,
+          error: `Received quantity for ${label} must be between 0 and ${cap} ${it.unit.toLowerCase()} — ${sent} ${it.unit.toLowerCase()} was sent, so check for a typo`,
+        });
         return;
       }
     }
@@ -2466,10 +2716,140 @@ foodRouter.get("/dishes", authenticate, authorizeAny(FOOD_MODULES, "view"), asyn
 const sanitizePreparations = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((p): p is string => typeof p === "string" && (PREPARATIONS as readonly string[]).includes(p)) : [];
 
-/** Replace a dish's ingredient rows from a [{ingredientId, quantity?, unit?}] list. */
+/* ────────────────────────────────────────────────────────────────────────────
+ * Master-data duplicate guard (dishes / ingredients)
+ *
+ * The catalogue is keyed on the NAME people read, so "Aloo Gobi", "aloo gobi"
+ * and "Aloo Gobi " are one dish to everyone except Postgres. Matching is
+ * therefore trim + case-insensitive — the SAME identity the bulk importer
+ * already enforces (handleDishes / handleIngredients in routes/bulk.ts), so the
+ * sheet and the drawer can never disagree about what a duplicate is.
+ *
+ * A dish is identified by name + course: two dishes both called "Rice" are the
+ * same dish only if they are the same course.
+ *
+ * RETIRED rows still count. Both tables are soft-deleted (isActive=false), so
+ * the row is still there, still joined by name in every report, and admitting a
+ * second copy would make the catalogue permanently ambiguous. The refusal names
+ * the inactive twin so the user reactivates it instead of cloning it.
+ *
+ * Two layers, and they are not redundant:
+ *   1. This pre-check, which produces the message worth reading — it names the
+ *      row already on file and whether it is retired.
+ *   2. `uq_dish_name_component` / `uq_ingredient_name` (schema/food.ts), which
+ *      catch what a pre-check structurally cannot: two concurrent creates whose
+ *      SELECTs both come back empty before either INSERT lands.
+ * refuseDuplicateFromError below maps layer 2 onto the same 409, so that race
+ * reads as a duplicate rather than a 500.
+ *
+ * Databases provisioned before the indexes existed may hold duplicates, and
+ * `drizzle-kit push` aborts on an index it cannot build. Run
+ * `pnpm --filter @workspace/scripts run dedupe:food` first — it MERGES the
+ * duplicates (repointing orders and rotation slots at the survivor) rather than
+ * deleting rows that history still points at.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Case-insensitive, whitespace-insensitive match on a name column. */
+const nameMatches = (col: AnyColumn, name: string) =>
+  sql`lower(trim(${col})) = ${name.trim().toLowerCase()}`;
+
+/** The existing dish with this name + course, or null. `excludeId` skips the row being edited. */
+async function findDuplicateDish(name: string, component: string, excludeId?: string | null) {
+  const [row] = await db.select({ id: dishesTable.id, name: dishesTable.name, isActive: dishesTable.isActive })
+    .from(dishesTable)
+    .where(and(
+      nameMatches(dishesTable.name, name),
+      eq(dishesTable.component, component as never),
+      ...(excludeId ? [ne(dishesTable.id, excludeId)] : []),
+    ))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The existing ingredient with this name, or null. `excludeId` skips the row being edited. */
+async function findDuplicateIngredient(name: string, excludeId?: string | null) {
+  const [row] = await db.select({ id: ingredientsTable.id, name: ingredientsTable.name, isActive: ingredientsTable.isActive })
+    .from(ingredientsTable)
+    .where(and(
+      nameMatches(ingredientsTable.name, name),
+      ...(excludeId ? [ne(ingredientsTable.id, excludeId)] : []),
+    ))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Human-readable course, so the refusal reads like the chips in the drawer do. */
+const componentLabel = (c: string) =>
+  c.split("_").map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
+
+/**
+ * Writes the 409 for a duplicate master-data row and returns true, or returns
+ * false when there is nothing to refuse — so callers read as
+ * `if (await refuseDuplicate(...)) return;`.
+ */
+function refuseDuplicate(
+  res: Response,
+  dup: { name: string; isActive: boolean } | null,
+  what: "dish" | "ingredient",
+  qualifier = "",
+): boolean {
+  if (!dup) return false;
+  res.status(409).json({
+    success: false,
+    error: `“${dup.name}” already exists${qualifier}.`,
+    details: dup.isActive
+      ? `This ${what} is already in the catalogue — open it to make changes instead of adding a second copy.`
+      : `A retired ${what} still holds that name. Reactivate it instead of adding a second copy.`,
+  });
+  return true;
+}
+
+/** The catalogue indexes, named so an unrelated unique violation still 500s. */
+const CATALOGUE_UNIQUE_CONSTRAINTS = new Set(["uq_dish_name_component", "uq_ingredient_name"]);
+
+/**
+ * Maps a unique violation from those indexes onto the SAME 409 the pre-check
+ * writes, and returns true when it did — so a catch block reads as
+ * `if (refuseDuplicateFromError(res, err, "dish")) return;`.
+ *
+ * The pre-check wins almost every time and gives the better message, because it
+ * has the offending row in hand. This exists for the case it structurally
+ * cannot see: two concurrent creates of the same name, both SELECTs empty
+ * before either INSERT lands. Without it that race is a 500 telling the user
+ * the server is broken, when the truth is that someone beat them to the name.
+ *
+ * Narrowed by constraint name (not bare isUniqueViolation) so an unrelated
+ * collision keeps its 500 instead of being mislabelled a duplicate name.
+ */
+function refuseDuplicateFromError(res: Response, err: unknown, what: "dish" | "ingredient"): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const constraint = violatedConstraint(err);
+  if (!constraint || !CATALOGUE_UNIQUE_CONSTRAINTS.has(constraint)) return false;
+  res.status(409).json({
+    success: false,
+    error: `That ${what} already exists.`,
+    details: `Someone added a ${what} with the same name a moment ago. Reload to see it.`,
+  });
+  return true;
+}
+
+/**
+ * Replace a dish's ingredient rows from a [{ingredientId, quantity?, unit?}] list.
+ *
+ * Repeats of the same ingredient are collapsed to their FIRST occurrence (which
+ * carries the quantity the user typed), mirroring replaceDishSideOptions. The
+ * drawer picks ingredients with a toggle so it can't send one twice, but the
+ * bulk importer and any direct API caller can — and a dish holding "Aloo" twice
+ * double-counts in every consumption report and in the shared-ingredient block.
+ */
 async function replaceDishIngredients(dishId: string, ingredients: unknown): Promise<void> {
   await db.delete(dishIngredientsTable).where(eq(dishIngredientsTable.dishId, dishId));
-  const valid = (Array.isArray(ingredients) ? ingredients : []).filter((it) => it && it.ingredientId);
+  const seen = new Set<string>();
+  const valid = (Array.isArray(ingredients) ? ingredients : []).filter((it) => {
+    if (!it || !it.ingredientId || seen.has(it.ingredientId)) return false;
+    seen.add(it.ingredientId);
+    return true;
+  });
   if (!valid.length) return;
   await db.insert(dishIngredientsTable).values(valid.map((it) => ({
     id: newId(), dishId, ingredientId: it.ingredientId,
@@ -2615,6 +2995,12 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "create"), 
     if (!validateBody(createDishSchema, req, res)) return;
     const b = req.body || {};
     if (!b.name || !b.component || !b.unit) { res.status(400).json({ success: false, error: "name, component, unit required" }); return; }
+    // Refuse a second copy of a dish already in the catalogue (see the
+    // duplicate-guard block above for what counts as the same dish).
+    if (refuseDuplicate(
+      res, await findDuplicateDish(b.name, b.component), "dish",
+      ` as a ${componentLabel(b.component)}`,
+    )) return;
     const lock = normalizeQtyLock(b);
     const [row] = await db.insert(dishesTable).values({
       id: newId(),
@@ -2633,7 +3019,12 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "create"), 
     if (b.sideDishIds !== undefined) await replaceDishSideOptions(row.id, b.sideDishIds);
     auditConfig(req, "FOOD_CONFIG_CREATED", "food_dish", row.id, { after: row });
     res.status(201).json({ success: true, data: row });
-  } catch (err) { fail(req, res, err); }
+  } catch (err) {
+    // The index behind this is the only thing that catches a concurrent
+    // create; without the mapping that race is a 500.
+    if (refuseDuplicateFromError(res, err, "dish")) return;
+    fail(req, res, err);
+  }
 });
 
 // Same gate as its list sibling (H8) — the by-id read was the one left behind.
@@ -2689,6 +3080,18 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"),
     // off every kitchen's plate. Attribute edits stay open to them (assertMay-
     // RetireDish), which keeps the dish they are allowed to CREATE correctable.
     if (before?.isActive && u["isActive"] === false) await assertMayRetireDish(req.user!, before.id);
+    // A rename or a course change can collide with another dish just as a create
+    // can. Both halves of the identity are resolved against `before`, so moving
+    // only one of them is still checked against the pair that will end up stored
+    // — and re-saving a dish under its own name never trips on itself.
+    if (before && (b.name !== undefined || b.component !== undefined)) {
+      const name = (b.name ?? before.name) as string;
+      const component = (b.component ?? before.component) as string;
+      if (refuseDuplicate(
+        res, await findDuplicateDish(name, component, before.id), "dish",
+        ` as a ${componentLabel(component)}`,
+      )) return;
+    }
     const [row] = await db.update(dishesTable).set(u as Partial<typeof dishesTable.$inferInsert>).where(eq(dishesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     auditConfig(req, "FOOD_CONFIG_UPDATED", "food_dish", row.id, { before, after: row });
@@ -2701,7 +3104,12 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"),
       rotationSidesRemoved = await pruneRotationSidesForDish(row.id, kept, await resolveAccessibleKitchenIds(req.user!));
     }
     res.json({ success: true, data: row, meta: { rotationSidesRemoved } });
-  } catch (err) { fail(req, res, err); }
+  } catch (err) {
+    // The index behind this is the only thing that catches a concurrent
+    // create; without the mapping that race is a 500.
+    if (refuseDuplicateFromError(res, err, "dish")) return;
+    fail(req, res, err);
+  }
 });
 
 foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
@@ -2745,12 +3153,21 @@ foodRouter.post("/ingredients", authenticate, authorize("FOOD_CATALOGUE", "creat
     if (!validateBody(createIngredientSchema, req, res)) return;
     const b = req.body || {};
     if (!b.name || !b.unit) { res.status(400).json({ success: false, error: "name and unit required" }); return; }
+    // One raw material, one row: the shared-ingredient block compares dishes by
+    // ingredient ID, so a second "Aloo" silently stops two aloo dishes from
+    // clashing — the exact check this list exists to power.
+    if (refuseDuplicate(res, await findDuplicateIngredient(b.name), "ingredient")) return;
     const [row] = await db.insert(ingredientsTable).values({
       id: newId(), name: b.name, unit: b.unit, isActive: b.isActive !== false, updatedAt: new Date(),
     }).returning();
     auditConfig(req, "FOOD_CONFIG_CREATED", "food_ingredient", row.id, { after: row });
     res.status(201).json({ success: true, data: row });
-  } catch (err) { fail(req, res, err); }
+  } catch (err) {
+    // The index behind this is the only thing that catches a concurrent
+    // create; without the mapping that race is a 500.
+    if (refuseDuplicateFromError(res, err, "ingredient")) return;
+    fail(req, res, err);
+  }
 });
 
 const updateIngredientSchema = z.object({
@@ -2766,11 +3183,20 @@ foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "ed
     const u: Record<string, unknown> = { updatedAt: new Date() };
     for (const k of ["name", "unit", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
     const [before] = await db.select().from(ingredientsTable).where(eq(ingredientsTable.id, req.params["id"]!));
+    // Renaming onto an existing ingredient is the same collision as creating one
+    // (excluding self, so a no-op re-save of the same name is fine).
+    if (before && b.name !== undefined
+      && refuseDuplicate(res, await findDuplicateIngredient(b.name, before.id), "ingredient")) return;
     const [row] = await db.update(ingredientsTable).set(u as never).where(eq(ingredientsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     auditConfig(req, "FOOD_CONFIG_UPDATED", "food_ingredient", row.id, { before, after: row });
     res.json({ success: true, data: row });
-  } catch (err) { fail(req, res, err); }
+  } catch (err) {
+    // The index behind this is the only thing that catches a concurrent
+    // create; without the mapping that race is a 500.
+    if (refuseDuplicateFromError(res, err, "ingredient")) return;
+    fail(req, res, err);
+  }
 });
 
 foodRouter.delete("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {

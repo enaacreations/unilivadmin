@@ -30,6 +30,46 @@ export const plateKey = (day: number, meal: MealType | string) => `${day}|${meal
 export const componentLabel = (s: string | null | undefined) =>
   (s ?? "Any").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 
+/* ── catalogue identity ──────────────────────────────────────────────────────
+ * What makes two catalogue rows "the same". Kept here, in one place, because
+ * THREE call sites have to agree on it or the app contradicts itself: the dish
+ * drawer, the ingredients grid, and — the authority — the server's 409 on
+ * POST/PUT /food/{dishes,ingredients}. The bulk importer enforces the same rule
+ * a fourth time in routes/bulk.ts.
+ *
+ * A name is compared trimmed and case-folded, because that is how a person
+ * reads it: "Aloo Gobi", "aloo gobi" and "Aloo Gobi " are one dish. A dish
+ * carries its COURSE in the identity too — "Rice" the rice and "Rice" the
+ * dessert are genuinely two dishes.
+ *
+ * A RETIRED row still counts. Both tables are soft-deleted, so the row survives
+ * and keeps being joined by name in reports; admitting a second copy would make
+ * the catalogue ambiguous for good. Callers say "reactivate it" rather than
+ * silently allowing the clone.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The comparable form of a catalogue name. */
+export const catalogueKey = (name: string | null | undefined) => (name ?? "").trim().toLowerCase();
+
+/** The dish this draft would duplicate, or null. `selfId` skips the row being edited. */
+export const findDuplicateDish = (
+  dishes: Dish[], name: string, component: string, selfId: string | null = null,
+): Dish | null => {
+  const key = catalogueKey(name);
+  if (!key) return null;
+  return dishes.find((d) =>
+    d.id !== selfId && d.component === component && catalogueKey(d.name) === key) ?? null;
+};
+
+/** The ingredient this draft would duplicate, or null. `selfId` skips the row being edited. */
+export const findDuplicateIngredient = <T extends { id: string; name: string }>(
+  ingredients: T[], name: string, selfId: string | null = null,
+): T | null => {
+  const key = catalogueKey(name);
+  if (!key) return null;
+  return ingredients.find((i) => i.id !== selfId && catalogueKey(i.name) === key) ?? null;
+};
+
 /** Ingredient ids of a dish. Empty when the dish has none configured. */
 export const ingredientIdsOf = (d: Dish | undefined): string[] =>
   (d?.ingredients ?? []).map((i) => i.ingredientId).filter(Boolean);

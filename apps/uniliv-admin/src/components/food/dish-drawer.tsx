@@ -9,7 +9,7 @@
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Check, ChevronsUpDown, Info, Plus, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, ChevronsUpDown, Info, Plus, Search, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,7 +26,7 @@ import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL, PREPARATIONS, PREPARATION_LABEL,
   type Dish, type Ingredient, type MealType, type PerResidentRule,
 } from "@/lib/food-api";
-import { MEAL_SHORT, componentLabel } from "./menu-lib";
+import { MEAL_SHORT, catalogueKey, componentLabel, findDuplicateDish } from "./menu-lib";
 import { PrepDot } from "./plate-composer";
 
 /** Mirrors the food_dish_component / food_measurement_unit enums. Exported so
@@ -117,10 +117,13 @@ function ChipGroup({
 
 export function DishDrawer({
   open, onOpenChange, draft, setDraft, dishes, ingredients, brands, onSaved,
-  canEdit = true, orgWideConfig = true,
+  canEdit = true, orgWideConfig = true, draftNotice,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
+  /** Autosave-restored banner. Owned by the parent, which holds the draft state
+   *  this drawer edits, but it has to render inside the sheet to be seen. */
+  draftNotice?: React.ReactNode;
   /** Mirrors the server's FOOD_SETTINGS:edit gate (M16). */
   canEdit?: boolean;
   /** The portion grid writes per_resident_rules, which is BRAND-WIDE — the table
@@ -269,7 +272,13 @@ export function DishDrawer({
       patch({ ingredientIds: [...(draft?.ingredientIds ?? []), row.id] });
       setIngQuery("");
     },
-    onError: (e: any) => toast({ title: e?.message || "Could not add the ingredient", variant: "destructive" }),
+    // The server refuses a duplicate name with a 409 whose `details` says what to
+    // do about it — the whole point of the refusal, so it must not be dropped.
+    onError: (e: any) => toast({
+      title: e?.message || "Could not add the ingredient",
+      description: typeof e?.details === "string" ? e.details : undefined,
+      variant: "destructive",
+    }),
   });
 
   if (!draft) return null;
@@ -288,7 +297,24 @@ export function DishDrawer({
   // FOOD_SETTINGS:create with no scope guard (see IngredientsGrid, the sibling
   // on the same endpoint), so a kitchen-scoped F&B manager may legitimately do
   // this and must not lose it.
-  const canCreateIng = canEdit && !!q && !ingredients.some((g) => g.name.toLowerCase() === ql);
+  // Offering "Create" for a name already on file is how the duplicate gets made
+  // in the first place, so the match uses the shared catalogue identity rather
+  // than a bare lowercase compare.
+  const canCreateIng = canEdit && !!q && !ingredients.some((g) => catalogueKey(g.name) === ql);
+  // An exact-name match that is RETIRED is filtered out of ingOptions above AND
+  // blocks "Create" — so without naming it here the list just says "No
+  // ingredient matches" for a name that plainly does exist, and the user's only
+  // read of the situation is that the app is broken.
+  const retiredIngMatch = q && !canCreateIng
+    ? ingredients.find((g) => !g.isActive && !draft.ingredientIds.includes(g.id) && catalogueKey(g.name) === ql) ?? null
+    : null;
+
+  // Mirrors the server's 409 on POST/PUT /food/dishes — see catalogueKey in
+  // menu-lib for what counts as the same dish and why.
+  //
+  // A failed catalogue read empties `dishes` and this check quietly passes; the
+  // server makes the same check on save, so the refusal is late but never lost.
+  const dupDish = findDuplicateDish(dishes, draft.name, draft.component, draft.id);
 
   // A dish has to be served at a meal to exist usefully: computeOrderItems skips
   // dishes with no per-resident rule, so one with an empty grid can never be
@@ -318,16 +344,25 @@ export function DishDrawer({
     .map((r) => `${brandName(r.brand)} ${MEAL_SHORT[r.mealType as MealType] ?? r.mealType}`)
     .join(", ");
 
+  const dupDishReason = dupDish
+    ? `“${dupDish.name}” already exists as a ${componentLabel(dupDish.component)}`
+      + (dupDish.isActive
+        ? " — edit that dish instead of adding a second copy."
+        : " but is retired. Reopen it and switch Active back on rather than adding a second copy.")
+    : null;
+
   /** Why saving is blocked, or null when the dish is good to go. */
   const blockReason = !draft.name.trim()
     ? "Give the dish a name to save it."
-    : rulesUnread
-      ? rulesQuery.isError
-        ? "The portions on file could not be read — saving now would rewrite them from a blank slate. Reopen the dish to try again."
-        : "Reading the portions on file…"
-      : orgWideConfig && filledMeals.length === 0
-        ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
-        : null;
+    : dupDishReason
+      ? dupDishReason
+      : rulesUnread
+        ? rulesQuery.isError
+          ? "The portions on file could not be read — saving now would rewrite them from a blank slate. Reopen the dish to try again."
+          : "Reading the portions on file…"
+        : orgWideConfig && filledMeals.length === 0
+          ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
+          : null;
   // B3 — the portion requirement may only be asked of a caller who can satisfy
   // it. Dishes themselves carry no scope (POST /dishes is FOOD_SETTINGS:create,
   // unscoped), but per_resident_rules is brand-wide and refused for a
@@ -377,11 +412,22 @@ export function DishDrawer({
         </div>
 
         <div className="flex-1 overflow-y-auto bg-background px-6 py-5">
+          {draftNotice}
+          {/* Flagged at the name because that is where the fix usually is. The
+              message names the COURSE too, since course is the other half of a
+              dish's identity and re-coursing it is the other way out. */}
           <Input
             value={draft.name} onChange={(e) => patch({ name: e.target.value })}
             placeholder="Dish name" aria-label="Dish name"
-            className="mb-5 h-11 text-base"
+            aria-invalid={!!dupDish}
+            className={`h-11 text-base ${dupDish ? "mb-1.5 border-destructive focus-visible:ring-destructive/30" : "mb-5"}`}
           />
+          {dupDishReason && (
+            <p className="mb-5 flex items-start gap-1.5 text-[11px] text-destructive">
+              <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+              <span>{dupDishReason}</span>
+            </p>
+          )}
 
           <ChipGroup title="Course">
             {DISH_COMPONENTS.map((c) => (
@@ -468,7 +514,13 @@ export function DishDrawer({
                     onWheel={(e) => e.stopPropagation()}
                     onTouchMove={(e) => e.stopPropagation()}
                   >
-                    {!canCreateIng && <CommandEmpty>No ingredient matches.</CommandEmpty>}
+                    {!canCreateIng && (
+                      <CommandEmpty>
+                        {retiredIngMatch
+                          ? `“${retiredIngMatch.name}” already exists but is retired — reactivate it under Ingredients to use it here.`
+                          : "No ingredient matches."}
+                      </CommandEmpty>
+                    )}
                     <CommandGroup>
                       {ingOptions.map((g) => {
                         const on = draft.ingredientIds.includes(g.id);
@@ -679,9 +731,11 @@ export function DishDrawer({
         </div>
 
         <div className="shrink-0 border-t bg-card px-6 py-3.5">
-          {/* A disabled button with no reason reads as a bug — always say why. */}
+          {/* A disabled button with no reason reads as a bug — always say why.
+              Restated here as well as at the field it belongs to, because this
+              footer is pinned and the field it names may be scrolled away. */}
           {blockReason && (
-            <p className="mb-2 text-[11px] text-muted-foreground">{blockReason}</p>
+            <p className={`mb-2 text-[11px] ${dupDish ? "text-destructive" : "text-muted-foreground"}`}>{blockReason}</p>
           )}
           {/* Saves fine, but the dish is inert until the portion exists — and
               nobody would guess that from a successful save. */}

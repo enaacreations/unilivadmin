@@ -646,6 +646,9 @@ export function RotationBoard({
           serviceTime={serviceTime(sel.meal)}
           canEdit={canEdit}
           isSaving={saveSlot.isPending}
+          // A plate cell is only unique within a kitchen, and the composer
+          // never sees the kitchen id — build its autosave identity here.
+          draftKey={`plate-form:${kitchenId}:${brand}:w${week}:d${sel.day}:${sel.meal}`}
           onSave={(plate) => saveSlot.mutate({ day: sel.day, meal: sel.meal, plate })}
           {...(onGoToRules
             ? { onGoToRules: () => { onGoToRules({ brand, meal: sel.meal }); setSel(null); } }

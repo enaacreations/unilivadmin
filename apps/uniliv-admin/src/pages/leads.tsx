@@ -1,6 +1,8 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import jsPDF from "jspdf";
@@ -77,12 +79,15 @@ export default function Leads() {
 
   const form = useForm<LeadForm>({ resolver: zodResolver(leadSchema), defaultValues: { name: "", phone: "", email: "", source: "WEBSITE" } });
 
+  const draft = useFormDraft(form, { key: "lead-form:new", enabled: open });
+
   const onCreate = form.handleSubmit(async (values) => {
     try {
       const payload: any = { ...values };
       if (!payload.email) delete payload.email;
       await apiFetch("/leads", { method: "POST", body: JSON.stringify(payload) });
       toast({ title: "Lead created" });
+      draft.clearDraft();
       setOpen(false); form.reset();
       qc.invalidateQueries({ queryKey: ["leads"] });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
@@ -176,6 +181,7 @@ export default function Leads() {
 
       <FormModal open={open} onOpenChange={setOpen} title="Add Lead" onSave={onCreate}>
         <form className="space-y-3">
+          <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
           <div><Label>Name *</Label><Input {...form.register("name")} /></div>
           <div className="grid grid-cols-2 gap-3">
             <div><Label>Phone *</Label><Input {...form.register("phone")} /></div>

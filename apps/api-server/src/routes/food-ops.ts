@@ -103,7 +103,13 @@ const MEASUREMENT_UNITS = measurementUnitEnum.enumValues;
  *  per-resident rule derives for that headcount. Mirrors the 20% residents cap in
  *  residentsCapForProperty — the editable grid is a product feature, an unbounded
  *  cook quantity is not (H6). */
-const ORDER_QTY_TOLERANCE = 1.2;
+export const ORDER_QTY_TOLERANCE = 1.2;
+
+/** Headroom on a per-dish people count: a dish may be ordered for up to 120% of
+ *  the people eating that meal (residents + staff). Kept as its own constant —
+ *  it bounds a HEADCOUNT, where ORDER_QTY_TOLERANCE bounds the kilograms derived
+ *  from one, and the two limits must be able to move independently. */
+export const DISH_PERSONS_TOLERANCE = 1.2;
 
 /** Base for public/share links (mirrors auth.ts; trailing slashes trimmed).
  *  NOTE: unset, this silently yields relative `/m/<token>` links in outbound
@@ -466,6 +472,62 @@ async function loadCutoffResolver(brands: string[]): Promise<(brand: string, pro
 }
 
 /**
+ * Meal config for ONE property: its own row wins, else the org-wide default.
+ *
+ * The enabled filter is applied AFTER that resolution, never in the query — a
+ * property row exists precisely to disagree with the default, so a site that
+ * serves no evening snacks can switch SNACKS off locally, and one that does
+ * serve them can switch it back on after the org has switched it off. Filtering
+ * `is_enabled` in SQL would drop the disabled global row and let the enabled
+ * override resolve against nothing (or vice versa), which reads as the opposite
+ * of what was configured.
+ *
+ * `sortOrder` and `displayLabel` come from whichever row won, so a property that
+ * overrides a meal also owns how it is named and where it sits in the day.
+ */
+function pickMealConfig<T extends { mealType: string; propertyId: string | null; isEnabled: boolean; sortOrder: number }>(
+  rows: T[], propertyId: string,
+): T[] {
+  const byMeal = new Map<string, T>();
+  for (const r of rows) {
+    if (r.propertyId !== null && r.propertyId !== propertyId) continue;
+    const cur = byMeal.get(r.mealType);
+    if (!cur || r.propertyId === propertyId) byMeal.set(r.mealType, r);
+  }
+  return [...byMeal.values()].filter((r) => r.isEnabled).sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+/**
+ * Enabled meal config in force at `propertyId` (property override → org default).
+ * Called with no property — browsing a brand's menu directly, with no site in
+ * play — it is the org-wide set, since no override can apply to nobody.
+ */
+export async function resolveMealConfig(propertyId?: string | null) {
+  const pid = propertyId || "";
+  const rows = await db.select().from(foodMealConfigTable).where(
+    pid
+      ? or(isNull(foodMealConfigTable.propertyId), eq(foodMealConfigTable.propertyId, pid))
+      : isNull(foodMealConfigTable.propertyId),
+  );
+  return pickMealConfig(rows, pid);
+}
+
+/**
+ * L2 — resolveMealConfig for MANY properties in one query. Same precedence,
+ * resolved in JS. Mirrors loadCutoffResolver; exists because the Unit-Lead board
+ * needs the labels for every property on it and must not issue a query each.
+ */
+export async function loadMealConfigResolver(propertyIds: string[]) {
+  const uniq = [...new Set(propertyIds)];
+  const rows = await db.select().from(foodMealConfigTable).where(
+    uniq.length
+      ? or(isNull(foodMealConfigTable.propertyId), inArray(foodMealConfigTable.propertyId, uniq))
+      : isNull(foodMealConfigTable.propertyId),
+  );
+  return (propertyId: string) => pickMealConfig(rows, propertyId);
+}
+
+/**
  * L2 — run `fn` over `items` with at most `limit` in flight.
  *
  * Promise.all over a property list is unbounded fan-out: each callback here costs
@@ -574,17 +636,30 @@ async function expectedDeliveryAt(brand: string, mealType: string, serviceDate: 
  * Meal config & cut-off windows (Persona st.11, st.27)
  * ════════════════════════════════════════════════════════════════════════ */
 
-foodOpsRouter.get("/meal-config", authenticate, authorize("FOOD_SETTINGS", "view"), async (_req, res) => {
+foodOpsRouter.get("/meal-config", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
   try {
-    const rows = await db.select().from(foodMealConfigTable).orderBy(foodMealConfigTable.sortOrder);
+    // Same shape as its sibling /meal-windows: naming a property narrows to that
+    // property's rows PLUS the org-wide defaults they override, so the caller can
+    // still see what an override is overriding. Omitting it returns every row,
+    // which is what the settings table wants — it lists the properties that have
+    // diverged. Unscoped for the same reason /meal-windows is: these are meal
+    // labels, not property data, and the write paths below carry the real gate.
+    const propertyId = req.query["propertyId"] as string | undefined;
+    const rows = await db.select().from(foodMealConfigTable)
+      .where(propertyId
+        ? or(isNull(foodMealConfigTable.propertyId), eq(foodMealConfigTable.propertyId, propertyId))
+        : undefined)
+      .orderBy(foodMealConfigTable.sortOrder);
     res.json({ success: true, data: rows });
-  } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 const updateMealConfigSchema = z.object({
   displayLabel: z.string().max(256).optional(),
   sortOrder: z.coerce.number().optional(),
   isEnabled: z.boolean().optional(),
+  /** Null/absent → the org-wide default row. Set → that property's override. */
+  propertyId: zId.nullish(),
 }).passthrough();
 
 foodOpsRouter.put("/meal-config/:mealType", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
@@ -595,23 +670,100 @@ foodOpsRouter.put("/meal-config/:mealType", authenticate, authorize("FOOD_SETTIN
     // was unreachable. Membership is checked here so it answers, as intended.
     const mealType = req.params["mealType"] as string;
     if (!(MEAL_TYPES as readonly string[]).includes(mealType)) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    // H4: food_meal_config is an org-wide singleton — `isEnabled:false` here takes
-    // the meal off the ordering screen for every property on every brand, so a
-    // kitchen-scoped FOOD_SETTINGS holder must not reach it.
-    if (await deniedGlobalConfig(req, res, "Meal settings")) return;
     const b = req.body || {};
+    const propertyId = (b.propertyId as string | null | undefined) || null;
+
+    // Two different writes behind one endpoint, and they need different gates.
+    if (propertyId === null) {
+      // H4 unchanged: the global row IS the org-wide default — `isEnabled:false`
+      // here takes the meal off the ordering screen for every property that has
+      // not overridden it, so a kitchen-scoped FOOD_SETTINGS holder must not
+      // reach it. What they CAN now do is write their own property's row below.
+      if (await deniedGlobalConfig(req, res, "Organisation-wide meal settings")) return;
+    } else {
+      // A property override only moves that property, so the gate is simply
+      // "is this property yours" — the same check every property-scoped food
+      // write makes. Without it a UNIT_LEAD could relabel a rival property.
+      if (!isAccessible(propertyId, await resolveAccessiblePropertyIds(req.user!))) {
+        res.status(403).json({ success: false, error: "Property not accessible" }); return;
+      }
+      const [prop] = await db.select({ id: propertiesTable.id }).from(propertiesTable).where(eq(propertiesTable.id, propertyId));
+      if (!prop) { res.status(404).json({ success: false, error: "Property not found" }); return; }
+    }
+
+    const scope = propertyId === null
+      ? isNull(foodMealConfigTable.propertyId)
+      : eq(foodMealConfigTable.propertyId, propertyId);
     // M17: read the prior row so the entry says what changed — "breakfast was
     // switched off network-wide" is not recoverable from the new row alone.
-    const [before] = await db.select().from(foodMealConfigTable).where(eq(foodMealConfigTable.mealType, mealType as never));
-    const u: Record<string, unknown> = { updatedAt: new Date() };
-    if (b.displayLabel !== undefined) u["displayLabel"] = b.displayLabel;
-    if (b.sortOrder !== undefined) u["sortOrder"] = Number(b.sortOrder);
-    if (b.isEnabled !== undefined) u["isEnabled"] = !!b.isEnabled;
-    const [row] = await db.update(foodMealConfigTable).set(u as never)
-      .where(eq(foodMealConfigTable.mealType, mealType as never)).returning();
+    const [before] = await db.select().from(foodMealConfigTable)
+      .where(and(eq(foodMealConfigTable.mealType, mealType as never), scope));
+
+    let row;
+    if (before) {
+      const u: Record<string, unknown> = { updatedAt: new Date() };
+      if (b.displayLabel !== undefined) u["displayLabel"] = b.displayLabel;
+      if (b.sortOrder !== undefined) u["sortOrder"] = Number(b.sortOrder);
+      if (b.isEnabled !== undefined) u["isEnabled"] = !!b.isEnabled;
+      [row] = await db.update(foodMealConfigTable).set(u as never)
+        .where(and(eq(foodMealConfigTable.mealType, mealType as never), scope)).returning();
+    } else if (propertyId === null) {
+      // The global rows are seeded for the whole meal-type enum; a missing one
+      // is a genuine 404, not something to invent here.
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    } else {
+      // First write for this property = create the override. Seed it from the
+      // org default so a body carrying only `isEnabled:false` still lands a row
+      // with the label and ordering currently in force, rather than a blank one
+      // that silently renames the meal to "" at that property.
+      const [base] = await db.select().from(foodMealConfigTable)
+        .where(and(eq(foodMealConfigTable.mealType, mealType as never), isNull(foodMealConfigTable.propertyId)));
+      [row] = await db.insert(foodMealConfigTable).values({
+        id: newId(),
+        mealType: mealType as never,
+        propertyId,
+        displayLabel: b.displayLabel !== undefined ? b.displayLabel : (base?.displayLabel ?? mealType),
+        brand: base?.brand ?? null,
+        sortOrder: b.sortOrder !== undefined ? Number(b.sortOrder) : (base?.sortOrder ?? 0),
+        isEnabled: b.isEnabled !== undefined ? !!b.isEnabled : (base?.isEnabled ?? true),
+      } as never).returning();
+    }
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    auditConfig(req, "FOOD_CONFIG_UPDATED", "food_meal_config", mealType, { before, after: row });
+    // Global entries keep their existing `mealType` entity id so the audit trail
+    // stays continuous; overrides are qualified by the property they move.
+    auditConfig(req, "FOOD_CONFIG_UPDATED", "food_meal_config",
+      propertyId === null ? mealType : `${mealType}:${propertyId}`, { before: before ?? null, after: row });
     res.json({ success: true, data: row });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/**
+ * Clear a property's override so the meal falls back to the org-wide default.
+ *
+ * `propertyId` is required and the global row is deliberately not deletable: the
+ * global rows are the seeded meal-type enum, and removing one would leave the
+ * meal with no configuration anywhere rather than resetting it.
+ */
+foodOpsRouter.delete("/meal-config/:mealType", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+  try {
+    const mealType = req.params["mealType"] as string;
+    if (!(MEAL_TYPES as readonly string[]).includes(mealType)) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    const propertyId = (req.query["propertyId"] as string | undefined) || "";
+    if (!propertyId) {
+      res.status(400).json({ success: false, error: "propertyId is required — the organisation-wide default cannot be deleted, only edited" });
+      return;
+    }
+    if (!isAccessible(propertyId, await resolveAccessiblePropertyIds(req.user!))) {
+      res.status(403).json({ success: false, error: "Property not accessible" }); return;
+    }
+    const [before] = await db.select().from(foodMealConfigTable).where(and(
+      eq(foodMealConfigTable.mealType, mealType as never),
+      eq(foodMealConfigTable.propertyId, propertyId),
+    ));
+    if (!before) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    await db.delete(foodMealConfigTable).where(eq(foodMealConfigTable.id, before.id));
+    auditConfig(req, "FOOD_CONFIG_UPDATED", "food_meal_config", `${mealType}:${propertyId}`, { before, after: null });
+    res.json({ success: true, data: { id: before.id } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -2689,8 +2841,11 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       const mealResidents = Math.max(0, meal.residentsCount != null ? Number(meal.residentsCount) : persons);
       const mealStaff = Math.max(0, meal.staffCount != null ? Number(meal.staffCount) : staffScalar);
       const mealPersons = mealResidents + mealStaff;
-      // Ceiling for a per-item headcount (see the check in the loop below).
-      const personsCeiling = mealPersons > 0 ? mealPersons : residentsCap;
+      // Ceiling for a per-item headcount (see the check in the loop below):
+      // 120% of the meal's own total, so one dish can carry a buffer without
+      // the count running away from the meal it belongs to.
+      const personsCeiling =
+        mealPersons > 0 ? Math.ceil(mealPersons * DISH_PERSONS_TOLERANCE) : residentsCap;
 
       // Per-item editing path, else legacy quantity path.
       let itemRows: PlannedItem[] = [];
@@ -2715,12 +2870,15 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
           // The per-item headcount has to be bounded too, or it defeats the
           // quantity bound below by inflating what that bound is computed FROM.
           // Fewer people than the meal's headcount is normal (not everyone eats
-          // the paneer); more than are eating the meal is not. When the meal
-          // carries no headcount at all, the 20% residents cap stands in.
+          // the paneer); above it, a 20% buffer is allowed (guests, second
+          // helpings) and no more. When the meal carries no headcount at all,
+          // the 20% residents cap stands in.
           if (!pinned && personsCount > personsCeiling) {
             res.status(422).json({
               success: false,
-              error: `${md.dishName} for ${meal.mealType} is ordered for ${personsCount} people, more than the ${personsCeiling} eating that meal.`,
+              error: mealPersons > 0
+                ? `${md.dishName} for ${meal.mealType} is ordered for ${personsCount} people — at most ${personsCeiling} (20% above the ${mealPersons} eating that meal).`
+                : `${md.dishName} for ${meal.mealType} is ordered for ${personsCount} people, more than the ${personsCeiling} limit.`,
             });
             return;
           }
@@ -2882,7 +3040,9 @@ foodOpsRouter.get("/order-preview", authenticate, authorize("FOOD_PLACE_ORDER", 
     const { brand, kitchenId } = await getPropertyFoodConfig(propertyId);
     if (!brand || !kitchenId) { res.json({ success: true, data: { brand, kitchenId, configured: false, meals: [] } }); return; }
 
-    const cfg = await db.select().from(foodMealConfigTable).where(eq(foodMealConfigTable.isEnabled, true)).orderBy(foodMealConfigTable.sortOrder);
+    // Resolved for THIS property: a site that has switched a meal off, or renamed
+    // it, must not be offered the org-wide set here.
+    const cfg = await resolveMealConfig(propertyId);
     const meals = [];
     for (const c of cfg) {
       if (c.brand && c.brand !== brand) continue;
@@ -2920,7 +3080,9 @@ foodOpsRouter.get("/menu/full", authenticate, authorizeAny(["FOOD_PLACE_ORDER", 
       kitchenId = cfg.kitchenId || kitchenId;
     }
     if (!brand || !kitchenId) { res.json({ success: true, data: { brand, date, meals: [] } }); return; }
-    const mealCfg = await db.select().from(foodMealConfigTable).where(eq(foodMealConfigTable.isEnabled, true)).orderBy(foodMealConfigTable.sortOrder);
+    // Property-resolved when the caller named one; the org-wide set when they
+    // asked by brand/kitchen alone and there is no site whose override applies.
+    const mealCfg = await resolveMealConfig(propertyId);
     const meals = [];
     for (const c of mealCfg) {
       if (c.brand && c.brand !== brand) continue;
@@ -3090,7 +3252,9 @@ foodOpsRouter.get("/menu/shared/:token", async (req, res) => {
       .from(propertiesTable).where(eq(propertiesTable.id, share.propertyId));
     const meals: Array<{ mealType: string; label: string; dishes: unknown[] }> = [];
     if (brand && kitchenId) {
-      const mealCfg = await db.select().from(foodMealConfigTable).where(eq(foodMealConfigTable.isEnabled, true)).orderBy(foodMealConfigTable.sortOrder);
+      // The shared link is a menu for ONE property, so it shows that property's
+      // meals under that property's names — not the org-wide set.
+      const mealCfg = await resolveMealConfig(share.propertyId);
       for (const c of mealCfg) {
         if (c.brand && c.brand !== brand) continue;
         if (share.mealType && c.mealType !== share.mealType) continue; // single-meal share
@@ -4937,9 +5101,10 @@ foodOpsRouter.get("/next-orders", authenticate, authorize("FOOD_PLACE_ORDER", "v
       .groupBy(residentsTable.propertyId);
     const guestCount = new Map(guests.map((g) => [g.propertyId, g.c]));
 
-    // Enabled meal config — resolved once; gives per-meal display labels.
-    const mealCfg = await db.select().from(foodMealConfigTable).where(eq(foodMealConfigTable.isEnabled, true)).orderBy(foodMealConfigTable.sortOrder);
-    const labelByMeal = new Map(mealCfg.map((c) => [c.mealType, c.displayLabel]));
+    // Enabled meal config — still ONE read for the whole board (L2), but now
+    // resolved per property inside the loop: two properties on this board can
+    // legitimately disagree about which meals run and what they are called.
+    const mealCfgFor = await loadMealConfigResolver(propIds);
 
     const todayYmd = istDayYmd(new Date());
     const now = new Date();
@@ -5006,6 +5171,10 @@ foodOpsRouter.get("/next-orders", authenticate, authorize("FOOD_PLACE_ORDER", "v
       const isPastCutoff = Boolean(cutoffAt && now > cutoffAt);
       const sd = ymdToIstDayStart(serviceYmd);
       const dayEnd = new Date(sd.getTime() + 24 * 60 * 60 * 1000);
+
+      // This property's meals — its own overrides applied over the org default.
+      const mealCfg = mealCfgFor(p.id);
+      const labelByMeal = new Map(mealCfg.map((c) => [c.mealType, c.displayLabel]));
 
       // Meals that have a resolvable menu for that day.
       const availableMeals: { mealType: string; label: string }[] = [];

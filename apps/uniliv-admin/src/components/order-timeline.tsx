@@ -39,13 +39,24 @@ export function OrderTimeline({
   className?: string;
 }) {
   // Earliest event per status = the moment the order entered that stage.
-  const eventByStatus = React.useMemo(() => {
+  //
+  // Anything AFTER the first event for a status is something that happened while
+  // the order sat in that stage rather than a transition into it — today that
+  // means a pre-cut-off edit, which is appended as a second PLACED row. Those
+  // notes are collected separately and shown under the stage, or the whole edit
+  // trail would be written to the database and never surface anywhere.
+  const { eventByStatus, notesByStatus } = React.useMemo(() => {
     const sorted = [...events].sort(
       (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
-    const m = new Map<string, FoodOrderEvent>();
-    for (const e of sorted) if (!m.has(e.status)) m.set(e.status, e);
-    return m;
+    const first = new Map<string, FoodOrderEvent>();
+    const later = new Map<string, string[]>();
+    for (const e of sorted) {
+      if (!first.has(e.status)) { first.set(e.status, e); continue; }
+      if (!e.note) continue;
+      later.set(e.status, [...(later.get(e.status) ?? []), e.note]);
+    }
+    return { eventByStatus: first, notesByStatus: later };
   }, [events]);
 
   const isTerminal = status === "CANCELLED" || status === "REJECTED";
@@ -58,7 +69,11 @@ export function OrderTimeline({
   if (isTerminal) {
     for (let i = 0; i <= reachedIdx; i++) {
       const st = HAPPY_PATH[i]!;
-      steps.push({ stage: st, state: "done", at: fmtWhen(eventByStatus.get(st.key)?.createdAt) });
+      steps.push({
+        stage: st, state: "done",
+        at: fmtWhen(eventByStatus.get(st.key)?.createdAt),
+        note: notesByStatus.get(st.key)?.join(" · "),
+      });
     }
     const term = TERMINAL[status as "CANCELLED" | "REJECTED"];
     const te = eventByStatus.get(term.key);
@@ -66,7 +81,11 @@ export function OrderTimeline({
   } else {
     HAPPY_PATH.forEach((st, i) => {
       const state: StepState = i < reachedIdx ? "done" : i === reachedIdx ? "current" : "upcoming";
-      steps.push({ stage: st, state, at: fmtWhen(eventByStatus.get(st.key)?.createdAt) });
+      steps.push({
+        stage: st, state,
+        at: fmtWhen(eventByStatus.get(st.key)?.createdAt),
+        note: notesByStatus.get(st.key)?.join(" · "),
+      });
     });
   }
 

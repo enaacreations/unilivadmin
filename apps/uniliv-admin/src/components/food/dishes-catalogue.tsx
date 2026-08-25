@@ -16,6 +16,8 @@ import { FormModal } from "@/components/ui/form-modal";
 import { type BulkColumn } from "@/components/bulk-upload-dialog";
 import { ImportExportMenu } from "@/components/import-export-menu";
 import { useToast } from "@/hooks/use-toast";
+import { useStateDraft } from "@/hooks/use-state-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import {
   foodApi, foodKeys, MEAL_TYPES, PREPARATIONS,
   type Dish, type MenuRotationRow, type PerResidentRule,
@@ -60,6 +62,15 @@ export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canE
   const [facet, setFacet] = React.useState("ALL");
   const [draft, setDraft] = React.useState<DishDraft | null>(null);
   const [delTarget, setDelTarget] = React.useState<Dish | null>(null);
+
+  // `draft` is the drawer's entire editable state and null means closed, so it
+  // doubles as the autosave value and the open flag. Keyed by dish id so an
+  // abandoned edit of one dish never surfaces on another — or on "New dish".
+  const dishDraft = useStateDraft(draft, {
+    key: draft ? `dish-form:${draft.id ?? "new"}` : null,
+    enabled: !!draft,
+    onRestore: setDraft,
+  });
 
   // Exported under the import template's own columns — ingredients by name, the
   // list columns comma-joined — so a download can be edited and uploaded back.
@@ -281,7 +292,15 @@ export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canE
         canEdit={canEdit} orgWideConfig={orgWideConfig}
         draft={draft} setDraft={setDraft}
         dishes={dishes} ingredients={ingredients} brands={brands}
-        onSaved={() => setDraft(null)}
+        onSaved={() => { dishDraft.clearDraft(); setDraft(null); }}
+        draftNotice={
+          <DraftRestoredNotice
+            show={dishDraft.restored}
+            savedAt={dishDraft.restoredAt}
+            onDiscard={dishDraft.discardDraft}
+            onDismiss={dishDraft.dismissRestored}
+          />
+        }
       />
 
       <FormModal

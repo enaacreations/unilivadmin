@@ -29,6 +29,8 @@ import {
 } from "./menu-lib";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
 import { FoodQueryError } from "./query-error";
+import { useStateDraft } from "@/hooks/use-state-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 
 /**
  * Radix Select forbids an empty-string item value, so the "no kitchen scope"
@@ -225,6 +227,16 @@ export function MenuRulesEditor({
   // Switching brand, meal or scope abandons an unsaved edit to the previous rule.
   React.useEffect(() => { setDraft(null); }, [brand, meal, scopeKitchen]);
 
+  // `draft` is null until the plate is actually edited, which makes it both the
+  // autosave value and the "is there anything to save" flag. Keyed to the exact
+  // rule being edited — brand, meal and scope — because the effect above throws
+  // the edit away when any of those change, and a resumed draft must not land on
+  // a different rule than the one it was typed against.
+  const plateRuleDraft = useStateDraft(draft, {
+    key: `menu-rule-form:${brand}:${meal}:${scopeKitchen || "all-kitchens"}`,
+    onRestore: setDraft,
+  });
+
   const rule: CompositionRule | null = React.useMemo(
     () => ruleFor(rules, brand, meal, scopeKitchen || null, null),
     [rules, brand, meal, scopeKitchen],
@@ -281,6 +293,7 @@ export function MenuRulesEditor({
 
       });
       qc.invalidateQueries({ queryKey: ["food", "composition-rules"] });
+      plateRuleDraft.clearDraft();
       setDraft(null);
     },
     onError: (e: any) => toast({ title: e?.message || "Could not save the rule", variant: "destructive" }),
@@ -383,6 +396,13 @@ export function MenuRulesEditor({
         </p>
       )}
 
+      <DraftRestoredNotice
+        show={plateRuleDraft.restored}
+        savedAt={plateRuleDraft.restoredAt}
+        onDiscard={plateRuleDraft.discardDraft}
+        onDismiss={plateRuleDraft.dismissRestored}
+      />
+
       <div className="flex flex-wrap items-center gap-2">
         {MEAL_TYPES.map((m) => (
           <button
@@ -413,7 +433,7 @@ export function MenuRulesEditor({
           {dirty && canEditPlate && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-warning">Unsaved changes</span>
-              <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>Discard</Button>
+              <Button variant="ghost" size="sm" onClick={plateRuleDraft.discardDraft}>Discard</Button>
               <Button
                 size="sm" className="bg-accent text-white hover:bg-accent/90"
                 disabled={save.isPending} onClick={() => save.mutate()}

@@ -18,6 +18,8 @@ import { StatusBadge } from "@/components/status-badge";
 import { apiFetch } from "@/lib/api-fetch";
 import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Badge } from "@/components/ui/badge";
@@ -107,6 +109,17 @@ function AnnouncementsTab() {
     }
   }, [isCreateOpen, editor, form]);
 
+  // TipTap owns its own document, so restoring `content` into the form is not
+  // enough — the editor has to be told to repaint from the restored HTML.
+  const draft = useFormDraft(form, {
+    key: "announcement-form:new",
+    enabled: isCreateOpen,
+    ready: !!editor,
+    onRestore: (values) => {
+      editor?.commands.setContent(values.content || "");
+    },
+  });
+
   const onSubmit = async (values: z.infer<typeof announcementSchema>) => {
     const base = { title: values.title, content: values.content, type: values.type };
 
@@ -135,6 +148,7 @@ function AnnouncementsTab() {
       qc.invalidateQueries({ queryKey: getGetAnnouncementsQueryKey({} as any) });
 
       if (failed === 0) {
+        draft.clearDraft();
         setIsCreateOpen(false);
         toast({
           title:
@@ -189,6 +203,7 @@ function AnnouncementsTab() {
       <FormModal open={isCreateOpen} onOpenChange={setIsCreateOpen} title="Create Announcement" onSave={form.handleSubmit(onSubmit)} isSaving={isSubmitting}>
         <Form {...form}>
           <form className="space-y-4">
+            <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
             <FormField control={form.control} name="title" render={({field}) => (
               <FormItem><FormLabel>Title</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
             )} />

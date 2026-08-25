@@ -8,7 +8,7 @@
  */
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
@@ -18,6 +18,7 @@ import { type BulkColumn } from "@/components/bulk-upload-dialog";
 import { ImportExportMenu } from "@/components/import-export-menu";
 import { useToast } from "@/hooks/use-toast";
 import { foodApi, type Ingredient } from "@/lib/food-api";
+import { findDuplicateIngredient } from "./menu-lib";
 import { FoodQueryError } from "./query-error";
 import { useDishCatalogue, useIngredients } from "./use-food-masters";
 
@@ -79,7 +80,13 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
       invalidate();
       setDraft(null);
     },
-    onError: (e: any) => toast({ title: e?.message || "Could not save the ingredient", variant: "destructive" }),
+    // A duplicate name comes back as a 409 whose `details` says what to do about
+    // it instead — surface that rather than just the headline.
+    onError: (e: any) => toast({
+      title: e?.message || "Could not save the ingredient",
+      description: typeof e?.details === "string" ? e.details : undefined,
+      variant: "destructive",
+    }),
   });
 
   const del = useMutation({
@@ -91,6 +98,14 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
   const q = search.trim().toLowerCase();
   const rows = ingredients.filter((r) => !q || r.name.toLowerCase().includes(q));
   const delUses = usage.get(delTarget?.id ?? "") ?? 0;
+
+  // Mirrors the server's 409 on POST/PUT /food/ingredients — see catalogueKey in
+  // menu-lib for what counts as the same ingredient. Caught here as well so the
+  // collision is named while the user is still typing rather than thrown back at
+  // them after a failed save.
+  const dupIngredient = draft
+    ? findDuplicateIngredient(ingredients, draft.name, draft.id)
+    : null;
 
   return (
     <div className="space-y-4">
@@ -193,8 +208,21 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
               <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Name</p>
               <Input
                 value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                placeholder="e.g. Aloo" aria-label="Ingredient name" className="mb-5 h-11 text-base"
+                placeholder="e.g. Aloo" aria-label="Ingredient name"
+                aria-invalid={!!dupIngredient}
+                className={`h-11 text-base ${dupIngredient ? "mb-1.5 border-destructive focus-visible:ring-destructive/30" : "mb-5"}`}
               />
+              {dupIngredient && (
+                <p className="mb-5 flex items-start gap-1.5 text-[11px] text-destructive">
+                  <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                  <span>
+                    “{dupIngredient.name}” is already in the list
+                    {dupIngredient.isActive
+                      ? " — edit that one instead of adding a second copy."
+                      : " but is retired. Reopen it and switch Active back on rather than adding a second copy."}
+                  </span>
+                </p>
+              )}
 
               <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Default unit</p>
               <div className="mb-5 flex flex-wrap gap-1.5">
@@ -228,7 +256,7 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
           <div className="flex shrink-0 items-center gap-2 border-t bg-card px-6 py-3.5">
             <Button
               className="flex-1 bg-accent text-white hover:bg-accent/90"
-              disabled={!draft?.name.trim() || save.isPending}
+              disabled={!draft?.name.trim() || !!dupIngredient || save.isPending}
               onClick={() => draft && save.mutate(draft)}
             >
               {save.isPending ? "Saving…" : "Save ingredient"}

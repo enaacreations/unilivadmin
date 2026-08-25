@@ -1,6 +1,8 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Link } from "wouter";
@@ -64,10 +66,13 @@ export default function Courses() {
 
   const form = useForm<z.infer<typeof schema>>({ resolver: zodResolver(schema), defaultValues: { title: "", category: "Onboarding", contentType: "VIDEO", isMandatory: false, passScore: 70, targetRoles: [] } });
 
+  const draft = useFormDraft(form, { key: "course-form:new", enabled: open });
+
   const onCreate = form.handleSubmit(async (values) => {
     try {
       await apiFetch("/courses", { method: "POST", body: JSON.stringify(values) });
       toast({ title: "Course created" });
+      draft.clearDraft();
       setOpen(false); form.reset({ title: "", category: "Onboarding", contentType: "VIDEO", isMandatory: false, passScore: 70, targetRoles: [] });
       qc.invalidateQueries({ queryKey: ["courses"] });
       qc.invalidateQueries({ queryKey: ["courses-stats"] });
@@ -240,6 +245,7 @@ export default function Courses() {
 
       <FormModal open={open} onOpenChange={setOpen} title="Add Course" onSave={onCreate}>
         <form className="space-y-3">
+          <DraftRestoredNotice show={draft.restored} savedAt={draft.restoredAt} onDiscard={draft.discardDraft} onDismiss={draft.dismissRestored} />
           <div><Label>Title *</Label><Input {...form.register("title")} /></div>
           <div><Label>Description</Label><Textarea rows={3} {...form.register("description")} /></div>
           <div className="grid grid-cols-2 gap-3">

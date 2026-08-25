@@ -179,7 +179,42 @@ export const reportJobsTable = pgTable("report_jobs", {
   completedAt: timestamp("completed_at"),
 });
 
+/**
+ * Server-side copy of an in-progress form so a half-filled form survives closing
+ * the app — and follows the user to another device. The client also mirrors every
+ * draft into localStorage; that copy is the one that catches the last keystroke
+ * before the tab dies, while this table is written on a debounce and is what the
+ * app reads back on a fresh device/browser.
+ *
+ * `formKey` identifies both the form and the record it edits ("vendor-form:new",
+ * "vendor-form:<id>"), so a create draft and an edit draft never overwrite each
+ * other. Rows are owned by exactly one user and are only ever read/written by
+ * that user — there is no RBAC module here on purpose, `authenticate` plus the
+ * userId filter is the whole authorization story.
+ */
+export const formDraftsTable = pgTable(
+  "form_drafts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => usersTable.id),
+    formKey: text("form_key").notNull(),
+    /** `{ values, extra }` — opaque to the server; the owning form defines the shape. */
+    payload: json("payload").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => ({
+    // uniqueIndex rather than unique() — same drizzle-kit round-trip reason as
+    // notification_suppressions above, and it is the ON CONFLICT target for the
+    // upsert in routes/form-drafts.ts.
+    uniqUserForm: uniqueIndex("form_drafts_user_form_key_uq").on(t.userId, t.formKey),
+    byUser: index("form_drafts_user_idx").on(t.userId),
+  }),
+);
+
 export type SystemConfig = typeof systemConfigTable.$inferSelect;
+export type FormDraft = typeof formDraftsTable.$inferSelect;
+export type NewFormDraft = typeof formDraftsTable.$inferInsert;
 export type NotificationOutbox = typeof notificationOutboxTable.$inferSelect;
 export type NewNotificationOutbox = typeof notificationOutboxTable.$inferInsert;
 export type PushSubscription = typeof pushSubscriptionsTable.$inferSelect;

@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, differenceInCalendarDays, differenceInMinutes, format, parseISO } from "date-fns";
 import {
-  AlertTriangle, Ban, BarChart3, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, PartyPopper, Truck, Trash2,
+  AlertTriangle, BarChart3, Building2, Check, ChevronLeft, ChevronRight, Clock, Eye, History, Loader2, Lock, MapPin, PartyPopper, Pencil, Truck, Trash2,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -11,8 +11,6 @@ import {
 } from "@/components/ui/select";
 import { PropertyOptions } from "@/components/property-options";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
@@ -29,6 +27,7 @@ import {
   MEAL_LABEL,
   MEAL_TYPES,
   shortMeal,
+  orderPeople,
   isFractionalUnit,
   fmtQty,
   type FoodOrder,
@@ -50,6 +49,13 @@ const num = (v: string | null | undefined): number => {
   const n = v == null ? NaN : parseFloat(v);
   return Number.isFinite(n) ? n : 0;
 };
+
+/** Stepper step for a dish unit — kg/litre move in halves, everything else whole. */
+const qtyStep = (unit: string): number => (isFractionalUnit(unit) ? 0.5 : 1);
+/** Move a qty by one step and snap back onto the 1-decimal grid. The snap is the
+ *  point: binary floats make 2.4 − 1 − 1 = 0.40000000000000013, which renders as
+ *  a 17-digit string and blows out the stepper's fixed-width readout. */
+const stepQty = (v: number, delta: number): number => Math.round((v + delta) * 10) / 10;
 
 const fmtTime = (iso: string | null | undefined): string =>
   iso ? format(parseISO(iso), "h:mm a") : "";
@@ -195,13 +201,25 @@ function CheckDot({ done, size = 24 }: { done: boolean; size?: number }) {
 }
 
 function MiniStepper({
-  value, display, onMinus, onPlus,
+  value, display, onMinus, onPlus, onType, suffix, ariaLabel, plusDisabled, plusTitle,
 }: {
   value: number;
   display: string;
   onMinus: () => void;
   onPlus: () => void;
+  /** When given, the read-out becomes typeable. A surplus can be several units
+   *  over what was sent, and tapping + twenty times is not a way to record it. */
+  onType?: (v: number) => void;
+  /** Unit shown beside the typeable field, which carries the bare number. */
+  suffix?: string;
+  ariaLabel?: string;
+  /** Upper bound reached — the + goes inert, with `plusTitle` saying why. */
+  plusDisabled?: boolean;
+  plusTitle?: string;
 }) {
+  // Draft state so a half-typed value ("1." or an empty box mid-edit) survives
+  // until it parses — committing on every keystroke would fight the typist.
+  const [draft, setDraft] = React.useState<string | null>(null);
   return (
     <span className="flex shrink-0 items-center gap-1.5">
       <button
@@ -213,19 +231,51 @@ function MiniStepper({
       >
         −
       </button>
-      <span className="min-w-[52px] text-center font-mono text-[12.5px] font-semibold tabular-nums">
-        {display}
-      </span>
+      {onType ? (
+        <span className="flex min-w-[52px] items-center justify-center gap-1">
+          <input
+            type="text"
+            inputMode="decimal"
+            aria-label={ariaLabel ?? "Quantity"}
+            value={draft ?? String(value)}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw !== "" && !/^\d*\.?\d*$/.test(raw)) return;
+              setDraft(raw);
+              const n = parseFloat(raw);
+              if (Number.isFinite(n)) onType(Math.round(n * 10) / 10);
+            }}
+            onBlur={() => setDraft(null)}
+            className="h-[26px] w-[46px] rounded-[7px] border border-border bg-card text-center font-mono text-[12.5px] font-semibold tabular-nums text-foreground focus:border-accent focus:outline-none"
+          />
+          {suffix && <span className="text-[10.5px] text-muted-foreground">{suffix}</span>}
+        </span>
+      ) : (
+        <span className="min-w-[52px] text-center font-mono text-[12.5px] font-semibold tabular-nums">
+          {display}
+        </span>
+      )}
       <button
         type="button"
         onClick={onPlus}
         aria-label="More"
-        className="h-[26px] w-[26px] rounded-[7px] border border-border bg-card text-sm text-foreground hover:bg-muted"
+        disabled={plusDisabled}
+        title={plusTitle}
+        className="h-[26px] w-[26px] rounded-[7px] border border-border bg-card text-sm text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         +
       </button>
     </span>
   );
+}
+
+/** Ceiling for one dish's people count: the meal's own total (residents + staff)
+ *  plus a 20% buffer — room for guests or second helpings without the count
+ *  running away from the meal. Mirrors DISH_PERSONS_TOLERANCE on the server, so
+ *  the stepper stops exactly where the send would otherwise 422; a meal with no
+ *  people yet falls back to the residents cap, as the server does. */
+function dishPersonsCap(mealTotal: number, residentsCap: number): number {
+  return mealTotal > 0 ? Math.ceil(mealTotal * 1.2) : residentsCap;
 }
 
 function ColumnHead({ icon, label, tone, right }: {
@@ -255,6 +305,32 @@ function LockedPanel({ text }: { text: string }) {
   );
 }
 
+/** Property switcher for the journey header. Only rendered when this login
+ *  actually reaches more than one property — a unit lead bound to a single
+ *  property has nothing to switch between. Grouped by city like every other
+ *  property picker, and with no "All properties" option: the journey (meal
+ *  slots, cut-offs, ordering) is per property by definition. */
+function PropertySwitcher({ properties, value, onChange }: {
+  properties: { id: string; name: string; city: string | null }[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger
+        aria-label="Switch property"
+        className="h-[34px] w-auto min-w-[190px] max-w-[260px] gap-1.5 rounded-[9px] border-border bg-card px-3 text-[13px] font-semibold"
+      >
+        <Building2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <SelectValue placeholder="Choose a property…" />
+      </SelectTrigger>
+      <SelectContent>
+        <PropertyOptions properties={properties} />
+      </SelectContent>
+    </Select>
+  );
+}
+
 /* ────────────────────────────── the page ────────────────────────────── */
 
 export default function FoodDashboard() {
@@ -267,9 +343,11 @@ export default function FoodDashboard() {
   const canPlace = can("FOOD_PLACE_ORDER", "create");
   const canConfirm = can("FOOD_CONFIRM_DELIVERY", "edit") || can("FOOD_CONFIRM_DELIVERY", "create");
   const canWaste = can("FOOD_WASTE_TRACKING", "edit") || can("FOOD_WASTE_TRACKING", "create");
-  // Cancel mirrors the server guard (food.ts POST /orders/:id/cancel): either
-  // permission, on a pre-dispatch order.
-  const canCancel = can("FOOD_PLACE_ORDER", "edit") || can("FOOD_KITCHEN_SUMMARY", "edit");
+  // Editing a placed order mirrors the server guard on PUT /food/orders/:id
+  // (authorize FOOD_PLACE_ORDER "edit"). Cancelling is deliberately NOT offered
+  // from this page: a placed order is fixed once the cut-off passes, and before
+  // it the answer is to correct the numbers, not to withdraw the meal.
+  const canEditOrder = can("FOOD_PLACE_ORDER", "edit");
   const canViewReports = can("FOOD_REPORTS", "view");
   // GET /food/orders(+/:id) is server-gated on FOOD_ALL_ORDERS. Some food
   // personas (FNB supervisor/manager/zonal head, SVP) hold FOOD_DASHBOARD but
@@ -440,8 +518,22 @@ export default function FoodDashboard() {
     slots[0] ||
     null;
 
-  // Reset the manual pick when flipping days so auto-focus works again.
-  React.useEffect(() => { setPickedMeal(null); }, [journeyDay]);
+  // Reset the manual pick when flipping days so auto-focus works again. An edit
+  // in progress belongs to the day it was opened on, so it closes with it.
+  React.useEffect(() => { setPickedMeal(null); setEditingMeal(null); }, [journeyDay]);
+
+  /* ── edit mode: re-open a PLACED meal in the ordering grid ──────────────────
+   * The meal being edited, plus its own copy of every number the grid holds.
+   * Edit state is deliberately SEPARATE from the placement state below: that
+   * state doubles as the server-side draft for meals not yet ordered, and a
+   * correction to an order already with the kitchen must not leak into it.
+   * An unseeded dish means "not on this order" → 0 people, never the menu
+   * default, or opening Edit would silently add every dish the lead had left
+   * off. ── */
+  const [editingMeal, setEditingMeal] = React.useState<MealType | null>(null);
+  const [editResidents, setEditResidents] = React.useState(0);
+  const [editStaff, setEditStaff] = React.useState(0);
+  const [editDishPersons, setEditDishPersons] = React.useState<Record<string, number>>({});
 
   /* ── the selected meal's full detail (items/events/dispatch) ── */
   const selectedOrderId = selected?.order?.id ?? null;
@@ -460,11 +552,25 @@ export default function FoodDashboard() {
      show the inline place-order UI (prototype); already-ordered meals show
      their normal Track/Received/Waste detail. ── */
   const orderMode = orderDay && !!selected && isMissing(selected.mealType);
-  // Inline cancel is offered only for a real, pre-dispatch order the caller may
-  // cancel — never while still placing (orderMode) or once dispatched/closed.
-  const canCancelThis =
-    !orderMode && !!selected?.order && canCancel &&
-    (selected.order.status === "PLACED" || selected.order.status === "ACCEPTED");
+  // Inline edit is offered ONLY inside the ordering window: a still-PLACED order
+  // on the next orderable service day, before that day's cut-off (9:00 PM by
+  // default — the time is configured per brand/property, so it is always read
+  // off `myNext`, never hard-coded). This mirrors PUT /food/orders/:id exactly:
+  // the server re-runs checkOrderCutoff on any count change and refuses one once
+  // the order leaves PLACED, so an Edit button outside this window could only
+  // ever produce a 422. `now` ticks, so the button closes itself at the cut-off
+  // without waiting for the next next-orders poll.
+  const editCutoffAt = myNext?.cutoffAt ? parseISO(myNext.cutoffAt) : null;
+  const editWindowOpen =
+    !!myNext && !myNext.isPastCutoff && serviceDate === myNext.serviceDate &&
+    !!editCutoffAt && now < editCutoffAt;
+  const canEditThis =
+    !orderMode && !!selected?.order && canEditOrder && editWindowOpen &&
+    selected.order.status === "PLACED";
+  // The grid is open on THIS meal. Derived from canEditThis rather than stored,
+  // so when the cut-off elapses mid-edit the grid closes on the next tick instead
+  // of offering a Save the server would refuse.
+  const editing = !!selected && editingMeal === selected.mealType && canEditThis;
   // Headcount is set PER MEAL — attendance genuinely differs across
   // breakfast/lunch/high-tea/dinner, so each meal step carries its own count.
   const [headcounts, setHeadcounts] = React.useState<Partial<Record<MealType, number>>>({});
@@ -500,7 +606,10 @@ export default function FoodDashboard() {
     queryKey: foodKeys.orderPreview({ propertyId, serviceDate: myNext?.serviceDate, persons: 1 }),
     queryFn: () =>
       foodApi.orderPreview({ propertyId: propertyId!, serviceDate: myNext!.serviceDate, persons: 1 }),
-    enabled: orderDay && !!propertyId && !!myNext,
+    // Editing re-opens this same grid on a meal that IS ordered, and `orderDay`
+    // goes false the moment every meal is in — so the preview has to be fetched
+    // for an edit too, or the grid would open with no dishes in it.
+    enabled: (orderDay || editingMeal !== null) && !!propertyId && !!myNext,
   });
   // Per-dish overrides, keyed `${mealType}:${dishId}`. `persons` pins how many
   // people eat THAT dish; the quantity is always derived (qtyPerResident ×
@@ -509,10 +618,16 @@ export default function FoodDashboard() {
   // Order-mode edits belong to ONE property — dishIds are a shared catalogue,
   // so carrying overrides (or manual headcounts) across a property switch
   // would place the next property's order with the previous one's numbers.
+  // The journey position resets too: the switched-to property is a fresh day
+  // to read, and its meal tabs are different orders entirely.
   React.useEffect(() => {
     setHeadcounts({});
     setStaffCounts({});
     setDishOverrides({});
+    setEditingMeal(null);
+    setEditDishPersons({});
+    setJourneyDay(0);
+    setPickedMeal(null);
   }, [propertyId]);
   const dishKey = (mealType: MealType, dishId: string) => `${mealType}:${dishId}`;
   // A quantity-locked dish is pinned in Service Set: its people count is fixed
@@ -537,10 +652,57 @@ export default function FoodDashboard() {
     // Pinned in Service Set — drop the write. Defence in depth: a pinned row
     // renders no stepper, so getting here at all means a stale render.
     if (lockedDishPersons(mealType, dishId) != null) return;
+    // Clamped to the 20%-buffer ceiling so a held + can't walk past what the
+    // server will accept at send.
+    const cap = dishPersonsCap(effHeadFor(mealType), residentsCap);
     setDishOverrides((q) => ({
       ...q,
-      [dishKey(mealType, dishId)]: { persons: Math.max(1, persons) },
+      [dishKey(mealType, dishId)]: { persons: Math.max(1, Math.min(persons, cap)) },
     }));
+  };
+
+  /* ── the same three functions, for edit mode ────────────────────────────────
+   * The grid is handed these instead of the placement trio, so one component
+   * serves both flows. Two deliberate differences: an unseeded dish is 0 (it is
+   * not on the order — see the edit-state comment above), and a dish MAY be
+   * taken to 0, which drops it from the order. Placement clamps to 1 because
+   * there is nothing to drop yet.
+   * ────────────────────────────────────────────────────────────────────────── */
+  const editDishPersonsFor = (mealType: MealType, dishId: string): number =>
+    lockedDishPersons(mealType, dishId) ?? editDishPersons[dishId] ?? 0;
+  const editDishQty = (mealType: MealType, dishId: string, perResident: number, unit: string): number => {
+    const raw = perResident * editDishPersonsFor(mealType, dishId);
+    return isFractionalUnit(unit) ? Math.round(raw * 10) / 10 : Math.round(raw);
+  };
+  const setEditDishPersonsFor = (mealType: MealType, dishId: string, persons: number) => {
+    if (lockedDishPersons(mealType, dishId) != null) return;
+    // Same 20%-buffer ceiling as placement, on the edit grid's own totals.
+    const cap = dishPersonsCap(editResidents + editStaff, residentsCap);
+    setEditDishPersons((s) => ({ ...s, [dishId]: Math.max(0, Math.min(persons, cap)) }));
+  };
+  // Moving the meal's headcount carries the dishes that were FOLLOWING it, and
+  // only those. This is the same rule the server's rescale applies (a line sitting
+  // at the old total was tracking it; one deliberately set away from it — or
+  // dropped to 0 — is a statement about that dish and is left alone). Without it,
+  // raising the headcount in the grid would leave every dish cooked for the old
+  // number, and the save would send an order whose header and lines disagree.
+  const retrackEditDishes = (prevTotal: number, nextTotal: number) => {
+    if (prevTotal === nextTotal) return;
+    setEditDishPersons((s) => {
+      const out: Record<string, number> = {};
+      for (const [dishId, n] of Object.entries(s)) out[dishId] = n === prevTotal ? nextTotal : n;
+      return out;
+    });
+  };
+  const setEditResidentsTo = (n: number) => {
+    const next = Math.min(residentsCap, Math.max(0, n));
+    retrackEditDishes(editResidents + editStaff, next + editStaff);
+    setEditResidents(next);
+  };
+  const setEditStaffTo = (n: number) => {
+    const next = Math.max(0, n);
+    retrackEditDishes(editResidents + editStaff, editResidents + next);
+    setEditStaff(next);
   };
 
   /* ── server-side draft: a half-built order follows the unit lead across
@@ -712,43 +874,56 @@ export default function FoodDashboard() {
   const [ack, setAck] = React.useState(false);
   const [received, setReceived] = React.useState<Record<string, number>>({});
   const [reason, setReason] = React.useState<string | null>(null);
-  /* ── inline cancel dialog state ── */
-  const [cancelOpen, setCancelOpen] = React.useState(false);
-  const [cancelReason, setCancelReason] = React.useState("");
   React.useEffect(() => {
-    // Reset the receive + cancel forms whenever the focused order changes.
+    // Reset the receive + edit forms whenever the focused order changes.
     setAck(false);
     setReceived({});
     setReason(null);
-    setCancelOpen(false);
-    setCancelReason("");
+    setEditingMeal(null);
   }, [selectedOrderId]);
 
   const sentOf = (i: { orderedQty: string; preparedQty: string | null }) =>
     num(i.preparedQty ?? i.orderedQty);
   const receivedOf = (i: { id: string; orderedQty: string; preparedQty: string | null }) =>
     received[i.id] ?? sentOf(i);
-  const mismatches = (detail?.items ?? []).filter((i) => receivedOf(i) !== sentOf(i));
-  const confirmDisabled = mismatches.length > 0 && !reason;
+  // A delivery varies in BOTH directions. Short lines auto-raise a complaint
+  // server-side; extra lines don't, but they still need explaining, so either
+  // kind gates the confirm on a reason.
+  //
+  // Snapped to the same 1-decimal grid the row renders on (and that stepQty
+  // writes), so a float artefact can't count a line as a mismatch while the row
+  // beside it shows no variance and demands a reason for nothing.
+  const deltaOf = (i: OrderDetail["items"][number]) =>
+    Math.round((receivedOf(i) - sentOf(i)) * 10) / 10;
+  const shorts = (detail?.items ?? []).filter((i) => deltaOf(i) < 0);
+  const extras = (detail?.items ?? []).filter((i) => deltaOf(i) > 0);
+  const mismatches = shorts.length + extras.length;
+  const confirmDisabled = mismatches > 0 && !reason;
 
   const confirmMutation = useMutation({
     mutationFn: () =>
       foodApi.confirmDelivery(
         detail!.id,
         detail!.items.map((i) => ({ itemId: i.id, receivedQty: receivedOf(i) })),
-        mismatches.length > 0 && reason ? reason : undefined,
+        mismatches > 0 && reason ? reason : undefined,
       ),
     onSuccess: () => {
       // Order lists + details cover everything a confirm changes.
       qc.invalidateQueries({ queryKey: ["food", "orders"] });
       qc.invalidateQueries({ queryKey: ["food", "order"] });
       fire();
+      const parts = [
+        shorts.length > 0 && `${shorts.length} short item${shorts.length > 1 ? "s" : ""}`,
+        extras.length > 0 && `${extras.length} extra item${extras.length > 1 ? "s" : ""}`,
+      ].filter(Boolean);
       toast({
-        variant: mismatches.length > 0 ? "warning" : "success",
+        // A surplus is worth flagging but isn't a problem — only a shortfall,
+        // which raises a complaint against the kitchen, warrants the warning.
+        variant: shorts.length > 0 ? "warning" : "success",
         title: "Delivery confirmed",
         description:
-          mismatches.length > 0
-            ? `${mismatches.length} short item${mismatches.length > 1 ? "s" : ""} noted — the kitchen has been told`
+          parts.length > 0
+            ? `${parts.join(" and ")} noted — the kitchen has been told`
             : "Everything matched the kitchen's numbers",
       });
     },
@@ -790,20 +965,60 @@ export default function FoodDashboard() {
     },
   });
 
-  /* ── cancel the focused (pre-dispatch) order, with an optional reason ── */
-  const cancelMutation = useMutation({
-    mutationFn: () => foodApi.cancelOrder(selectedOrderId!, cancelReason.trim() || undefined),
+  /* ── edit the focused order in the ordering grid (open until the cut-off) ── */
+  // Open on what was ACTUALLY ordered — the order's own counts and its own
+  // per-dish people — not on the menu defaults. Dishes the lead left off stay
+  // off (unseeded → 0) until they add them back.
+  const openEdit = () => {
+    const o = detail ?? selected?.order;
+    if (!o || !selected) return;
+    setEditResidents(o.residentsCount ?? 0);
+    setEditStaff(o.staffCount ?? 0);
+    const seeded: Record<string, number> = {};
+    for (const it of detail?.items ?? []) seeded[it.dishId] = it.personsCount ?? orderPeople(o);
+    setEditDishPersons(seeded);
+    setEditingMeal(selected.mealType);
+  };
+  const editTotal = editResidents + editStaff;
+  // Lines the save will send: the whole resolved menu for this meal, minus the
+  // dishes sitting at zero. A dish that was on the order and is now zero is
+  // simply absent — the server reads the list as the order's new line-up.
+  const editItems = React.useMemo(() => {
+    if (!editingMeal) return [];
+    const meal = (preview?.meals ?? []).find((m) => m.mealType === editingMeal);
+    return (meal?.items ?? [])
+      .map((it) => ({
+        dishId: it.dishId,
+        personsCount: editDishPersonsFor(editingMeal, it.dishId),
+        orderedQty: editDishQty(editingMeal, it.dishId, it.qtyPerResident, it.unit),
+      }))
+      .filter((it) => it.orderedQty > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingMeal, preview, editDishPersons, editResidents, editStaff]);
+  const editMutation = useMutation({
+    // Counts AND lines, i.e. the same payload shape the grid places an order
+    // with. `notes` is deliberately omitted so this screen can never blank a
+    // note it doesn't show.
+    mutationFn: () =>
+      foodApi.editOrderItems(selectedOrderId!, {
+        residentsCount: editResidents,
+        staffCount: editStaff,
+        items: editItems,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["food", "orders"] });
       qc.invalidateQueries({ queryKey: ["food", "order"] });
       qc.invalidateQueries({ queryKey: foodKeys.nextOrders() });
-      setCancelOpen(false);
-      setCancelReason("");
-      toast({ variant: "warning", title: "Order cancelled", description: "The kitchen has been notified." });
+      setEditingMeal(null);
+      toast({
+        variant: "success",
+        title: "Order updated",
+        description: `${editItems.length} dish${editItems.length === 1 ? "" : "es"} for ${editTotal} ${editTotal === 1 ? "person" : "people"} — the kitchen has been told.`,
+      });
     },
     onError: (e: unknown) => {
       toast({
-        title: "Couldn't cancel the order",
+        title: "Couldn't update the order",
         description: e instanceof Error ? e.message : "Please try again",
         variant: "destructive",
       });
@@ -847,6 +1062,15 @@ export default function FoodDashboard() {
   return (
     <div className="mx-auto flex max-w-[760px] animate-fade-up flex-col gap-6">
       {confetti}
+
+      {/* ── property scope: the journey below is ONE property's day, and a
+          manager reaches several — so the property has to be switchable from
+          here (it used to need a page reload to get the picker back). ── */}
+      {properties.length > 1 && (
+        <div className="flex justify-end">
+          <PropertySwitcher properties={properties} value={propertyId} onChange={setPropertyId} />
+        </div>
+      )}
 
       {/* ── next-order hero: a reminder + shortcut to the order day. Hidden once
           you're actually ON that day (orderDay) — the wizard there already
@@ -1043,7 +1267,7 @@ export default function FoodDashboard() {
           {selected ? (
             <>
               {/* Meal head — label, time, status pill, and the order actions
-                  (View order / Cancel) shown directly inline. */}
+                  (View order / Edit) shown directly inline. */}
               <div className="mb-4 flex flex-wrap items-center gap-2.5">
                 <span className="font-display text-[17px] font-bold tracking-[-0.012em]">
                   {MEAL_LABEL[selected.mealType]}
@@ -1072,44 +1296,66 @@ export default function FoodDashboard() {
                     </span>
                   </Link>
                 )}
-                {canCancelThis && (
+                {/* Held back until the order's lines are in hand: the grid opens
+                    seeded from them, and seeding from nothing would read as
+                    "every dish removed". */}
+                {canEditThis && !editing && !!detail && (
                   <button
                     type="button"
-                    onClick={() => setCancelOpen(true)}
-                    className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-danger-soft px-2.5 py-1 text-xs font-semibold text-destructive transition-colors hover:bg-destructive hover:text-white"
+                    onClick={openEdit}
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:border-accent hover:text-foreground"
                   >
-                    <Ban className="h-3.5 w-3.5" /> Cancel
+                    <Pencil className="h-3.5 w-3.5" /> Edit
                   </button>
+                )}
+                {editing && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-accent bg-accent/[.08] px-2.5 py-1 text-xs font-bold text-accent-strong">
+                    <Pencil className="h-3.5 w-3.5" /> Editing
+                  </span>
                 )}
               </div>
 
-              {orderMode ? (
+              {/* One grid, two jobs: placing a meal that isn't ordered yet, and
+                  correcting one that is. Editing hands it the edit state and a
+                  single-meal wizard (no "Next: dinner" walk — you came here for
+                  this meal), so the screen a lead corrects an order on is the
+                  screen they placed it on. */}
+              {orderMode || editing ? (
                 <OrderModePanel
                   myNextCutoffAt={myNext?.cutoffAt ?? null}
                   myNextCutoffTime={myNext?.cutoffTime ?? null}
                   now={now}
                   dayWord={nextIsTomorrow ? "tomorrow" : `on ${nextDayLabel}`}
                   dayPossessive={nextIsTomorrow ? "tomorrow's" : `${nextDayLabel}'s`}
-                  residents={residentsFor(selected.mealType)}
-                  setResidents={(n) => setResidentsFor(selected.mealType, n)}
-                  staff={staffFor(selected.mealType)}
-                  setStaff={(n) => setStaffFor(selected.mealType, n)}
+                  editing={editing}
+                  onDiscard={() => setEditingMeal(null)}
+                  residents={editing ? editResidents : residentsFor(selected.mealType)}
+                  setResidents={(n) =>
+                    editing ? setEditResidentsTo(n) : setResidentsFor(selected.mealType, n)}
+                  staff={editing ? editStaff : staffFor(selected.mealType)}
+                  setStaff={(n) => (editing ? setEditStaffTo(n) : setStaffFor(selected.mealType, n))}
                   occupied={occupied}
                   residentsMax={residentsCap}
                   previewMeals={(preview?.meals ?? []).filter((m) =>
-                    missingMeals.some((x) => x.mealType === m.mealType),
+                    editing
+                      ? m.mealType === selected.mealType
+                      : missingMeals.some((x) => x.mealType === m.mealType),
                   )}
                   selectedMeal={selected.mealType}
-                  orderedMeals={missingMeals.map((m) => m.mealType)}
+                  orderedMeals={editing ? [selected.mealType] : missingMeals.map((m) => m.mealType)}
                   onSelectMeal={setPickedMeal}
-                  dishQty={dishQty}
-                  dishPersons={dishPersons}
-                  setDishPersons={setDishPersonsOverride}
-                  onSend={() => placeMutation.mutate()}
-                  sending={placeMutation.isPending}
-                  mealsCount={missingMeals.filter((m) => effHeadFor(m.mealType) > 0).length}
-                  draftSavedAt={draftSavedAt}
-                  savingDraft={savingDraft}
+                  dishQty={editing ? editDishQty : dishQty}
+                  dishPersons={editing ? editDishPersonsFor : dishPersons}
+                  setDishPersons={editing ? setEditDishPersonsFor : setDishPersonsOverride}
+                  onSend={() => (editing ? editMutation.mutate() : placeMutation.mutate())}
+                  sending={editing ? editMutation.isPending : placeMutation.isPending}
+                  mealsCount={
+                    editing
+                      ? (editTotal > 0 && editItems.length > 0 ? 1 : 0)
+                      : missingMeals.filter((m) => effHeadFor(m.mealType) > 0).length
+                  }
+                  draftSavedAt={editing ? null : draftSavedAt}
+                  savingDraft={editing ? false : savingDraft}
                 />
               ) : selected.order == null ? (
                 <div className="rounded-[12px] border border-dashed border-border px-4 py-9 text-center text-sm text-muted-foreground">
@@ -1127,7 +1373,8 @@ export default function FoodDashboard() {
                     receivedOf={receivedOf}
                     sentOf={sentOf}
                     setReceived={setReceived}
-                    mismatchCount={mismatches.length}
+                    shortCount={shorts.length}
+                    extraCount={extras.length}
                     reason={reason}
                     setReason={setReason}
                     confirmDisabled={confirmDisabled}
@@ -1177,39 +1424,6 @@ export default function FoodDashboard() {
           </span>
         </Link>
       </div>
-
-      {/* ── inline cancel dialog (optional reason → audit trail) ── */}
-      <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Ban className="h-5 w-5 text-warning" /> Cancel order
-            </DialogTitle>
-            <DialogDescription>
-              This order will be cancelled and removed from the kitchen queue.
-              Optionally share a reason for the audit trail.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="dash-cancel-reason">Reason (optional)</Label>
-            <Textarea
-              id="dash-cancel-reason"
-              rows={3}
-              placeholder="e.g. Residents away, duplicate order…"
-              value={cancelReason}
-              onChange={(e) => setCancelReason(e.target.value)}
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setCancelOpen(false)} disabled={cancelMutation.isPending}>
-              Keep order
-            </Button>
-            <Button variant="destructive" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending}>
-              {cancelMutation.isPending ? "Cancelling…" : "Cancel order"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -1372,9 +1586,16 @@ function AdditionalFoodDialog({
   );
 }
 
+/** Why a line came in UNDER what was sent — drives the auto-raised shortfall
+ *  complaint, so the wording stays loss-shaped. */
+const SHORT_REASONS = ["Spilled in transit", "Short from kitchen", "Counting mistake"];
+/** Why a line came in OVER. A surplus raises no complaint, but it still has to
+ *  be explained or the variance report reads as a counting error. */
+const EXTRA_REASONS = ["Kitchen sent extra", "Top-up for extra guests", "Counting mistake"];
+
 function ReceiveColumn({
   detail, state, canConfirm, ack, onAck, receivedOf, sentOf, setReceived,
-  mismatchCount, reason, setReason, confirmDisabled, onConfirm, confirming, journeyDay,
+  shortCount, extraCount, reason, setReason, confirmDisabled, onConfirm, confirming, journeyDay,
 }: {
   detail: OrderDetail | null;
   state: MealState;
@@ -1384,7 +1605,8 @@ function ReceiveColumn({
   receivedOf: (i: OrderDetail["items"][number]) => number;
   sentOf: (i: OrderDetail["items"][number]) => number;
   setReceived: React.Dispatch<React.SetStateAction<Record<string, number>>>;
-  mismatchCount: number;
+  shortCount: number;
+  extraCount: number;
   reason: string | null;
   setReason: (r: string) => void;
   confirmDisabled: boolean;
@@ -1394,7 +1616,12 @@ function ReceiveColumn({
 }) {
   const delivered = detail?.status === "DELIVERED";
   const atGate = state === "action-confirm" && canConfirm;
-  const REASONS = ["Spilled in transit", "Short from kitchen", "Counting mistake"];
+  const mismatchCount = shortCount + extraCount;
+  // Offer the chips that match what actually happened; a mixed delivery gets
+  // both lists, since one remark covers the whole order.
+  const REASONS = shortCount > 0 && extraCount > 0
+    ? [...SHORT_REASONS, ...EXTRA_REASONS.slice(0, 2)]
+    : extraCount > 0 ? EXTRA_REASONS : SHORT_REASONS;
   const [addlOpen, setAddlOpen] = React.useState(false);
   // Per-dish additional-food totals (top-ups sourced from other properties).
   const additionalByDish = React.useMemo(() => {
@@ -1429,11 +1656,21 @@ function ReceiveColumn({
             {(detail?.items ?? []).map((i) => {
               const received = num(i.receivedQty ?? i.preparedQty ?? i.orderedQty);
               const addl = additionalByDish.get(i.dishId) ?? 0;
+              // Variance against what the kitchen booked out, kept visible after
+              // the confirm — otherwise a recorded surplus disappears the moment
+              // it is saved and only the reports remember it.
+              const delta = i.receivedQty == null ? 0 : Math.round((received - sentOf(i)) * 10) / 10;
               return (
                 <div key={i.id} className="flex items-center justify-between gap-2 border-b border-dashed border-border py-1.5 last:border-0">
                   <span className="text-[13px]">{i.dishName ?? "Item"}</span>
                   <span className="font-mono text-[12.5px] font-semibold tabular-nums text-muted-foreground">
                     {fmtQty(received + addl, i.unit)}
+                    {delta > 0 && (
+                      <span className="ml-1 text-[10px] font-normal text-info">(+{fmtQty(delta)} over)</span>
+                    )}
+                    {delta < 0 && (
+                      <span className="ml-1 text-[10px] font-normal text-warning">({fmtQty(delta)} short)</span>
+                    )}
                     {addl > 0 && (
                       <span className="ml-1 text-[10px] font-normal text-accent">(+{fmtQty(addl)} extra)</span>
                     )}
@@ -1482,27 +1719,51 @@ function ReceiveColumn({
             {(detail?.items ?? []).map((i) => {
               const sent = sentOf(i);
               const rec = receivedOf(i);
-              const diff = rec !== sent;
+              const step = qtyStep(i.unit);
+              const delta = Math.round((rec - sent) * 10) / 10;
               return (
-                <div key={i.id} className={cn("flex items-center gap-2 border-b border-dashed border-border py-[7px] last:border-0", diff && "rounded bg-warning-soft px-1")}>
+                <div
+                  key={i.id}
+                  className={cn(
+                    "flex items-center gap-2 border-b border-dashed border-border py-[7px] last:border-0",
+                    delta < 0 && "rounded bg-warning-soft px-1",
+                    delta > 0 && "rounded bg-info-soft px-1",
+                  )}
+                >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] font-semibold">{i.dishName ?? "Item"}</span>
-                    <span className="block text-[11px] text-muted-foreground">sent {fmtQty(sent, i.unit)}</span>
+                    <span className="block text-[11px] text-muted-foreground">
+                      sent {fmtQty(sent, i.unit)}
+                      {delta < 0 && (
+                        <span className="ml-1 font-semibold text-warning">· {fmtQty(-delta)} short</span>
+                      )}
+                      {delta > 0 && (
+                        <span className="ml-1 font-semibold text-info">· {fmtQty(delta)} extra</span>
+                      )}
+                    </span>
                   </span>
+                  {/* No upper bound: a delivery arrives over as often as under, and
+                      a surplus nobody can key in is a surplus nobody can report. */}
                   <MiniStepper
                     value={rec}
-                    display={String(rec)}
-                    onMinus={() => setReceived((r) => ({ ...r, [i.id]: Math.max(0, rec - 1) }))}
-                    onPlus={() => setReceived((r) => ({ ...r, [i.id]: Math.min(sent, rec + 1) }))}
+                    display={fmtQty(rec, i.unit)}
+                    suffix={i.unit.toLowerCase()}
+                    ariaLabel={`Received quantity for ${i.dishName ?? "item"}`}
+                    onType={(v) => setReceived((r) => ({ ...r, [i.id]: Math.max(0, v) }))}
+                    onMinus={() => setReceived((r) => ({ ...r, [i.id]: Math.max(0, stepQty(rec, -step)) }))}
+                    onPlus={() => setReceived((r) => ({ ...r, [i.id]: stepQty(rec, step) }))}
                   />
                 </div>
               );
             })}
           </div>
           {mismatchCount > 0 && (
-            <div className="mt-2.5 rounded-[9px] bg-warning-soft px-3 py-2.5">
+            <div className={cn("mt-2.5 rounded-[9px] px-3 py-2.5", shortCount > 0 ? "bg-warning-soft" : "bg-info-soft")}>
               <div className="mb-1.5 text-xs font-semibold">
-                {mismatchCount} item{mismatchCount > 1 ? "s are" : " is"} less than what was sent
+                {shortCount > 0 && `${shortCount} item${shortCount > 1 ? "s" : ""} less`}
+                {shortCount > 0 && extraCount > 0 && ", "}
+                {extraCount > 0 && `${extraCount} item${extraCount > 1 ? "s" : ""} more`}
+                {" than what was sent"}
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {REASONS.map((r) => (
@@ -1512,7 +1773,9 @@ function ReceiveColumn({
                     onClick={() => setReason(r)}
                     className={cn(
                       "rounded-full px-3 py-1.5 text-xs font-semibold",
-                      reason === r ? "bg-warning text-white" : "border border-border bg-card text-foreground",
+                      reason === r
+                        ? shortCount > 0 ? "bg-warning text-white" : "bg-info text-white"
+                        : "border border-border bg-card text-foreground",
                     )}
                   >
                     {r}
@@ -1534,9 +1797,15 @@ function ReceiveColumn({
           >
             {confirming
               ? "Saving…"
-              : mismatchCount > 0
-                ? reason ? "Save received — short noted" : "Pick a reason first"
-                : "Save received ✓"}
+              : mismatchCount === 0
+                ? "Save received ✓"
+                : !reason
+                  ? "Pick a reason first"
+                  : shortCount > 0 && extraCount > 0
+                    ? "Save received — variance noted"
+                    : shortCount > 0
+                      ? "Save received — short noted"
+                      : "Save received — extra noted"}
           </button>
         </>
       ) : (
@@ -1575,7 +1844,6 @@ function WasteColumn({
   const closed =
     detail?.status === "DELIVERED" && !!closesAt && now.getTime() > closesAt.getTime() && !wasteRecorded;
   const minsLeft = closesAt ? Math.max(0, differenceInMinutes(closesAt, now)) : 0;
-  const wasteStep = (unit: string) => (isFractionalUnit(unit) ? 0.5 : 1);
   const capOf = (i: OrderDetail["items"][number]) => num(i.receivedQty ?? i.preparedQty ?? i.orderedQty);
   const summary = (detail?.items ?? []).filter((i) => num(i.wastedQty) > 0);
   return (
@@ -1619,19 +1887,15 @@ function WasteColumn({
           <div className="flex flex-col">
             {(detail?.items ?? []).map((i) => {
               const v = wasteQty[i.id] ?? 0;
-              const step = wasteStep(i.unit);
+              const step = qtyStep(i.unit);
               return (
                 <div key={i.id} className="flex items-center gap-2 border-b border-dashed border-border py-[7px] last:border-0">
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{i.dishName ?? "Item"}</span>
                   <MiniStepper
                     value={v}
                     display={fmtQty(v, i.unit)}
-                    onMinus={() =>
-                      setWasteQty((q) => ({ ...q, [i.id]: Math.max(0, Math.round((v - step) * 10) / 10) }))
-                    }
-                    onPlus={() =>
-                      setWasteQty((q) => ({ ...q, [i.id]: Math.min(capOf(i), Math.round((v + step) * 10) / 10) }))
-                    }
+                    onMinus={() => setWasteQty((q) => ({ ...q, [i.id]: Math.max(0, stepQty(v, -step)) }))}
+                    onPlus={() => setWasteQty((q) => ({ ...q, [i.id]: Math.min(capOf(i), stepQty(v, step)) }))}
                   />
                 </div>
               );
@@ -1670,7 +1934,7 @@ function WasteColumn({
 /* ───────────────────────── order mode (tomorrow) ───────────────────────── */
 
 function OrderModePanel({
-  myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, residents, setResidents, staff, setStaff, occupied, residentsMax, previewMeals,
+  myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, editing, onDiscard, residents, setResidents, staff, setStaff, occupied, residentsMax, previewMeals,
   selectedMeal, orderedMeals, onSelectMeal, dishQty, dishPersons, setDishPersons, onSend, sending, mealsCount, draftSavedAt, savingDraft,
 }: {
   myNextCutoffAt: string | null;
@@ -1680,6 +1944,11 @@ function OrderModePanel({
   dayWord: string;
   /** "tomorrow's" or "Wednesday's" — for the send button. */
   dayPossessive: string;
+  /** Correcting an order already with the kitchen rather than placing a new one.
+   *  Same grid, same cut-off; only the framing and the footer differ. */
+  editing?: boolean;
+  /** Leave edit mode without saving (edit only). */
+  onDiscard?: () => void;
   /** Residents eating the selected meal (0..residentsMax; 0 skips the meal). */
   residents: number;
   setResidents: (n: number) => void;
@@ -1721,6 +1990,10 @@ function OrderModePanel({
   const mealIdx = selectedMeal ? orderedMeals.indexOf(selectedMeal) : -1;
   const isLastMeal = mealIdx === -1 || mealIdx >= orderedMeals.length - 1;
   const nextMeal = isLastMeal ? null : orderedMeals[mealIdx + 1] ?? null;
+  // A dish may be ordered for more people than the meal — up to a 20% buffer
+  // (see dishPersonsCap). residents/staff are the selected meal's, and the grid
+  // only renders the selected meal, so one cap serves every row.
+  const pplMax = dishPersonsCap(residents + staff, residentsMax);
   // One row per dish. A main and a side render the same way — the side just
   // sits indented under its parent — so each keeps its own people count and a
   // unit lead can order fewer portions of the side than of the main.
@@ -1785,6 +2058,12 @@ function OrderModePanel({
             display={`${ppl} ppl`}
             onMinus={() => setDishPersons(mealType, d.dishId, ppl - 1)}
             onPlus={() => setDishPersons(mealType, d.dishId, ppl + 1)}
+            plusDisabled={ppl >= pplMax}
+            plusTitle={
+              ppl >= pplMax
+                ? `Limit reached — max ${pplMax} (20% above the ${residents + staff} eating this meal)`
+                : undefined
+            }
           />
         )}
       </div>
@@ -1798,8 +2077,10 @@ function OrderModePanel({
       <div className="mb-3.5 flex items-center gap-2.5 rounded-[10px] bg-warning-soft px-3.5 py-2.5 text-[13px]">
         <Clock className="h-[15px] w-[15px] shrink-0 text-warning" />
         <span>
-          Order closes at <strong>{myNextCutoffTime ?? "the cut-off"}</strong> —{" "}
+          {editing ? "Editable until" : "Order closes at"}{" "}
+          <strong>{myNextCutoffTime ?? "the cut-off"}</strong> —{" "}
           <span className="font-mono font-semibold text-warning">{untilLabel(myNextCutoffAt, now)}</span> left
+          {editing ? " — after that this order is fixed." : ""}
         </span>
       </div>
 
@@ -1811,7 +2092,10 @@ function OrderModePanel({
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
               Occupied: <span className="font-semibold text-foreground">{occupied}</span> residents · order up to{" "}
-              <span className="font-semibold text-foreground">{residentsMax}</span> (120%). Set to 0 to skip this meal.
+              <span className="font-semibold text-foreground">{residentsMax}</span> (120%).{" "}
+              {editing
+                ? "Take a dish to 0 people to drop it from the order."
+                : "Set to 0 to skip this meal."}
             </div>
           </div>
           {/* Total = residents + staff — the number the kitchen cooks for. */}
@@ -1918,24 +2202,56 @@ function OrderModePanel({
          each meal, then "Next" walks to the following meal; on the last meal the
          CTA places every meal at once. */}
       <div className="-mx-[18px] mt-3.5 border-t border-border bg-card px-[18px] pb-[2px] pt-2.5">
-        {/* Always-on reassurance that edits persist — autosaves silently. */}
-        <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-          {savingDraft ? (
-            <>
-              <Loader2 className="h-3 w-3 animate-spin" /> Saving…
-            </>
-          ) : draftSavedAt ? (
-            <>
-              <Check className="h-3 w-3 text-success" strokeWidth={3} />
-              Changes saved · {format(draftSavedAt, "h:mm a")}
-            </>
-          ) : (
-            <>
-              <Check className="h-3 w-3" strokeWidth={3} /> Changes are saved automatically as you edit
-            </>
-          )}
-        </div>
-        {isLastMeal ? (
+        {/* Draft autosave is a PLACEMENT affordance: it protects a half-built
+            order that hasn't been sent. An edit changes an order the kitchen
+            already holds, so nothing is saved until Save is pressed — promising
+            otherwise here would be a lie. */}
+        {editing ? (
+          <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+            <Pencil className="h-3 w-3" /> Nothing changes for the kitchen until you save
+          </div>
+        ) : (
+          <div className="mb-2 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+            {savingDraft ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" /> Saving…
+              </>
+            ) : draftSavedAt ? (
+              <>
+                <Check className="h-3 w-3 text-success" strokeWidth={3} />
+                Changes saved · {format(draftSavedAt, "h:mm a")}
+              </>
+            ) : (
+              <>
+                <Check className="h-3 w-3" strokeWidth={3} /> Changes are saved automatically as you edit
+              </>
+            )}
+          </div>
+        )}
+        {editing ? (
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onDiscard}
+              disabled={sending}
+              className="h-[52px] shrink-0 rounded-[12px] border border-border bg-card px-5 font-display text-sm font-bold tracking-[-0.012em] text-muted-foreground transition-colors hover:border-accent hover:text-foreground disabled:opacity-60"
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              disabled={sending || previewMeals.length === 0 || mealsCount === 0}
+              onClick={onSend}
+              className="h-[52px] flex-1 rounded-[12px] bg-success font-display text-[15px] font-bold tracking-[-0.012em] text-white transition-[filter] hover:brightness-105 disabled:opacity-60"
+            >
+              {sending
+                ? "Saving…"
+                : mealsCount === 0
+                  ? "Keep at least one dish to save"
+                  : "Save changes ✓"}
+            </button>
+          </div>
+        ) : isLastMeal ? (
           <button
             type="button"
             disabled={sending || previewMeals.length === 0 || mealsCount === 0}

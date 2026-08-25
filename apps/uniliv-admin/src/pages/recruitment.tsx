@@ -10,6 +10,8 @@ import {
 } from "@workspace/api-client-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm, Controller } from "react-hook-form";
+import { useFormDraft } from "@/hooks/use-form-draft";
+import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import jsPDF from "jspdf";
@@ -118,6 +120,9 @@ export default function Recruitment() {
   React.useEffect(() => { if (addOpen) cForm.reset(); /* eslint-disable-next-line */ }, [addOpen]);
   React.useEffect(() => { if (reqOpen) rForm.reset(); /* eslint-disable-next-line */ }, [reqOpen]);
 
+  const cDraft = useFormDraft(cForm, { key: "candidate-form:new", enabled: addOpen });
+  const rDraft = useFormDraft(rForm, { key: "requisition-form:new", enabled: reqOpen });
+
   const moveCandidate = async (id: string, stage: string) => {
     const c = candidates.find((x) => x.id === id);
     if (!c || c.stage === stage) return;
@@ -144,6 +149,7 @@ export default function Recruitment() {
       await createCandidate.mutateAsync({ data: body });
       toast({ title: "Candidate added" });
       qc.invalidateQueries({ queryKey: getGetCandidatesQueryKey() });
+      cDraft.clearDraft();
       setAddOpen(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -157,6 +163,7 @@ export default function Recruitment() {
       });
       toast({ title: "Requisition created" });
       qc.invalidateQueries({ queryKey: getGetJobRequisitionsQueryKey() });
+      rDraft.clearDraft();
       setReqOpen(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -319,6 +326,7 @@ export default function Recruitment() {
         saveLabel="Add Candidate"
       >
         <div className="space-y-4">
+          <DraftRestoredNotice show={cDraft.restored} savedAt={cDraft.restoredAt} onDiscard={cDraft.discardDraft} onDismiss={cDraft.dismissRestored} />
           <div>
             <Label>Name *</Label>
             <Input {...cForm.register("name")} data-testid="input-cand-name" />
@@ -367,6 +375,7 @@ export default function Recruitment() {
         saveLabel="Create Requisition"
       >
         <div className="space-y-4">
+          <DraftRestoredNotice show={rDraft.restored} savedAt={rDraft.restoredAt} onDiscard={rDraft.discardDraft} onDismiss={rDraft.dismissRestored} />
           <div>
             <Label>Role *</Label>
             <Input {...rForm.register("role")} />
@@ -484,6 +493,17 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
   React.useEffect(() => { if (interviewOpen) iForm.reset(); /* eslint-disable-next-line */ }, [interviewOpen]);
   React.useEffect(() => { if (offerOpen) oForm.reset(); /* eslint-disable-next-line */ }, [offerOpen]);
 
+  // Keyed by candidate — an interview drafted for one person must not surface
+  // on the next person's dialog.
+  const iDraft = useFormDraft(iForm, {
+    key: candidateId ? `interview-form:${candidateId}` : null,
+    enabled: interviewOpen,
+  });
+  const oDraft = useFormDraft(oForm, {
+    key: candidateId ? `offer-form:${candidateId}` : null,
+    enabled: offerOpen,
+  });
+
   const submitInterview = iForm.handleSubmit(async (v) => {
     if (!candidate) return;
     try {
@@ -493,6 +513,7 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
       });
       toast({ title: "Interview scheduled" });
       qc.invalidateQueries({ queryKey: ["candidate", candidate.id] });
+      iDraft.clearDraft();
       setInterviewOpen(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -533,6 +554,7 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
       doc.text("Welcome to UNILIV", 105, 270, { align: "center" });
       doc.save(`offer-${candidate.name.replace(/\s+/g, "-")}.pdf`);
 
+      oDraft.clearDraft();
       setOfferOpen(false);
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -640,6 +662,7 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
         saveLabel="Schedule"
       >
         <div className="space-y-4">
+          <DraftRestoredNotice show={iDraft.restored} savedAt={iDraft.restoredAt} onDiscard={iDraft.discardDraft} onDismiss={iDraft.dismissRestored} />
           <div>
             <Label>Scheduled At *</Label>
             <Controller control={iForm.control} name="scheduledAt" render={({ field }) => (
@@ -666,6 +689,7 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
         saveLabel="Generate Offer"
       >
         <div className="space-y-4">
+          <DraftRestoredNotice show={oDraft.restored} savedAt={oDraft.restoredAt} onDiscard={oDraft.discardDraft} onDismiss={oDraft.dismissRestored} />
           <div>
             <Label>CTC (Annual) *</Label>
             <Input type="number" {...oForm.register("ctc")} />

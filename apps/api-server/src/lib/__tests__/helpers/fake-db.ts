@@ -60,11 +60,55 @@ function operandValue(chunk: any, bundle: Bundle): unknown {
   return chunk;
 }
 
+/**
+ * Scalar functions a hand-written `sql` fragment may wrap a column in. Only the
+ * ones the code under test actually uses — an unknown name throws rather than
+ * being ignored, because silently comparing the RAW column is exactly the
+ * false pass this exists to prevent (a case-insensitive duplicate check would
+ * "work" in the test and let duplicates through in production).
+ */
+const SQL_FNS: Record<string, (v: unknown) => unknown> = {
+  lower: (v) => (typeof v === "string" ? v.toLowerCase() : v),
+  upper: (v) => (typeof v === "string" ? v.toUpperCase() : v),
+  trim: (v) => (typeof v === "string" ? v.trim() : v),
+};
+
+/**
+ * Apply the calls that immediately ENCLOSE a column, given the fragment text
+ * that precedes it — `lower(trim(` applies trim then lower, the order Postgres
+ * evaluates them in.
+ *
+ * Walks backwards from the end rather than scanning the whole prefix, because
+ * text further left is context, not a wrapper: the `count(*) FILTER (WHERE `
+ * that evalAtomic is also handed would otherwise read as a call on the column.
+ */
+function applyWrappers(prefix: string, v: unknown): unknown {
+  const names: string[] = [];
+  let head = prefix.trimEnd();
+  for (let m = head.match(/([a-z_]+)\s*\(\s*$/); m; m = head.match(/([a-z_]+)\s*\(\s*$/)) {
+    names.push(m[1]!);
+    head = head.slice(0, m.index).trimEnd();
+  }
+  let out = v;
+  for (const n of names) {
+    const fn = SQL_FNS[n];
+    if (!fn) throw new Error(`fake-db: unsupported sql function "${n}()"`);
+    out = fn(out);
+  }
+  return out;
+}
+
 function evalAtomic(chunks: any[], bundle: Bundle): boolean {
   const i = chunks.findIndex(isColumn);
-  const left = norm(readCol(bundle, chunks[i]));
+  // A hand-written fragment may WRAP the column — `lower(trim(col)) = $1`. The
+  // opening calls sit in the string chunk before the column and their closing
+  // parens in the one after it, so both have to be read: ignoring them compared
+  // the raw column value AND mis-read ")) =" as the operator.
+  const before = chunks[i - 1];
+  const prefix = isStringChunk(before) ? before.value.join("").toLowerCase() : "";
+  const left = norm(applyWrappers(prefix, readCol(bundle, chunks[i])));
   const rest = chunks.slice(i + 1);
-  const op = (rest.find(isStringChunk)?.value.join("") ?? "").trim().toLowerCase();
+  const op = (rest.find(isStringChunk)?.value.join("") ?? "").replace(/^[)\s]+/, "").trim().toLowerCase();
   const operand = rest.find((c: any) => isParam(c) || isColumn(c) || Array.isArray(c) || isLiteral(c));
   switch (op) {
     case "is null":
