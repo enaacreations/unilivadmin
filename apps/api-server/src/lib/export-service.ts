@@ -7,9 +7,17 @@
  * name and the export date.
  *
  * WS4 (security): every cell — CSV and XLS alike — is neutralised against
- * spreadsheet formula injection. CSV cells beginning with a formula trigger
- * (`= + - @`, tab, CR) are prefixed with a single quote; XLS cells are always
- * emitted as String-typed data so a value is never evaluated as a formula.
+ * spreadsheet formula injection. TEXT cells beginning with a formula trigger
+ * (`= + - @`, tab, CR) are prefixed with a single quote in CSV and are always
+ * String-typed in XLS, so a value is never evaluated as a formula.
+ *
+ * Numbers are the documented exception, and deliberately so: a finite JS number
+ * cannot carry a formula, so exempting it costs nothing in safety and fixes a
+ * real reporting defect. String-typing every cell landed quantities in Excel as
+ * left-aligned TEXT that could not be summed, sorted numerically or charted —
+ * and in CSV the `-` trigger turned a negative variance into the literal
+ * `'-2.5`. Number-typed cells are emitted verbatim; everything else is escaped
+ * exactly as before.
  */
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
@@ -71,8 +79,13 @@ export function sanitizeForFilename(label: string | null | undefined): string {
  *     spreadsheet treats it as literal text rather than evaluating it.
  *  2. Standard RFC-4180 quoting for cells containing `" , \n`.
  * Exported so route handlers building CSV by hand share the same hardening.
+ *
+ * A finite NUMBER skips both layers. It cannot be a formula, so the guard buys
+ * nothing — while applying it wrote a negative quantity out as `'-2.5`, text
+ * that no spreadsheet will add up. Numeric cells therefore stay numeric.
  */
 export const csvEsc = (v: unknown) => {
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
   let s = v == null ? "" : String(v);
   if (s.length > 0 && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -609,9 +622,19 @@ const xmlEsc = (v: unknown) =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
 
-/** Wraps a value as a String-typed SpreadsheetML cell. */
+/** Wraps a value as a SpreadsheetML cell.
+ *
+ *  Finite numbers are emitted as `ss:Type="Number"`; everything else stays
+ *  String-typed and XML-escaped. String-typing the numbers too was the safer-
+ *  looking choice and the wrong one: Excel showed a wasted quantity of 0.3 as
+ *  left-aligned text, so the client could not sum a column, sort it by size or
+ *  chart it — the exported report looked like it had lost the decimals it had
+ *  in fact carried. A number literal has no formula surface, so the injection
+ *  guarantee is unchanged. */
 const xlsCell = (v: unknown) =>
-  `<Cell><Data ss:Type="String">${xmlEsc(v)}</Data></Cell>`;
+  typeof v === "number" && Number.isFinite(v)
+    ? `<Cell><Data ss:Type="Number">${v}</Data></Cell>`
+    : `<Cell><Data ss:Type="String">${xmlEsc(v)}</Data></Cell>`;
 
 /** Wraps a list of cell XML fragments as a SpreadsheetML row. */
 const xlsRow = (cells: string[]) => `   <Row>${cells.join("")}</Row>`;
@@ -620,9 +643,11 @@ const xlsRow = (cells: string[]) => `   <Row>${cells.join("")}</Row>`;
  * Builds a SpreadsheetML 2003 (`.xls`) workbook as a dependency-free XML string.
  * Excel and LibreOffice open this classic format directly from a `.xls` file.
  *
- * Every cell is rendered as `ss:Type="String"`, so values are NEVER interpreted
- * as formulas — this makes the output inherently formula-injection-safe (a cell
- * like `=cmd|…` is stored and shown verbatim as text). Cell text is XML-escaped.
+ * Text cells are rendered as `ss:Type="String"`, so they are NEVER interpreted
+ * as formulas — a cell like `=cmd|…` is stored and shown verbatim as text — and
+ * their content is XML-escaped. Finite numbers are rendered as `ss:Type="Number"`
+ * so quantities arrive in Excel as numbers you can sum, sort and chart; see
+ * `xlsCell` for why that does not weaken the injection guarantee.
  *
  * Layout mirrors toCsv/toPdf: title + property/range/exported meta rows, a blank
  * spacer row, the column header row, then the data rows.

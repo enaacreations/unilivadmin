@@ -8,6 +8,7 @@ import {
   groupLabel,
   isFractionalUnit,
   orderStatusPill,
+  qtyAxisTick,
   serviceDayKey,
   shortMeal,
 } from "@/lib/food-api";
@@ -113,5 +114,35 @@ describe("export-URL builders — qs() serialisation", () => {
     expect(
       foodApi.wasteAnalyticsExportUrl("xlsx", "property", { brand: "UNILIV", cityId: "ALL" }),
     ).toBe("/api/food/waste-analytics/export.xlsx?brand=UNILIV&widget=property");
+  });
+});
+
+/**
+ * Regression cover for the wastage-chart defect. Every waste axis carried
+ * recharts' `allowDecimals={false}`, which snaps the tick domain onto whole
+ * numbers: a 0–0.8 kg range was drawn against ticks 0,1,2,3,4, so a real 0.3 kg
+ * bar rendered flush with the floor and the chart read as "no waste" over data
+ * that was stored correctly. The axes now use this formatter instead — it must
+ * pass fractions through untouched, or the fix is undone.
+ */
+describe("qtyAxisTick — quantity axis ticks keep their decimals", () => {
+  it("passes fractional ticks through rather than rounding them to whole units", () => {
+    expect(qtyAxisTick(0.3)).toBe("0.3");
+    expect(qtyAxisTick(0.075)).toBe("0.075");
+    expect(qtyAxisTick(1.25)).toBe("1.25");
+  });
+
+  it("trims recharts' float tails to the stored precision (numeric(12,3))", () => {
+    expect(qtyAxisTick(0.30000000000000004)).toBe("0.3");
+    expect(qtyAxisTick(0.1 + 0.2)).toBe("0.3");
+  });
+
+  it("leaves whole numbers looking whole", () => {
+    expect(qtyAxisTick(0)).toBe("0");
+    expect(qtyAxisTick(12)).toBe("12");
+  });
+
+  it("returns non-numeric input unchanged instead of printing NaN on an axis", () => {
+    expect(qtyAxisTick("auto")).toBe("auto");
   });
 });

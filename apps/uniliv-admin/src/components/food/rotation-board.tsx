@@ -34,9 +34,10 @@ import {
 } from "@/lib/food-api";
 import {
   DAY_SHORT, MEAL_SHORT, REPEAT_WITHIN_DAYS, ROTATION_WEEKS, WEEK_DAYS,
-  allPlateDishIds, cellRepeats, componentLabel, fillPlate, nearbyRepeats,
+  allPlateDishIds, anyRepeatRuleOn, cellRepeats, componentLabel, fillPlate, nearbyRepeats,
+  type RepeatRuleSet,
   plateKey, plateToItems, plateVerdict, rowsToCycleCells,
-  rowsToPlates, ruleFor, slotsOf,
+  rowsToPlates, courseSlotsOf, ruleFor, slotsOf,
   type PlateEntry, type PlateMap,
 } from "./menu-lib";
 import { GenerateFromRule } from "./generate-from-rule";
@@ -184,10 +185,20 @@ export function RotationBoard({
   const serviceTime = (meal: MealType) =>
     windows.find((w) => w.mealType === meal && !w.propertyId)?.serviceTime ?? null;
 
-  /** The two Menu Rules switches. Everything the board shows honours both. */
+  /** The Menu Rules switches. Everything the board shows honours them. */
   const flagRepeats = ruleSettings?.flagRepeatsWithin3Days !== false;
   /** The window the rule is set to — see repeatWithinDays under Menu Rules. */
   const repeatDays = ruleSettings?.repeatWithinDays ?? REPEAT_WITHIN_DAYS;
+  /* The three variety rules, resolved into one set. Each is independent: the
+     window can be off while rule 3 or 4 is on, which is why withinDays is
+     nulled rather than zeroed — 0 would still be a window, just an empty one,
+     and the distinction matters to isRepeatSource. Both new rules default OFF
+     (`=== true`), so an install that never touched them behaves as before. */
+  const repeatRules: RepeatRuleSet = React.useMemo(() => ({
+    withinDays: flagRepeats ? repeatDays : null,
+    sameWeek: ruleSettings?.flagSameWeekRepeats === true,
+    sameWeekday: ruleSettings?.flagSameWeekdayRepeats === true,
+  }), [flagRepeats, repeatDays, ruleSettings?.flagSameWeekRepeats, ruleSettings?.flagSameWeekdayRepeats]);
   const clashBlocks = ruleSettings?.ingredientClashBlocks !== false;
 
   // Repeats span the whole rotation cycle — week 4 Sunday sits one day before
@@ -239,8 +250,9 @@ export function RotationBoard({
       }));
   }, [cycleRows, kitchens, kitchenId]);
   const repeatsFor = React.useCallback(
-    (day: number, meal: MealType) => (flagRepeats ? cellRepeats(cycleCells, week, day, meal, repeatDays) : []),
-    [cycleCells, week, flagRepeats, repeatDays],
+    (day: number, meal: MealType) =>
+      (anyRepeatRuleOn(repeatRules) ? cellRepeats(cycleCells, week, day, meal, repeatRules) : []),
+    [cycleCells, week, repeatRules],
   );
 
   const dishById = React.useMemo(() => new Map(dishes.map((d) => [d.id, d])), [dishes]);
@@ -248,6 +260,14 @@ export function RotationBoard({
   const brandName = brands.find((b) => b.code === brand)?.name ?? brand;
   const slotsFor = React.useCallback(
     (meal: MealType) => slotsOf(ruleFor(rules, brand, meal, kitchenId)),
+    [rules, brand, kitchenId],
+  );
+  // The star slot is a constraint, not a course (see courseSlotsOf). Counting
+  // courses and answering "has this meal got a rule?" both have to ignore it,
+  // or switching the star rule on would make every meal claim a 1-course plate
+  // rule that nobody wrote.
+  const coursesFor = React.useCallback(
+    (meal: MealType) => courseSlotsOf(ruleFor(rules, brand, meal, kitchenId)),
     [rules, brand, kitchenId],
   );
 
@@ -331,7 +351,7 @@ export function RotationBoard({
     return { complete, warning, empty, total: MEAL_TYPES.length * WEEK_DAYS.length };
   }, [plates, dishById, slotsFor, clashBlocks, repeatsFor]);
 
-  const anyRule = MEAL_TYPES.some((m) => slotsFor(m).length > 0);
+  const anyRule = MEAL_TYPES.some((m) => coursesFor(m).length > 0);
 
   // ── whole-week actions ─────────────────────────────────────────────────────
   /** Shared refusal for the three actions that write from `plates`. */
@@ -595,13 +615,14 @@ export function RotationBoard({
 
           {MEAL_TYPES.map((meal) => {
             const slots = slotsFor(meal);
+            const courses = coursesFor(meal);
             const time = serviceTime(meal);
             return (
               <React.Fragment key={meal}>
                 <div className="flex flex-col justify-center px-1 py-2">
                   <p className="text-sm font-semibold text-primary">{MEAL_SHORT[meal]}</p>
                   <p className="text-[11px] text-muted-foreground">
-                    {time ?? (slots.length ? `${slots.length} course${slots.length === 1 ? "" : "s"}` : "no rule")}
+                    {time ?? (courses.length ? `${courses.length} course${courses.length === 1 ? "" : "s"}` : "no rule")}
                   </p>
                 </div>
                 {WEEK_DAYS.map((day) => (
@@ -610,6 +631,7 @@ export function RotationBoard({
                     cell={`${DAY_LABEL[day]} ${MEAL_SHORT[meal]}`}
                     plate={plates.get(plateKey(day, meal)) ?? []}
                     slots={slots}
+                    hasRule={courses.length > 0}
                     dishById={dishById}
                     repeats={repeatsFor(day, meal)}
                     clashBlocks={clashBlocks}
@@ -633,14 +655,14 @@ export function RotationBoard({
           brand={brand}
           brandName={brandName}
           slots={slotsFor(sel.meal)}
-          ruleMissing={slotsFor(sel.meal).length === 0}
+          ruleMissing={coursesFor(sel.meal).length === 0}
           dishes={dishes}
           dishById={dishById}
           initialPlate={plates.get(plateKey(sel.day, sel.meal)) ?? []}
           // Both switches come from Menu Rules. An empty map is how "don't flag
           // repeats" is expressed — the composer needs no separate off-switch.
-          nearby={flagRepeats
-            ? nearbyRepeats(cycleCells, week, sel.day, sel.meal, repeatDays)
+          nearby={anyRepeatRuleOn(repeatRules)
+            ? nearbyRepeats(cycleCells, week, sel.day, sel.meal, repeatRules)
             : new Map<string, string>()}
           clashBlocks={clashBlocks}
           serviceTime={serviceTime(sel.meal)}
@@ -666,12 +688,14 @@ export function RotationBoard({
 
 /** One plate on the board: what's on it, and whether it satisfies its rule. */
 function BoardCell({
-  cell, plate, slots, dishById, repeats, clashBlocks, onOpen, onGoToRules,
+  cell, plate, slots, hasRule, dishById, repeats, clashBlocks, onOpen, onGoToRules,
 }: {
   /** "Monday Lunch" — the cell's position, which its contents never state. */
   cell: string;
   plate: PlateEntry[];
   slots: ReturnType<typeof slotsOf>;
+  /** Whether the meal has a COURSE rule — the star slot alone is not one. */
+  hasRule: boolean;
   dishById: Map<string, import("@/lib/food-api").Dish>;
   /** Dishes here also served for this meal within 3 days, and where. */
   repeats: Array<{ dishId: string; where: string }>;
@@ -681,7 +705,7 @@ function BoardCell({
   /** Absent when the viewer cannot open Menu Rules — see FOOD_CATALOGUE. */
   onGoToRules?: () => void;
 }) {
-  const noRule = slots.length === 0;
+  const noRule = !hasRule;
 
   if (!plate.length) {
     // Rules before rotation: an empty cell with no rule has nothing to compose

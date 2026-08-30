@@ -66,6 +66,45 @@ export async function getDefaultCutoffTime(): Promise<string> {
   return typeof v === "string" && /^\d{1,2}:\d{2}$/.test(v) ? v : "09:00";
 }
 
+/* ── Ordering headroom ──────────────────────────────────────────────────────
+ * ONE percentage bounds every "you may order above the derived number" check:
+ *
+ *   • residents on a meal   ≤ occupancy      + headroom
+ *   • people on one dish    ≤ the meal total + headroom
+ *   • kilograms on one dish ≤ what the portion rule derives + headroom
+ *
+ * They are deliberately not three settings. The three limits multiply through
+ * the same order — a dish's kg ceiling is computed FROM its people count, which
+ * is computed from the meal's headcount — so a lone raised limit is swallowed by
+ * whichever of the other two is still tight, and the setting reads as broken.
+ * Was a hardcoded 20% (ORDER_QTY_TOLERANCE / DISH_PERSONS_TOLERANCE / the 1.2 in
+ * residentsCapForProperty); now Ops Excellence's to set.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Headroom (%) allowed above any derived headcount or quantity when ordering. */
+export const FOOD_ORDER_HEADROOM_KEY = "FOOD_ORDER_HEADROOM_PCT";
+/** Default headroom: a meal may be ordered for up to DOUBLE its headcount. */
+export const FOOD_ORDER_HEADROOM_DEFAULT_PCT = 100;
+/** Ceiling on the setting itself. 1000% is 11× the headcount — past that the cap
+ *  has stopped being a cap, and a typo'd 10000 should not become policy. */
+export const FOOD_ORDER_HEADROOM_MAX_PCT = 1000;
+
+/** Configured ordering headroom as a percentage (default 100). Out-of-range or
+ *  malformed rows fall back to the default rather than removing the bound. */
+export async function getOrderHeadroomPct(): Promise<number> {
+  const raw = Number(
+    await getSystemConfigValue<number>(FOOD_ORDER_HEADROOM_KEY, FOOD_ORDER_HEADROOM_DEFAULT_PCT),
+  );
+  return Number.isFinite(raw) && raw >= 0 && raw <= FOOD_ORDER_HEADROOM_MAX_PCT
+    ? raw
+    : FOOD_ORDER_HEADROOM_DEFAULT_PCT;
+}
+
+/** The same setting as a multiplier — 100% headroom → 2.0, 20% → 1.2. */
+export async function getOrderHeadroomMultiplier(): Promise<number> {
+  return 1 + (await getOrderHeadroomPct()) / 100;
+}
+
 /* ── Menu rule switches (Service Set → Menu Rules) ──────────────────────────
  * Both default to ON so an environment with no rows behaves exactly as it did
  * when the rules were hard-coded — turning a rule off has to be a deliberate,
@@ -117,6 +156,71 @@ export async function isRepeatFlagRuleOn(): Promise<boolean> {
   return getSystemConfigBool(FOOD_RULE_REPEAT_FLAG_KEY, true);
 }
 
+/** Require exactly one star dish on every meal's plate. */
+export const FOOD_RULE_STAR_DISH_KEY = "food_rule_star_dish_required";
+
+/**
+ * Is the star-dish requirement switched on? Defaults OFF — and that is the one
+ * place this rule differs from its two neighbours.
+ *
+ * They default ON because they were hard-coded before they were switches, so ON
+ * *is* the historical behaviour. This rule is new: defaulting it ON would make
+ * every plate already in the rotation invalid the moment the code ships, with no
+ * star dish in the catalogue to fix them with. It has to be opted into.
+ */
+export async function isStarDishRuleOn(): Promise<boolean> {
+  return getSystemConfigBool(FOOD_RULE_STAR_DISH_KEY, false);
+}
+
+/** Block a day carrying more dishes of one ingredient than its own limit. */
+export const FOOD_RULE_INGREDIENT_DAY_CAP_KEY = "food_rule_ingredient_day_cap";
+
+/**
+ * Is the per-ingredient daily cap switched on? Defaults OFF — new rule, and it
+ * is inert anyway until someone sets a `maxPerDay` on an ingredient.
+ *
+ * Note this is the ONLY switch here; the numbers live on the ingredients. See
+ * ingredientsTable.maxPerDay for why the limit cannot be one global figure.
+ */
+export async function isIngredientDayCapRuleOn(): Promise<boolean> {
+  return getSystemConfigBool(FOOD_RULE_INGREDIENT_DAY_CAP_KEY, false);
+}
+
+/* ── Variety flags (rules 3 and 4) ──────────────────────────────────────────
+ * Both are HINTS. Nothing on the save path reads them — like flagRepeats, they
+ * only draw a marker while the menu is being built, and the kitchen decides.
+ *
+ * Both are scoped PER MEAL, matching flagRepeats: `cycleKey` includes mealType,
+ * so Monday lunch is compared with other lunches and never with dinners. Staples
+ * (rice, dal, roti, curd) appear at several meals every day by design, and an
+ * any-meal rule would flag them constantly and teach people to ignore the
+ * marker. If the client wants cross-meal comparison it is a one-line predicate
+ * change in menu-lib.ts (drop `meal` from the cell key) — but it should be a
+ * deliberate choice, not a side effect.
+ *
+ * Both default OFF: they are new, and a variety hint that fires everywhere on
+ * day one is noise rather than a rule.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Rule 3 — flag a dish served twice within one rotation week. */
+export const FOOD_RULE_SAME_WEEK_KEY = "food_rule_same_week_repeat";
+/** Rule 4 — flag a dish served on the same weekday in another rotation week. */
+export const FOOD_RULE_SAME_WEEKDAY_KEY = "food_rule_same_weekday_repeat";
+
+export async function isSameWeekRepeatRuleOn(): Promise<boolean> {
+  return getSystemConfigBool(FOOD_RULE_SAME_WEEK_KEY, false);
+}
+export async function isSameWeekdayRepeatRuleOn(): Promise<boolean> {
+  return getSystemConfigBool(FOOD_RULE_SAME_WEEKDAY_KEY, false);
+}
+
+/** Does the catalogue hold at least one active star dish to satisfy the rule? */
+export async function hasAnyStarDish(): Promise<boolean> {
+  const [row] = await db.select({ id: dishesTable.id }).from(dishesTable)
+    .where(and(eq(dishesTable.isStarDish, true), eq(dishesTable.isActive, true))).limit(1);
+  return !!row;
+}
+
 /**
  * Number from system_config, tolerating the same wrapped-object rows
  * getSystemConfigBool does. A value that is not a usable number falls back
@@ -145,6 +249,13 @@ export interface MenuRuleSettings {
   ingredientClashBlocks: boolean;
   flagRepeats: boolean;
   repeatWithinDays: number;
+  starDishRequired: boolean;
+  /** Rule 3 — flag a dish served twice within one rotation week. */
+  flagSameWeekRepeats: boolean;
+  /** Rule 4 — flag a dish on the same weekday in another rotation week. */
+  flagSameWeekdayRepeats: boolean;
+  /** Enforce each ingredient's own per-day dish limit across the whole day. */
+  ingredientDayCapBlocks: boolean;
 }
 
 /**
@@ -165,6 +276,10 @@ export async function resolveMenuRuleSettings(
     ingredientClashBlocks: await isIngredientClashRuleOn(),
     flagRepeats: await isRepeatFlagRuleOn(),
     repeatWithinDays: await getRepeatWindowDays(),
+    starDishRequired: await isStarDishRuleOn(),
+    flagSameWeekRepeats: await isSameWeekRepeatRuleOn(),
+    flagSameWeekdayRepeats: await isSameWeekdayRepeatRuleOn(),
+    ingredientDayCapBlocks: await isIngredientDayCapRuleOn(),
   };
   if (!kitchenId && !propertyId) return settings;
 
@@ -182,6 +297,10 @@ export async function resolveMenuRuleSettings(
     if (r.ingredientClashBlocks !== null) settings.ingredientClashBlocks = r.ingredientClashBlocks;
     if (r.flagRepeats !== null) settings.flagRepeats = r.flagRepeats;
     if (r.repeatWithinDays !== null) settings.repeatWithinDays = clampRepeatDays(r.repeatWithinDays);
+    if (r.starDishRequired !== null) settings.starDishRequired = r.starDishRequired;
+    if (r.flagSameWeekRepeats !== null) settings.flagSameWeekRepeats = r.flagSameWeekRepeats;
+    if (r.flagSameWeekdayRepeats !== null) settings.flagSameWeekdayRepeats = r.flagSameWeekdayRepeats;
+    if (r.ingredientDayCapBlocks !== null) settings.ingredientDayCapBlocks = r.ingredientDayCapBlocks;
   }
   return settings;
 }
@@ -1038,6 +1157,9 @@ export async function resolveOrderPreview(
 export interface CompositionSlot {
   id: string; slotLabel: string | null; component: string | null; preparation: string | null;
   minCount: number; maxCount: number | null; sortOrder: number;
+  /** Matches star dishes only, and counts across the whole plate — see the
+   *  is_star column comment for why it does not consume like the others. */
+  isStar?: boolean;
 }
 export interface CompositionRule {
   id: string; brand: string; mealType: string; kitchenId: string | null;
@@ -1087,41 +1209,134 @@ export async function resolveCompositionRule(
   )[0]!;
   const slots = await db.select().from(menuCompositionSlotTable)
     .where(eq(menuCompositionSlotTable.ruleId, rule.id)).orderBy(menuCompositionSlotTable.sortOrder);
-  return {
+  return withStarSlot({
     id: rule.id, brand: rule.brand, mealType: rule.mealType, kitchenId: rule.kitchenId,
     propertyId: rule.propertyId, name: rule.name,
-    slots: slots.map((s) => ({ id: s.id, slotLabel: s.slotLabel, component: s.component, preparation: s.preparation, minCount: s.minCount, maxCount: s.maxCount, sortOrder: s.sortOrder })),
+    slots: slots.map((s) => ({ id: s.id, slotLabel: s.slotLabel, component: s.component, preparation: s.preparation, minCount: s.minCount, maxCount: s.maxCount, sortOrder: s.sortOrder, isStar: s.isStar })),
+  }, kitchenId, propertyId);
+}
+
+/** The id every synthesised star slot carries, so the UI can recognise it as
+ *  rule-owned and not offer a delete that would have nothing to delete. */
+export const STAR_SLOT_ID = "__star__";
+
+/** The synthesised star slot, shaped like a stored row so the composition-rules
+ *  read can splice it into a rule's slot list. `ruleId` is the rule it is being
+ *  attached to; nothing about it is persisted. */
+export const starSlotRow = (ruleId: string) => ({
+  id: STAR_SLOT_ID, ruleId, slotLabel: "Star dish", component: null, preparation: null,
+  isStar: true, minCount: 1, maxCount: 1, sortOrder: -1,
+  createdAt: null, updatedAt: null,
+});
+
+/**
+ * Give a rule its star slot when the star-dish rule is on for this scope.
+ *
+ * The slot is SYNTHESISED at resolve time rather than written into every
+ * composition rule when the switch flips. Materialising it would mean a mass
+ * write across every brand × meal × kitchen × property rule, and — worse — every
+ * rule created *after* the switch went on would silently lack the slot, so
+ * "star dish required" would quietly not apply to it. Synthesising makes the
+ * rule unconditionally true of every meal, which is what "star dish should be
+ * for every meal" asks for, and turning the switch off removes it everywhere at
+ * once with nothing left behind to clean up.
+ *
+ * A rule that already defines its own star slot keeps it — an explicitly
+ * configured slot (a custom label, say) beats the default one.
+ */
+async function withStarSlot(
+  rule: CompositionRule, kitchenId: string | null, propertyId: string | null,
+): Promise<CompositionRule> {
+  const s = await resolveMenuRuleSettings(kitchenId, propertyId);
+  if (!s.starDishRequired || rule.slots.some((sl) => sl.isStar)) return rule;
+  return {
+    ...rule,
+    slots: [
+      // sortOrder -1: the star is the dish the meal is built around, so it
+      // leads the plate in every editor that renders slots in order.
+      { id: STAR_SLOT_ID, slotLabel: "Star dish", component: null, preparation: null, minCount: 1, maxCount: 1, sortOrder: -1, isStar: true },
+      ...rule.slots,
+    ],
   };
+}
+
+/**
+ * The star requirement for a meal that has NO composition rule at all.
+ *
+ * resolveCompositionRule returns null there, and validateMenuAgainstRule treats
+ * a null rule as "nothing to check" — so without this a meal with no rule would
+ * be the one meal the star requirement did not reach, which is exactly the gap
+ * "star dish should be for every meal" is about.
+ */
+export function starOnlyRule(brand: string, mealType: string): CompositionRule {
+  return {
+    id: STAR_SLOT_ID, brand, mealType, kitchenId: null, propertyId: null, name: "Star dish",
+    slots: [{ id: STAR_SLOT_ID, slotLabel: "Star dish", component: null, preparation: null, minCount: 1, maxCount: 1, sortOrder: -1, isStar: true }],
+  };
+}
+
+/**
+ * The rule a plate is validated against, star requirement included: the scope's
+ * own rule with a star slot bolted on, or a star-only rule when the meal has no
+ * composition rule of its own. Null only when there is genuinely nothing to
+ * enforce. Every caller that validates a plate should go through this rather
+ * than resolveCompositionRule, or it will miss the ruleless-meal case above.
+ */
+export async function resolveRuleForValidation(
+  brand: string, mealType: string, kitchenId: string | null, propertyId: string | null = null,
+): Promise<CompositionRule | null> {
+  const rule = await resolveCompositionRule(brand, mealType, kitchenId, propertyId);
+  if (rule) return rule;
+  const { starDishRequired } = await resolveMenuRuleSettings(kitchenId, propertyId);
+  return starDishRequired ? starOnlyRule(brand, mealType) : null;
 }
 
 export interface SlotValidation {
   slotId: string; slotLabel: string | null; component: string | null; preparation: string | null;
   minCount: number; maxCount: number | null; count: number; matchedDishIds: string[];
   status: "OK" | "MISSING" | "UNDER" | "OVER";
+  /** The star slot, so the editor can render it distinctly and word its own copy. */
+  isStar?: boolean;
 }
 export interface CompositionValidation {
   ruleId: string | null; ruleName: string | null;
   slots: SlotValidation[]; unmatchedDishIds: string[]; isComplete: boolean;
 }
 
-const dishMatchesSlot = (d: { component: string; preparations: string[] }, slot: CompositionSlot): boolean => {
+type ValidatableDish = { dishId: string; component: string; preparations: string[]; isStarDish?: boolean };
+
+const dishMatchesSlot = (d: ValidatableDish, slot: CompositionSlot): boolean => {
+  if (slot.isStar) return !!d.isStarDish;
   const compOk = !slot.component || d.component === slot.component;
   const prepOk = !slot.preparation || (d.preparations ?? []).includes(slot.preparation);
   return compOk && prepOk;
 };
 
-/** Validates a set of chosen dishes against a composition rule (greedy match, each dish used once). */
+/**
+ * Validates a set of chosen dishes against a composition rule (greedy match,
+ * each dish used once) — EXCEPT star slots, which count across the whole plate
+ * and consume nothing. "Exactly one star dish on this plate" is a property of
+ * the plate, not an exclusive assignment: under greedy matching a star Paneer
+ * would be claimed by an earlier "1 SABZI" slot and the star slot would read
+ * MISSING with the star dish sitting right there on the plate.
+ *
+ * Non-consuming also means a star dish still fills the ordinary slot it belongs
+ * in, which is the intent — the star is a badge on a dish the meal already
+ * serves, not an extra dish bolted onto the plate.
+ */
 export function validateMenuAgainstRule(
   rule: CompositionRule | null,
-  dishes: { dishId: string; component: string; preparations: string[] }[],
+  dishes: ValidatableDish[],
 ): CompositionValidation {
   if (!rule) return { ruleId: null, ruleName: null, slots: [], unmatchedDishIds: dishes.map((d) => d.dishId), isComplete: true };
   const consumed = new Set<string>();
-  const slots: SlotValidation[] = rule.slots.map((slot) => {
+  const evaluate = (slot: CompositionSlot): SlotValidation => {
     const matched: string[] = [];
     for (const d of dishes) {
-      if (consumed.has(d.dishId)) continue;
-      if (dishMatchesSlot(d, slot)) { matched.push(d.dishId); consumed.add(d.dishId); }
+      if (!slot.isStar && consumed.has(d.dishId)) continue;
+      if (!dishMatchesSlot(d, slot)) continue;
+      matched.push(d.dishId);
+      if (!slot.isStar) consumed.add(d.dishId);
     }
     const count = matched.length;
     const status: SlotValidation["status"] =
@@ -1129,19 +1344,31 @@ export function validateMenuAgainstRule(
       : count < slot.minCount ? "UNDER"
       : slot.maxCount != null && count > slot.maxCount ? "OVER"
       : "OK";
-    return { slotId: slot.id, slotLabel: slot.slotLabel, component: slot.component, preparation: slot.preparation, minCount: slot.minCount, maxCount: slot.maxCount, count, matchedDishIds: matched, status };
-  });
-  const unmatchedDishIds = dishes.filter((d) => !consumed.has(d.dishId)).map((d) => d.dishId);
+    return { slotId: slot.id, slotLabel: slot.slotLabel, component: slot.component, preparation: slot.preparation, minCount: slot.minCount, maxCount: slot.maxCount, count, matchedDishIds: matched, status, isStar: !!slot.isStar };
+  };
+  // Consuming slots first so a star slot's non-consumption cannot change which
+  // dish an ordinary slot ends up with — the star pass is pure observation.
+  const byId = new Map<string, SlotValidation>();
+  for (const slot of rule.slots) if (!slot.isStar) byId.set(slot.id, evaluate(slot));
+  for (const slot of rule.slots) if (slot.isStar) byId.set(slot.id, evaluate(slot));
+  const slots = rule.slots.map((s) => byId.get(s.id)!);
+  // A star dish counted only by the star slot is NOT unmatched — it is on the
+  // plate on purpose. Only dishes no consuming slot took are unplaced.
+  const unmatchedDishIds = dishes
+    .filter((d) => !consumed.has(d.dishId) && !(d.isStarDish && rule.slots.some((s) => s.isStar)))
+    .map((d) => d.dishId);
   const isComplete = slots.every((s) => s.status === "OK");
   return { ruleId: rule.id, ruleName: rule.name, slots, unmatchedDishIds, isComplete };
 }
 
-/** Loads chosen dishes' component + preparations for validation. */
-export async function loadDishesForValidation(dishIds: string[]): Promise<{ dishId: string; component: string; preparations: string[] }[]> {
+/** Loads chosen dishes' component + preparations + star flag for validation. */
+export async function loadDishesForValidation(dishIds: string[]): Promise<ValidatableDish[]> {
   if (!dishIds.length) return [];
-  const rows = await db.select({ id: dishesTable.id, component: dishesTable.component, preparations: dishesTable.preparations })
-    .from(dishesTable).where(inArray(dishesTable.id, dishIds));
-  return rows.map((r) => ({ dishId: r.id, component: r.component, preparations: r.preparations ?? [] }));
+  const rows = await db.select({
+    id: dishesTable.id, component: dishesTable.component,
+    preparations: dishesTable.preparations, isStarDish: dishesTable.isStarDish,
+  }).from(dishesTable).where(inArray(dishesTable.id, dishIds));
+  return rows.map((r) => ({ dishId: r.id, component: r.component, preparations: r.preparations ?? [], isStarDish: r.isStarDish }));
 }
 
 /** Candidate dishes to fill a slot (brand-tagged, matching component/prep), newest first. */
@@ -1152,6 +1379,9 @@ export async function suggestDishesForSlot(
     eq(dishesTable.isActive, true),
     sql`${dishesTable.brands} @> ARRAY[${brand}]::text[]`,
   ] as any[];
+  // A star slot is filled from the star pool, not from everything: it carries no
+  // component/preparation, so without this it would suggest the whole catalogue.
+  if (slot.isStar) conds.push(eq(dishesTable.isStarDish, true));
   if (slot.component) conds.push(eq(dishesTable.component, slot.component as any));
   if (slot.preparation) conds.push(sql`${dishesTable.preparations} @> ARRAY[${slot.preparation}]::text[]`);
   if (excludeDishIds.length) conds.push(sql`${dishesTable.id} <> ALL(ARRAY[${sql.join(excludeDishIds.map((d) => sql`${d}`), sql`, `)}]::text[])`);
@@ -1184,7 +1414,8 @@ export interface SharedIngredient { ingredientId: string; name: string; dishIds:
 
 /** A single machine-readable rule violation the frontend can hard-block on. */
 export interface CompositionViolation {
-  type: "SLOT_MISSING" | "SLOT_UNDER" | "SLOT_OVER" | "SHARED_INGREDIENT";
+  type: "SLOT_MISSING" | "SLOT_UNDER" | "SLOT_OVER" | "SHARED_INGREDIENT"
+    | "STAR_DISH_MISSING" | "STAR_DISH_MULTIPLE";
   message: string;
   dishIds: string[];
 }
@@ -1203,6 +1434,17 @@ export function buildCompositionVerdict(
   const violations: CompositionViolation[] = [];
   for (const s of validation.slots) {
     const label = s.slotLabel || s.component || "slot";
+    // The star slot gets its own wording: "Missing a dish for Star dish (needs
+    // 1)" describes a slot to fill, when what the user has to do is mark one of
+    // these dishes as the star — a different action in a different screen.
+    if (s.isStar) {
+      if (s.status === "MISSING" || s.status === "UNDER") {
+        violations.push({ type: "STAR_DISH_MISSING", message: "This meal has no star dish — exactly one dish on the plate must be a star dish.", dishIds: [] });
+      } else if (s.status === "OVER") {
+        violations.push({ type: "STAR_DISH_MULTIPLE", message: `This meal has ${s.count} star dishes — only one is allowed.`, dishIds: s.matchedDishIds });
+      }
+      continue;
+    }
     if (s.status === "MISSING") {
       violations.push({ type: "SLOT_MISSING", message: `Missing a dish for "${label}" (needs ${s.minCount}).`, dishIds: [] });
     } else if (s.status === "UNDER") {
@@ -1350,6 +1592,103 @@ export async function dishesMissingPortionRule(
   const named = await db.select({ name: dishesTable.name })
     .from(dishesTable).where(inArray(dishesTable.id, missing));
   return named.map((n) => n.name);
+}
+
+/** One ingredient over its daily allowance, and the dishes that carry it. */
+export interface IngredientDayCapBreach {
+  ingredientId: string; name: string; maxPerDay: number; count: number; dishNames: string[];
+}
+
+/** The rotation cell a write is aimed at — the day the cap is counted over. */
+export interface RotationCell {
+  kitchenId: string; brand: string; rotationWeek: number; dayOfWeek: number; mealType: string;
+}
+
+/**
+ * The per-ingredient daily cap ("aloo dishes at most once a day").
+ *
+ * The distinguishing feature versus the shared-ingredient rule next door is
+ * SCOPE: that one asks about a single plate, this one counts across every meal
+ * of the same (kitchen, brand, rotation week, day). Aloo at lunch AND aloo at
+ * dinner is exactly the case it exists to catch, and no per-plate check can see
+ * it.
+ *
+ * The other meals are read from the rotation; the meal being written is taken
+ * from `incomingDishIds` instead, because the write REPLACES that cell and the
+ * stored rows for it are about to disappear. `alsoCounting` lets a caller add
+ * cells it is writing in the same request but has not committed yet — without
+ * it, a bulk import that puts aloo at both lunch and dinner of one day would
+ * check each against a database that still knows nothing about the other.
+ *
+ * Occurrences are counted, not distinct dishes: the same aloo dish served at
+ * lunch and at dinner is aloo twice that day, which is the thing being limited.
+ *
+ * Returns a 422 payload, or null when the day is fine — nothing capped, no
+ * breach, or the rule switched off.
+ */
+export async function ingredientDayCapError(
+  cell: RotationCell,
+  incomingDishIds: string[],
+  alsoCounting: string[] = [],
+): Promise<{ error: string; details: Record<string, unknown> } | null> {
+  if (!(await isIngredientDayCapRuleOn())) return null;
+  // Cheap exit before any rotation read: with no ingredient carrying a limit
+  // there is nothing this rule can say, however full the day is.
+  const capped = await db.select({
+    id: ingredientsTable.id, name: ingredientsTable.name, maxPerDay: ingredientsTable.maxPerDay,
+  }).from(ingredientsTable).where(and(
+    eq(ingredientsTable.isActive, true),
+    sql`${ingredientsTable.maxPerDay} is not null`,
+  ));
+  if (!capped.length) return null;
+
+  const others = await db.select({ dishId: foodMenuRotationTable.dishId })
+    .from(foodMenuRotationTable).where(and(
+      eq(foodMenuRotationTable.kitchenId, cell.kitchenId),
+      eq(foodMenuRotationTable.brand, cell.brand as never),
+      eq(foodMenuRotationTable.rotationWeek, cell.rotationWeek),
+      eq(foodMenuRotationTable.dayOfWeek, cell.dayOfWeek),
+      // Every meal of the day EXCEPT the one being replaced.
+      sql`${foodMenuRotationTable.mealType} <> ${cell.mealType}`,
+    ));
+  const dayDishIds = [...others.map((r) => r.dishId), ...incomingDishIds, ...alsoCounting];
+  if (!dayDishIds.length) return null;
+
+  const links = await db.select({
+    dishId: dishIngredientsTable.dishId, ingredientId: dishIngredientsTable.ingredientId,
+    dishName: dishesTable.name,
+  }).from(dishIngredientsTable)
+    .leftJoin(dishesTable, eq(dishIngredientsTable.dishId, dishesTable.id))
+    .where(and(
+      inArray(dishIngredientsTable.dishId, [...new Set(dayDishIds)]),
+      inArray(dishIngredientsTable.ingredientId, capped.map((c) => c.id)),
+    ));
+  const carriers = new Map<string, Map<string, string>>(); // ingredientId → dishId → name
+  for (const l of links) {
+    const m = carriers.get(l.ingredientId) ?? new Map<string, string>();
+    m.set(l.dishId, l.dishName ?? l.dishId);
+    carriers.set(l.ingredientId, m);
+  }
+
+  const breaches: IngredientDayCapBreach[] = [];
+  for (const c of capped) {
+    const byDish = carriers.get(c.id);
+    if (!byDish) continue;
+    // Occurrences, so a dish appearing at two meals counts twice.
+    const count = dayDishIds.filter((id) => byDish.has(id)).length;
+    if (count > c.maxPerDay!) {
+      breaches.push({
+        ingredientId: c.id, name: c.name, maxPerDay: c.maxPerDay!, count,
+        dishNames: [...new Set(dayDishIds.filter((id) => byDish.has(id)).map((id) => byDish.get(id)!))],
+      });
+    }
+  }
+  if (!breaches.length) return null;
+  const first = breaches[0]!;
+  return {
+    error: `${first.name} would be served in ${first.count} dishes on this day (${first.dishNames.join(", ")}) — the limit is ${first.maxPerDay} per day. Swap one, or change the limit on the ingredient.`,
+    details: { ingredientDayCap: breaches },
+  };
 }
 
 /** Every dish a slot payload would put on the menu — the items and their sides. */

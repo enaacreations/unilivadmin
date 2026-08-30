@@ -23,7 +23,7 @@ import { GlobalPropertyScopeBanner } from "@/components/property-scope-banner";
 import { useAppStore } from "@/lib/store";
 import { usePermissions } from "@/lib/use-permissions";
 import {
-  foodApi, foodKeys,
+  foodApi, foodKeys, qtyAxisTick,
   type HomeAnalytics, type MyPropertyCard, type RevenueData, type FoodLookups,
 } from "@/lib/food-api";
 
@@ -172,8 +172,15 @@ export default function UnitLeadHome() {
   const orderDelays = home?.orderDelays ?? [];
   const cmp = home?.peopleComparison;
 
-  const topWasteChartData = (home?.topWasteItems ?? [])
-    .slice(0, 8)
+  // The server now sends EVERY dish with recorded waste, ranked (it used to send
+  // only the top ~20% and the card called itself "Top 20%", which read as "these
+  // are all the items"). The chart still draws a slice — a bar per dish does not
+  // fit — but the slice is the CHART's, it is stated on the card, and the number
+  // left out is known rather than invisible.
+  const wasteItemsAll = home?.topWasteItems ?? [];
+  const WASTE_ITEMS_SHOWN = 10;
+  const topWasteChartData = wasteItemsAll
+    .slice(0, WASTE_ITEMS_SHOWN)
     // This page reads /home-analytics — the ORDERED basis. The waste-analytics
     // page's number is of-received; the two are different metrics and must not
     // both render as a bare "Waste %".
@@ -394,7 +401,7 @@ export default function UnitLeadHome() {
         </CardContent>
       </Card>
 
-      {/* b) Wastage trend + c) Top 20% wastage items */}
+      {/* b) Wastage trend + c) wastage by item */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
@@ -418,7 +425,8 @@ export default function UnitLeadHome() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="date" tickFormatter={dayTickFmt} tick={{ fontSize: 11 }} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                  {/* Quantity axis — decimals are the norm here, see qtyAxisTick. */}
+                  <YAxis tickFormatter={qtyAxisTick} tick={{ fontSize: 11 }} />
                   <Tooltip labelFormatter={dayTickFmt} />
                   {wasteUnits.length > 1 && <Legend />}
                   {wasteUnits.map((u, i) => (
@@ -437,7 +445,12 @@ export default function UnitLeadHome() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
-              <Trash2 className="w-4 h-4 text-accent" /> Top 20% Wastage Items
+              <Trash2 className="w-4 h-4 text-accent" /> Wastage by Item
+              {wasteItemsAll.length > WASTE_ITEMS_SHOWN && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  top {WASTE_ITEMS_SHOWN} of {wasteItemsAll.length}
+                </span>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent style={{ height: 300 }}>
@@ -449,7 +462,7 @@ export default function UnitLeadHome() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={topWasteChartData} layout="vertical" margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                  <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                  <XAxis type="number" tickFormatter={qtyAxisTick} tick={{ fontSize: 11 }} />
                   <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11 }} interval={0} />
                   <Tooltip
                     formatter={(val: any, _n: any, item: any) => [

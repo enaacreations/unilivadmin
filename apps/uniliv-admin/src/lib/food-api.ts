@@ -219,6 +219,19 @@ export interface OnTimeReport {
 }
 // O16 — global on-time tolerance (minutes after configured service time).
 export interface OnTimeTolerance { minutes: number }
+
+/** Global ordering headroom — how far above the derived headcount/quantity an
+ *  order may go. `pct` is the setting (100 = up to double); `multiplier` is the
+ *  same number pre-applied (1 + pct/100) so callers never re-derive it. */
+export interface OrderHeadroom {
+  pct: number;
+  multiplier: number;
+  defaultPct: number;
+  maxPct: number;
+}
+/** Fallback while the setting is in flight or the user can't read it — matches
+ *  FOOD_ORDER_HEADROOM_DEFAULT_PCT on the server. */
+export const DEFAULT_ORDER_HEADROOM_MULTIPLIER = 2;
 // O17 — ordered-vs-received variance per service-day (bar chart, filterable by
 // meal). One row per (date, unit), NOT per date: a day with both KG and PLATE
 // lines emits two rows, so anything that charts or counts these must collapse
@@ -247,13 +260,24 @@ export interface Dish {
    */
   isQtyLocked?: boolean;
   lockedPersons?: number | null;
+  /**
+   * A star dish — one of the dishes the brand wants showcased. Any number of
+   * dishes may carry it: it marks a POOL. The "only one" rule applies to the
+   * PLATE — when the star-dish menu rule is on, each meal's rotation plate must
+   * contain exactly one dish from this pool.
+   */
+  isStarDish?: boolean;
   ingredients?: DishIngredientRow[];
   /** Dishes configured as possible accompaniments. Present on list + detail. */
   sideDishIds?: string[];
   /** Detail view only — the same options joined to name/component. */
   sideOptions?: DishSideOptionRow[];
 }
-export interface Ingredient { id: string; name: string; unit: string; isActive: boolean }
+export interface Ingredient {
+  id: string; name: string; unit: string; isActive: boolean;
+  /** Dishes carrying this ingredient allowed per DAY. Null = no limit. */
+  maxPerDay?: number | null;
+}
 export interface MenuRotationRow {
   id: string; brand: FoodBrand; kitchenId: string | null; kitchenName?: string | null;
   rotationWeek: number; dayOfWeek: number;
@@ -384,6 +408,32 @@ export interface MenuRuleSettings {
    */
   repeatWithinDays: number;
   /**
+   * Require exactly one star dish on every meal's plate. Defaults OFF — unlike
+   * its two neighbours, which default ON because they were hard-coded before
+   * they were switches. Turning this on when no star dish exists is refused by
+   * the server (422, details.reason === "NO_STAR_DISH").
+   */
+  starDishRequired: boolean;
+  /**
+   * Rule 3 — flag a dish served twice within one rotation week.
+   * Rule 4 — flag a dish on the same weekday in another rotation week.
+   *
+   * Both are HINTS: nothing on the save path reads them, exactly like
+   * flagRepeatsWithin3Days. Both default OFF, and both are scoped per meal.
+   */
+  flagSameWeekRepeats: boolean;
+  flagSameWeekdayRepeats: boolean;
+  /**
+   * Rule 2 — enforce each ingredient's own `maxPerDay` across every meal of a
+   * day. BLOCKS on save, like ingredientClashBlocks; the limits themselves live
+   * on the ingredients, not here. Defaults OFF, and is inert until an
+   * ingredient actually carries a limit.
+   */
+  ingredientDayCapBlocks: boolean;
+  /** Whether the catalogue holds a star dish at all — what the editor needs to
+   *  explain a refused toggle without a second round-trip. */
+  hasStarDish?: boolean;
+  /**
    * Which scope the returned values were resolved at. Present on reads/writes
    * that named a propertyId or kitchenId; the values themselves are always the
    * RESOLVED answer (property → kitchen → org default), never the raw row.
@@ -427,10 +477,14 @@ export interface WasteAnalyticsData {
   range: { from: string; to: string };
   granularity: WasteGranularity;
   summary: {
-    byUnit: { unit: string | null; totalWasted: number; totalReceived: number; totalOrdered: number; wastePctOfReceived: number }[];
+    /** `wastePctOfReceived` is computed on CONFIRMED lines only — numerator and
+     *  denominator share one basis. `wastedOnUnconfirmed` is the waste logged
+     *  against trip-delivered lines (receivedQty NULL), which the percentage
+     *  cannot describe and which must therefore be shown next to it. */
+    byUnit: { unit: string | null; totalWasted: number; totalReceived: number; totalOrdered: number; wastePctOfReceived: number; wastedOnUnconfirmed: number }[];
     ordersWithWaste: number;
   };
-  byProperty: { propertyId: string; name: string; city: string | null; cluster: string | null; unit: string | null; wastedQty: number; receivedQty: number; wastePctOfReceived: number }[];
+  byProperty: { propertyId: string; name: string; city: string | null; cluster: string | null; unit: string | null; wastedQty: number; receivedQty: number; wastePctOfReceived: number; wastedOnUnconfirmed: number }[];
   byDish: { dishId: string | null; name: string; unit: string | null; wastedQty: number }[];
   byMealType: { mealType: MealType; unit: string | null; wastedQty: number }[];
   byMenu: { brand: string; unit: string | null; wastedQty: number }[];
@@ -519,7 +573,20 @@ export interface OrderPreviewItem {
 export interface OrderPreviewMeal { mealType: MealType; label: string; items: OrderPreviewItem[] }
 
 // ─── Menu-composition rule engine ─────────────────────────────────────────────
-export interface CompositionSlot { id?: string; slotLabel: string | null; component: string | null; preparation: string | null; minCount: number; maxCount: number | null; sortOrder: number }
+export interface CompositionSlot {
+  id?: string; slotLabel: string | null; component: string | null; preparation: string | null;
+  minCount: number; maxCount: number | null; sortOrder: number;
+  /**
+   * The star slot. Synthesised by the server from the star-dish menu rule rather
+   * than stored, so it carries the sentinel id STAR_SLOT_ID and must never be
+   * sent back in a rule save — it would outlive the switch being turned off.
+   * Matches star dishes only, and counts across the whole plate instead of
+   * claiming a dish the way the other slots do.
+   */
+  isStar?: boolean;
+}
+/** The id the server gives every synthesised star slot (STAR_SLOT_ID). */
+export const STAR_SLOT_ID = "__star__";
 export interface CompositionRule { id: string; brand: string; mealType: MealType; kitchenId: string | null; propertyId: string | null; name: string | null; isActive: boolean; slots: CompositionSlot[] }
 export interface SlotValidation { slotId: string; slotLabel: string | null; component: string | null; preparation: string | null; minCount: number; maxCount: number | null; count: number; matchedDishIds: string[]; status: "OK" | "MISSING" | "UNDER" | "OVER" }
 export interface SharedIngredient { ingredientId: string; name: string; dishIds: string[] }
@@ -597,6 +664,7 @@ export const foodKeys = {
   // O15/O16/O17 — on-time report, tolerance config, variance-by-day.
   reportsOnTime: (p: Record<string, unknown>) => ["food", "reports-ontime", p] as const,
   ontimeTolerance: () => ["food", "ontime-tolerance"] as const,
+  orderHeadroom: () => ["food", "order-headroom"] as const,
   reportsVarianceByDay: (p: Record<string, unknown>) => ["food", "reports-variance-by-day", p] as const,
   dishes: (p: Record<string, unknown>) => ["food", "dishes", p] as const,
   dish: (id: string) => ["food", "dish", id] as const,
@@ -676,6 +744,12 @@ export const foodApi = {
     apiFetch<Envelope<OnTimeTolerance>>(`/food/settings/ontime-tolerance`).then((r) => r.data),
   updateOntimeTolerance: (minutes: number | string) =>
     apiFetch<Envelope<OnTimeTolerance>>(`/food/settings/ontime-tolerance`, { method: "PUT", body: JSON.stringify({ minutes }) }).then((r) => r.data),
+  // Global ordering headroom (read: anyone who can place/see orders; write:
+  // SUPER_ADMIN + OPS_EXCELLENCE).
+  orderHeadroom: () =>
+    apiFetch<Envelope<OrderHeadroom>>(`/food/settings/order-headroom`).then((r) => r.data),
+  updateOrderHeadroom: (pct: number | string) =>
+    apiFetch<Envelope<OrderHeadroom>>(`/food/settings/order-headroom`, { method: "PUT", body: JSON.stringify({ pct }) }).then((r) => r.data),
   reportsExportUrl: (p: Record<string, unknown> = {}) => `/api/food/reports/export${qs(p)}`,
 
   // Orders
@@ -1062,6 +1136,22 @@ export const groupLabel = (batchNumber: string): string => batchNumber.replace(/
 /** True for units ordered in fractional steps (0.5) with 1-decimal display.
  *  Unit values are the DB enum: G/KG/ML/LITRE/PCS/PLATE/SERVING. */
 export const isFractionalUnit = (u: string): boolean => /^(kg|litre)$/i.test(u.trim());
+/** Axis tick formatter for a QUANTITY axis (wasted / ordered / received).
+ *
+ *  Quantities are numeric(12,3) and are routinely fractional — 0.3 kg wasted is
+ *  a real weighing, not a rounding artefact. These axes therefore must NOT be
+ *  given recharts' `allowDecimals={false}`: that snaps the tick domain onto
+ *  whole numbers, so a 0–0.8 kg range is drawn against ticks 0,1,2,3,4 and every
+ *  real bar collapses onto the floor. The data was right and the chart said
+ *  zero. Counting axes (people, residents, orders) keep allowDecimals={false} —
+ *  half a resident is not a reading.
+ *
+ *  The trim to 3dp is because recharts' "nice" fractional ticks (0.075, 0.225…)
+ *  otherwise print binary-float tails. */
+export const qtyAxisTick = (v: number | string): string => {
+  const n = Number(v);
+  return Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : String(v);
+};
 export const DAY_LABEL = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 export function fmtQty(qty: number | string | null | undefined, unit?: string): string {
   if (qty === null || qty === undefined || qty === "") return "—";

@@ -5,6 +5,7 @@ import {
   foodOrderItemsTable,
   foodOrdersTable,
   perResidentRuleTable,
+  systemConfigTable,
 } from "@workspace/db";
 import { resetDb, seedDb } from "./helpers/fake-db.js";
 import { callRoute } from "./helpers/call-route.js";
@@ -169,27 +170,63 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-describe("PUT /orders/:id — per-dish people ceiling (120% of the meal total)", () => {
-  it("accepts a dish ordered for more people than the meal, up to 120%", async () => {
-    seedOrder(); // 8 residents + 2 staff = 10 people → ceiling 12
-    const res = await putItems(12);
+/** Seed the ordering-headroom setting. Omit to exercise the default (100%). */
+const seedHeadroom = (pct: number) =>
+  seedDb([[systemConfigTable, [{
+    id: "cfg-headroom",
+    key: "FOOD_ORDER_HEADROOM_PCT",
+    value: pct,
+    description: null,
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  }]]]);
+
+describe("PUT /orders/:id — per-dish people ceiling (meal total + headroom)", () => {
+  it("accepts a dish ordered for more people than the meal, up to the headroom", async () => {
+    seedOrder(); // 8 residents + 2 staff = 10 people → ceiling 20 at the 100% default
+    const res = await putItems(20);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
-  it("rejects a dish ordered for more than 120% of the meal total", async () => {
-    seedOrder(); // 10 people → ceiling 12
-    const res = await putItems(13);
+  it("rejects a dish ordered past the meal total + headroom", async () => {
+    seedOrder(); // 10 people → ceiling 20
+    const res = await putItems(21);
     expect(res.status).toBe(422);
-    expect(res.body.error).toContain("at most 12");
-    expect(res.body.error).toContain("20% above the 10 eating this meal");
+    expect(res.body.error).toContain("at most 20");
+    expect(res.body.error).toContain("100% above the 10 eating this meal");
   });
 
-  it("rounds the ceiling up on a fractional 20% — 7 people allow 9, not 8", async () => {
-    seedOrder({ residentsCount: 7, staffCount: 0 }); // ceil(7 × 1.2) = 9
+  it("rounds a fractional ceiling up — 7 people at 25% allow 9, not 8", async () => {
+    seedHeadroom(25);
+    seedOrder({ residentsCount: 7, staffCount: 0 }); // ceil(7 × 1.25) = 9
     expect((await putItems(9)).status).toBe(200);
     const over = await putItems(10);
     expect(over.status).toBe(422);
     expect(over.body.error).toContain("at most 9");
+  });
+
+  /* The setting is what makes the ceiling movable at all — without these two, a
+   * call site that quietly went back to a hardcoded multiplier still passes. */
+  it("honours a configured headroom below the default", async () => {
+    seedHeadroom(20);
+    seedOrder(); // 10 people → ceiling 12, the pre-setting behaviour
+    expect((await putItems(12)).status).toBe(200);
+    const over = await putItems(13);
+    expect(over.status).toBe(422);
+    expect(over.body.error).toContain("20% above the 10 eating this meal");
+  });
+
+  it("0% headroom pins the ceiling to the meal total exactly", async () => {
+    seedHeadroom(0);
+    seedOrder(); // 10 people → ceiling 10
+    expect((await putItems(10)).status).toBe(200);
+    expect((await putItems(11)).status).toBe(422);
+  });
+
+  it("falls back to the default when the stored value is out of range", async () => {
+    seedHeadroom(99999); // past FOOD_ORDER_HEADROOM_MAX_PCT — not an uncapped order
+    seedOrder(); // 10 people → ceiling 20, the 100% default
+    expect((await putItems(20)).status).toBe(200);
+    expect((await putItems(21)).status).toBe(422);
   });
 });

@@ -174,6 +174,22 @@ export function ruleFor(
 export const slotsOf = (rule: CompositionRule | null): CompositionSlot[] =>
   [...(rule?.slots ?? [])].sort((a, b) => a.sortOrder - b.sortOrder);
 
+/**
+ * The COURSES a rule defines — its slots minus the star slot.
+ *
+ * The star slot is synthesised by the server from the star-dish menu rule and
+ * appears on every meal while that rule is on (see CompositionSlot.isStar). It
+ * is a constraint on the plate, not a course on it, so anything that counts
+ * courses or asks "does this meal have a rule at all" must exclude it: otherwise
+ * turning the rule on makes every meal report "1 course" and claim it has a
+ * plate rule when nobody has written one.
+ *
+ * Use `slotsOf` where the star genuinely participates — scoring a plate,
+ * rendering the slots to fill — and this where the question is about the rule.
+ */
+export const courseSlotsOf = (rule: CompositionRule | null): CompositionSlot[] =>
+  slotsOf(rule).filter((s) => !s.isStar);
+
 // ─── Plate scoring ───────────────────────────────────────────────────────────
 
 export type SlotRow = { slot: CompositionSlot; dishIds: string[] };
@@ -188,24 +204,43 @@ export type PlateVerdict = {
   ok: boolean;
 };
 
-/** True when a dish can fill a slot (component and preparation must both match). */
+/** True when a dish can fill a slot (component and preparation must both match).
+ *  A star slot ignores both and matches on the dish's star flag alone. */
 const dishFitsSlot = (d: Dish | undefined, slot: CompositionSlot): boolean => {
   if (!d) return false;
+  if (slot.isStar) return !!d.isStarDish;
   if (slot.component && d.component !== slot.component) return false;
   if (slot.preparation && !(d.preparations ?? []).includes(slot.preparation)) return false;
   return true;
 };
 
-/** Greedily seats each chosen dish in the first slot it fits that still has room. */
+/**
+ * Greedily seats each chosen dish in the first slot it fits that still has room.
+ *
+ * Star slots are the exception and are filled in a separate, NON-CONSUMING pass
+ * — they list every star dish on the plate rather than claiming one. This
+ * mirrors validateMenuAgainstRule on the server, and the two must agree: the
+ * composer's verdict is what arms the Save button, so if it seated a star dish
+ * in the star slot and the server seated it in "1 Sabzi", the user would be
+ * shown a complete plate the save then rejected.
+ */
 export function assignToSlots(
   dishIds: string[], slots: CompositionSlot[], dishById: Map<string, Dish>,
 ): { rows: SlotRow[]; extras: string[] } {
   const rows: SlotRow[] = slots.map((slot) => ({ slot, dishIds: [] }));
   const extras: string[] = [];
+  const consuming = rows.filter((r) => !r.slot.isStar);
   for (const id of dishIds) {
     const d = dishById.get(id);
-    const row = rows.find((r) => dishFitsSlot(d, r.slot) && r.dishIds.length < (r.slot.maxCount ?? 99));
-    if (row) row.dishIds.push(id); else extras.push(id);
+    const row = consuming.find((r) => dishFitsSlot(d, r.slot) && r.dishIds.length < (r.slot.maxCount ?? 99));
+    if (row) row.dishIds.push(id);
+    // A star dish the star slot will show is on the plate on purpose, not an
+    // extra — it just did not fit any of the component slots.
+    else if (!(d?.isStarDish && rows.some((r) => r.slot.isStar))) extras.push(id);
+  }
+  for (const r of rows) {
+    if (!r.slot.isStar) continue;
+    r.dishIds = dishIds.filter((id) => dishFitsSlot(dishById.get(id), r.slot));
   }
   return { rows, extras };
 }
@@ -254,7 +289,15 @@ export function plateVerdict(
 ): PlateVerdict {
   const { rows, extras } = assignToSlots(plate.map((e) => e.dishId), slots, dishById);
   const clashes = findClashes(allPlateDishIds(plate), dishById);
-  const met = rows.filter((r) => r.dishIds.length >= r.slot.minCount).length;
+  // maxCount is part of "met", not just minCount. It never used to matter —
+  // assignToSlots refuses to seat past a consuming slot's maxCount, so no row
+  // could exceed it. A star slot is non-consuming and lists every star dish on
+  // the plate, so two stars is a real over-count the server rejects, and without
+  // this the composer would call that plate complete and arm Save.
+  const met = rows.filter(
+    (r) => r.dishIds.length >= r.slot.minCount
+      && (r.slot.maxCount == null || r.dishIds.length <= r.slot.maxCount),
+  ).length;
   return { rows, extras, clashes, met, total: rows.length, ok: met === rows.length && clashes.length === 0 };
 }
 
@@ -395,23 +438,82 @@ const whereLabel = (sameWeek: boolean, week: number, day: number) =>
   sameWeek ? DAY_SHORT[day]! : `W${week} ${DAY_SHORT[day]}`;
 
 /**
- * Dishes served for the SAME meal within `withinDays` of this cell, anywhere in
- * the cycle, as dishId → where it also appears.
+ * Which repeat rules are switched on, as the board resolves them from Menu Rules.
  *
- * The cell itself is skipped — a dish is not a repeat of itself.
+ * Three independent rules, all HINTS — none of them ever blocks a save:
+ *
+ *   withinDays  the +/-N-day window, measured the short way round the cycle
+ *   sameWeek    rule 3 - the same dish twice inside one rotation week
+ *   sameWeekday rule 4 - the same dish on the same weekday of another week
+ *
+ * They are genuinely different questions and deliberately not one setting. The
+ * window asks "how far apart are these two days?", rule 4 asks "are these the
+ * same weekday?" - and no window value expresses the latter: same-weekday pairs
+ * sit at gaps of 7 and 14 in a 4-week cycle, so a window wide enough to catch
+ * them (14) catches every other cell in the cycle too.
+ */
+export type RepeatRuleSet = {
+  /** Window in days, or null when the window rule is off. */
+  withinDays: number | null;
+  sameWeek: boolean;
+  sameWeekday: boolean;
+};
+
+/** Back-compat: a bare number means "window rule only", as callers used to pass. */
+const asRules = (r: number | RepeatRuleSet | undefined | null): RepeatRuleSet =>
+  r == null || typeof r === "number"
+    ? { withinDays: r ?? REPEAT_WITHIN_DAYS, sameWeek: false, sameWeekday: false }
+    : r;
+
+/** No rule on - callers can then skip the scan entirely. */
+export const anyRepeatRuleOn = (r: RepeatRuleSet): boolean =>
+  r.withinDays != null || r.sameWeek || r.sameWeekday;
+
+/**
+ * Does cell (w, d) count as a repeat of (week, day) under these rules?
+ *
+ * The cell itself is never a repeat of itself, which is checked first - it also
+ * makes the two later branches exact: any remaining `d === day` necessarily has
+ * `w !== week` (rule 4's "another week"), and any remaining `w === week` has
+ * `d !== day` (rule 3's "another day this week").
+ */
+function isRepeatSource(
+  rules: RepeatRuleSet, week: number, day: number, w: number, d: number,
+): boolean {
+  if (w === week && d === day) return false;
+  if (rules.withinDays != null) {
+    const gap = cycleGap(cycleIndex(week, day), cycleIndex(w, d));
+    if (gap > 0 && gap <= rules.withinDays) return true;
+  }
+  if (rules.sameWeek && w === week) return true;
+  if (rules.sameWeekday && d === day) return true;
+  return false;
+}
+
+/**
+ * Dishes served for the SAME meal that repeat this cell under `rules`, as
+ * dishId -> where they also appear.
+ *
+ * Per meal, like every repeat rule here: `cycleKey` carries mealType, so lunches
+ * are compared with lunches. Staples appear at several meals a day by design,
+ * and comparing across meals would flag rice and dal everywhere.
+ *
+ * The cell itself is skipped - a dish is not a repeat of itself.
  */
 export function repeatsNearCell(
   cells: CycleCells, week: number, day: number, meal: MealType | string,
-  withinDays: number = REPEAT_WITHIN_DAYS,
+  rules: number | RepeatRuleSet = REPEAT_WITHIN_DAYS,
 ): Map<string, string> {
-  const here = cycleIndex(week, day);
+  const r = asRules(rules);
   const out = new Map<string, string>();
+  if (!anyRepeatRuleOn(r)) return out;
   for (const w of ROTATION_WEEKS) {
     for (const d of WEEK_DAYS) {
-      if (w === week && d === day) continue;
-      const gap = cycleGap(here, cycleIndex(w, d));
-      if (gap === 0 || gap > withinDays) continue;
+      if (!isRepeatSource(r, week, day, w, d)) continue;
       for (const id of cells.get(cycleKey(w, d, meal)) ?? []) {
+        // The label says WHERE, not which rule fired - and it already
+        // distinguishes them naturally: a same-week hit reads "Wed", a
+        // same-weekday hit reads "W3 Fri".
         if (!out.has(id)) out.set(id, whereLabel(w === week, w, d));
       }
     }
@@ -425,9 +527,9 @@ export function repeatsNearCell(
  */
 export function cellRepeats(
   cells: CycleCells, week: number, day: number, meal: MealType | string,
-  withinDays: number = REPEAT_WITHIN_DAYS,
+  rules: number | RepeatRuleSet = REPEAT_WITHIN_DAYS,
 ): Array<{ dishId: string; where: string }> {
-  const near = repeatsNearCell(cells, week, day, meal, withinDays);
+  const near = repeatsNearCell(cells, week, day, meal, rules);
   if (!near.size) return [];
   const mine = cells.get(cycleKey(week, day, meal)) ?? [];
   return [...new Set(mine)]
@@ -441,7 +543,7 @@ export function cellRepeats(
  */
 export function nearbyRepeats(
   cells: CycleCells, week: number, day: number, meal: MealType,
-  withinDays: number = REPEAT_WITHIN_DAYS,
+  rules: number | RepeatRuleSet = REPEAT_WITHIN_DAYS,
 ): Map<string, string> {
-  return repeatsNearCell(cells, week, day, meal, withinDays);
+  return repeatsNearCell(cells, week, day, meal, rules);
 }

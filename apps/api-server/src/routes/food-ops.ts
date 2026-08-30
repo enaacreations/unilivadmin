@@ -77,6 +77,16 @@ import {
   getWasteEditWindowMs,
   FOOD_DEFAULT_CUTOFF_KEY,
   FOOD_WASTE_WINDOW_KEY,
+  FOOD_RULE_STAR_DISH_KEY,
+  FOOD_RULE_SAME_WEEK_KEY,
+  FOOD_RULE_SAME_WEEKDAY_KEY,
+  FOOD_RULE_INGREDIENT_DAY_CAP_KEY,
+  hasAnyStarDish,
+  getOrderHeadroomPct,
+  getOrderHeadroomMultiplier,
+  FOOD_ORDER_HEADROOM_KEY,
+  FOOD_ORDER_HEADROOM_DEFAULT_PCT,
+  FOOD_ORDER_HEADROOM_MAX_PCT,
 } from "../lib/food-service.js";
 import { notify, notifyAll, notifyOrderEvent } from "../lib/notification-service.js";
 import { writeAuditLog } from "../lib/wallet-service.js";
@@ -99,17 +109,17 @@ const MEAL_TYPES = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER"] as const;
  *  throwing mid-insert (H6). Sourced from the enum itself so the two cannot drift. */
 const MEASUREMENT_UNITS = measurementUnitEnum.enumValues;
 
-/** Tolerance on a client-edited order quantity: at most 120% of what the standing
- *  per-resident rule derives for that headcount. Mirrors the 20% residents cap in
- *  residentsCapForProperty — the editable grid is a product feature, an unbounded
- *  cook quantity is not (H6). */
-export const ORDER_QTY_TOLERANCE = 1.2;
+/* The three ordering ceilings — residents vs occupancy, people per dish, and
+ * kilograms per dish — are all `derived × (1 + headroom)`, where the headroom is
+ * the admin-tunable FOOD_ORDER_HEADROOM_PCT (default 100%, was a hardcoded 20%).
+ * See getOrderHeadroomPct in lib/food-service.ts for why it is one setting and
+ * not three. Read it per request via getOrderHeadroomMultiplier(); there is no
+ * module-level constant to import, precisely so a call site cannot quietly go on
+ * enforcing a stale 1.2. */
 
-/** Headroom on a per-dish people count: a dish may be ordered for up to 120% of
- *  the people eating that meal (residents + staff). Kept as its own constant —
- *  it bounds a HEADCOUNT, where ORDER_QTY_TOLERANCE bounds the kilograms derived
- *  from one, and the two limits must be able to move independently. */
-export const DISH_PERSONS_TOLERANCE = 1.2;
+/** "at most 120%" / "20% above" for an error message, from the live multiplier. */
+const pctOf = (mult: number): string => `${Math.round(mult * 100)}%`;
+const headroomPctOf = (mult: number): string => `${Math.round((mult - 1) * 100)}%`;
 
 /** Base for public/share links (mirrors auth.ts; trailing slashes trimmed).
  *  NOTE: unset, this silently yields relative `/m/<token>` links in outbound
@@ -604,19 +614,22 @@ export async function checkOrderCutoff(
   return null;
 }
 
-/** 20% ordering cap: the max RESIDENTS a property may order for a meal = 120% of
- *  its current occupancy (active residents). A property with 0 ACTIVE residents
- *  has cap 0 — you can't order resident meals for residents you don't have; staff
- *  are a separate, UNCAPPED population, so such a property orders staff-only. */
+/** Ordering cap: the max RESIDENTS a property may order for a meal = its current
+ *  occupancy (active residents) plus the configured headroom. A property with 0
+ *  ACTIVE residents has cap 0 — you can't order resident meals for residents you
+ *  don't have; staff are a separate, UNCAPPED population, so such a property
+ *  orders staff-only. `mult` is returned so callers can word their own 422 with
+ *  the headroom that was actually applied. */
 export async function residentsCapForProperty(
   propertyId: string,
-): Promise<{ occupancy: number; cap: number }> {
+): Promise<{ occupancy: number; cap: number; mult: number }> {
   const [occRow] = await db
     .select({ c: sql<number>`count(*)::int` })
     .from(residentsTable)
     .where(and(eq(residentsTable.propertyId, propertyId), eq(residentsTable.status, "ACTIVE")));
   const occupancy = Number(occRow?.c ?? 0);
-  return { occupancy, cap: occupancy > 0 ? Math.ceil(occupancy * 1.2) : 0 };
+  const mult = await getOrderHeadroomMultiplier();
+  return { occupancy, cap: occupancy > 0 ? Math.ceil(occupancy * mult) : 0, mult };
 }
 
 /** Expected delivery time = serviceDate@serviceTime + leadTime (delay baseline). */
@@ -1111,6 +1124,15 @@ const menuRuleSettingsSchema = z.object({
    */
   propertyId: z.string().max(128).nullish(),
   kitchenId: z.string().max(128).nullish(),
+  /** Require exactly one star dish on every meal's plate. Null clears a scoped
+   *  override; at global level null is ignored (see the `!= null` note below). */
+  starDishRequired: z.boolean().nullish(),
+  /** Rule 3 — flag a dish served twice within one rotation week. */
+  flagSameWeekRepeats: z.boolean().nullish(),
+  /** Rule 4 — flag a dish on the same weekday in another rotation week. */
+  flagSameWeekdayRepeats: z.boolean().nullish(),
+  /** Rule 2 — enforce each ingredient's own per-day dish limit. */
+  ingredientDayCapBlocks: z.boolean().nullish(),
 }).passthrough();
 
 /**
@@ -1129,6 +1151,13 @@ foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SET
         ingredientClashBlocks: s.ingredientClashBlocks,
         flagRepeatsWithin3Days: s.flagRepeats,
         repeatWithinDays: s.repeatWithinDays,
+        starDishRequired: s.starDishRequired,
+        flagSameWeekRepeats: s.flagSameWeekRepeats,
+        flagSameWeekdayRepeats: s.flagSameWeekdayRepeats,
+        ingredientDayCapBlocks: s.ingredientDayCapBlocks,
+        // Whether the catalogue can actually satisfy the star rule. The editor
+        // needs this to explain a refused toggle without a second round-trip.
+        hasStarDish: await hasAnyStarDish(),
         // Which scope the caller asked for, so the editor can label the values
         // it is showing as inherited vs overridden without a second call.
         scope: propertyId ? "PROPERTY" : kitchenId ? "KITCHEN" : "GLOBAL",
@@ -1153,6 +1182,23 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
     if (await deniedGlobalConfig(req, res, "Menu rules")) return;
     const b = req.body || {};
 
+    /* Switching the star rule ON with no star dish in the catalogue would put
+     * the system in a state it cannot get out of by itself: every plate becomes
+     * invalid at once, and the only fix — marking a dish as the star — lives on
+     * a different screen. Refuse, and hand back the machine-readable reason so
+     * the editor can send the user straight there instead of showing a bare
+     * error. Applies to the scoped path as much as the global one: a kitchen
+     * override that turns it on is just as unsatisfiable.
+     */
+    if (b.starDishRequired === true && !(await hasAnyStarDish())) {
+      res.status(422).json({
+        success: false,
+        error: "No star dish exists yet — mark a dish as the star dish before requiring one on every plate.",
+        details: { reason: "NO_STAR_DISH" },
+      });
+      return;
+    }
+
     // ── Scoped write: a property or kitchen override row, not the global default.
     // One scope only — a property already implies its kitchen, so accepting both
     // would leave two rows claiming the same answer.
@@ -1169,6 +1215,10 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
       if (b.ingredientClashBlocks !== undefined) patch["ingredientClashBlocks"] = b.ingredientClashBlocks;
       if (b.flagRepeatsWithin3Days !== undefined) patch["flagRepeats"] = b.flagRepeatsWithin3Days;
       if (b.repeatWithinDays !== undefined) patch["repeatWithinDays"] = b.repeatWithinDays;
+      if (b.starDishRequired !== undefined) patch["starDishRequired"] = b.starDishRequired;
+      if (b.flagSameWeekRepeats !== undefined) patch["flagSameWeekRepeats"] = b.flagSameWeekRepeats;
+      if (b.flagSameWeekdayRepeats !== undefined) patch["flagSameWeekdayRepeats"] = b.flagSameWeekdayRepeats;
+      if (b.ingredientDayCapBlocks !== undefined) patch["ingredientDayCapBlocks"] = b.ingredientDayCapBlocks;
       if (Object.keys(patch).length === 1) {
         res.status(400).json({ success: false, error: "Nothing to update" });
         return;
@@ -1191,6 +1241,11 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
           ingredientClashBlocks: s.ingredientClashBlocks,
           flagRepeatsWithin3Days: s.flagRepeats,
           repeatWithinDays: s.repeatWithinDays,
+          starDishRequired: s.starDishRequired,
+          flagSameWeekRepeats: s.flagSameWeekRepeats,
+          flagSameWeekdayRepeats: s.flagSameWeekdayRepeats,
+          ingredientDayCapBlocks: s.ingredientDayCapBlocks,
+          hasStarDish: await hasAnyStarDish(),
           scope: propertyId ? "PROPERTY" : "KITCHEN",
         },
       });
@@ -1224,6 +1279,34 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
         description: "How many days apart two servings of a dish stop counting as a repeat.",
       });
     }
+    if (b.starDishRequired != null) {
+      updates.push({
+        key: FOOD_RULE_STAR_DISH_KEY,
+        value: b.starDishRequired === true,
+        description: "Require exactly one star dish on every meal's rotation plate.",
+      });
+    }
+    if (b.flagSameWeekRepeats != null) {
+      updates.push({
+        key: FOOD_RULE_SAME_WEEK_KEY,
+        value: b.flagSameWeekRepeats === true,
+        description: "Flag (never block) a dish served twice within one rotation week.",
+      });
+    }
+    if (b.flagSameWeekdayRepeats != null) {
+      updates.push({
+        key: FOOD_RULE_SAME_WEEKDAY_KEY,
+        value: b.flagSameWeekdayRepeats === true,
+        description: "Flag (never block) a dish served on the same weekday in another rotation week.",
+      });
+    }
+    if (b.ingredientDayCapBlocks != null) {
+      updates.push({
+        key: FOOD_RULE_INGREDIENT_DAY_CAP_KEY,
+        value: b.ingredientDayCapBlocks === true,
+        description: "Enforce each ingredient's own per-day dish limit across every meal of a day.",
+      });
+    }
     if (!updates.length) { res.status(400).json({ success: false, error: "Nothing to update" }); return; }
 
     for (const u of updates) {
@@ -1246,6 +1329,11 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
         ingredientClashBlocks: s.ingredientClashBlocks,
         flagRepeatsWithin3Days: s.flagRepeats,
         repeatWithinDays: s.repeatWithinDays,
+        starDishRequired: s.starDishRequired,
+        flagSameWeekRepeats: s.flagSameWeekRepeats,
+        flagSameWeekdayRepeats: s.flagSameWeekdayRepeats,
+        ingredientDayCapBlocks: s.ingredientDayCapBlocks,
+        hasStarDish: await hasAnyStarDish(),
         scope: "GLOBAL",
       },
     });
@@ -2791,14 +2879,14 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       return;
     }
 
-    // 20% ordering cap (validated up-front so we never insert a partial batch).
+    // Ordering cap (validated up-front so we never insert a partial batch).
     // cap is 0 for a property with no ACTIVE residents → residents must be 0
     // (staff-only order); staff itself is never capped here.
-    const { occupancy, cap: residentsCap } = await residentsCapForProperty(propertyId);
+    const { occupancy, cap: residentsCap, mult: headroom } = await residentsCapForProperty(propertyId);
     for (const meal of mealsToPlace) {
       const r = Math.max(0, meal.residentsCount != null ? Number(meal.residentsCount) : persons);
       if (r > residentsCap) {
-        res.status(422).json({ success: false, error: `Residents for ${meal.mealType} (${r}) exceed the ${residentsCap} limit — at most 120% of your ${occupancy} occupied residents. Add staff separately if needed.` });
+        res.status(422).json({ success: false, error: `Residents for ${meal.mealType} (${r}) exceed the ${residentsCap} limit — at most ${pctOf(headroom)} of your ${occupancy} occupied residents. Add staff separately if needed.` });
         return;
       }
     }
@@ -2841,11 +2929,11 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
       const mealResidents = Math.max(0, meal.residentsCount != null ? Number(meal.residentsCount) : persons);
       const mealStaff = Math.max(0, meal.staffCount != null ? Number(meal.staffCount) : staffScalar);
       const mealPersons = mealResidents + mealStaff;
-      // Ceiling for a per-item headcount (see the check in the loop below):
-      // 120% of the meal's own total, so one dish can carry a buffer without
-      // the count running away from the meal it belongs to.
+      // Ceiling for a per-item headcount (see the check in the loop below): the
+      // meal's own total plus the configured headroom, so one dish can carry a
+      // buffer without the count running away from the meal it belongs to.
       const personsCeiling =
-        mealPersons > 0 ? Math.ceil(mealPersons * DISH_PERSONS_TOLERANCE) : residentsCap;
+        mealPersons > 0 ? Math.ceil(mealPersons * headroom) : residentsCap;
 
       // Per-item editing path, else legacy quantity path.
       let itemRows: PlannedItem[] = [];
@@ -2870,14 +2958,14 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
           // The per-item headcount has to be bounded too, or it defeats the
           // quantity bound below by inflating what that bound is computed FROM.
           // Fewer people than the meal's headcount is normal (not everyone eats
-          // the paneer); above it, a 20% buffer is allowed (guests, second
-          // helpings) and no more. When the meal carries no headcount at all,
-          // the 20% residents cap stands in.
+          // the paneer); above it, the configured headroom is allowed (guests,
+          // second helpings) and no more. When the meal carries no headcount at
+          // all, the residents cap stands in.
           if (!pinned && personsCount > personsCeiling) {
             res.status(422).json({
               success: false,
               error: mealPersons > 0
-                ? `${md.dishName} for ${meal.mealType} is ordered for ${personsCount} people — at most ${personsCeiling} (20% above the ${mealPersons} eating that meal).`
+                ? `${md.dishName} for ${meal.mealType} is ordered for ${personsCount} people — at most ${personsCeiling} (${headroomPctOf(headroom)} above the ${mealPersons} eating that meal).`
                 : `${md.dishName} for ${meal.mealType} is ordered for ${personsCount} people, more than the ${personsCeiling} limit.`,
             });
             return;
@@ -2885,14 +2973,14 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
           const derivedQty = personsCount * rule.qty;
           const oq = pinned ? derivedQty : Number(it.orderedQty);
           if (!Number.isFinite(oq) || oq <= 0) { skipped.push(`${meal.mealType}: ${md.dishName} had no usable quantity`); continue; }
-          // Upper bound on a client-edited quantity, mirroring the 20% headcount
-          // cap above: at most 120% of what the standing rule derives for this
-          // headcount. Ordering LESS is always legitimate.
-          const ceiling = Math.round(derivedQty * ORDER_QTY_TOLERANCE * 1000) / 1000;
+          // Upper bound on a client-edited quantity, mirroring the headcount cap
+          // above: at most the same headroom over what the standing rule derives
+          // for this headcount. Ordering LESS is always legitimate.
+          const ceiling = Math.round(derivedQty * headroom * 1000) / 1000;
           if (!pinned && oq > ceiling) {
             res.status(422).json({
               success: false,
-              error: `${md.dishName} for ${meal.mealType} (${oq}) exceeds the ${ceiling} limit — at most 120% of the ${derivedQty} the portion rule sets for ${personsCount} people.`,
+              error: `${md.dishName} for ${meal.mealType} (${oq}) exceeds the ${ceiling} limit — at most ${pctOf(headroom)} of the ${derivedQty} the portion rule sets for ${personsCount} people.`,
             });
             return;
           }
@@ -3487,7 +3575,22 @@ function homePeriodRange(
  * "Waste % (of ordered)"; nothing may render either as plain "Waste %".
  * ───────────────────────────────────────────────────────────────────────── */
 
-/** wasted / received, guarded against /0; one-decimal percentage. See above. */
+/* Both percentages share one further rule, the C3 COUNTED-LINE rule the variance
+ * export already follows: the numerator and the denominator must be drawn from
+ * the SAME set of order lines.
+ *
+ * receivedQty stays NULL on a trip-delivered order — it is never inferred (see
+ * the confirm-delivery handler). Summing those lines as received = 0 while still
+ * counting their waste in the numerator produced the inverse of the variance
+ * bug: a property whose deliveries were all trip-confirmed reported real wasted
+ * kilograms next to "Waste % (of received) = 0%", because the whole denominator
+ * had been coalesced away. So `wastePctOfReceived` is fed a numerator restricted
+ * to lines with a receivedQty, and the waste sitting on unconfirmed lines is
+ * reported in its own field rather than silently folded into a percentage that
+ * cannot describe it. */
+/** wasted / received, guarded against /0; one-decimal percentage. See above.
+ *  `wasted` MUST be the confirmed-line subtotal — pass `wastedConfirmed`, never
+ *  the grand total, or the numerator outruns its own denominator. */
 const wastePctOfReceived = (wasted: unknown, received: unknown) =>
   Number(received) > 0 ? Math.round((Number(wasted) / Number(received)) * 1000) / 10 : 0;
 /** wasted / ordered (ordered restricted to DELIVERED), /0-guarded. See above. */
@@ -3526,7 +3629,7 @@ foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"),
       .from(foodOrdersTable).innerJoin(foodOrderItemsTable, eq(foodOrderItemsTable.orderId, foodOrdersTable.id))
       .where(where).groupBy(day, unit).orderBy(day);
 
-    // Top waste items (by total wasted qty), then take top ~20%.
+    // Every dish with recorded waste, ranked by wasted qty (WASTE_ITEM_LIST_CAP).
     const wasteByDish = await db.select({
       dishId: foodOrderItemsTable.dishId, dishName: dishesTable.name, unit: foodOrderItemsTable.unit,
       wasted: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}), 0)::float`,
@@ -3536,8 +3639,7 @@ foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"),
       .where(where).groupBy(foodOrderItemsTable.dishId, dishesTable.name, foodOrderItemsTable.unit)
       .orderBy(desc(sql`sum(${foodOrderItemsTable.wastedQty})`));
     const nonZero = wasteByDish.filter((d) => Number(d.wasted) > 0);
-    const topCount = Math.max(1, Math.ceil(nonZero.length * 0.2));
-    const topWasteItems = nonZero.slice(0, topCount).map((d) => ({
+    const topWasteItems = nonZero.slice(0, WASTE_ITEM_LIST_CAP).map((d) => ({
       dishId: d.dishId, dishName: d.dishName, unit: d.unit,
       wasted: Math.round(Number(d.wasted) * 1000) / 1000, ordered: Math.round(Number(d.ordered) * 1000) / 1000,
       // `where` is DELIVERED-only, so `ordered` here is already ordered-on-delivered.
@@ -3616,6 +3718,17 @@ foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"),
  * clusterId, cityId (resolved via clusters), brand. granularity defaults to
  * month when the range spans > 60 days, else day.
  * ════════════════════════════════════════════════════════════════════════ */
+
+/** Row cap for the ranked waste-item lists the dashboards read.
+ *
+ *  These lists used to be sliced to the top ~20% — `ceil(nonZero.length * 0.2)`,
+ *  a Pareto view. Two things were wrong with it. A period with 10 wasted dishes
+ *  reported 2, and nothing on screen said the other 8 existed; and the DOWNLOAD
+ *  built from the same rule shipped a file called "Top Waste Items" with 80% of
+ *  the client's own data missing, which is not a report. The lists now carry
+ *  every dish with recorded waste, ranked by quantity and bounded only by this
+ *  cap — the client decides how many to DRAW, and labels the slice it drew. */
+const WASTE_ITEM_LIST_CAP = 200;
 
 /** Number → numeric(…,3) rounding shared by the waste-analytics responses. */
 const wr3 = (n: unknown) => Math.round(Number(n ?? 0) * 1000) / 1000;
@@ -3720,6 +3833,9 @@ foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "v
       wasted: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}), 0)::float`,
       received: sql<number>`coalesce(sum(${foodOrderItemsTable.receivedQty}), 0)::float`,
       ordered: sql<number>`coalesce(sum(${foodOrderItemsTable.orderedQty}), 0)::float`,
+      // C3 counted-line basis for the percentage, plus the waste it leaves out.
+      wastedConfirmed: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}) filter (where ${foodOrderItemsTable.receivedQty} is not null), 0)::float`,
+      wastedUnconfirmed: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}) filter (where ${foodOrderItemsTable.receivedQty} is null), 0)::float`,
     }).from(foodOrdersTable)
       .innerJoin(foodOrderItemsTable, eq(foodOrderItemsTable.orderId, foodOrdersTable.id))
       .where(where).groupBy(unit).orderBy(unit);
@@ -3757,6 +3873,8 @@ foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "v
       unit,
       wasted: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}), 0)::float`,
       received: sql<number>`coalesce(sum(${foodOrderItemsTable.receivedQty}), 0)::float`,
+      wastedConfirmed: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}) filter (where ${foodOrderItemsTable.receivedQty} is not null), 0)::float`,
+      wastedUnconfirmed: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}) filter (where ${foodOrderItemsTable.receivedQty} is null), 0)::float`,
     }).from(foodOrdersTable)
       .innerJoin(foodOrderItemsTable, eq(foodOrderItemsTable.orderId, foodOrdersTable.id))
       .leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
@@ -3826,7 +3944,13 @@ foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "v
             totalWasted: wr3(r.wasted),
             totalReceived: wr3(r.received),
             totalOrdered: wr3(r.ordered),
-            wastePctOfReceived: wastePctOfReceived(r.wasted, r.received),
+            // Counted-line basis on BOTH sides of the division (see the
+            // waste-percentage block above wastePctOfReceived).
+            wastePctOfReceived: wastePctOfReceived(r.wastedConfirmed, r.received),
+            /** Waste logged against lines whose delivery was never confirmed
+             *  (receivedQty NULL — trip-delivered). Real waste, but outside the
+             *  percentage's basis, so it is shown rather than absorbed. */
+            wastedOnUnconfirmed: wr3(r.wastedUnconfirmed),
           })),
           ordersWithWaste: Number(withWasteRow?.n ?? 0),
         },
@@ -3839,7 +3963,8 @@ foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "v
           wastedQty: wr3(r.wasted),
           // Carried alongside so the percentage is reproducible from its own operands.
           receivedQty: wr3(r.received),
-          wastePctOfReceived: wastePctOfReceived(r.wasted, r.received),
+          wastePctOfReceived: wastePctOfReceived(r.wastedConfirmed, r.received),
+          wastedOnUnconfirmed: wr3(r.wastedUnconfirmed),
         })),
         byDish: byDishRows.map((r) => ({
           dishId: r.dishId,
@@ -3892,6 +4017,8 @@ async function buildWasteWidgetTable(widget: string, req: any): Promise<{
       name: propertiesTable.name, city: citiesTable.name, cluster: clustersTable.name, unit,
       wasted: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}), 0)::float`,
       received: sql<number>`coalesce(sum(${foodOrderItemsTable.receivedQty}), 0)::float`,
+      wastedConfirmed: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}) filter (where ${foodOrderItemsTable.receivedQty} is not null), 0)::float`,
+      wastedUnconfirmed: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}) filter (where ${foodOrderItemsTable.receivedQty} is null), 0)::float`,
     }).from(foodOrdersTable)
       .innerJoin(foodOrderItemsTable, eq(foodOrderItemsTable.orderId, foodOrdersTable.id))
       .leftJoin(propertiesTable, eq(foodOrdersTable.propertyId, propertiesTable.id))
@@ -3905,8 +4032,11 @@ async function buildWasteWidgetTable(widget: string, req: any): Promise<{
       // The column names its denominator: this file and the `report=waste` file
       // both carried a column called "Waste %" computed two different ways.
       title: "Food Waste by Property",
-      headers: ["Property", "City", "Cluster", "Unit", "Wasted", "Received", "Waste % (of received)"],
-      rows: rows.map((r) => [r.name ?? "—", r.city ?? "", r.cluster ?? "", r.unit, wr3(r.wasted), wr3(r.received), `${wastePctOfReceived(r.wasted, r.received)}%`]),
+      // The trailing column is not decoration: without it a trip-delivered
+      // property reads as "12 kg wasted, 0% of received" with nothing on the
+      // page explaining where the denominator went.
+      headers: ["Property", "City", "Cluster", "Unit", "Wasted", "Received", "Waste % (of received)", "Wasted (delivery unconfirmed)"],
+      rows: rows.map((r) => [r.name ?? "—", r.city ?? "", r.cluster ?? "", r.unit, wr3(r.wasted), wr3(r.received), `${wastePctOfReceived(r.wastedConfirmed, r.received)}%`, wr3(r.wastedUnconfirmed)]),
       fileBase: "food-waste-by-property",
       dateRange,
     };
@@ -4106,7 +4236,7 @@ foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "vi
       .where(whereDelivered).groupBy(day, unit).orderBy(day);
     const wastageTrend = wastageRows.map((r) => ({ date: r.date, unit: r.unit, wasted: Math.round(Number(r.wasted) * 1000) / 1000 }));
 
-    // ── Top 20% items by wastage ──────────────────────────────────────────────
+    // ── Items by wastage — every dish with waste, ranked (WASTE_ITEM_LIST_CAP) ─
     const wasteByDish = await db.select({
       dishId: foodOrderItemsTable.dishId, dishName: dishesTable.name, unit,
       wasted: sql<number>`coalesce(sum(${foodOrderItemsTable.wastedQty}), 0)::float`,
@@ -4116,8 +4246,7 @@ foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "vi
       .where(whereDelivered).groupBy(foodOrderItemsTable.dishId, dishesTable.name, unit)
       .orderBy(desc(sql`sum(${foodOrderItemsTable.wastedQty})`));
     const nonZero = wasteByDish.filter((d) => Number(d.wasted) > 0);
-    const topCount = Math.max(1, Math.ceil(nonZero.length * 0.2));
-    const topWasteItems = nonZero.slice(0, topCount).map((d) => ({
+    const topWasteItems = nonZero.slice(0, WASTE_ITEM_LIST_CAP).map((d) => ({
       dishId: d.dishId, dishName: d.dishName, unit: d.unit,
       wasted: Math.round(Number(d.wasted) * 1000) / 1000, ordered: Math.round(Number(d.ordered) * 1000) / 1000,
       // `whereDelivered`, so `ordered` is already ordered-on-delivered — same
@@ -4497,6 +4626,64 @@ foodOpsRouter.put("/settings/ontime-tolerance", authenticate, async (req, res) =
       .onConflictDoUpdate({ target: systemConfigTable.key, set: { value: n as never, updatedAt: new Date() } });
     auditConfig(req, before ? "FOOD_CONFIG_UPDATED" : "FOOD_CONFIG_CREATED", "food_system_config", FOOD_ONTIME_TOLERANCE_KEY, { before: before?.value, after: n });
     res.json({ success: true, data: { minutes: await getOntimeToleranceMinutes() } });
+  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/**
+ * GET /food/settings/order-headroom — read the global ordering headroom (%).
+ *
+ * Readable by anyone who can place or edit an order, not just settings holders:
+ * the ordering grid needs it to draw its own +/- ceilings, and a unit lead whose
+ * client fell back to a stale default would be stopped by a 422 it never showed
+ * a limit for.
+ */
+foodOpsRouter.get(
+  "/settings/order-headroom",
+  authenticate,
+  authorizeAny(["FOOD_PLACE_ORDER", "FOOD_ALL_ORDERS", "FOOD_DASHBOARD", "FOOD_SETTINGS"], "view"),
+  async (req, res) => {
+    try {
+      const pct = await getOrderHeadroomPct();
+      res.json({
+        success: true,
+        data: { pct, multiplier: 1 + pct / 100, defaultPct: FOOD_ORDER_HEADROOM_DEFAULT_PCT, maxPct: FOOD_ORDER_HEADROOM_MAX_PCT },
+      });
+    } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  },
+);
+
+/**
+ * PUT /food/settings/order-headroom — set the headroom. SUPER_ADMIN parity only,
+ * which is SUPER_ADMIN + OPS_EXCELLENCE (isSuperAdmin), mirroring the on-time
+ * tolerance gate above. This is the one number standing between an editable grid
+ * and an unbounded cook instruction across every property, so it does not sit
+ * behind FOOD_SETTINGS — a kitchen- or property-scoped settings holder must not
+ * be able to raise the ceiling org-wide.
+ */
+const orderHeadroomSchema = z.object({ pct: z.union([z.string(), z.number()]) }).passthrough();
+
+foodOpsRouter.put("/settings/order-headroom", authenticate, async (req, res) => {
+  try {
+    if (!isSuperAdmin(req.user?.role)) {
+      res.status(403).json({ success: false, error: "Forbidden — SUPER_ADMIN or OPS_EXCELLENCE only" }); return;
+    }
+    if (!validateBody(orderHeadroomSchema, req, res)) return;
+    const n = Number((req.body || {}).pct);
+    if (!Number.isInteger(n) || n < 0 || n > FOOD_ORDER_HEADROOM_MAX_PCT) {
+      res.status(400).json({ success: false, error: `pct must be an integer between 0 and ${FOOD_ORDER_HEADROOM_MAX_PCT}` }); return;
+    }
+    // Org-wide ordering bound: raising it lets every property order further above
+    // its occupancy from the next order on, so who changed it has to be on record.
+    const [before] = await db.select().from(systemConfigTable).where(eq(systemConfigTable.key, FOOD_ORDER_HEADROOM_KEY));
+    await db.insert(systemConfigTable)
+      .values({ id: newId(), key: FOOD_ORDER_HEADROOM_KEY, value: n as never, description: "Headroom (%) allowed above the derived headcount/quantity when placing or editing a food order.", updatedAt: new Date() })
+      .onConflictDoUpdate({ target: systemConfigTable.key, set: { value: n as never, updatedAt: new Date() } });
+    auditConfig(req, before ? "FOOD_CONFIG_UPDATED" : "FOOD_CONFIG_CREATED", "food_system_config", FOOD_ORDER_HEADROOM_KEY, { before: before?.value, after: n });
+    const pct = await getOrderHeadroomPct();
+    res.json({
+      success: true,
+      data: { pct, multiplier: 1 + pct / 100, defaultPct: FOOD_ORDER_HEADROOM_DEFAULT_PCT, maxPct: FOOD_ORDER_HEADROOM_MAX_PCT },
+    });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
@@ -4903,10 +5090,14 @@ async function buildReportTable(report: string, req: any): Promise<{
     }).from(foodOrdersTable).innerJoin(foodOrderItemsTable, eq(foodOrderItemsTable.orderId, foodOrdersTable.id))
       .leftJoin(dishesTable, eq(foodOrderItemsTable.dishId, dishesTable.id))
       .where(where).groupBy(dishesTable.name, foodOrderItemsTable.unit)
-      .orderBy(desc(sql`sum(${foodOrderItemsTable.wastedQty})`));
-    const nonZero = wasteByDish.filter((d) => Number(d.wasted) > 0);
-    const topCount = Math.max(1, Math.ceil(nonZero.length * 0.2));
-    const rows = nonZero.slice(0, topCount).map((d) => {
+      .orderBy(desc(sql`sum(${foodOrderItemsTable.wastedQty})`))
+      .limit(EXPORT_ROW_CAP + 1);
+    // EVERY dish with recorded waste, ranked. This file used to be the top ~20%
+    // under the title "Top Waste Items" — a download that dropped four fifths of
+    // the client's own wastage entries without saying so. A report exports the
+    // data; ranking it is the ordering, not a filter.
+    if (wasteByDish.length > EXPORT_ROW_CAP) throw new ExportTooLargeError(EXPORT_ROW_CAP);
+    const rows = wasteByDish.filter((d) => Number(d.wasted) > 0).map((d) => {
       const wasted = r3(Number(d.wasted)); const ordered = r3(Number(d.ordered));
       // reportExportScope pins DELIVERED, so `ordered` is ordered-on-delivered.
       return [d.dishName ?? "—", d.unit ?? "", ordered, wasted, `${wastePctOfOrdered(d.wasted, d.ordered)}%`];
@@ -4914,7 +5105,7 @@ async function buildReportTable(report: string, req: any): Promise<{
     return {
       // The column names its denominator — see the waste-percentage block above
       // /analytics. The waste-analytics file's column is "of received".
-      title: "Top Waste Items", headers: ["Dish", "Unit", "Ordered", "Wasted", "Waste % (of ordered)"],
+      title: "Food Waste by Dish", headers: ["Dish", "Unit", "Ordered", "Wasted", "Waste % (of ordered)"],
       rows, propertyName, dateRange, fileBase: "food-waste",
     };
   }

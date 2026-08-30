@@ -11,7 +11,7 @@
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Info, Minus, Plus, X } from "lucide-react";
+import { Check, Info, Minus, Plus, Star, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -25,9 +25,9 @@ import {
 } from "@/lib/food-api";
 import {
   MEAL_SHORT, REPEAT_WITHIN_DAYS, REPEAT_WITHIN_DAYS_MAX, ROTATION_WEEKS, WEEK_DAYS,
-  componentLabel, ruleFor, slotsOf,
+  componentLabel, courseSlotsOf, ruleFor, slotsOf,
 } from "./menu-lib";
-import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
+import { useActiveBrands, useCompositionRules, useDishCatalogue, useIngredients, useKitchens } from "./use-food-masters";
 import { FoodQueryError } from "./query-error";
 import { useStateDraft } from "@/hooks/use-state-draft";
 import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
@@ -63,6 +63,7 @@ const countLabel = (s: CompositionSlot) =>
 export function MenuRulesEditor({
   canEdit = true, orgWideConfig = true,
   focus, kitchenId, onKitchenChange, brand, onBrandChange, allKitchens, onAllKitchensChange,
+  onGoToDishes,
 }: {
   canEdit?: boolean;
   orgWideConfig?: boolean;
@@ -75,6 +76,10 @@ export function MenuRulesEditor({
   /** True = editing the brand default rather than `kitchenId`. Page-owned too. */
   allKitchens: boolean;
   onAllKitchensChange: (v: boolean) => void;
+  /** Open the dish catalogue — the only place a star dish can be created, and
+   *  so the only useful next step when the star rule is refused for want of one.
+   *  Absent for a role that cannot see the catalogue; the copy adapts. */
+  onGoToDishes?: () => void;
 }) {
   // H4: the two "Variety & safety rules" switches below live in system_config
   // under a single org-wide key, so PUT /food/system-config/menu-rules 403s any
@@ -150,6 +155,25 @@ export function MenuRulesEditor({
       // Invalidate the whole family, not just this scope: a global change moves
       // what every property inherits, and the board reads these too.
       qc.invalidateQueries({ queryKey: ["food", "menu-rule-settings"] });
+      /* These two READ a rule switch server-side, so flipping one changes their
+       * answers and they have to be dropped with it:
+       *
+       *   composition-rules — carries the star slot, which the server
+       *     synthesises from starDishRequired rather than storing.
+       *   rotation-validate — the plate verdict, which gains/loses the star
+       *     violations along with the slot.
+       *
+       * Without this the switch appears not to take effect for staleTime (30s,
+       * set globally in App.tsx): the Menu board keeps rendering the star slot
+       * from cache after the rule is turned off, then silently corrects itself.
+       *
+       * Invalidated on ANY switch save rather than only when starDishRequired
+       * moved. The shared-ingredient switch feeds the verdict too, and the cost
+       * of being generous is one refetch of a rarely-changed setting — cheaper
+       * than another cache that quietly disagrees with the server.
+       */
+      qc.invalidateQueries({ queryKey: ["food", "composition-rules"] });
+      qc.invalidateQueries({ queryKey: ["food", "rotation-validate"] });
       // Say which way it went — a switch sliding back on failure is otherwise
       // the only feedback, and it is easy to miss.
       // Name the scope: "turned off" reads as org-wide, and doing that to every
@@ -162,14 +186,52 @@ export function MenuRulesEditor({
       }
       const label = key === "ingredientClashBlocks"
         ? "Shared-ingredient block"
-        : "Repeat flag";
+        : key === "starDishRequired"
+          ? "Star dish requirement"
+          : key === "flagSameWeekRepeats"
+            ? "Same-week repeat flag"
+            : key === "flagSameWeekdayRepeats"
+              ? "Same-weekday repeat flag"
+              : key === "ingredientDayCapBlocks"
+                ? "Ingredient daily limits"
+                : "Repeat flag";
       toast({ title: `${label} turned ${value ? "on" : "off"}${where}` });
     },
-    onError: (e: any) => toast({ title: e?.message || "Could not change the rule", variant: "destructive" }),
+    onError: (e: any) => {
+      // The star rule is the one refusal a user can act on: it fails because the
+      // catalogue has no star dish yet. Say what to do and where, rather than
+      // surfacing the server sentence and leaving them to find the screen.
+      if (e?.details?.reason === "NO_STAR_DISH" || /no star dish/i.test(e?.message ?? "")) {
+        setStarBlocked(true);
+        toast({
+          title: "No star dish yet",
+          description: "Mark a dish as the star dish first — opening the catalogue.",
+          variant: "warning",
+        });
+        onGoToDishes?.();
+        return;
+      }
+      toast({ title: e?.message || "Could not change the rule", variant: "destructive" });
+    },
   });
+  /* Latches when the server refused the star toggle for want of a star dish, so
+   * the explanation stays on screen after the toast goes. Cleared as soon as the
+   * catalogue reports one, which is the only thing that can fix it. */
+  const [starBlocked, setStarBlocked] = React.useState(false);
+  const hasStarDish = ruleSettings?.hasStarDish ?? true;
+  React.useEffect(() => { if (hasStarDish) setStarBlocked(false); }, [hasStarDish]);
+  const starOn = ruleSettings?.starDishRequired === true;
   /** Falls back to the shipped default until the settings land. */
   const repeatDays = ruleSettings?.repeatWithinDays ?? REPEAT_WITHIN_DAYS;
   const repeatOn = ruleSettings?.flagRepeatsWithin3Days !== false;
+  // Both default OFF, so `=== true` rather than `!== false`.
+  const sameWeekOn = ruleSettings?.flagSameWeekRepeats === true;
+  const sameWeekdayOn = ruleSettings?.flagSameWeekdayRepeats === true;
+  const dayCapOn = ruleSettings?.ingredientDayCapBlocks === true;
+  // How many ingredients actually carry a limit — the rule is inert without one,
+  // and a switch that appears to do nothing reads as broken.
+  const { data: allIngredients = [] } = useIngredients();
+  const cappedCount = allIngredients.filter((i) => i.isActive && i.maxPerDay != null).length;
 
   // The window is edited in place, inside the rule's own sentence: the number is
   // a control, and the stepper only exists while it is being changed. It opens
@@ -249,7 +311,13 @@ export function MenuRulesEditor({
    */
   const ruleIsOwn = !!rule && (rule.kitchenId ?? null) === (scopeKitchen || null);
   const inherited = !!rule && !ruleIsOwn;
-  const saved = React.useMemo(() => toDraft(slotsOf(rule)), [rule]);
+  /* COURSES only. The star slot is synthesised by the server from the switch
+   * below, not stored on the rule — rendering it here would give it count
+   * steppers that change nothing and an X that deletes nothing, and it would
+   * come straight back on the next read. The switch is the control for it, and
+   * it is three rows further down this same panel. (The save path drops it too,
+   * in slotValues — this keeps it out of the editor in the first place.) */
+  const saved = React.useMemo(() => toDraft(courseSlotsOf(rule)), [rule]);
   const slots = draft ?? saved;
   const dirty = draft !== null;
   const brandName = brands.find((b) => b.code === brand)?.name ?? brand;
@@ -568,6 +636,30 @@ export function MenuRulesEditor({
                 aria-label="Block plates whose dishes share an ingredient"
               />
             </div>
+            {/* Rule 2. Its sibling above asks about ONE PLATE; this one counts
+                across every meal of a day, which is the only way "aloo at most
+                once a day" can be seen at all. The numbers are per ingredient
+                (Ingredients → Max dishes per day), because a single org-wide
+                figure over all ingredients would make almost every day
+                unsatisfiable — oil alone is in a third of the catalogue. */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium">Respect ingredient daily limits</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {dayCapOn
+                    ? cappedCount > 0
+                      ? `Enforced on save — ${cappedCount} ingredient${cappedCount === 1 ? " has" : "s have"} a daily limit.`
+                      : "On, but no ingredient has a limit yet — set one under Ingredients."
+                    : "Off — an ingredient can appear in any number of dishes across a day."}
+                </p>
+              </div>
+              <Switch
+                checked={dayCapOn}
+                disabled={!canEditGlobalRules || !ruleSettings || saveRules.isPending}
+                onCheckedChange={(v) => saveRules.mutate({ ingredientDayCapBlocks: v })}
+                aria-label="Enforce per-ingredient daily limits"
+              />
+            </div>
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1">
                 {/* The window lives in the sentence. Off, it is plain prose;
@@ -640,6 +732,91 @@ export function MenuRulesEditor({
                   setEditingDays(v);
                 }}
                 aria-label={`Flag dishes repeated within ${repeatDays} days`}
+              />
+            </div>
+            {/* Rules 3 and 4. Both sit under the window rule because all three
+                answer "is this dish repeating?" — but they are separate
+                switches, not settings on the window, because no window value
+                expresses either one. Same-weekday pairs sit 7 and 14 days apart
+                in a 4-week cycle, so a window wide enough to catch them catches
+                everything else too. */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium">No dish repeats within the same week</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {sameWeekOn
+                    ? "Flagged as you pick — a dish used twice in one rotation week is marked."
+                    : "Off — a dish can appear twice in one week unflagged."}
+                </p>
+              </div>
+              <Switch
+                checked={sameWeekOn}
+                disabled={!canEditGlobalRules || !ruleSettings || saveRules.isPending}
+                onCheckedChange={(v) => saveRules.mutate({ flagSameWeekRepeats: v })}
+                aria-label="Flag a dish repeated within the same week"
+              />
+            </div>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium">No dish repeats on the same weekday</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {sameWeekdayOn
+                    ? "Flagged as you pick — a Friday dish used on another week's Friday is marked."
+                    : "Off — the same weekday in another week is not compared."}
+                </p>
+              </div>
+              <Switch
+                checked={sameWeekdayOn}
+                disabled={!canEditGlobalRules || !ruleSettings || saveRules.isPending}
+                onCheckedChange={(v) => saveRules.mutate({ flagSameWeekdayRepeats: v })}
+                aria-label="Flag a dish repeated on the same weekday in another week"
+              />
+            </div>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <Star className="h-3.5 w-3.5 text-warning" fill={starOn ? "currentColor" : "none"} />
+                  Every meal has a star dish
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  {starOn
+                    ? "Enforced on save — every meal's plate needs exactly one starred dish."
+                    : "Off — a plate can be saved with no star dish, or with several."}
+                </p>
+                {/* Only reachable state a user can act on: the rule cannot be
+                    satisfied because nothing is starred yet. Kept on screen
+                    after the toast, and cleared the moment a star dish exists. */}
+                {(starBlocked || (!hasStarDish && !starOn)) && (
+                  <p className="mt-1 text-[11px] text-warning">
+                    No dish is marked as a star dish yet
+                    {onGoToDishes ? (
+                      <>
+                        {" — "}
+                        <button
+                          type="button"
+                          onClick={onGoToDishes}
+                          className="border-b border-dashed border-warning font-medium hover:border-solid"
+                        >
+                          mark one in the catalogue
+                        </button>
+                        {" first."}
+                      </>
+                    ) : ", so this rule cannot be switched on yet."}
+                  </p>
+                )}
+              </div>
+              <Switch
+                checked={starOn}
+                // Unsatisfiable without a star dish — the server refuses it too
+                // (422 NO_STAR_DISH); this stops the round-trip that only ever
+                // ends in an error toast. Turning it OFF stays available whatever
+                // the catalogue holds, so the rule can never trap anyone.
+                disabled={
+                  !canEditGlobalRules || !ruleSettings || saveRules.isPending
+                  || (!starOn && !hasStarDish)
+                }
+                onCheckedChange={(v) => saveRules.mutate({ starDishRequired: v })}
+                aria-label="Require exactly one star dish on every meal"
               />
             </div>
           </div>

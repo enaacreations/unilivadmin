@@ -30,6 +30,7 @@ import {
   orderPeople,
   isFractionalUnit,
   fmtQty,
+  DEFAULT_ORDER_HEADROOM_MULTIPLIER,
   type FoodOrder,
   type MealType,
   type OrderDetail,
@@ -50,12 +51,19 @@ const num = (v: string | null | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-/** Stepper step for a dish unit — kg/litre move in halves, everything else whole. */
+/** Stepper step for a dish unit — kg/litre move in halves, everything else whole.
+ *  The step is only what the +/- buttons jump by; any quantity the unit can hold
+ *  is typeable in the read-out, so an off-step 0.3 kg is entered, not approximated. */
 const qtyStep = (unit: string): number => (isFractionalUnit(unit) ? 0.5 : 1);
-/** Move a qty by one step and snap back onto the 1-decimal grid. The snap is the
+/** Quantity decimals — matches numeric(12,3) on food_order_items and fmtQty's own
+ *  rounding, so what is typed is what is stored. */
+const QTY_DP = 3;
+const roundQty = (v: number): number => Math.round(v * 10 ** QTY_DP) / 10 ** QTY_DP;
+/** Move a qty by one step and snap back onto the quantity grid. The snap is the
  *  point: binary floats make 2.4 − 1 − 1 = 0.40000000000000013, which renders as
- *  a 17-digit string and blows out the stepper's fixed-width readout. */
-const stepQty = (v: number, delta: number): number => Math.round((v + delta) * 10) / 10;
+ *  a 17-digit string and blows out the stepper's fixed-width readout. Snapping at
+ *  the stored precision keeps a typed 0.125 intact when the user then taps +. */
+const stepQty = (v: number, delta: number): number => roundQty(v + delta);
 
 const fmtTime = (iso: string | null | undefined): string =>
   iso ? format(parseISO(iso), "h:mm a") : "";
@@ -207,8 +215,10 @@ function MiniStepper({
   display: string;
   onMinus: () => void;
   onPlus: () => void;
-  /** When given, the read-out becomes typeable. A surplus can be several units
-   *  over what was sent, and tapping + twenty times is not a way to record it. */
+  /** When given, the read-out becomes typeable. Two reasons: a surplus can be
+   *  several units over what was sent, and tapping + twenty times is not a way to
+   *  record it; and a real quantity rarely lands on the step — 0.3 kg wasted must
+   *  be enterable even though + moves in halves. */
   onType?: (v: number) => void;
   /** Unit shown beside the typeable field, which carries the bare number. */
   suffix?: string;
@@ -240,13 +250,15 @@ function MiniStepper({
             value={draft ?? String(value)}
             onChange={(e) => {
               const raw = e.target.value;
-              if (raw !== "" && !/^\d*\.?\d*$/.test(raw)) return;
+              // Digits with at most QTY_DP decimals — anything finer than the
+              // column stores would be silently rounded on save.
+              if (raw !== "" && !new RegExp(`^\\d*\\.?\\d{0,${QTY_DP}}$`).test(raw)) return;
               setDraft(raw);
               const n = parseFloat(raw);
-              if (Number.isFinite(n)) onType(Math.round(n * 10) / 10);
+              if (Number.isFinite(n)) onType(roundQty(n));
             }}
             onBlur={() => setDraft(null)}
-            className="h-[26px] w-[46px] rounded-[7px] border border-border bg-card text-center font-mono text-[12.5px] font-semibold tabular-nums text-foreground focus:border-accent focus:outline-none"
+            className="h-[26px] w-[58px] rounded-[7px] border border-border bg-card text-center font-mono text-[12.5px] font-semibold tabular-nums text-foreground focus:border-accent focus:outline-none"
           />
           {suffix && <span className="text-[10.5px] text-muted-foreground">{suffix}</span>}
         </span>
@@ -270,12 +282,13 @@ function MiniStepper({
 }
 
 /** Ceiling for one dish's people count: the meal's own total (residents + staff)
- *  plus a 20% buffer — room for guests or second helpings without the count
- *  running away from the meal. Mirrors DISH_PERSONS_TOLERANCE on the server, so
- *  the stepper stops exactly where the send would otherwise 422; a meal with no
- *  people yet falls back to the residents cap, as the server does. */
-function dishPersonsCap(mealTotal: number, residentsCap: number): number {
-  return mealTotal > 0 ? Math.ceil(mealTotal * 1.2) : residentsCap;
+ *  plus the configured ordering headroom — room for guests or second helpings
+ *  without the count running away from the meal. `mult` comes from the same
+ *  system_config row the server reads, so the stepper stops exactly where the
+ *  send would otherwise 422; a meal with no people yet falls back to the
+ *  residents cap, as the server does. */
+function dishPersonsCap(mealTotal: number, residentsCap: number, mult: number): number {
+  return mealTotal > 0 ? Math.ceil(mealTotal * mult) : residentsCap;
 }
 
 function ColumnHead({ icon, label, tone, right }: {
@@ -580,16 +593,29 @@ export default function FoodDashboard() {
   // equals residents.
   const [staffCounts, setStaffCounts] = React.useState<Partial<Record<MealType, number>>>({});
   // Occupied residents (current occupancy) — the default residents count and the
-  // basis for the 20% ordering cap.
+  // basis for the ordering cap.
   const occupied = myNext?.activeGuests ?? overview?.activeGuests ?? 1;
+  // Global ordering headroom (Ops Excellence sets it in Food Settings). Every
+  // ceiling this page draws comes from it, so the +/- stop where the server's
+  // 422 would. Rarely changes, so it is cached hard; until it lands, the server
+  // default stands in rather than a guess of our own.
+  const { data: headroom } = useQuery({
+    queryKey: foodKeys.orderHeadroom(),
+    queryFn: () => foodApi.orderHeadroom(),
+    staleTime: 10 * 60_000,
+  });
+  const headroomMult = headroom?.multiplier ?? DEFAULT_ORDER_HEADROOM_MULTIPLIER;
+  /** "100%" — the headroom as the grid words it ("20% above the 40 eating"). */
+  const headroomPct = Math.round((headroomMult - 1) * 100);
   // Residents default to current occupancy (0 for a property with no ACTIVE
   // residents — such a property orders staff-only; the Send button stays disabled
   // until at least one meal has people).
   const baseHead = occupied;
-  // 20% cap: residents ordered for a meal can't exceed 120% of occupancy; a
-  // property with 0 occupancy caps residents at 0 (staff stay uncapped). Mirrors
-  // residentsCapForProperty on the server exactly.
-  const residentsCap = occupied > 0 ? Math.ceil(occupied * 1.2) : 0;
+  // Ordering cap: residents ordered for a meal can't exceed occupancy plus the
+  // configured headroom; a property with 0 occupancy caps residents at 0 (staff
+  // stay uncapped). Mirrors residentsCapForProperty on the server exactly — it
+  // reads the same setting, so the grid never offers a number the send refuses.
+  const residentsCap = occupied > 0 ? Math.ceil(occupied * headroomMult) : 0;
   // Residents only — drives the residentsCount column. Can be 0 (skip the meal).
   const residentsFor = (mealType: MealType): number => headcounts[mealType] ?? baseHead;
   // Staff only — drives the new staffCount column (0 when unset).
@@ -654,7 +680,7 @@ export default function FoodDashboard() {
     if (lockedDishPersons(mealType, dishId) != null) return;
     // Clamped to the 20%-buffer ceiling so a held + can't walk past what the
     // server will accept at send.
-    const cap = dishPersonsCap(effHeadFor(mealType), residentsCap);
+    const cap = dishPersonsCap(effHeadFor(mealType), residentsCap, headroomMult);
     setDishOverrides((q) => ({
       ...q,
       [dishKey(mealType, dishId)]: { persons: Math.max(1, Math.min(persons, cap)) },
@@ -677,7 +703,7 @@ export default function FoodDashboard() {
   const setEditDishPersonsFor = (mealType: MealType, dishId: string, persons: number) => {
     if (lockedDishPersons(mealType, dishId) != null) return;
     // Same 20%-buffer ceiling as placement, on the edit grid's own totals.
-    const cap = dishPersonsCap(editResidents + editStaff, residentsCap);
+    const cap = dishPersonsCap(editResidents + editStaff, residentsCap, headroomMult);
     setEditDishPersons((s) => ({ ...s, [dishId]: Math.max(0, Math.min(persons, cap)) }));
   };
   // Moving the meal's headcount carries the dishes that were FOLLOWING it, and
@@ -1336,6 +1362,8 @@ export default function FoodDashboard() {
                   setStaff={(n) => (editing ? setEditStaffTo(n) : setStaffFor(selected.mealType, n))}
                   occupied={occupied}
                   residentsMax={residentsCap}
+                  headroomMult={headroomMult}
+                  headroomPct={headroomPct}
                   previewMeals={(preview?.meals ?? []).filter((m) =>
                     editing
                       ? m.mealType === selected.mealType
@@ -1558,17 +1586,23 @@ function AdditionalFoodDialog({
           <div className="max-h-[46vh] space-y-2 overflow-y-auto pr-1">
             {order.items.map((it) => {
               const q = qtys[it.dishId] ?? 0;
+              const step = qtyStep(it.unit);
               return (
                 <div key={it.id} className="flex items-center justify-between gap-2 rounded-[10px] border border-border bg-card px-3 py-2">
                   <div className="min-w-0">
                     <div className="truncate text-[13px] font-semibold">{it.dishName ?? "Item"}</div>
                     <div className="text-[11px] uppercase text-muted-foreground">{it.unit}</div>
                   </div>
+                  {/* Unit-aware step and a typeable read-out — a top-up is weighed
+                      like any other quantity, so 2.4 kg must be enterable. The
+                      unit already labels the row, hence no suffix. */}
                   <MiniStepper
                     value={q}
-                    display={String(q)}
-                    onMinus={() => setQtys((s) => ({ ...s, [it.dishId]: Math.max(0, q - 1) }))}
-                    onPlus={() => setQtys((s) => ({ ...s, [it.dishId]: q + 1 }))}
+                    display={fmtQty(q, it.unit)}
+                    ariaLabel={`Additional quantity for ${it.dishName ?? "item"}`}
+                    onType={(v) => setQtys((s) => ({ ...s, [it.dishId]: Math.max(0, v) }))}
+                    onMinus={() => setQtys((s) => ({ ...s, [it.dishId]: Math.max(0, stepQty(q, -step)) }))}
+                    onPlus={() => setQtys((s) => ({ ...s, [it.dishId]: stepQty(q, step) }))}
                   />
                 </div>
               );
@@ -1888,14 +1922,24 @@ function WasteColumn({
             {(detail?.items ?? []).map((i) => {
               const v = wasteQty[i.id] ?? 0;
               const step = qtyStep(i.unit);
+              const cap = capOf(i);
               return (
                 <div key={i.id} className="flex items-center gap-2 border-b border-dashed border-border py-[7px] last:border-0">
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{i.dishName ?? "Item"}</span>
+                  {/* Typeable: waste is weighed, not stepped — 0.3 kg is a real
+                      reading and the halves the +/- moves in can't express it.
+                      Clamped to what was received, which is what the server caps
+                      at (M18), so the field stops where the save would 400. */}
                   <MiniStepper
                     value={v}
                     display={fmtQty(v, i.unit)}
+                    suffix={i.unit.toLowerCase()}
+                    ariaLabel={`Wasted quantity for ${i.dishName ?? "item"}`}
+                    onType={(q) => setWasteQty((s) => ({ ...s, [i.id]: Math.min(cap, Math.max(0, q)) }))}
                     onMinus={() => setWasteQty((q) => ({ ...q, [i.id]: Math.max(0, stepQty(v, -step)) }))}
-                    onPlus={() => setWasteQty((q) => ({ ...q, [i.id]: Math.min(capOf(i), stepQty(v, step)) }))}
+                    onPlus={() => setWasteQty((q) => ({ ...q, [i.id]: Math.min(cap, stepQty(v, step)) }))}
+                    plusDisabled={v >= cap}
+                    plusTitle={v >= cap ? `All ${fmtQty(cap, i.unit)} received is already logged as waste` : undefined}
                   />
                 </div>
               );
@@ -1934,7 +1978,7 @@ function WasteColumn({
 /* ───────────────────────── order mode (tomorrow) ───────────────────────── */
 
 function OrderModePanel({
-  myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, editing, onDiscard, residents, setResidents, staff, setStaff, occupied, residentsMax, previewMeals,
+  myNextCutoffAt, myNextCutoffTime, now, dayWord, dayPossessive, editing, onDiscard, residents, setResidents, staff, setStaff, occupied, residentsMax, headroomMult, headroomPct, previewMeals,
   selectedMeal, orderedMeals, onSelectMeal, dishQty, dishPersons, setDishPersons, onSend, sending, mealsCount, draftSavedAt, savingDraft,
 }: {
   myNextCutoffAt: string | null;
@@ -1957,8 +2001,12 @@ function OrderModePanel({
   setStaff: (n: number) => void;
   /** Occupied residents (current occupancy) — reference + cap basis. */
   occupied: number;
-  /** Max residents allowed = 120% of occupancy (the 20% ordering cap). */
+  /** Max residents allowed = occupancy × the configured headroom multiplier. */
   residentsMax: number;
+  /** Ordering headroom as a multiplier (1 + pct/100) and as the percent the
+   *  copy quotes. Both come from the server setting, never a local constant. */
+  headroomMult: number;
+  headroomPct: number;
   previewMeals: Array<{
     mealType: MealType;
     label: string;
@@ -1990,10 +2038,10 @@ function OrderModePanel({
   const mealIdx = selectedMeal ? orderedMeals.indexOf(selectedMeal) : -1;
   const isLastMeal = mealIdx === -1 || mealIdx >= orderedMeals.length - 1;
   const nextMeal = isLastMeal ? null : orderedMeals[mealIdx + 1] ?? null;
-  // A dish may be ordered for more people than the meal — up to a 20% buffer
-  // (see dishPersonsCap). residents/staff are the selected meal's, and the grid
-  // only renders the selected meal, so one cap serves every row.
-  const pplMax = dishPersonsCap(residents + staff, residentsMax);
+  // A dish may be ordered for more people than the meal — up to the configured
+  // headroom (see dishPersonsCap). residents/staff are the selected meal's, and
+  // the grid only renders the selected meal, so one cap serves every row.
+  const pplMax = dishPersonsCap(residents + staff, residentsMax, headroomMult);
   // One row per dish. A main and a side render the same way — the side just
   // sits indented under its parent — so each keeps its own people count and a
   // unit lead can order fewer portions of the side than of the main.
@@ -2061,7 +2109,7 @@ function OrderModePanel({
             plusDisabled={ppl >= pplMax}
             plusTitle={
               ppl >= pplMax
-                ? `Limit reached — max ${pplMax} (20% above the ${residents + staff} eating this meal)`
+                ? `Limit reached — max ${pplMax} (${headroomPct}% above the ${residents + staff} eating this meal)`
                 : undefined
             }
           />
@@ -2092,7 +2140,7 @@ function OrderModePanel({
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
               Occupied: <span className="font-semibold text-foreground">{occupied}</span> residents · order up to{" "}
-              <span className="font-semibold text-foreground">{residentsMax}</span> (120%).{" "}
+              <span className="font-semibold text-foreground">{residentsMax}</span> (+{headroomPct}%).{" "}
               {editing
                 ? "Take a dish to 0 people to drop it from the order."
                 : "Set to 0 to skip this meal."}
@@ -2130,7 +2178,7 @@ function OrderModePanel({
               onClick={() => setResidents(residents + 1)}
               disabled={residents >= residentsMax}
               aria-label="More residents"
-              title={residents >= residentsMax ? `Limit reached — max ${residentsMax} (120% of ${occupied} occupied)` : undefined}
+              title={residents >= residentsMax ? `Limit reached — max ${residentsMax} (${occupied} occupied + ${headroomPct}%)` : undefined}
               className="h-[38px] w-[38px] rounded-[10px] border border-border bg-background text-lg text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
             >
               +

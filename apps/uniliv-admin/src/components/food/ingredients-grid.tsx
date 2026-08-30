@@ -31,7 +31,12 @@ const INGREDIENT_BULK_COLUMNS: BulkColumn[] = [
   { key: "isActive", label: "isActive", hint: "true / false. Blank = true" },
 ];
 
-type IngDraft = { id: string | null; name: string; unit: string; isActive: boolean };
+type IngDraft = {
+  id: string | null; name: string; unit: string; isActive: boolean;
+  /** Dishes per day allowed, "" for no limit. Kept as a string so the field can
+   *  be emptied mid-edit without snapping to a number. */
+  maxPerDay: string;
+};
 
 /** `canEdit` mirrors the server's FOOD_SETTINGS:edit gate (M16) — see
  *  DishesCatalogue for why a view-only principal reaches this tab at all. */
@@ -72,7 +77,13 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
 
   const save = useMutation({
     mutationFn: (d: IngDraft) => {
-      const body = { name: d.name.trim(), unit: d.unit, isActive: d.isActive };
+      const capped = d.maxPerDay.trim();
+      const body = {
+        name: d.name.trim(), unit: d.unit, isActive: d.isActive,
+        // Explicit null is how the limit is CLEARED — undefined would leave the
+        // stored one in place, so an emptied field has to send null.
+        maxPerDay: capped === "" ? null : Number(capped),
+      };
       return d.id ? foodApi.updateIngredient(d.id, body) : foodApi.createIngredient(body);
     },
     onSuccess: (_r, d) => {
@@ -135,7 +146,7 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
           {canEdit && (
             <Button
               className="bg-accent text-white hover:bg-accent/90"
-              onClick={() => setDraft({ id: null, name: "", unit: "KG", isActive: true })}
+              onClick={() => setDraft({ id: null, name: "", unit: "KG", isActive: true, maxPerDay: "" })}
             >
               <Plus className="mr-2 h-4 w-4" /> Add ingredient
             </Button>
@@ -161,6 +172,14 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
                   {r.name}
                 </span>
                 <span className="font-mono text-[10px] uppercase text-muted-foreground">{r.unit}</span>
+                {r.maxPerDay != null && (
+                  <span
+                    className="whitespace-nowrap rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-medium text-accent-strong"
+                    title={`At most ${r.maxPerDay} dish${r.maxPerDay === 1 ? "" : "es"} with this ingredient per day`}
+                  >
+                    max {r.maxPerDay}/day
+                  </span>
+                )}
                 {!r.isActive && (
                   <span className="rounded-full bg-muted px-1.5 py-px text-[10px] text-muted-foreground">Inactive</span>
                 )}
@@ -171,7 +190,10 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
                   <div className="flex shrink-0 items-center gap-0.5">
                     <Button
                       variant="ghost" size="icon" className="h-7 w-7" title="Edit ingredient"
-                      onClick={() => setDraft({ id: r.id, name: r.name, unit: r.unit, isActive: r.isActive })}
+                      onClick={() => setDraft({
+                        id: r.id, name: r.name, unit: r.unit, isActive: r.isActive,
+                        maxPerDay: r.maxPerDay != null ? String(r.maxPerDay) : "",
+                      })}
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
@@ -236,6 +258,34 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
                     {u}
                   </button>
                 ))}
+              </div>
+
+              {/* Rule 2's number. It lives on the INGREDIENT, not in the rule:
+                  "at most one aloo dish a day" is a real kitchen rule, "at most
+                  one dish with cooking oil" is not, and oil is in a third of the
+                  catalogue. One global figure would make almost every day
+                  unsatisfiable. Blank = no limit, which is every ingredient
+                  until someone says otherwise. */}
+              <div>
+                <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Max dishes per day
+                </p>
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  value={draft.maxPerDay}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "" || /^\d{1,2}$/.test(v)) setDraft({ ...draft, maxPerDay: v });
+                  }}
+                  placeholder="No limit"
+                  aria-label="Maximum dishes per day carrying this ingredient"
+                  className="w-32"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Counted across every meal of a day, not per plate. Enforced only while
+                  “ingredient daily limits” is on under Menu Rules.
+                </p>
               </div>
 
               <div className="flex items-start justify-between gap-3 rounded-lg border bg-card px-3.5 py-3">

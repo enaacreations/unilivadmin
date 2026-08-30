@@ -36,3 +36,4 @@ export function useCompositionRules() {
     queryFn: () => foodApi.listCompositionRules(),
   });
 }
+

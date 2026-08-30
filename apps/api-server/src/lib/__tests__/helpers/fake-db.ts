@@ -356,10 +356,62 @@ export const fakeDb = {
   transaction: (fn: (tx: unknown) => unknown) => (txHandler ? txHandler(fn) : fn(fakeDb)),
   insert: (table: AnyTable) => ({
     values: (v: Row | Row[]) => {
-      const rows = rowsOf(table);
-      const added = (Array.isArray(v) ? v : [v]).map((r) => withDefaults(table, r));
-      tables.set(getTableName(table), [...rows, ...added]);
-      return writeResult(added);
+      const incoming = (Array.isArray(v) ? v : [v]).map((r) => withDefaults(table, r));
+      /* Drizzle's insert builder is LAZY — it runs when awaited, which is what
+       * lets `.onConflictDoUpdate()` change the statement before anything is
+       * written. Executing eagerly in `values()` (as this used to) made every
+       * upsert handler a plain insert here: the config-writing routes all use
+       * `insert().values().onConflictDoUpdate()`, and against an eager fake the
+       * second save appended a duplicate row instead of updating the first, so
+       * the read-back assertion that matters most silently passed on the stale
+       * row. Deferred, and memoised so `.returning()` after an `await` does not
+       * write twice. */
+      const exec = (run: () => Row[]) => {
+        let done: Row[] | null = null;
+        const once = () => (done ??= run());
+        const chain: any = {
+          returning: () => Promise.resolve(once()),
+          then: <A>(ok?: (r: Row[]) => A) => Promise.resolve(once()).then(ok),
+          onConflictDoNothing: () => exec(() => upsert(null)),
+          onConflictDoUpdate: (cfg: { target?: unknown; set?: Row }) =>
+            exec(() => upsert(cfg?.set ?? {}, cfg?.target)),
+        };
+        return chain;
+      };
+      /** The property keys behind a conflict target (a column or array of them). */
+      const targetKeys = (target: unknown): string[] => {
+        const cols = Array.isArray(target) ? target : target == null ? [] : [target];
+        const entries = Object.entries(getTableColumns(table) as Record<string, unknown>);
+        return cols
+          .map((c) => entries.find(([, col]) => col === c)?.[0])
+          .filter((k): k is string => !!k);
+      };
+      /** `set === null` is DO NOTHING; otherwise DO UPDATE with those values.
+       *  `set` is taken as literals — a real `sql`/excluded expression is not
+       *  evaluated here, so a handler that needs one wants a real database. */
+      const upsert = (set: Row | null, target?: unknown): Row[] => {
+        const keys = targetKeys(target);
+        const rows = rowsOf(table);
+        const out: Row[] = [];
+        const added: Row[] = [];
+        for (const r of incoming) {
+          const clash = keys.length
+            ? rows.find((e) => keys.every((k) => e[k] === r[k]))
+            : undefined;
+          if (clash) {
+            if (set) { Object.assign(clash, set); out.push(clash); }
+          } else {
+            added.push(r);
+            out.push(r);
+          }
+        }
+        if (added.length) tables.set(getTableName(table), [...rows, ...added]);
+        return out;
+      };
+      return exec(() => {
+        tables.set(getTableName(table), [...rowsOf(table), ...incoming]);
+        return incoming;
+      });
     },
   }),
   update: (table: AnyTable) => ({

@@ -9,7 +9,7 @@
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, Check, ChevronsUpDown, Info, Plus, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, ChevronsUpDown, Info, Plus, Search, Star, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -55,6 +55,8 @@ export type DishDraft = {
   /** Pin the people count at order time — see dishesTable.isQtyLocked. The
    *  count itself isn't drafted: locking pins the dish at 0. */
   qtyLockOn: boolean;
+  /** Mark this dish as a star dish — see dishesTable.isStarDish. */
+  starOn: boolean;
   ingredientIds: string[];
   sidesOn: boolean;
   sideDishIds: string[];
@@ -81,6 +83,7 @@ export const draftFromDish = (
     preparations: d?.preparations ?? ["VEG"],
     isActive: d?.isActive ?? true,
     qtyLockOn: d?.isQtyLocked ?? false,
+    starOn: d?.isStarDish ?? false,
     ingredientIds: (d?.ingredients ?? []).map((i) => i.ingredientId),
     sidesOn: (d?.sideDishIds ?? []).length > 0,
     sideDishIds: d?.sideDishIds ?? [],
@@ -217,6 +220,7 @@ export function DishDrawer({
         // Null when the switch is off, 0 when it's on — the server normalises to
         // exactly this, so the flag/count pair can never drift apart.
         lockedPersons: d.qtyLockOn ? 0 : null,
+        isStarDish: d.starOn,
         ingredients: d.ingredientIds.map((id) => ({
           ingredientId: id,
           quantity: prevRows.get(id)?.quantity ?? null,
@@ -715,6 +719,29 @@ export function DishDrawer({
                 checked={draft.qtyLockOn}
                 onCheckedChange={(v) => patch({ qtyLockOn: v })}
                 aria-label="Non-editable quantity"
+              />
+            </div>
+          </div>
+
+          {/* Star dish. Tinted like the qty lock above for the same reason: it
+              changes what the MENU must contain, not just how this dish is
+              described. Any number of dishes may be starred — the "only one"
+              rule is enforced per plate, so the copy says pool, not winner. */}
+          <div className="rounded-lg border border-warning/40 bg-warning-soft px-3.5 py-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <Star className="h-3.5 w-3.5 text-warning" fill="currentColor" /> Star dish
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Marks this as one of the brand’s showcase dishes. When “every meal has a star dish”
+                  is on under Menu Rules, each meal’s plate must contain exactly one starred dish.
+                </p>
+              </div>
+              <Switch
+                checked={draft.starOn}
+                onCheckedChange={(v) => patch({ starOn: v })}
+                aria-label="Star dish"
               />
             </div>
           </div>

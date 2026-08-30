@@ -263,7 +263,12 @@ export default function FoodReports() {
     queryFn: () => foodApi.reportsVariance(varianceParams),
   });
   const mealLabel = (m: string) => MEAL_FILTERS.find((f) => f.key === m)?.label ?? m;
-  const num = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
+  // Quantities are numeric(12,3). toFixed(2) here rounded the third decimal away,
+  // so an entered 0.125 kg read as "0.13" on screen while the export of the same
+  // row said 0.125 — the screen and the file disagreeing about one figure. Trim
+  // to the stored precision instead, and drop trailing zeros so whole numbers
+  // still render as "12", not "12.000".
+  const num = (n: number) => String(Math.round(n * 1000) / 1000);
   // A meal the server had nothing to report on comes back as a single all-zero
   // row so all four meals stay on the table; keep them, but only when there is
   // something else to compare them against.

@@ -4,6 +4,7 @@ import { format, subDays, differenceInCalendarDays } from "date-fns";
 import {
   Download, CalendarRange, Trash2, TrendingDown, Recycle, Building2,
   UtensilsCrossed, Soup, BookOpen, ListChecks, ClipboardList, FileText, ChevronDown,
+  AlertTriangle,
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, BarChart, Bar, Cell,
@@ -27,7 +28,7 @@ import { apiDownload } from "@/lib/api-fetch";
 import { usePermissions } from "@/lib/use-permissions";
 import { isSuperAdminRole } from "@/lib/permissions";
 import {
-  foodApi, foodKeys, MEAL_LABEL,
+  foodApi, foodKeys, MEAL_LABEL, qtyAxisTick,
   type WasteAnalyticsData, type WasteGranularity, type FoodLookups, type City, type Cluster,
 } from "@/lib/food-api";
 import { FoodQueryError } from "@/components/food/query-error";
@@ -145,6 +146,7 @@ export default function FoodWasteAnalytics() {
    *  test against a shape that no longer has one rendered the whole-page empty
    *  card underneath charts that were showing real waste. */
   const noWasteAtAll = summaryUnits.every((u) => u.totalWasted === 0);
+  const unconfirmedUnits = summaryUnits.filter((u) => u.wastedOnUnconfirmed > 0);
   const byProperty = data?.byProperty ?? [];
   const byDish = data?.byDish ?? [];
   const byMealType = data?.byMealType ?? [];
@@ -383,6 +385,24 @@ export default function FoodWasteAnalytics() {
         />
       </div>
 
+      {/* Waste on lines whose delivery was never confirmed (trip-delivered, so
+          receivedQty is NULL). It is outside the "of received" denominator by
+          construction — and while it went unsaid, a property delivered entirely
+          by trip showed real wasted kilograms beside "0% of received" with
+          nothing to explain the contradiction. */}
+      {!isLoading && unconfirmedUnits.length > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>
+            <span className="font-semibold">
+              {unconfirmedUnits.map((u) => `${u.wastedOnUnconfirmed} ${u.unit ?? ""}`.trim()).join(" · ")}
+            </span>{" "}
+            of the waste above sits on orders whose delivery was never confirmed, so it has no
+            received quantity to measure against and is excluded from “Waste % (of received)”.
+          </span>
+        </div>
+      )}
+
       {/* Waste trend over time */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
@@ -407,7 +427,7 @@ export default function FoodWasteAnalytics() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="period" tickFormatter={periodTickFmt} tick={{ fontSize: 11 }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                <YAxis tickFormatter={qtyAxisTick} tick={{ fontSize: 11 }} />
                 <Tooltip labelFormatter={periodTickFmt} />
                 {trendUnits.length > 1 && <Legend />}
                 {trendUnits.map((u, i) => (
@@ -441,7 +461,7 @@ export default function FoodWasteAnalytics() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={propertyChart} layout="vertical" margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                  <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                  <XAxis type="number" tickFormatter={qtyAxisTick} tick={{ fontSize: 11 }} />
                   <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} interval={0} />
                   <Tooltip
                     formatter={(val: any, _n: any, item: any) => [
@@ -472,7 +492,7 @@ export default function FoodWasteAnalytics() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={dishChart} layout="vertical" margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                  <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                  <XAxis type="number" tickFormatter={qtyAxisTick} tick={{ fontSize: 11 }} />
                   <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} interval={0} />
                   <Tooltip />
                   <Bar dataKey="wasted" name="Wasted" fill={WARNING} radius={[0, 4, 4, 0]} />
@@ -502,7 +522,7 @@ export default function FoodWasteAnalytics() {
                 <BarChart data={mealChart} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                  <YAxis tickFormatter={qtyAxisTick} tick={{ fontSize: 11 }} />
                   <Tooltip />
                   <Bar dataKey="wasted" name="Wasted" radius={[4, 4, 0, 0]}>
                     {mealChart.map((m, i) => (
@@ -532,7 +552,7 @@ export default function FoodWasteAnalytics() {
                 <BarChart data={menuChart} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                  <YAxis tickFormatter={qtyAxisTick} tick={{ fontSize: 11 }} />
                   <Tooltip />
                   <Bar dataKey="wasted" name="Wasted" fill={ACCENT} radius={[4, 4, 0, 0]} />
                 </BarChart>

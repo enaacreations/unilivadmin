@@ -326,6 +326,19 @@ export const dishesTable = pgTable("dishes", {
    * ordered for it, until that dish is next saved.
    */
   lockedPersons: integer("locked_persons"),
+  /**
+   * Star dish — this dish is one the brand wants showcased. Any number of dishes
+   * may carry the flag: it marks a POOL of star-worthy dishes, not a single
+   * chosen one. The "no more than one" rule bites on the PLATE, not here — when
+   * the star-dish menu rule is on, each meal's rotation plate must contain
+   * exactly one dish from this pool (see menu_composition_slots.is_star).
+   *
+   * Deliberately a property of the DISH and not of a dish+meal: a dish has no
+   * meal type of its own — the weekly rotation is what assigns it to breakfast
+   * or dinner — so pinning a meal here would invent a second, conflicting
+   * source of truth for something foodMenuRotationTable already answers.
+   */
+  isStarDish: boolean("is_star_dish").default(false).notNull(),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -391,6 +404,18 @@ export const ingredientsTable = pgTable("ingredients", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   unit: measurementUnitEnum("unit").notNull(),
+  /**
+   * How many dishes carrying this ingredient may be served across ONE day —
+   * every meal of it, not one plate. Null = no limit, which is the default and
+   * why an existing catalogue is unaffected until someone sets a number.
+   *
+   * Per ingredient, not one global figure, because the limits are not uniform:
+   * "at most one aloo dish a day" is a real kitchen rule, "at most one dish with
+   * cooking oil" is not — and oil is on 21 of 58 dishes here. A single org-wide
+   * cap over all ingredients would make almost every day unsatisfiable, which is
+   * why the LIMIT lives on the ingredient rather than in the rule.
+   */
+  maxPerDay: integer("max_per_day"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -462,6 +487,19 @@ export const menuCompositionSlotTable = pgTable("menu_composition_slots", {
   component: dishComponentEnum("component"),
   /** Match dishes whose preparations[] contains this tag (nullable → any). */
   preparation: text("preparation"),
+  /**
+   * Match only dishes flagged `dishes.is_star_dish`. A third match dimension
+   * alongside component/preparation, and the only one that is a property of the
+   * dish rather than of its classification.
+   *
+   * A star slot is NON-CONSUMING: it is counted across the whole plate rather
+   * than greedily claiming a dish the way the other slots do. "Exactly one star
+   * dish on this plate" is a property of the plate, so it must not depend on
+   * whether some earlier slot happened to consume the star dish first — under
+   * greedy matching a star Paneer would be eaten by the "1 SABZI" slot and the
+   * star slot would read MISSING with the star dish sitting right there.
+   */
+  isStar: boolean("is_star").default(false).notNull(),
   minCount: integer("min_count").default(1).notNull(),
   maxCount: integer("max_count"),
   sortOrder: integer("sort_order").default(0).notNull(),
@@ -491,6 +529,14 @@ export const menuRuleOverrideTable = pgTable("menu_rule_overrides", {
   flagRepeats: boolean("flag_repeats"),
   /** Null → inherit. Days apart before two servings stop counting as a repeat. */
   repeatWithinDays: integer("repeat_within_days"),
+  /** Null → inherit. Require exactly one star dish on every meal's plate. */
+  starDishRequired: boolean("star_dish_required"),
+  /** Null → inherit. Flag a dish served twice in one rotation week. */
+  flagSameWeekRepeats: boolean("flag_same_week_repeats"),
+  /** Null → inherit. Flag a dish served on the same weekday in another week. */
+  flagSameWeekdayRepeats: boolean("flag_same_weekday_repeats"),
+  /** Null → inherit. Enforce each ingredient's own per-day dish limit. */
+  ingredientDayCapBlocks: boolean("ingredient_day_cap_blocks"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => ({

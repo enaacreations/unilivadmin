@@ -182,11 +182,13 @@ describe("checkOrderCutoff — which cut-off row applies", () => {
 });
 
 /**
- * The 20% ordering cap. Residents are the capped population; a property with no
+ * The ordering cap. Residents are the capped population; a property with no
  * ACTIVE residents may not order resident meals at all (staff are separate and
- * uncapped), so cap 0 is a real answer and not a missing one.
+ * uncapped), so cap 0 is a real answer and not a missing one. The headroom above
+ * occupancy is the admin-tunable FOOD_ORDER_HEADROOM_PCT — 100% by default, so
+ * an unseeded config caps at double.
  */
-describe("residentsCapForProperty — 120% of live occupancy", () => {
+describe("residentsCapForProperty — occupancy + configured headroom", () => {
   const resident = (id: string, propertyId: string, status = "ACTIVE") => ({
     id,
     propertyId,
@@ -194,12 +196,38 @@ describe("residentsCapForProperty — 120% of live occupancy", () => {
     status,
   });
 
-  it("caps at 120% of occupancy, rounded up to a whole resident", async () => {
+  /** Seed the headroom setting. Omit to exercise the 100% default. */
+  const seedHeadroom = (pct: number) =>
+    seedDb([[systemConfigTable, [{
+      id: "cfg-headroom",
+      key: "FOOD_ORDER_HEADROOM_PCT",
+      value: pct,
+      description: null,
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+    }]]]);
+
+  it("defaults to 100% headroom — occupancy doubles", async () => {
+    seedDb([
+      [residentsTable, Array.from({ length: 7 }, (_, i) => resident(`r${i}`, PROPERTY))],
+    ]);
+    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 7, cap: 14, mult: 2 });
+  });
+
+  it("rounds up to a whole resident", async () => {
+    seedHeadroom(20);
     seedDb([
       [residentsTable, Array.from({ length: 7 }, (_, i) => resident(`r${i}`, PROPERTY))],
     ]);
     // 7 × 1.2 = 8.4 → 9: the fraction rounds in the property's favour.
-    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 7, cap: 9 });
+    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 7, cap: 9, mult: 1.2 });
+  });
+
+  it("0% headroom caps at occupancy exactly", async () => {
+    seedHeadroom(0);
+    seedDb([
+      [residentsTable, Array.from({ length: 7 }, (_, i) => resident(`r${i}`, PROPERTY))],
+    ]);
+    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 7, cap: 7, mult: 1 });
   });
 
   it("counts ACTIVE residents only", async () => {
@@ -214,18 +242,18 @@ describe("residentsCapForProperty — 120% of live occupancy", () => {
         ],
       ],
     ]);
-    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 2, cap: 3 });
+    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 2, cap: 4, mult: 2 });
   });
 
   it("counts only the property asked for", async () => {
     seedDb([
       [residentsTable, [resident("r1", PROPERTY), resident("r2", "p-other"), resident("r3", "p-other")]],
     ]);
-    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 1, cap: 2 });
+    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 1, cap: 2, mult: 2 });
   });
 
   it("a property with no active residents has cap 0, not an uncapped one", async () => {
     seedDb([[residentsTable, [resident("r1", PROPERTY, "EXITED")]]]);
-    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 0, cap: 0 });
+    expect(await residentsCapForProperty(PROPERTY)).toEqual({ occupancy: 0, cap: 0, mult: 2 });
   });
 });

@@ -74,6 +74,10 @@ import {
   resolveExpectedDeliveryAt,
   getPropertyFoodConfig,
   resolveCompositionRule,
+  resolveRuleForValidation,
+  resolveMenuRuleSettings,
+  starSlotRow,
+  STAR_SLOT_ID,
   validateMenuAgainstRule,
   loadDishesForValidation,
   autoFillMenu,
@@ -85,6 +89,7 @@ import {
   dishesMissingPortionRule,
   collectDishIds,
   ingredientClashError,
+  ingredientDayCapError,
   findPortionRuleUsage,
 } from "../lib/food-service.js";
 import { notifyOrderEvent, notifyOrderEdited } from "../lib/notification-service.js";
@@ -94,7 +99,7 @@ import {
 } from "../lib/export-service.js";
 // Shared order cut-off enforcement (single source of truth lives in food-ops.ts,
 // alongside resolveCutoff()/atTime()) so /orders and /order-batches stay consistent.
-import { checkOrderCutoff, createDispatchForOrders, reconcileDispatchForOrder, residentsCapForProperty, enumParamError, ORDER_QTY_TOLERANCE, DISH_PERSONS_TOLERANCE, type TxClient } from "./food-ops.js";
+import { checkOrderCutoff, createDispatchForOrders, reconcileDispatchForOrder, residentsCapForProperty, enumParamError, type TxClient } from "./food-ops.js";
 import { ymdToIstDayStart, istDayYmd, todayIstYmd, istParts } from "../lib/tz.js";
 import { writeAuditLog } from "../lib/wallet-service.js";
 
@@ -840,16 +845,16 @@ foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create")
     }
 
     const residents = residentsCount != null ? Number(residentsCount) : qty;
-    // H1 — the 120% occupancy cap, which both sibling write paths enforce
+    // H1 — the occupancy cap, which both sibling write paths enforce
     // (POST /order-batches, PUT /orders/:id) and this one did not. `quantity` is
     // the headcount computeOrderItems multiplies by each portion rule, so an
     // unbounded value here IS an unbounded cook instruction: 5000 on a 40-bed
     // property was accepted silently. cap is 0 for a property with no ACTIVE
     // residents, matching food-ops.
-    const { occupancy, cap: residentsCap } = await residentsCapForProperty(propertyId);
+    const { occupancy, cap: residentsCap, mult: headroom } = await residentsCapForProperty(propertyId);
     const capped = Math.max(residents, qty);
     if (capped > residentsCap) {
-      res.status(422).json({ success: false, error: `Residents for ${mealType} (${capped}) exceed the ${residentsCap} limit — at most 120% of your ${occupancy} occupied residents.` });
+      res.status(422).json({ success: false, error: `Residents for ${mealType} (${capped}) exceed the ${residentsCap} limit — at most ${Math.round(headroom * 100)}% of your ${occupancy} occupied residents.` });
       return;
     }
     const computed = await computeOrderItems(kitchenId, brand, mealType, sd, qty);
@@ -1532,8 +1537,8 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
       residents = Number(b.residentsCount);
       if (!Number.isFinite(residents) || residents < 0) { res.status(400).json({ success: false, error: "residentsCount must be a non-negative number" }); return; }
       if (residents !== prevResidents) {
-        const { occupancy, cap } = await residentsCapForProperty(order.propertyId);
-        if (residents > cap) { res.status(422).json({ success: false, error: `Residents (${residents}) exceed the ${cap} limit — at most 120% of your ${occupancy} occupied residents.` }); return; }
+        const { occupancy, cap, mult } = await residentsCapForProperty(order.propertyId);
+        if (residents > cap) { res.status(422).json({ success: false, error: `Residents (${residents}) exceed the ${cap} limit — at most ${Math.round(mult * 100)}% of your ${occupancy} occupied residents.` }); return; }
       }
     }
     if (b.staffCount != null) {
@@ -1580,11 +1585,11 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
       const rulesByDish = await resolveRulesByDish(order.brand, order.mealType, menu.map((m) => m.dishId));
       // An unbounded per-dish count defeats the quantity bound below by
       // inflating what that bound is computed FROM. Fewer people than the
-      // meal's headcount is ordinary — not everyone wants the paneer — and a
-      // 20% buffer above it is allowed (guests, second helpings), same as
-      // placement.
-      const { cap: capNow } = await residentsCapForProperty(order.propertyId);
-      const personsCeiling = people > 0 ? Math.ceil(people * DISH_PERSONS_TOLERANCE) : capNow;
+      // meal's headcount is ordinary — not everyone wants the paneer — and the
+      // configured headroom above it is allowed (guests, second helpings), same
+      // as placement.
+      const { cap: capNow, mult: headroom } = await residentsCapForProperty(order.propertyId);
+      const personsCeiling = people > 0 ? Math.ceil(people * headroom) : capNow;
       const rows: PlannedItem[] = [];
       const seen = new Set<string>();
       for (const it of b.items as Array<{ dishId: string; personsCount?: number | null; orderedQty: number }>) {
@@ -1606,7 +1611,7 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
           res.status(422).json({
             success: false,
             error: people > 0
-              ? `${md.dishName} is ordered for ${personsCount} people — at most ${personsCeiling} (20% above the ${people} eating this meal).`
+              ? `${md.dishName} is ordered for ${personsCount} people — at most ${personsCeiling} (${Math.round((headroom - 1) * 100)}% above the ${people} eating this meal).`
               : `${md.dishName} is ordered for ${personsCount} people, more than the ${personsCeiling} limit.`,
           });
           return;
@@ -1616,11 +1621,11 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
         // A zero-quantity line is how the grid says "not this dish" — drop it
         // rather than writing a line the kitchen would read as nothing to cook.
         if (!Number.isFinite(oq) || oq <= 0) continue;
-        const ceiling = Math.round(derivedQty * ORDER_QTY_TOLERANCE * 1000) / 1000;
+        const ceiling = Math.round(derivedQty * headroom * 1000) / 1000;
         if (!pinned && oq > ceiling) {
           res.status(422).json({
             success: false,
-            error: `${md.dishName} (${oq}) exceeds the ${ceiling} limit — at most 120% of the ${derivedQty} the portion rule sets for ${personsCount} people.`,
+            error: `${md.dishName} (${oq}) exceeds the ${ceiling} limit — at most ${Math.round(headroom * 100)}% of the ${derivedQty} the portion rule sets for ${personsCount} people.`,
           });
           return;
         }
@@ -2985,6 +2990,8 @@ const createDishSchema = z.object({
    *  client might still send. */
   isQtyLocked: z.boolean().optional(),
   lockedPersons: z.coerce.number().int().min(0).nullish(),
+  /** Mark this dish as a star dish — see dishesTable.isStarDish. */
+  isStarDish: z.boolean().optional(),
   ingredients: z.array(zIngredient).optional(),
   /** Dishes that may be served alongside this one (see dish_side_options). */
   sideDishIds: z.array(zId).optional(),
@@ -3012,6 +3019,7 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "create"), 
       photoUrl: b.photoUrl ?? null,
       isQtyLocked: lock?.isQtyLocked ?? false,
       lockedPersons: lock?.lockedPersons ?? null,
+      isStarDish: b.isStarDish === true,
       isActive: b.isActive !== false,
       updatedAt: new Date(),
     }).returning();
@@ -3054,6 +3062,8 @@ const updateDishSchema = z.object({
    *  client might still send. */
   isQtyLocked: z.boolean().optional(),
   lockedPersons: z.coerce.number().int().min(0).nullish(),
+  /** Mark this dish as a star dish — see dishesTable.isStarDish. */
+  isStarDish: z.boolean().optional(),
   ingredients: z.array(zIngredient).optional(),
   /** Dishes that may be served alongside this one (see dish_side_options). */
   sideDishIds: z.array(zId).optional(),
@@ -3065,7 +3075,7 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"),
     const b = req.body || {};
     const lock = normalizeQtyLock(b);
     const u: Record<string, unknown> = { updatedAt: new Date() };
-    for (const k of ["name", "component", "unit", "brands", "photoUrl", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
+    for (const k of ["name", "component", "unit", "brands", "photoUrl", "isActive", "isStarDish"]) if (b[k] !== undefined) u[k] = b[k];
     // The two lock columns move together and deliberately bypass the whitelist
     // above — a column left out of that array silently no-ops on every update.
     if (lock) {
@@ -3145,6 +3155,8 @@ foodRouter.get("/ingredients", authenticate, authorizeAny(FOOD_MODULES, "view"),
 const createIngredientSchema = z.object({
   name: zText,
   unit: z.enum(MEASUREMENT_UNITS),
+  /** Dishes carrying this ingredient allowed per DAY. Null/absent = no limit. */
+  maxPerDay: z.coerce.number().int().min(1).nullish(),
   isActive: z.boolean().optional(),
 }).passthrough();
 
@@ -3158,7 +3170,8 @@ foodRouter.post("/ingredients", authenticate, authorize("FOOD_CATALOGUE", "creat
     // clashing — the exact check this list exists to power.
     if (refuseDuplicate(res, await findDuplicateIngredient(b.name), "ingredient")) return;
     const [row] = await db.insert(ingredientsTable).values({
-      id: newId(), name: b.name, unit: b.unit, isActive: b.isActive !== false, updatedAt: new Date(),
+      id: newId(), name: b.name, unit: b.unit, maxPerDay: b.maxPerDay ?? null,
+      isActive: b.isActive !== false, updatedAt: new Date(),
     }).returning();
     auditConfig(req, "FOOD_CONFIG_CREATED", "food_ingredient", row.id, { after: row });
     res.status(201).json({ success: true, data: row });
@@ -3173,6 +3186,8 @@ foodRouter.post("/ingredients", authenticate, authorize("FOOD_CATALOGUE", "creat
 const updateIngredientSchema = z.object({
   name: zText.optional(),
   unit: z.enum(MEASUREMENT_UNITS).optional(),
+  /** Dishes carrying this ingredient allowed per DAY. Explicit null clears it. */
+  maxPerDay: z.coerce.number().int().min(1).nullish(),
   isActive: z.boolean().optional(),
 }).passthrough();
 
@@ -3181,7 +3196,9 @@ foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "ed
     if (!validateBody(updateIngredientSchema, req, res)) return;
     const b = req.body || {};
     const u: Record<string, unknown> = { updatedAt: new Date() };
-    for (const k of ["name", "unit", "isActive"]) if (b[k] !== undefined) u[k] = b[k];
+    // maxPerDay included: an explicit null is how the limit is CLEARED, and
+    // `!== undefined` admits it where a truthiness check would silently drop it.
+    for (const k of ["name", "unit", "isActive", "maxPerDay"]) if (b[k] !== undefined) u[k] = b[k];
     const [before] = await db.select().from(ingredientsTable).where(eq(ingredientsTable.id, req.params["id"]!));
     // Renaming onto an existing ingredient is the same collision as creating one
     // (excluding self, so a no-op re-save of the same name is fine).
@@ -3549,8 +3566,15 @@ foodRouter.post("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "crea
         eq(foodMenuRotationTable.dayOfWeek, Number(b.dayOfWeek)),
         eq(foodMenuRotationTable.mealType, b.mealType as never),
       ));
-    const addClash = await ingredientClashError([...new Set([...cellDishes.map((r) => r.dishId), b.dishId])]);
+    const addPlate = [...new Set([...cellDishes.map((r) => r.dishId), b.dishId])];
+    const addClash = await ingredientClashError(addPlate);
     if (addClash) { res.status(422).json({ success: false, ...addClash }); return; }
+    const addCap = await ingredientDayCapError({
+      kitchenId: b.kitchenId, brand: b.brand,
+      rotationWeek: b.rotationWeek != null ? Number(b.rotationWeek) : 1,
+      dayOfWeek: Number(b.dayOfWeek), mealType: b.mealType,
+    }, addPlate);
+    if (addCap) { res.status(422).json({ success: false, ...addCap }); return; }
     const [row] = await db.insert(foodMenuRotationTable).values({
       id: newId(),
       kitchenId: b.kitchenId,
@@ -3666,6 +3690,12 @@ foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", 
     }
     const bulkClash = await ingredientClashError(collectDishIds(items));
     if (bulkClash) { res.status(422).json({ success: false, ...bulkClash }); return; }
+    const bulkCap = await ingredientDayCapError({
+      kitchenId: b.kitchenId, brand: b.brand,
+      rotationWeek: b.rotationWeek != null ? Number(b.rotationWeek) : 1,
+      dayOfWeek: Number(b.dayOfWeek), mealType: b.mealType,
+    }, collectDishIds(items));
+    if (bulkCap) { res.status(422).json({ success: false, ...bulkCap }); return; }
     const now = new Date();
     const base = {
       kitchenId: b.kitchenId,
@@ -3725,7 +3755,10 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
     // rotation rows that predate the rule must never become unremovable.
     if (items.some((it) => it.dishId)) {
       const rule = await resolveCompositionRule(brand, mealType, kitchenId ?? null);
-      if (!rule?.slots.length) {
+      // Non-star slots only: the star slot is synthesised from the menu-rule
+      // switch for every meal, so counting it would make "a rule exists" true
+      // everywhere and silently retire this gate.
+      if (!rule?.slots.some((sl) => !sl.isStar)) {
         res.status(422).json({
           success: false,
           error: `No menu rule for ${mealType.toLowerCase()} — define the plate under Menu Rules before building this rotation.`,
@@ -3755,6 +3788,11 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
     // The plate arrives wholesale here, so the clash is checkable in one shot.
     const clash = await ingredientClashError(collectDishIds(items));
     if (clash) { res.status(422).json({ success: false, ...clash }); return; }
+    const dayCap = await ingredientDayCapError({
+      kitchenId, brand, rotationWeek: Number(rotationWeek),
+      dayOfWeek: Number(dayOfWeek), mealType,
+    }, collectDishIds(items));
+    if (dayCap) { res.status(422).json({ success: false, ...dayCap }); return; }
     const slotWhere = and(
       eq(foodMenuRotationTable.kitchenId, kitchenId),
       eq(foodMenuRotationTable.brand, brand as never),
@@ -3826,7 +3864,10 @@ foodRouter.get("/menu-rotation/validate", authenticate, authorizeAny(FOOD_MODULE
     // Null means the brand-wide composition rule, which every kitchen resolves
     // against — a legitimate read, so only a NAMED kitchen is scope-checked.
     if (kitchenId && await deniedKitchen(req, res, kitchenId)) return;
-    const rule = await resolveCompositionRule(brand, mealType, kitchenId);
+    // resolveRuleForValidation, not resolveCompositionRule: a meal with no
+    // composition rule of its own still has to satisfy the star requirement, and
+    // a null rule validates as "nothing to check".
+    const rule = await resolveRuleForValidation(brand, mealType, kitchenId);
     const countedIds = dishIds.filter((id) => !sideDishIds.has(id));
     const dishes = await loadDishesForValidation(countedIds);
     const validation = validateMenuAgainstRule(rule, dishes);
@@ -3921,7 +3962,8 @@ foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "e
       .some((k) => u[k] !== undefined && u[k] !== before[k]);
     if (rePlates) {
       const rule = await resolveCompositionRule(dest.brand, dest.mealType, dest.kitchenId ?? null);
-      if (!rule?.slots.length) {
+      // Non-star slots only — see the sibling gate in the bulk write above.
+      if (!rule?.slots.some((sl) => !sl.isStar)) {
         res.status(422).json({
           success: false,
           error: `No menu rule for ${dest.mealType.toLowerCase()} — define the plate under Menu Rules before building this rotation.`,
@@ -3948,10 +3990,16 @@ foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "e
         eq(foodMenuRotationTable.dayOfWeek, dest.dayOfWeek),
         eq(foodMenuRotationTable.mealType, dest.mealType as never),
       ));
-    const moveClash = await ingredientClashError([
+    const movePlate = [
       ...new Set([...neighbours.filter((n) => n.id !== before.id).map((n) => n.dishId), dest.dishId]),
-    ]);
+    ];
+    const moveClash = await ingredientClashError(movePlate);
     if (moveClash) { res.status(422).json({ success: false, ...moveClash }); return; }
+    const moveCap = await ingredientDayCapError({
+      kitchenId: dest.kitchenId, brand: dest.brand, rotationWeek: dest.rotationWeek,
+      dayOfWeek: dest.dayOfWeek, mealType: dest.mealType,
+    }, movePlate);
+    if (moveCap) { res.status(422).json({ success: false, ...moveCap }); return; }
 
     const [row] = await db.update(foodMenuRotationTable).set(u as Partial<typeof foodMenuRotationTable.$inferInsert>).where(eq(foodMenuRotationTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -4183,16 +4231,23 @@ foodRouter.delete("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "delet
  * ──────────────────────────────────────────────────────────────────────────── */
 
 const slotValues = (ruleId: string, slots: any[]) =>
-  (Array.isArray(slots) ? slots : []).map((s, i) => ({
-    id: newId(), ruleId,
-    slotLabel: s.slotLabel ?? null,
-    component: s.component || null,
-    preparation: s.preparation || null,
-    minCount: s.minCount != null ? Number(s.minCount) : 1,
-    maxCount: s.maxCount != null && s.maxCount !== "" ? Number(s.maxCount) : null,
-    sortOrder: s.sortOrder != null ? Number(s.sortOrder) : i,
-    updatedAt: new Date(),
-  }));
+  (Array.isArray(slots) ? slots : [])
+    // The star slot is synthesised by resolveCompositionRule from the menu-rule
+    // switch, never stored (see withStarSlot). An editor that round-trips the
+    // resolved slots back into a save must not persist a copy of it — that copy
+    // would outlive the switch being turned off.
+    .filter((s) => s?.id !== STAR_SLOT_ID)
+    .map((s, i) => ({
+      id: newId(), ruleId,
+      slotLabel: s.slotLabel ?? null,
+      component: s.component || null,
+      preparation: s.preparation || null,
+      isStar: s.isStar === true,
+      minCount: s.minCount != null ? Number(s.minCount) : 1,
+      maxCount: s.maxCount != null && s.maxCount !== "" ? Number(s.maxCount) : null,
+      sortOrder: s.sortOrder != null ? Number(s.sortOrder) : i,
+      updatedAt: new Date(),
+    }));
 
 foodRouter.get("/composition-rules", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
   try {
@@ -4216,7 +4271,18 @@ foodRouter.get("/composition-rules", authenticate, authorizeAny(FOOD_MODULES, "v
     const slots = ids.length ? await db.select().from(menuCompositionSlotTable).where(inArray(menuCompositionSlotTable.ruleId, ids)).orderBy(menuCompositionSlotTable.sortOrder) : [];
     const byRule = new Map<string, any[]>();
     for (const s of slots) { const a = byRule.get(s.ruleId) ?? []; a.push(s); byRule.set(s.ruleId, a); }
-    res.json({ success: true, data: rules.map((r) => ({ ...r, slots: byRule.get(r.id) ?? [] })) });
+    // The star slot is synthesised, not stored (see withStarSlot), so it has to
+    // be added here too — the plate composer scores a plate client-side from
+    // these slots, and a star space it cannot see is a rule it cannot help the
+    // user satisfy. Resolved per rule row, so a kitchen/property override of the
+    // switch is honoured rather than the org default being assumed.
+    const withStar = await Promise.all(rules.map(async (r) => {
+      const own = byRule.get(r.id) ?? [];
+      if (own.some((s) => s.isStar)) return { ...r, slots: own };
+      const { starDishRequired } = await resolveMenuRuleSettings(r.kitchenId, r.propertyId);
+      return { ...r, slots: starDishRequired ? [starSlotRow(r.id), ...own] : own };
+    }));
+    res.json({ success: true, data: withStar });
   } catch (err) { fail(req, res, err); }
 });
 
@@ -4226,6 +4292,8 @@ const zCompositionSlot = z.object({
   // Enum column; slotValues() reads "" as "any component" and writes NULL.
   component: z.union([z.enum(DISH_COMPONENTS), z.literal("")]).nullish(),
   preparation: z.string().max(128).nullish(),
+  /** Star slot — matches star dishes only. Usually synthesised rather than sent. */
+  isStar: z.boolean().optional(),
   minCount: z.union([z.coerce.number(), z.literal("")]).nullish(),
   maxCount: z.union([z.coerce.number(), z.literal("")]).nullish(),
   sortOrder: z.union([z.coerce.number(), z.literal("")]).nullish(),

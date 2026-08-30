@@ -23,7 +23,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   foodApi, foodKeys, MEAL_TYPES, MEAL_LABEL,
   type FoodLookups, type FoodBrand, type MealType, type MealConfig,
-  type MealWindow, type FoodCutoffConfig, type FoodDefaults,
+  type MealWindow, type FoodCutoffConfig, type FoodDefaults, type OrderHeadroom,
 } from "@/lib/food-api";
 import { usePermissions } from "@/lib/use-permissions";
 import { isSuperAdminRole } from "@/lib/permissions";
@@ -221,6 +221,7 @@ export default function FoodSettings() {
                 canEdit={canEdit} orgWideConfig={orgWideConfig}
                 focus={rulesFocus} {...menuScope}
                 allKitchens={rulesAllKitchens} onAllKitchensChange={setRulesAllKitchens}
+                onGoToDishes={() => setTab("dishes")}
               />
             </TabsContent>
           </>
@@ -242,7 +243,10 @@ export default function FoodSettings() {
           />
         </TabsContent>
         {canFoodDefaults && (
-          <TabsContent value="food-defaults"><FoodDefaultsTab /></TabsContent>
+          <TabsContent value="food-defaults" className="space-y-4">
+            <FoodDefaultsTab />
+            <OrderHeadroomCard />
+          </TabsContent>
         )}
       </Tabs>
     </div>
@@ -874,6 +878,90 @@ function FoodDefaultsTab() {
             </div>
             <Button onClick={() => { if (!/^\d{1,2}:\d{2}$/.test(defaultCutoff.trim())) { toast({ title: "Cut-off must be HH:MM", variant: "destructive" }); return; } save.mutate(); }} disabled={save.isPending}>
               {save.isPending ? "Saving…" : "Save defaults"}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Ordering headroom (SUPER_ADMIN + OPS_EXCELLENCE) — the single percentage that
+// bounds how far above the derived numbers an order may go. Its own card, and
+// its own save, because it writes through a different endpoint with a different
+// gate than the two org defaults above: those are FOOD_SETTINGS, this one is
+// super-admin parity (it lifts the ordering ceiling for every property at once).
+// ════════════════════════════════════════════════════════════════════════════
+function OrderHeadroomCard() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  // Same invariant as Food Defaults: Save OVERWRITES the stored value, so a
+  // failed read must not let the seeded placeholder be written over the real one.
+  const { data, isLoading, isError, refetch } = useQuery<OrderHeadroom>({
+    queryKey: foodKeys.orderHeadroom(),
+    queryFn: () => foodApi.orderHeadroom(),
+  });
+
+  const [pct, setPct] = React.useState(100);
+  React.useEffect(() => {
+    if (data) setPct(data.pct);
+  }, [data]);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!data) throw new Error("The current headroom could not be read — reload before saving.");
+      return foodApi.updateOrderHeadroom(pct);
+    },
+    onSuccess: (saved) => {
+      toast({
+        title: "Ordering headroom saved",
+        description: `Orders may now go up to ${saved.pct}% above the derived headcount and quantity.`,
+      });
+      // The ordering grid draws its own +/- ceilings from this, so refresh it
+      // rather than leaving open tabs enforcing the previous number.
+      qc.invalidateQueries({ queryKey: foodKeys.orderHeadroom() });
+    },
+    onError: (e: any) => toast({ title: e?.message || "Failed to save", variant: "destructive" }),
+  });
+
+  const maxPct = data?.maxPct ?? 1000;
+  const defaultPct = data?.defaultPct ?? 100;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <SlidersHorizontal className="h-4 w-4" /> Ordering Headroom
+        </CardTitle>
+        <CardDescription className="text-xs">
+          How far above the derived numbers a property may order. One percentage bounds all three
+          ordering limits — residents against occupancy, people per dish, and the quantity per dish —
+          because each is computed from the one before it. Super Admin / Ops Excellence only.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isError ? (
+          <FoodQueryError
+            label="the current ordering headroom"
+            hint="Saving now would write the placeholder over whatever is really stored, so the form stays hidden until this loads."
+            onRetry={() => refetch()}
+          />
+        ) : isLoading ? (
+          <p className="py-4 text-sm text-muted-foreground">Loading…</p>
+        ) : (
+          <div className="space-y-5 max-w-md">
+            <div>
+              <Label>Headroom above the derived number (%)</Label>
+              <NumberStepper value={pct} onChange={setPct} min={0} max={maxPct} step={10} />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {pct === 0
+                  ? "0% — orders may not exceed the derived headcount or quantity at all."
+                  : `${pct}% — a meal for 50 people can be ordered for up to ${Math.ceil(50 * (1 + pct / 100))}.`}
+                {" "}Default {defaultPct}%.
+              </p>
+            </div>
+            <Button onClick={() => save.mutate()} disabled={save.isPending || pct === data?.pct}>
+              {save.isPending ? "Saving…" : "Save headroom"}
             </Button>
           </div>
         )}
