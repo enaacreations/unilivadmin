@@ -89,7 +89,6 @@ import {
   dishesMissingPortionRule,
   collectDishIds,
   ingredientClashError,
-  ingredientDayCapError,
   findPortionRuleUsage,
 } from "../lib/food-service.js";
 import { notifyOrderEvent, notifyOrderEdited } from "../lib/notification-service.js";
@@ -3569,12 +3568,6 @@ foodRouter.post("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "crea
     const addPlate = [...new Set([...cellDishes.map((r) => r.dishId), b.dishId])];
     const addClash = await ingredientClashError(addPlate);
     if (addClash) { res.status(422).json({ success: false, ...addClash }); return; }
-    const addCap = await ingredientDayCapError({
-      kitchenId: b.kitchenId, brand: b.brand,
-      rotationWeek: b.rotationWeek != null ? Number(b.rotationWeek) : 1,
-      dayOfWeek: Number(b.dayOfWeek), mealType: b.mealType,
-    }, addPlate);
-    if (addCap) { res.status(422).json({ success: false, ...addCap }); return; }
     const [row] = await db.insert(foodMenuRotationTable).values({
       id: newId(),
       kitchenId: b.kitchenId,
@@ -3690,12 +3683,6 @@ foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", 
     }
     const bulkClash = await ingredientClashError(collectDishIds(items));
     if (bulkClash) { res.status(422).json({ success: false, ...bulkClash }); return; }
-    const bulkCap = await ingredientDayCapError({
-      kitchenId: b.kitchenId, brand: b.brand,
-      rotationWeek: b.rotationWeek != null ? Number(b.rotationWeek) : 1,
-      dayOfWeek: Number(b.dayOfWeek), mealType: b.mealType,
-    }, collectDishIds(items));
-    if (bulkCap) { res.status(422).json({ success: false, ...bulkCap }); return; }
     const now = new Date();
     const base = {
       kitchenId: b.kitchenId,
@@ -3788,11 +3775,6 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
     // The plate arrives wholesale here, so the clash is checkable in one shot.
     const clash = await ingredientClashError(collectDishIds(items));
     if (clash) { res.status(422).json({ success: false, ...clash }); return; }
-    const dayCap = await ingredientDayCapError({
-      kitchenId, brand, rotationWeek: Number(rotationWeek),
-      dayOfWeek: Number(dayOfWeek), mealType,
-    }, collectDishIds(items));
-    if (dayCap) { res.status(422).json({ success: false, ...dayCap }); return; }
     const slotWhere = and(
       eq(foodMenuRotationTable.kitchenId, kitchenId),
       eq(foodMenuRotationTable.brand, brand as never),
@@ -3995,11 +3977,6 @@ foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "e
     ];
     const moveClash = await ingredientClashError(movePlate);
     if (moveClash) { res.status(422).json({ success: false, ...moveClash }); return; }
-    const moveCap = await ingredientDayCapError({
-      kitchenId: dest.kitchenId, brand: dest.brand, rotationWeek: dest.rotationWeek,
-      dayOfWeek: dest.dayOfWeek, mealType: dest.mealType,
-    }, movePlate);
-    if (moveCap) { res.status(422).json({ success: false, ...moveCap }); return; }
 
     const [row] = await db.update(foodMenuRotationTable).set(u as Partial<typeof foodMenuRotationTable.$inferInsert>).where(eq(foodMenuRotationTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }

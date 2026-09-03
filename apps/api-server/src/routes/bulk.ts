@@ -17,7 +17,7 @@ import {
 } from "../lib/bulk-food-rows.js";
 import {
   assertKitchenAccess, collectDishIds, dishesMissingPortionRule,
-  ingredientClashError, ingredientDayCapError, resolveCompositionRule,
+  ingredientClashError, resolveCompositionRule,
 } from "../lib/food-service.js";
 import { newId } from "../lib/id.js";
 import { isKycGateEnabled } from "./kyc-esign.js";
@@ -777,9 +777,6 @@ async function handleMenu(
   // ── slot-level guards: exactly what PUT /menu-rotation/slot enforces ───────
   type Slot = { key: string; lines: Line[] };
   const writable: Slot[] = [];
-  /** (kitchen|brand|week|day) → dishes already approved in THIS import, so the
-   *  day cap sees siblings that are not in the database yet. */
-  const acceptedByDay = new Map<string, string[]>();
   const kitchenChecked = new Map<string, string | null>(); // id -> failure message
 
   for (const [key, group] of slots) {
@@ -815,21 +812,6 @@ async function handleMenu(
 
     const clash = await ingredientClashError(collectDishIds(items));
     if (clash) { fail(clash.error); continue; }
-
-    /* Day cap. `accepted` carries the dishes this import has already approved
-     * for the same (kitchen, brand, week, day) but has not written yet — a
-     * sheet placing aloo at both lunch and dinner of one day would otherwise
-     * check each against a database that still knows nothing about the other,
-     * and both would pass. */
-    const dayKey = `${first.kitchenId}|${first.brand}|${first.week}|${first.day}`;
-    const cap = await ingredientDayCapError(
-      { kitchenId: first.kitchenId, brand: first.brand, rotationWeek: first.week,
-        dayOfWeek: first.day, mealType: first.meal },
-      collectDishIds(items),
-      acceptedByDay.get(dayKey) ?? [],
-    );
-    if (cap) { fail(cap.error); continue; }
-    acceptedByDay.set(dayKey, [...(acceptedByDay.get(dayKey) ?? []), ...collectDishIds(items)]);
 
     writable.push({ key, lines: group });
   }

@@ -283,8 +283,10 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
                   className="w-32"
                 />
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  Counted across every meal of a day, not per plate. Enforced only while
-                  “ingredient daily limits” is on under Menu Rules.
+                  Blank means no limit. Set it to 1 and a day serving two dishes with this
+                  ingredient is flagged on the menu board — counting every meal, not each plate.
+                  Flagged, never blocked. Shows while “Limit how often an ingredient is used in a
+                  day” is on under Menu Rules.
                 </p>
               </div>
 

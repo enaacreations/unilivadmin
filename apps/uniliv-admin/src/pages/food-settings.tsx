@@ -222,6 +222,7 @@ export default function FoodSettings() {
                 focus={rulesFocus} {...menuScope}
                 allKitchens={rulesAllKitchens} onAllKitchensChange={setRulesAllKitchens}
                 onGoToDishes={() => setTab("dishes")}
+                onGoToIngredients={() => setTab("ingredients")}
               />
             </TabsContent>
           </>

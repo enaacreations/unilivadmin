@@ -63,7 +63,7 @@ const countLabel = (s: CompositionSlot) =>
 export function MenuRulesEditor({
   canEdit = true, orgWideConfig = true,
   focus, kitchenId, onKitchenChange, brand, onBrandChange, allKitchens, onAllKitchensChange,
-  onGoToDishes,
+  onGoToDishes, onGoToIngredients,
 }: {
   canEdit?: boolean;
   orgWideConfig?: boolean;
@@ -80,6 +80,8 @@ export function MenuRulesEditor({
    *  so the only useful next step when the star rule is refused for want of one.
    *  Absent for a role that cannot see the catalogue; the copy adapts. */
   onGoToDishes?: () => void;
+  /** Open Ingredients, where the per-day limits are set. Same reasoning. */
+  onGoToIngredients?: () => void;
 }) {
   // H4: the two "Variety & safety rules" switches below live in system_config
   // under a single org-wide key, so PUT /food/system-config/menu-rules 403s any
@@ -192,7 +194,7 @@ export function MenuRulesEditor({
             ? "Same-week repeat flag"
             : key === "flagSameWeekdayRepeats"
               ? "Same-weekday repeat flag"
-              : key === "ingredientDayCapBlocks"
+              : key === "flagIngredientDayCap"
                 ? "Ingredient daily limits"
                 : "Repeat flag";
       toast({ title: `${label} turned ${value ? "on" : "off"}${where}` });
@@ -227,11 +229,19 @@ export function MenuRulesEditor({
   // Both default OFF, so `=== true` rather than `!== false`.
   const sameWeekOn = ruleSettings?.flagSameWeekRepeats === true;
   const sameWeekdayOn = ruleSettings?.flagSameWeekdayRepeats === true;
-  const dayCapOn = ruleSettings?.ingredientDayCapBlocks === true;
-  // How many ingredients actually carry a limit — the rule is inert without one,
-  // and a switch that appears to do nothing reads as broken.
+  const dayCapOn = ruleSettings?.flagIngredientDayCap === true;
+  /* The rule is inert until an ingredient carries a number, and the number is
+   * set on another tab — so the line names the actual limits rather than
+   * counting them. "Aloo (Potato) max 1/day" tells you what the rule will do;
+   * "1 ingredient has a daily limit" makes you go and look. Past a handful the
+   * list stops fitting, so it falls back to the count. */
   const { data: allIngredients = [] } = useIngredients();
-  const cappedCount = allIngredients.filter((i) => i.isActive && i.maxPerDay != null).length;
+  const capped = allIngredients.filter((i) => i.isActive && i.maxPerDay != null);
+  const cappedLabel = capped.length === 0
+    ? ""
+    : capped.length <= 3
+      ? capped.map((i) => `${i.name} max ${i.maxPerDay}/day`).join(", ")
+      : `${capped.length} ingredients have a daily limit`;
 
   // The window is edited in place, inside the rule's own sentence: the number is
   // a control, and the stepper only exists while it is being changed. It opens
@@ -644,20 +654,41 @@ export function MenuRulesEditor({
                 unsatisfiable — oil alone is in a third of the catalogue. */}
             <div className="flex items-start justify-between gap-3">
               <div className="flex-1">
-                <p className="text-sm font-medium">Respect ingredient daily limits</p>
+                <p className="text-sm font-medium">Limit how often an ingredient is used in a day</p>
                 <p className="text-[11px] text-muted-foreground">
-                  {dayCapOn
-                    ? cappedCount > 0
-                      ? `Enforced on save — ${cappedCount} ingredient${cappedCount === 1 ? " has" : "s have"} a daily limit.`
-                      : "On, but no ingredient has a limit yet — set one under Ingredients."
-                    : "Off — an ingredient can appear in any number of dishes across a day."}
+                  {!dayCapOn
+                    ? "Off — the same ingredient can be used in any number of dishes on one day, at any meal."
+                    : cappedLabel
+                      ? `Flagged as you build — ${cappedLabel}. Counted across every meal of the day, not per plate. Never blocks a save.`
+                      : "On, but nothing is limited yet."}
                 </p>
+                {/* The rule is inert until a number exists, and the number is set
+                    on a different tab — so say where, rather than leaving an
+                    apparently dead switch. */}
+                {dayCapOn && !cappedLabel && (
+                  <p className="mt-1 text-[11px] text-warning">
+                    Set “Max dishes per day” on an ingredient
+                    {onGoToIngredients ? (
+                      <>
+                        {" — "}
+                        <button
+                          type="button"
+                          onClick={onGoToIngredients}
+                          className="border-b border-dashed border-warning font-medium hover:border-solid"
+                        >
+                          open Ingredients
+                        </button>
+                        .
+                      </>
+                    ) : " under Ingredients."}
+                  </p>
+                )}
               </div>
               <Switch
                 checked={dayCapOn}
                 disabled={!canEditGlobalRules || !ruleSettings || saveRules.isPending}
-                onCheckedChange={(v) => saveRules.mutate({ ingredientDayCapBlocks: v })}
-                aria-label="Enforce per-ingredient daily limits"
+                onCheckedChange={(v) => saveRules.mutate({ flagIngredientDayCap: v })}
+                aria-label="Limit how often an ingredient is used in a day"
               />
             </div>
             <div className="flex items-start justify-between gap-3">

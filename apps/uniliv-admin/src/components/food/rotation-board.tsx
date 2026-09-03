@@ -34,8 +34,9 @@ import {
 } from "@/lib/food-api";
 import {
   DAY_SHORT, MEAL_SHORT, REPEAT_WITHIN_DAYS, ROTATION_WEEKS, WEEK_DAYS,
-  allPlateDishIds, anyRepeatRuleOn, cellRepeats, componentLabel, fillPlate, nearbyRepeats,
-  type RepeatRuleSet,
+  allPlateDishIds, anyRepeatRuleOn, cellDayCapHits, cellRepeats, componentLabel, fillPlate,
+  nearbyRepeats, otherMealDishIds,
+  type DayCapHit, type IngredientCap, type RepeatRuleSet,
   plateKey, plateToItems, plateVerdict, rowsToCycleCells,
   rowsToPlates, courseSlotsOf, ruleFor, slotsOf,
   type PlateEntry, type PlateMap,
@@ -43,7 +44,7 @@ import {
 import { GenerateFromRule } from "./generate-from-rule";
 import { PlateComposer, PrepDot } from "./plate-composer";
 import { FoodQueryError } from "./query-error";
-import { useActiveBrands, useCompositionRules, useDishCatalogue, useKitchens } from "./use-food-masters";
+import { useActiveBrands, useCompositionRules, useDishCatalogue, useIngredients, useKitchens } from "./use-food-masters";
 
 /**
  * Import template for the rotation — one row per DISH, because that is how the
@@ -256,6 +257,25 @@ export function RotationBoard({
   );
 
   const dishById = React.useMemo(() => new Map(dishes.map((d) => [d.id, d])), [dishes]);
+
+  /* Rule 2 on the board. FLAG ONLY — the save is never refused, so this marker
+     is the entire rule as far as anyone using the app is concerned. It counts
+     across every meal of the day, which is the thing no per-plate check sees;
+     the caps come from the ingredients themselves. */
+  const dayCapOn = ruleSettings?.flagIngredientDayCap === true;
+  const { data: ingredients = [] } = useIngredients();
+  const caps: IngredientCap[] = React.useMemo(
+    () => (dayCapOn ? ingredients : [])
+      .filter((i) => i.isActive && i.maxPerDay != null)
+      .map((i) => ({ ingredientId: i.id, name: i.name, maxPerDay: i.maxPerDay! })),
+    [dayCapOn, ingredients],
+  );
+  const dayCapFor = React.useCallback(
+    (day: number, meal: MealType) =>
+      (caps.length ? cellDayCapHits(cycleCells, week, day, meal, dishById, caps) : []),
+    [caps, cycleCells, week, dishById],
+  );
+
   const plates: PlateMap = React.useMemo(() => rowsToPlates(rows), [rows]);
   const brandName = brands.find((b) => b.code === brand)?.name ?? brand;
   const slotsFor = React.useCallback(
@@ -344,12 +364,12 @@ export function RotationBoard({
         const v = plateVerdict(plate, slots, dishById);
         const clash = clashBlocks && v.clashes.length > 0;
         const missing = v.rows.some((r) => r.dishIds.length < r.slot.minCount);
-        if (clash || missing || repeatsFor(day, meal).length > 0) warning++;
+        if (clash || missing || repeatsFor(day, meal).length > 0 || dayCapFor(day, meal).length > 0) warning++;
         else complete++;
       }
     }
     return { complete, warning, empty, total: MEAL_TYPES.length * WEEK_DAYS.length };
-  }, [plates, dishById, slotsFor, clashBlocks, repeatsFor]);
+  }, [plates, dishById, slotsFor, clashBlocks, repeatsFor, dayCapFor]);
 
   const anyRule = MEAL_TYPES.some((m) => coursesFor(m).length > 0);
 
@@ -634,6 +654,7 @@ export function RotationBoard({
                     hasRule={courses.length > 0}
                     dishById={dishById}
                     repeats={repeatsFor(day, meal)}
+                    dayCap={dayCapFor(day, meal)}
                     clashBlocks={clashBlocks}
                     onOpen={() => setSel({ day, meal })}
                     onGoToRules={onGoToRules ? () => onGoToRules({ brand, meal }) : undefined}
@@ -656,6 +677,8 @@ export function RotationBoard({
           brandName={brandName}
           slots={slotsFor(sel.meal)}
           ruleMissing={coursesFor(sel.meal).length === 0}
+          dayCaps={caps}
+          otherMealDishIds={otherMealDishIds(cycleCells, week, sel.day, sel.meal)}
           dishes={dishes}
           dishById={dishById}
           initialPlate={plates.get(plateKey(sel.day, sel.meal)) ?? []}
@@ -688,7 +711,7 @@ export function RotationBoard({
 
 /** One plate on the board: what's on it, and whether it satisfies its rule. */
 function BoardCell({
-  cell, plate, slots, hasRule, dishById, repeats, clashBlocks, onOpen, onGoToRules,
+  cell, plate, slots, hasRule, dishById, repeats, dayCap, clashBlocks, onOpen, onGoToRules,
 }: {
   /** "Monday Lunch" — the cell's position, which its contents never state. */
   cell: string;
@@ -701,6 +724,8 @@ function BoardCell({
   repeats: Array<{ dishId: string; where: string }>;
   /** Shared-ingredient rule. Off means the cell says nothing about clashes. */
   clashBlocks: boolean;
+  /** Ingredients this cell pushes over their daily limit (rule 2). */
+  dayCap: DayCapHit[];
   onOpen: () => void;
   /** Absent when the viewer cannot open Menu Rules — see FOOD_CATALOGUE. */
   onGoToRules?: () => void;
@@ -770,15 +795,20 @@ function BoardCell({
     ? `${dishById.get(repeats[0]!.dishId)?.name ?? "A dish"} also ${repeats[0]!.where}`
     : `${repeats.length} dishes repeat within 3 days`;
 
+  // A variety warning, not a hard fault: it never blocks a save. Ranked with
+  // the repeats below rather than with the clash, and shown only when nothing
+  // actually broken is competing for the one line the cell has.
+  const cap = dayCap[0];
   const tone = clash ? "text-destructive"
     : noRule ? "text-muted-foreground"
     : missing.length ? "text-warning"
-    : repeats.length ? "text-destructive"
+    : repeats.length || cap ? "text-destructive"
     : "text-success";
   const status = clash ? `shares ${clash.ingredientName}`
     : noRule ? "no rule set"
     : missing.length ? `missing ${missing.join(", ")}`
     : repeats.length ? repeatLabel
+    : cap ? `${cap.ingredientName} ×${cap.count} today (max ${cap.maxPerDay})`
     : "complete";
 
   return (
@@ -800,13 +830,14 @@ function BoardCell({
       </div>
       <div className={`mt-1.5 flex items-center gap-1 border-t pt-1 text-[10px] font-medium ${tone}`}>
         {clash || missing.length ? <AlertTriangle className="h-2.5 w-2.5 shrink-0" />
-          : repeats.length ? <CircleAlert className="h-2.5 w-2.5 shrink-0" />
+          : repeats.length || cap ? <CircleAlert className="h-2.5 w-2.5 shrink-0" />
           : <CheckCircle2 className="h-2.5 w-2.5 shrink-0" />}
-        <span className="truncate">
+        <span className="truncate" title={status}>
           {clash ? `Shares ${clash.ingredientName}`
             : noRule ? `${allPlateDishIds(plate).length} dishes`
             : missing.length ? `Missing ${missing[0]}`
             : repeats.length ? repeatLabel
+            : cap ? `${cap.ingredientName} ×${cap.count} today (max ${cap.maxPerDay})`
             : "Complete"}
         </span>
       </div>

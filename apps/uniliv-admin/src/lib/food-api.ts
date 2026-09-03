@@ -424,12 +424,13 @@ export interface MenuRuleSettings {
   flagSameWeekRepeats: boolean;
   flagSameWeekdayRepeats: boolean;
   /**
-   * Rule 2 — enforce each ingredient's own `maxPerDay` across every meal of a
-   * day. BLOCKS on save, like ingredientClashBlocks; the limits themselves live
-   * on the ingredients, not here. Defaults OFF, and is inert until an
-   * ingredient actually carries a limit.
+   * Rule 2 — flag a day serving more dishes of one ingredient than its own
+   * `maxPerDay`, counted across every meal. FLAG ONLY, like the repeat rules:
+   * it blocked saves once and deadlocked any day already over the limit, since
+   * every step of a fix was still over it. The limits live on the ingredients,
+   * not here. Defaults OFF, and inert until an ingredient carries a limit.
    */
-  ingredientDayCapBlocks: boolean;
+  flagIngredientDayCap: boolean;
   /** Whether the catalogue holds a star dish at all — what the editor needs to
    *  explain a refused toggle without a second round-trip. */
   hasStarDish?: boolean;

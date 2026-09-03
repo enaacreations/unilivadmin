@@ -19,8 +19,9 @@ import { DraftRestoredNotice } from "@/components/ui/draft-restored-notice";
 import type { CompositionSlot, Dish, MealType } from "@/lib/food-api";
 import { MEAL_LABEL, DAY_LABEL } from "@/lib/food-api";
 import {
-  allPlateDishIds, candidatesForSlot, componentLabel, fillPlate, ingredientNamesOf, plateVerdict,
-  type PlateEntry,
+  allPlateDishIds, candidatesForSlot, componentLabel, dayCapBreaches, fillPlate,
+  ingredientNamesOf, plateVerdict,
+  type IngredientCap, type PlateEntry,
 } from "./menu-lib";
 
 /** Veg / non-veg marker, the square-with-a-dot convention used on Indian menus. */
@@ -43,7 +44,7 @@ const PICKER_PREVIEW = 6;
 export function PlateComposer({
   open, onOpenChange, day, meal, week, brand, brandName, slots, ruleMissing,
   dishes, dishById, initialPlate, nearby, serviceTime, onSave, isSaving, onGoToRules, draftKey,
-  clashBlocks = true, canEdit = true,
+  clashBlocks = true, dayCaps = [], otherMealDishIds = [], canEdit = true,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -70,6 +71,12 @@ export function PlateComposer({
    * harmless": a warning that survives its own off-switch reads as a bug.
    */
   clashBlocks?: boolean;
+  /** Ingredients carrying a per-day limit (rule 2). Empty when the rule is off. */
+  dayCaps?: IngredientCap[];
+  /** Dishes on the OTHER meals of this day — the context the per-day count needs.
+   *  This meal's own dishes come from the live draft, because a save replaces
+   *  the cell rather than adding to it, exactly as the server treats it. */
+  otherMealDishIds?: string[];
   /** Mirrors the server's FOOD_SETTINGS:edit gate (M16) — read-only principals
    *  can open and read a plate, but every control that changes it is inert. */
   canEdit?: boolean;
@@ -115,7 +122,18 @@ export function PlateComposer({
         : [...e.sideDishIds, sideId],
     }));
 
-  const blocked = clashBlocks && verdict.clashes.length > 0;
+  const ingredientBlocked = clashBlocks && verdict.clashes.length > 0;
+  /* Re-checked against the live draft, so removing the offending dish clears the
+     warning as you edit rather than at the next save. Same helper the board uses
+     and the same rule the server enforces — this is the warning that explains a
+     422 before you hit it. */
+  const capBreaches = React.useMemo(
+    () => dayCapBreaches(allPlateDishIds(draft), otherMealDishIds, dishById, dayCaps),
+    [draft, otherMealDishIds, dishById, dayCaps],
+  );
+  // Rule 2 never blocks (it deadlocked days that were already over), so it is
+  // deliberately NOT folded into `blocked` — the Save button stays live.
+  const blocked = ingredientBlocked;
 
   /**
    * Dishes on THIS plate that also run within 3 days, with where.
@@ -176,7 +194,8 @@ export function PlateComposer({
                 />
               </div>
               <span className={`whitespace-nowrap text-xs font-medium ${blocked ? "text-destructive" : verdict.ok ? "text-success" : "text-warning"}`}>
-                {blocked ? "Blocked — ingredient clash" : `${verdict.met} of ${verdict.total} slots met`}
+                {ingredientBlocked ? "Blocked — ingredient clash"
+                  : `${verdict.met} of ${verdict.total} slots met`}
               </span>
             </div>
           )}
@@ -419,7 +438,7 @@ export function PlateComposer({
             </div>
           )}
 
-          {blocked && (
+          {ingredientBlocked && (
             <div className="rounded-xl bg-danger-soft px-3.5 py-3">
               <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-destructive">
                 <AlertTriangle className="h-3.5 w-3.5" /> Ingredient clash — this plate can’t be saved
@@ -429,6 +448,28 @@ export function PlateComposer({
                   {c.a} and {c.b} both use {c.ingredientName} — swap one of them.
                 </p>
               ))}
+            </div>
+          )}
+
+          {/* Its own block, not folded into the clash above: that one is about
+              THIS plate, this one counts the whole day — so the fix may well be
+              on another meal, and the copy has to say so. Advisory, like the
+              repeat notice below it: saving stays available, because refusing
+              here made an over-limit day impossible to edit back into shape. */}
+          {capBreaches.length > 0 && (
+            <div className="rounded-xl bg-danger-soft px-3.5 py-3">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-destructive">
+                <CircleAlert className="h-3.5 w-3.5" /> Over the daily ingredient limit
+              </p>
+              {capBreaches.map((c) => (
+                <p key={c.ingredientName} className="text-xs leading-relaxed text-destructive">
+                  {c.ingredientName} is in {c.count} dishes today across all meals — the limit is{" "}
+                  {c.maxPerDay}. Swap one here, or on another meal of this day.
+                </p>
+              ))}
+              <p className="mt-1 text-[11px] leading-relaxed text-destructive/80">
+                Daily limits are only flagged, never blocked — save it if the kitchen wants it.
+              </p>
             </div>
           )}
 

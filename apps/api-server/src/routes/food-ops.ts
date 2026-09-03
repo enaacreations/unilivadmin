@@ -1132,7 +1132,7 @@ const menuRuleSettingsSchema = z.object({
   /** Rule 4 — flag a dish on the same weekday in another rotation week. */
   flagSameWeekdayRepeats: z.boolean().nullish(),
   /** Rule 2 — enforce each ingredient's own per-day dish limit. */
-  ingredientDayCapBlocks: z.boolean().nullish(),
+  flagIngredientDayCap: z.boolean().nullish(),
 }).passthrough();
 
 /**
@@ -1154,7 +1154,7 @@ foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SET
         starDishRequired: s.starDishRequired,
         flagSameWeekRepeats: s.flagSameWeekRepeats,
         flagSameWeekdayRepeats: s.flagSameWeekdayRepeats,
-        ingredientDayCapBlocks: s.ingredientDayCapBlocks,
+        flagIngredientDayCap: s.flagIngredientDayCap,
         // Whether the catalogue can actually satisfy the star rule. The editor
         // needs this to explain a refused toggle without a second round-trip.
         hasStarDish: await hasAnyStarDish(),
@@ -1218,7 +1218,7 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
       if (b.starDishRequired !== undefined) patch["starDishRequired"] = b.starDishRequired;
       if (b.flagSameWeekRepeats !== undefined) patch["flagSameWeekRepeats"] = b.flagSameWeekRepeats;
       if (b.flagSameWeekdayRepeats !== undefined) patch["flagSameWeekdayRepeats"] = b.flagSameWeekdayRepeats;
-      if (b.ingredientDayCapBlocks !== undefined) patch["ingredientDayCapBlocks"] = b.ingredientDayCapBlocks;
+      if (b.flagIngredientDayCap !== undefined) patch["flagIngredientDayCap"] = b.flagIngredientDayCap;
       if (Object.keys(patch).length === 1) {
         res.status(400).json({ success: false, error: "Nothing to update" });
         return;
@@ -1244,7 +1244,7 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
           starDishRequired: s.starDishRequired,
           flagSameWeekRepeats: s.flagSameWeekRepeats,
           flagSameWeekdayRepeats: s.flagSameWeekdayRepeats,
-          ingredientDayCapBlocks: s.ingredientDayCapBlocks,
+          flagIngredientDayCap: s.flagIngredientDayCap,
           hasStarDish: await hasAnyStarDish(),
           scope: propertyId ? "PROPERTY" : "KITCHEN",
         },
@@ -1300,10 +1300,10 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
         description: "Flag (never block) a dish served on the same weekday in another rotation week.",
       });
     }
-    if (b.ingredientDayCapBlocks != null) {
+    if (b.flagIngredientDayCap != null) {
       updates.push({
         key: FOOD_RULE_INGREDIENT_DAY_CAP_KEY,
-        value: b.ingredientDayCapBlocks === true,
+        value: b.flagIngredientDayCap === true,
         description: "Enforce each ingredient's own per-day dish limit across every meal of a day.",
       });
     }
@@ -1332,7 +1332,7 @@ foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CAT
         starDishRequired: s.starDishRequired,
         flagSameWeekRepeats: s.flagSameWeekRepeats,
         flagSameWeekdayRepeats: s.flagSameWeekdayRepeats,
-        ingredientDayCapBlocks: s.ingredientDayCapBlocks,
+        flagIngredientDayCap: s.flagIngredientDayCap,
         hasStarDish: await hasAnyStarDish(),
         scope: "GLOBAL",
       },

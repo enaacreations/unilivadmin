@@ -27,6 +27,9 @@ export const MEAL_SHORT: Record<MealType, string> = {
 
 export const plateKey = (day: number, meal: MealType | string) => `${day}|${meal}`;
 
+/** Every meal a day can hold — the span a per-day rule counts over. */
+export const MEAL_KEYS_OF_DAY: MealType[] = ["BREAKFAST", "LUNCH", "SNACKS", "DINNER"];
+
 export const componentLabel = (s: string | null | undefined) =>
   (s ?? "Any").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 
@@ -272,6 +275,83 @@ export function findClashes(dishIds: string[], dishById: Map<string, Dish>): Cla
         owner.set(ing.ingredientId, { dishId: id, name: d.name });
       }
     }
+  }
+  return out;
+}
+
+/** An ingredient carrying a per-day dish limit (ingredients.maxPerDay). */
+export type IngredientCap = { ingredientId: string; name: string; maxPerDay: number };
+
+/** One ingredient over its daily allowance, as the board reports it on a cell. */
+export type DayCapHit = { ingredientName: string; count: number; maxPerDay: number };
+
+/**
+ * Ingredients this cell pushes over their DAILY limit (rule 2).
+ *
+ * The count spans every meal of the (week, day) — that is the whole point of the
+ * rule, and what separates it from the shared-ingredient check, which only ever
+ * looks at one plate.
+ *
+ * This is the WHOLE rule. There is no server-side counterpart: enforcing it on
+ * save deadlocked any day already over the limit, because every step of a fix
+ * was still over it. The server was stripped back to storing the switch, so if
+ * this stops firing the rule simply stops existing.
+ *
+ * Only cells that actually CARRY a breaching ingredient are reported, so a
+ * dinner with no aloo is not marked because breakfast and lunch both had some.
+ *
+ * Occurrences are counted, not distinct dishes: the same dish served at two
+ * meals is that ingredient twice in the day, which is what is being limited.
+ */
+export function cellDayCapHits(
+  cells: CycleCells, week: number, day: number, meal: MealType | string,
+  dishById: Map<string, Dish>, caps: IngredientCap[],
+): DayCapHit[] {
+  return dayCapBreaches(
+    cells.get(cycleKey(week, day, meal)) ?? [],
+    otherMealDishIds(cells, week, day, meal),
+    dishById, caps,
+  );
+}
+
+/** Dishes on the other meals of this day — the context a per-day rule needs. */
+export function otherMealDishIds(
+  cells: CycleCells, week: number, day: number, meal: MealType | string,
+): string[] {
+  return MEAL_KEYS_OF_DAY
+    .filter((m) => m !== meal)
+    .flatMap((m) => cells.get(cycleKey(week, day, m)) ?? []);
+}
+
+/**
+ * Ingredients that `plateDishIds` pushes over their daily limit, given what the
+ * REST of the day already serves.
+ *
+ * Split this way so the plate composer can re-run it against a live draft: the
+ * board passes a saved cell, the composer passes whatever is on screen, and both
+ * get the same answer the server will give. `otherDayDishIds` is every other
+ * meal of the same day — the meal being edited is `plateDishIds`, because a save
+ * REPLACES that cell rather than adding to it.
+ *
+ * Only breaches this plate actually contributes to are returned, so a dinner
+ * with no aloo is never marked because breakfast and lunch both had some.
+ */
+export function dayCapBreaches(
+  plateDishIds: string[], otherDayDishIds: string[],
+  dishById: Map<string, Dish>, caps: IngredientCap[],
+): DayCapHit[] {
+  if (!caps.length || !plateDishIds.length) return [];
+  const dayDishIds = [...otherDayDishIds, ...plateDishIds];
+  const carries = (dishId: string, ingredientId: string) =>
+    ingredientIdsOf(dishById.get(dishId)).includes(ingredientId);
+  const out: DayCapHit[] = [];
+  for (const cap of caps) {
+    // Occurrences, not distinct dishes: the same dish at two meals is that
+    // ingredient twice in the day, which is what is being limited.
+    const count = dayDishIds.filter((id) => carries(id, cap.ingredientId)).length;
+    if (count <= cap.maxPerDay) continue;
+    if (!plateDishIds.some((id) => carries(id, cap.ingredientId))) continue;
+    out.push({ ingredientName: cap.name, count, maxPerDay: cap.maxPerDay });
   }
   return out;
 }

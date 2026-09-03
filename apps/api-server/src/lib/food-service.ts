@@ -172,15 +172,22 @@ export async function isStarDishRuleOn(): Promise<boolean> {
   return getSystemConfigBool(FOOD_RULE_STAR_DISH_KEY, false);
 }
 
-/** Block a day carrying more dishes of one ingredient than its own limit. */
+/** Flag a day carrying more dishes of one ingredient than its own limit. */
 export const FOOD_RULE_INGREDIENT_DAY_CAP_KEY = "food_rule_ingredient_day_cap";
 
 /**
- * Is the per-ingredient daily cap switched on? Defaults OFF — new rule, and it
+ * Is the per-ingredient daily flag switched on? Defaults OFF — new rule, and it
  * is inert anyway until someone sets a `maxPerDay` on an ingredient.
  *
- * Note this is the ONLY switch here; the numbers live on the ingredients. See
- * ingredientsTable.maxPerDay for why the limit cannot be one global figure.
+ * FLAG ONLY. It blocked saves once, and that was a deadlock: the check asked
+ * "is the day legal AFTER this save?", so on a day already over the limit every
+ * step of a fix was still over it and every save was refused — including saves
+ * to meals carrying none of the ingredient. There was no edit that reached a
+ * legal day, and 192 cells were unreachable on real data. Nothing on the save
+ * path reads this now; the board and plate composer draw the warning instead.
+ *
+ * The numbers live on the ingredients — see ingredientsTable.maxPerDay for why
+ * the limit cannot be one global figure.
  */
 export async function isIngredientDayCapRuleOn(): Promise<boolean> {
   return getSystemConfigBool(FOOD_RULE_INGREDIENT_DAY_CAP_KEY, false);
@@ -254,8 +261,8 @@ export interface MenuRuleSettings {
   flagSameWeekRepeats: boolean;
   /** Rule 4 — flag a dish on the same weekday in another rotation week. */
   flagSameWeekdayRepeats: boolean;
-  /** Enforce each ingredient's own per-day dish limit across the whole day. */
-  ingredientDayCapBlocks: boolean;
+  /** Flag (never block) a day carrying more dishes of one ingredient than its limit. */
+  flagIngredientDayCap: boolean;
 }
 
 /**
@@ -279,7 +286,7 @@ export async function resolveMenuRuleSettings(
     starDishRequired: await isStarDishRuleOn(),
     flagSameWeekRepeats: await isSameWeekRepeatRuleOn(),
     flagSameWeekdayRepeats: await isSameWeekdayRepeatRuleOn(),
-    ingredientDayCapBlocks: await isIngredientDayCapRuleOn(),
+    flagIngredientDayCap: await isIngredientDayCapRuleOn(),
   };
   if (!kitchenId && !propertyId) return settings;
 
@@ -300,7 +307,7 @@ export async function resolveMenuRuleSettings(
     if (r.starDishRequired !== null) settings.starDishRequired = r.starDishRequired;
     if (r.flagSameWeekRepeats !== null) settings.flagSameWeekRepeats = r.flagSameWeekRepeats;
     if (r.flagSameWeekdayRepeats !== null) settings.flagSameWeekdayRepeats = r.flagSameWeekdayRepeats;
-    if (r.ingredientDayCapBlocks !== null) settings.ingredientDayCapBlocks = r.ingredientDayCapBlocks;
+    if (r.flagIngredientDayCap !== null) settings.flagIngredientDayCap = r.flagIngredientDayCap;
   }
   return settings;
 }
@@ -1592,103 +1599,6 @@ export async function dishesMissingPortionRule(
   const named = await db.select({ name: dishesTable.name })
     .from(dishesTable).where(inArray(dishesTable.id, missing));
   return named.map((n) => n.name);
-}
-
-/** One ingredient over its daily allowance, and the dishes that carry it. */
-export interface IngredientDayCapBreach {
-  ingredientId: string; name: string; maxPerDay: number; count: number; dishNames: string[];
-}
-
-/** The rotation cell a write is aimed at — the day the cap is counted over. */
-export interface RotationCell {
-  kitchenId: string; brand: string; rotationWeek: number; dayOfWeek: number; mealType: string;
-}
-
-/**
- * The per-ingredient daily cap ("aloo dishes at most once a day").
- *
- * The distinguishing feature versus the shared-ingredient rule next door is
- * SCOPE: that one asks about a single plate, this one counts across every meal
- * of the same (kitchen, brand, rotation week, day). Aloo at lunch AND aloo at
- * dinner is exactly the case it exists to catch, and no per-plate check can see
- * it.
- *
- * The other meals are read from the rotation; the meal being written is taken
- * from `incomingDishIds` instead, because the write REPLACES that cell and the
- * stored rows for it are about to disappear. `alsoCounting` lets a caller add
- * cells it is writing in the same request but has not committed yet — without
- * it, a bulk import that puts aloo at both lunch and dinner of one day would
- * check each against a database that still knows nothing about the other.
- *
- * Occurrences are counted, not distinct dishes: the same aloo dish served at
- * lunch and at dinner is aloo twice that day, which is the thing being limited.
- *
- * Returns a 422 payload, or null when the day is fine — nothing capped, no
- * breach, or the rule switched off.
- */
-export async function ingredientDayCapError(
-  cell: RotationCell,
-  incomingDishIds: string[],
-  alsoCounting: string[] = [],
-): Promise<{ error: string; details: Record<string, unknown> } | null> {
-  if (!(await isIngredientDayCapRuleOn())) return null;
-  // Cheap exit before any rotation read: with no ingredient carrying a limit
-  // there is nothing this rule can say, however full the day is.
-  const capped = await db.select({
-    id: ingredientsTable.id, name: ingredientsTable.name, maxPerDay: ingredientsTable.maxPerDay,
-  }).from(ingredientsTable).where(and(
-    eq(ingredientsTable.isActive, true),
-    sql`${ingredientsTable.maxPerDay} is not null`,
-  ));
-  if (!capped.length) return null;
-
-  const others = await db.select({ dishId: foodMenuRotationTable.dishId })
-    .from(foodMenuRotationTable).where(and(
-      eq(foodMenuRotationTable.kitchenId, cell.kitchenId),
-      eq(foodMenuRotationTable.brand, cell.brand as never),
-      eq(foodMenuRotationTable.rotationWeek, cell.rotationWeek),
-      eq(foodMenuRotationTable.dayOfWeek, cell.dayOfWeek),
-      // Every meal of the day EXCEPT the one being replaced.
-      sql`${foodMenuRotationTable.mealType} <> ${cell.mealType}`,
-    ));
-  const dayDishIds = [...others.map((r) => r.dishId), ...incomingDishIds, ...alsoCounting];
-  if (!dayDishIds.length) return null;
-
-  const links = await db.select({
-    dishId: dishIngredientsTable.dishId, ingredientId: dishIngredientsTable.ingredientId,
-    dishName: dishesTable.name,
-  }).from(dishIngredientsTable)
-    .leftJoin(dishesTable, eq(dishIngredientsTable.dishId, dishesTable.id))
-    .where(and(
-      inArray(dishIngredientsTable.dishId, [...new Set(dayDishIds)]),
-      inArray(dishIngredientsTable.ingredientId, capped.map((c) => c.id)),
-    ));
-  const carriers = new Map<string, Map<string, string>>(); // ingredientId → dishId → name
-  for (const l of links) {
-    const m = carriers.get(l.ingredientId) ?? new Map<string, string>();
-    m.set(l.dishId, l.dishName ?? l.dishId);
-    carriers.set(l.ingredientId, m);
-  }
-
-  const breaches: IngredientDayCapBreach[] = [];
-  for (const c of capped) {
-    const byDish = carriers.get(c.id);
-    if (!byDish) continue;
-    // Occurrences, so a dish appearing at two meals counts twice.
-    const count = dayDishIds.filter((id) => byDish.has(id)).length;
-    if (count > c.maxPerDay!) {
-      breaches.push({
-        ingredientId: c.id, name: c.name, maxPerDay: c.maxPerDay!, count,
-        dishNames: [...new Set(dayDishIds.filter((id) => byDish.has(id)).map((id) => byDish.get(id)!))],
-      });
-    }
-  }
-  if (!breaches.length) return null;
-  const first = breaches[0]!;
-  return {
-    error: `${first.name} would be served in ${first.count} dishes on this day (${first.dishNames.join(", ")}) — the limit is ${first.maxPerDay} per day. Swap one, or change the limit on the ingredient.`,
-    details: { ingredientDayCap: breaches },
-  };
 }
 
 /** Every dish a slot payload would put on the menu — the items and their sides. */

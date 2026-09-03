@@ -414,6 +414,9 @@ export const ingredientsTable = pgTable("ingredients", {
    * cooking oil" is not — and oil is on 21 of 58 dishes here. A single org-wide
    * cap over all ingredients would make almost every day unsatisfiable, which is
    * why the LIMIT lives on the ingredient rather than in the rule.
+   *
+   * Advisory: exceeding it is FLAGGED on the menu board, never refused. See
+   * isIngredientDayCapRuleOn for why blocking had to be abandoned.
    */
   maxPerDay: integer("max_per_day"),
   isActive: boolean("is_active").default(true).notNull(),
@@ -535,8 +538,8 @@ export const menuRuleOverrideTable = pgTable("menu_rule_overrides", {
   flagSameWeekRepeats: boolean("flag_same_week_repeats"),
   /** Null → inherit. Flag a dish served on the same weekday in another week. */
   flagSameWeekdayRepeats: boolean("flag_same_weekday_repeats"),
-  /** Null → inherit. Enforce each ingredient's own per-day dish limit. */
-  ingredientDayCapBlocks: boolean("ingredient_day_cap_blocks"),
+  /** Null → inherit. Flag (never block) a day over an ingredient's daily limit. */
+  flagIngredientDayCap: boolean("flag_ingredient_day_cap"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (t) => ({
