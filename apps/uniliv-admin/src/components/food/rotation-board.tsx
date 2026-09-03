@@ -43,6 +43,7 @@ import {
 } from "./menu-lib";
 import { GenerateFromRule } from "./generate-from-rule";
 import { PlateComposer, PrepDot } from "./plate-composer";
+import { DishRail, dishTintProps } from "./dish-color";
 import { FoodQueryError } from "./query-error";
 import { useActiveBrands, useCompositionRules, useDishCatalogue, useIngredients, useKitchens } from "./use-food-masters";
 
@@ -818,8 +819,18 @@ function BoardCell({
       className="flex min-h-[118px] flex-col rounded-[10px] border bg-card p-2 text-left transition-colors hover:border-accent/50"
     >
       <div className="flex flex-1 flex-col gap-[3px]">
+        {/* A side's indent is a MARGIN, not padding: with the row tinted,
+            padding would start the wash at the cell edge and leave the indent
+            sitting inside the dish's own colour. */}
         {shown.map((l, i) => (
-          <div key={`${l.id}-${i}`} className={`flex min-w-0 items-center gap-1.5 ${l.isSide ? "pl-3" : ""}`}>
+          <div
+            key={`${l.id}-${i}`}
+            {...dishTintProps(
+              dishById.get(l.id),
+              `flex min-w-0 items-center gap-1.5 rounded px-1 py-px ${l.isSide ? "ml-3" : ""}`,
+            )}
+          >
+            <DishRail dish={dishById.get(l.id)} className="self-stretch" />
             <PrepDot dish={dishById.get(l.id)} />
             <span className={`flex-1 truncate text-[11px] ${l.isSide ? "text-muted-foreground" : ""}`}>
               {dishById.get(l.id)?.name ?? "Unknown dish"}

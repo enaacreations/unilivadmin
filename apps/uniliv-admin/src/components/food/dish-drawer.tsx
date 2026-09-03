@@ -28,6 +28,7 @@ import {
 } from "@/lib/food-api";
 import { MEAL_SHORT, catalogueKey, componentLabel, findDuplicateDish } from "./menu-lib";
 import { PrepDot } from "./plate-composer";
+import { DISH_COLOR_SWATCHES, DishRail, nearMissDish, normalizeHex, resolveDishColor } from "./dish-color";
 
 /** Mirrors the food_dish_component / food_measurement_unit enums. Exported so
  *  the bulk-import template documents the same accepted values the chips offer. */
@@ -51,6 +52,8 @@ export type DishDraft = {
   unit: string;
   brands: string[];
   preparations: string[];
+  /** Menu-board colour override as `#rrggbb`; null takes the course colour. */
+  color: string | null;
   isActive: boolean;
   /** Pin the people count at order time — see dishesTable.isQtyLocked. The
    *  count itself isn't drafted: locking pins the dish at 0. */
@@ -81,6 +84,7 @@ export const draftFromDish = (
     unit: d?.unit ?? "SERVING",
     brands: d ? (d.brands ?? []) : brands,
     preparations: d?.preparations ?? ["VEG"],
+    color: normalizeHex(d?.color),
     isActive: d?.isActive ?? true,
     qtyLockOn: d?.isQtyLocked ?? false,
     starOn: d?.isStarDish ?? false,
@@ -147,10 +151,21 @@ export function DishDrawer({
   const [sideSearch, setSideSearch] = React.useState("");
 
   const [dropConfirmOpen, setDropConfirmOpen] = React.useState(false);
+  // The hex field is typed into a character at a time, so it can't be driven
+  // straight off the draft: "#7a4" is a legitimate keystroke and not a colour.
+  // The draft only ever takes a value that parses; this holds what was typed.
+  const [colorText, setColorText] = React.useState("");
 
   React.useEffect(() => {
     if (open) { setIngOpen(false); setIngQuery(""); setSideSearch(""); setDropConfirmOpen(false); }
   }, [open]);
+
+  // Keyed on the dish too: the drawer stays mounted when the catalogue switches
+  // from one dish to another, and the field would otherwise keep the old hex.
+  React.useEffect(() => {
+    if (open) setColorText(draft?.color ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, draft?.id]);
 
   const patch = (p: Partial<DishDraft>) => draft && setDraft({ ...draft, ...p });
   const ingById = React.useMemo(() => new Map(ingredients.map((i) => [i.id, i])), [ingredients]);
@@ -215,6 +230,9 @@ export function DishDrawer({
         unit: d.unit,
         brands: d.brands,
         preparations: d.preparations,
+        // Null clears the override back to the course colour — the server reads
+        // null and undefined differently on update, so this is always sent.
+        color: d.color,
         isActive: d.isActive,
         isQtyLocked: d.qtyLockOn,
         // Null when the switch is off, 0 when it's on — the server normalises to
@@ -348,6 +366,16 @@ export function DishDrawer({
     .map((r) => `${brandName(r.brand)} ${MEAL_SHORT[r.mealType as MealType] ?? r.mealType}`)
     .join(", ");
 
+  // Typed hex that isn't a colour. The draft still holds the last good value, so
+  // without this the field would silently ignore what was typed and save the old
+  // colour — blockReason states it instead.
+  const typedColor = colorText.trim();
+  const colorInvalid = !!typedColor
+    && !normalizeHex(typedColor.startsWith("#") ? typedColor : `#${typedColor}`);
+  // The six-purples guard: another dish close enough that the two rails read as
+  // one colour. Advisory only.
+  const colorNearMiss = nearMissDish(draft.color, dishes, draft.id);
+
   const dupDishReason = dupDish
     ? `“${dupDish.name}” already exists as a ${componentLabel(dupDish.component)}`
       + (dupDish.isActive
@@ -360,13 +388,15 @@ export function DishDrawer({
     ? "Give the dish a name to save it."
     : dupDishReason
       ? dupDishReason
-      : rulesUnread
-        ? rulesQuery.isError
-          ? "The portions on file could not be read — saving now would rewrite them from a blank slate. Reopen the dish to try again."
-          : "Reading the portions on file…"
-        : orgWideConfig && filledMeals.length === 0
-          ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
-          : null;
+      : colorInvalid
+        ? "Enter a hex colour like #7a4ea3, or clear the colour field."
+        : rulesUnread
+          ? rulesQuery.isError
+            ? "The portions on file could not be read — saving now would rewrite them from a blank slate. Reopen the dish to try again."
+            : "Reading the portions on file…"
+          : orgWideConfig && filledMeals.length === 0
+            ? `Add a portion for at least one meal — ${MEAL_TYPES.map((m) => MEAL_SHORT[m]).join(", ")}.`
+            : null;
   // B3 — the portion requirement may only be asked of a caller who can satisfy
   // it. Dishes themselves carry no scope (POST /dishes is FOOD_SETTINGS:create,
   // unscoped), but per_resident_rules is brand-wide and refused for a
@@ -440,6 +470,94 @@ export function DishDrawer({
               </Chip>
             ))}
           </ChipGroup>
+
+          {/* ── colour ─────────────────────────────────────────────────────
+              Sits under Course deliberately: a dish with no colour of its own
+              is drawn in its COURSE's colour, so the thing it falls back to is
+              the field directly above. */}
+          <div className="mb-4">
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Colour on the menu board
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {DISH_COLOR_SWATCHES.map((c) => {
+                const on = draft.color === c;
+                return (
+                  <button
+                    key={c} type="button" aria-label={`Colour ${c}`} aria-pressed={on}
+                    onClick={() => { patch({ color: c }); setColorText(c); }}
+                    className={`h-7 w-7 rounded-lg border-2 transition-transform hover:scale-110 ${
+                      on ? "scale-110 border-primary" : "border-transparent"
+                    }`}
+                    style={{ backgroundColor: c }}
+                  >
+                    {on && <Check className="mx-auto h-3.5 w-3.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {/* The native picker IS the full spectrum — the 24 swatches above
+                  are only the fast path, so no colour is out of reach. */}
+              <input
+                type="color" aria-label="Pick any colour"
+                value={resolveDishColor(draft)}
+                onChange={(e) => {
+                  const hex = normalizeHex(e.target.value);
+                  patch({ color: hex });
+                  setColorText(hex ?? "");
+                }}
+                className="h-8 w-10 cursor-pointer rounded-md border border-border bg-card p-0.5"
+              />
+              <Input
+                value={colorText}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  setColorText(raw);
+                  // A blank field is how the override is cleared — the board
+                  // then draws the dish in its course colour again.
+                  if (!raw.trim()) { patch({ color: null }); return; }
+                  const hex = normalizeHex(raw.trim().startsWith("#") ? raw.trim() : `#${raw.trim()}`);
+                  if (hex) patch({ color: hex });
+                }}
+                placeholder="#7a4ea3" aria-label="Colour hex" aria-invalid={colorInvalid}
+                className={`h-8 w-28 font-mono text-xs ${colorInvalid ? "border-destructive focus-visible:ring-destructive/30" : ""}`}
+              />
+              <DishRail dish={draft} className="h-6" />
+              <span className="text-[11px] text-muted-foreground">
+                {draft.color ? "its own colour" : `${componentLabel(draft.component)} colour`}
+              </span>
+              {draft.color && (
+                <button
+                  type="button"
+                  onClick={() => { patch({ color: null }); setColorText(""); }}
+                  className="ml-auto text-[11px] font-medium text-accent-strong hover:underline"
+                >
+                  Use the course colour
+                </button>
+              )}
+            </div>
+
+            {colorInvalid && (
+              <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-destructive">
+                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                <span>Enter a hex colour like #7a4ea3, or clear the field to use the course colour.</span>
+              </p>
+            )}
+            {/* Advisory, never a block — same posture as the ingredient day-cap
+                flag on the board. An identical colour is deliberate and stays
+                silent; this only fires on the near-miss nobody can read. */}
+            {colorNearMiss && (
+              <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-warning">
+                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                <span>
+                  Hard to tell apart from <span className="font-medium">{colorNearMiss.name}</span> on a menu
+                  board. Pick a colour further away, or keep it if that's deliberate.
+                </span>
+              </p>
+            )}
+          </div>
 
           <ChipGroup title="Served as">
             {DISH_UNITS.map((u) => (

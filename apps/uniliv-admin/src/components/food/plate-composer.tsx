@@ -23,6 +23,7 @@ import {
   ingredientNamesOf, plateVerdict,
   type IngredientCap, type PlateEntry,
 } from "./menu-lib";
+import { DishRail, dishTintProps } from "./dish-color";
 
 /** Veg / non-veg marker, the square-with-a-dot convention used on Indian menus. */
 export function PrepDot({ dish, className = "" }: { dish: Dish | undefined; className?: string }) {
@@ -239,8 +240,14 @@ export function PlateComposer({
                     </span>
                   </div>
                   <div className="flex flex-col gap-1.5 px-3.5 pb-3">
+                    {/* The dish's own wash replaces the flat bg-muted — same
+                        weight of fill, now carrying which dish it is. */}
                     {draft.map((e) => (
-                      <div key={e.dishId} className="flex items-center gap-3 rounded-lg bg-muted px-2.5 py-2">
+                      <div
+                        key={e.dishId}
+                        {...dishTintProps(dishById.get(e.dishId), "flex items-center gap-2.5 rounded-lg px-2.5 py-2")}
+                      >
+                        <DishRail dish={dishById.get(e.dishId)} className="self-stretch" />
                         <PrepDot dish={dishById.get(e.dishId)} />
                         <span className="flex-1 text-sm font-medium">
                           {dishById.get(e.dishId)?.name ?? e.dishId}
@@ -297,8 +304,9 @@ export function PlateComposer({
                       .filter((x): x is Dish => !!x && x.isActive);
                     const ings = ingredientNamesOf(dish);
                     return (
-                      <div key={id} className="rounded-lg bg-muted px-2.5 py-2">
-                        <div className="flex items-center gap-3">
+                      <div key={id} {...dishTintProps(dish, "rounded-lg px-2.5 py-2")}>
+                        <div className="flex items-center gap-2.5">
+                          <DishRail dish={dish} className="h-7" />
                           <PrepDot dish={dish} />
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-medium">{dish?.name ?? id}</p>
@@ -377,6 +385,10 @@ export function PlateComposer({
                               : "border-border bg-card hover:border-accent/50 hover:bg-muted"
                           }`}
                         >
+                          {/* Rail only, no wash: the picker shows up to 40 of
+                              these at once and tinting every pill turns the
+                              list into confetti. */}
+                          <DishRail dish={c.dish} className="self-stretch" />
                           <PrepDot dish={c.dish} />
                           {c.dish.name}
                           {c.note && (
@@ -423,7 +435,11 @@ export function PlateComposer({
               </div>
               <div className="flex flex-col gap-1.5 px-3.5 pb-3">
                 {verdict.extras.map((id) => (
-                  <div key={id} className="flex items-center gap-3 rounded-lg bg-muted px-2.5 py-2">
+                  <div
+                    key={id}
+                    {...dishTintProps(dishById.get(id), "flex items-center gap-2.5 rounded-lg px-2.5 py-2")}
+                  >
+                    <DishRail dish={dishById.get(id)} className="self-stretch" />
                     <PrepDot dish={dishById.get(id)} />
                     <span className="flex-1 text-sm font-medium">{dishById.get(id)?.name ?? id}</span>
                     <Button

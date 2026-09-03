@@ -232,6 +232,23 @@
     color: transparent;
   }
 
+  /* Dish colour rail on the menu board. The two variants are computed per dish
+     (railColors in dish-color.ts) and handed in as custom properties, so the
+     theme picks between them in CSS — no listener, no re-render on toggle. */
+  .dish-rail {
+    background-color: var(--dish-rail-light);
+  }
+  .dark .dish-rail {
+    background-color: var(--dish-rail-dark);
+  }
+  /* The row wash behind a dish line — same per-theme trick, see dishTintProps. */
+  .dish-tint {
+    background-color: var(--dish-tint-light);
+  }
+  .dark .dish-tint {
+    background-color: var(--dish-tint-dark);
+  }
+
   /* Tabular figures for metrics/IDs */
   .tabular-nums {
     font-variant-numeric: tabular-nums;

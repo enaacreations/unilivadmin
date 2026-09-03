@@ -25,6 +25,7 @@ import {
 import { MEAL_SHORT, componentLabel } from "./menu-lib";
 import { DishDrawer, DISH_COMPONENTS, DISH_UNITS, draftFromDish, type DishDraft } from "./dish-drawer";
 import { PrepDot } from "./plate-composer";
+import { DishRail } from "./dish-color";
 import { FoodQueryError } from "./query-error";
 import { useActiveBrands, useDishCatalogue, useIngredients } from "./use-food-masters";
 
@@ -41,6 +42,7 @@ const DISH_BULK_COLUMNS: BulkColumn[] = [
   { key: "brands", label: "brands", hint: "brand codes, comma-separated. Blank = every active brand" },
   { key: "preparations", label: "preparations", hint: `${PREPARATIONS.join(" / ")}, comma-separated. Blank = VEG` },
   { key: "ingredients", label: "ingredients", hint: "existing ingredient names, comma-separated. Add unknown ones under Ingredients first" },
+  { key: "color", label: "color", hint: "menu-board colour as a hex, e.g. #7a4ea3. Blank = the course colour" },
   { key: "isQtyLocked", label: "isQtyLocked", hint: "true to pin the people count (non-editable at order time). Blank = false" },
   { key: "isActive", label: "isActive", hint: "true / false. Blank = true" },
 ];
@@ -84,6 +86,9 @@ export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canE
       brands: (d.brands ?? []).join(", "),
       preparations: (d.preparations ?? []).join(", "),
       ingredients: (d.ingredients ?? []).map((i) => i.ingredientName ?? "").filter(Boolean).join(", "),
+      // The stored override only — never the course fallback, or re-uploading an
+      // export would freeze every dish at whatever its course happened to be.
+      color: d.color ?? "",
       isQtyLocked: String(d.isQtyLocked ?? false),
       isActive: String(d.isActive),
     })),
@@ -216,6 +221,9 @@ export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canE
             return (
               <div key={d.id} className={`rounded-xl border bg-card px-3.5 py-3 ${d.isActive ? "" : "opacity-60"}`}>
                 <div className="flex items-start gap-2">
+                  {/* Taller than the board's rail: on a card the colour is the
+                      thing being reviewed, not a hint alongside a plate. */}
+                  <DishRail dish={d} className="mt-0.5 h-8" />
                   <PrepDot dish={d} className="mt-1.5" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium text-primary">{d.name}</p>

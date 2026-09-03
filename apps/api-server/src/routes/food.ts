@@ -2974,6 +2974,34 @@ function normalizeQtyLock(
   return { isQtyLocked: true, lockedPersons: 0 };
 }
 
+/**
+ * Menu-board colour. Accepts `#rrggbb` in any casing (and the 3-digit shorthand
+ * a hand-typed hex often is), stores it lowercased so two spellings of the same
+ * colour compare equal — the drawer's "too close to another dish" check and the
+ * export both rely on that.
+ *
+ * Empty string is admitted and means "clear it", because that is what a blanked
+ * text field and a blanked spreadsheet cell both send.
+ *
+ * validateBody only VALIDATES — the handlers still read the raw `req.body` — so
+ * the same normaliser has to run in both places or a `#ABC` would pass the gate
+ * and be stored verbatim.
+ */
+function normalizeDishColor(v: unknown): string | null | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "string") return v === null ? null : undefined;
+  const s = v.trim().toLowerCase();
+  if (!s) return null;
+  // #abc -> #aabbcc, so the short form isn't rejected as a non-match.
+  const m = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(s);
+  return m ? `#${m[1]}${m[1]}${m[2]}${m[2]}${m[3]}${m[3]}` : s;
+}
+
+const zDishColor = z.preprocess(
+  normalizeDishColor,
+  z.string().regex(/^#[0-9a-f]{6}$/, "color must be a hex colour like #7a4ea3").nullish(),
+);
+
 const createDishSchema = z.object({
   name: zText,
   // component/unit land on enum columns — bound them to the enum's own values so
@@ -2983,6 +3011,8 @@ const createDishSchema = z.object({
   brands: z.array(z.string().max(128)).optional(),
   preparations: z.array(z.string().max(128)).optional(),
   photoUrl: z.string().max(2048).nullish(),
+  /** Menu-board colour override — see dishesTable.color. */
+  color: zDishColor,
   isActive: z.boolean().optional(),
   /** Pin this dish's people count at order time — see dishesTable.isQtyLocked.
    *  normalizeQtyLock derives the count, so this only has to admit what an old
@@ -3016,6 +3046,9 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "create"), 
       brands: Array.isArray(b.brands) ? b.brands : [],
       preparations: sanitizePreparations(b.preparations),
       photoUrl: b.photoUrl ?? null,
+      // undefined (colour not sent) and null (cleared) both store null — a new
+      // dish with no override falls back to its course colour on the board.
+      color: normalizeDishColor(b.color) ?? null,
       isQtyLocked: lock?.isQtyLocked ?? false,
       lockedPersons: lock?.lockedPersons ?? null,
       isStarDish: b.isStarDish === true,
@@ -3055,6 +3088,8 @@ const updateDishSchema = z.object({
   brands: z.array(z.string().max(128)).optional(),
   preparations: z.array(z.string().max(128)).optional(),
   photoUrl: z.string().max(2048).nullish(),
+  /** Menu-board colour override — see dishesTable.color. */
+  color: zDishColor,
   isActive: z.boolean().optional(),
   /** Pin this dish's people count at order time — see dishesTable.isQtyLocked.
    *  normalizeQtyLock derives the count, so this only has to admit what an old
@@ -3082,6 +3117,10 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"),
       u["lockedPersons"] = lock.lockedPersons;
     }
     if (b.preparations !== undefined) u["preparations"] = sanitizePreparations(b.preparations);
+    // Out of the whitelist above for the same reason as preparations: the stored
+    // value is the normalised hex, not what the client typed. A null clears the
+    // override back to the course colour; an absent key leaves it alone.
+    if (b.color !== undefined) u["color"] = normalizeDishColor(b.color) ?? null;
     const [before] = await db.select().from(dishesTable).where(eq(dishesTable.id, req.params["id"]!));
     // Retiring a dish is an ORG-WIDE withdrawal, not an attribute edit: `dishes`
     // has no kitchen column and resolveMenu joins it on isActive, so isActive

@@ -306,6 +306,22 @@ export const dishesTable = pgTable("dishes", {
   preparations: text("preparations").array().notNull().$defaultFn(() => []),
   photoUrl: text("photo_url"),
   /**
+   * Menu-board colour, as a `#rrggbb` string. Null means "not chosen" and the
+   * board falls back to the dish's COURSE colour (see dish-color.ts), so the
+   * whole catalogue reads as coloured from day one and this column only ever
+   * holds a deliberate override.
+   *
+   * Stored exactly as the F&B manager picked it — the light/dark legibility
+   * clamp is applied at render, never on write. Keeping the raw hex means the
+   * clamp can be retuned later without having lost what was actually chosen,
+   * and it is the value the picker must show back on reopen.
+   *
+   * Deliberately free-form rather than an enum of swatches: the drawer offers 24
+   * swatches as the fast path but the custom picker admits any hex, so an enum
+   * would have to grow a row per custom colour anyone ever picks.
+   */
+  color: text("color"),
+  /**
    * When set, this dish's people count is fixed at order time: the +/− stepper
    * is read-only for everyone and `lockedPersons` is what gets ordered. Applies
    * wherever the dish appears — as a main, or as another dish's side — because

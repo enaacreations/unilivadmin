@@ -254,6 +254,12 @@ export interface Dish {
   preparations: string[];
   photoUrl: string | null; isActive: boolean;
   /**
+   * Menu-board colour as `#rrggbb`, or null to take the course colour instead.
+   * Stored raw — the light/dark legibility clamp happens at render, so this is
+   * exactly what was picked and exactly what the picker shows back.
+   */
+  color?: string | null;
+  /**
    * Pin this dish's people count at order time. When set, the order panel shows
    * a fixed count instead of a stepper — as a main and as anyone's side — and
    * the server re-derives the quantity at placement.

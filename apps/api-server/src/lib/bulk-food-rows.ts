@@ -45,6 +45,23 @@ const csvBool = z.preprocess((v) => {
   return v; // unrecognised word -> let z.boolean() reject the row
 }, z.boolean().optional());
 
+/**
+ * Menu-board colour from a spreadsheet cell. Mirrors zDishColor in
+ * routes/food.ts: any casing, the 3-digit shorthand expanded, stored lowercase.
+ * Blank -> undefined so the caller's "leave it alone" default applies, which is
+ * what an edited export with an untouched colour column has to mean.
+ */
+const csvColor = z.preprocess((v) => {
+  if (v == null) return undefined;
+  const s = String(v).trim().toLowerCase();
+  if (s === "") return undefined;
+  const m = /^#?([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(s);
+  if (m) return `#${m[1]}${m[1]}${m[2]}${m[2]}${m[3]}${m[3]}`;
+  // A bare "7a4ea3" is what a spreadsheet leaves behind once it has eaten the
+  // leading # as a formula marker, so accept it rather than fail the row.
+  return /^[0-9a-f]{6}$/.test(s) ? `#${s}` : s;
+}, z.string().regex(/^#[0-9a-f]{6}$/, "color must be a hex colour like #7a4ea3").optional());
+
 /** One cell holding a list: "Aloo, Pyaaz" -> ["Aloo", "Pyaaz"]. Blank -> []. */
 export function splitList(v: unknown): string[] {
   const parts = typeof v === "string" ? v.split(/[,;|]/)
@@ -78,6 +95,8 @@ export const dishRowSchema = z.object({
   preparations: z.unknown().optional(),
   ingredients: z.unknown().optional(),
   photoUrl: z.string().max(2048).nullish(),
+  /** Menu-board colour override — see dishesTable.color. */
+  color: csvColor,
   isActive: csvBool,
   isQtyLocked: csvBool,
 });

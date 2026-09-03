@@ -546,6 +546,10 @@ async function handleDishes(
       brands: brands.length ? [...new Set(brands)] : existingId ? [] : allBrandCodes,
       preparations: preparations.length ? [...new Set(preparations)] : existingId ? [] : ["VEG"],
       photoUrl: row.photoUrl ?? null,
+      // Same "blank means leave it alone" rule as the columns below: undefined
+      // here, and the update branch skips the column. A new dish with no colour
+      // falls back to its course colour on the board.
+      color: row.color,
       // Left as the raw optional so a blank cell stays distinguishable from an
       // explicit false; the insert and update branches each resolve it.
       isQtyLocked: row.isQtyLocked,
@@ -591,6 +595,7 @@ async function handleDishes(
             ...(dish.brands?.length ? { brands: dish.brands } : {}),
             ...(dish.preparations?.length ? { preparations: dish.preparations } : {}),
             ...(dish.photoUrl == null ? {} : { photoUrl: dish.photoUrl }),
+            ...(dish.color === undefined ? {} : { color: dish.color }),
             // The two lock columns move together — see normalizeQtyLock in
             // routes/food.ts, the other write path that sets them.
             ...(dish.isQtyLocked === undefined

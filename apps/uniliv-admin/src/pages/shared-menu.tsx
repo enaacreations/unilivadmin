@@ -2,8 +2,13 @@ import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Soup, MapPin, CalendarDays, Loader2, UtensilsCrossed } from "lucide-react";
+import { DishRail, dishTintProps } from "@/components/food/dish-color";
 
-interface SharedDish { dishName: string; unit?: string; slotLabel?: string | null; sortOrder?: number }
+interface SharedDish {
+  dishName: string; unit?: string; slotLabel?: string | null; sortOrder?: number;
+  /** Both feed the colour rail — the dish's own colour, or its course's. */
+  component?: string; color?: string | null;
+}
 interface SharedMeal { mealType: string; label: string; dishes: SharedDish[] }
 interface SharedMenu { brand: string; date: string; propertyName: string | null; city: string | null; meals: SharedMeal[] }
 
@@ -83,8 +88,11 @@ export default function SharedMenuPage() {
                         {[...meal.dishes]
                           .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
                           .map((d, i) => (
-                            <li key={i} className="flex items-baseline justify-between gap-3">
-                              <span className="text-sm">{d.dishName}</span>
+                            <li key={i} {...dishTintProps(d, "flex items-center justify-between gap-3 rounded-md px-2 py-1")}>
+                              <span className="flex min-w-0 items-center gap-2">
+                                <DishRail dish={d} className="h-4" />
+                                <span className="text-sm">{d.dishName}</span>
+                              </span>
                               {d.slotLabel && <span className="text-xs text-muted-foreground shrink-0">{d.slotLabel}</span>}
                             </li>
                           ))}

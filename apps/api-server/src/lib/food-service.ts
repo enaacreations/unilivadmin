@@ -948,6 +948,8 @@ export async function resolveMenu(
       dishName: dishesTable.name,
       component: dishesTable.component,
       preparations: dishesTable.preparations,
+      // Carried so the shared menu can draw the same colour rail the board does.
+      color: dishesTable.color,
       unit: dishesTable.unit,
       isQtyLocked: dishesTable.isQtyLocked,
       lockedPersons: dishesTable.lockedPersons,
@@ -966,6 +968,7 @@ export async function resolveMenu(
     dishName: r.dishName,
     component: r.component,
     preparations: r.preparations ?? [],
+    color: r.color,
     unit: r.unit,
     slotLabel: r.slotLabel,
     sortOrder: r.sortOrder,
