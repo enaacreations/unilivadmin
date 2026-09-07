@@ -273,3 +273,26 @@ export function DishRail({ dish, className = "h-3.5" }: {
     />
   );
 }
+
+/**
+ * The same colour as a filled square, for the editor rather than the board.
+ *
+ * Shares `.dish-rail` — the class only sets a background from the two custom
+ * properties, so the shape is entirely the caller's. That matters here: the
+ * square on the colour trigger has to be the colour the board will actually
+ * draw (clamped for the current theme), not the raw hex, or picking a navy on
+ * the dark theme shows a navy chip beside a pale rail.
+ */
+export function DishSwatch({ dish, className = "h-4 w-4" }: {
+  dish: ColorableDish | undefined;
+  className?: string;
+}) {
+  const { light, dark } = railColors(resolveDishColor(dish));
+  return (
+    <span
+      aria-hidden
+      className={`dish-rail inline-block shrink-0 rounded ${className}`}
+      style={{ "--dish-rail-light": light, "--dish-rail-dark": dark } as React.CSSProperties}
+    />
+  );
+}

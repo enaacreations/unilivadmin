@@ -28,7 +28,9 @@ import {
 } from "@/lib/food-api";
 import { MEAL_SHORT, catalogueKey, componentLabel, findDuplicateDish } from "./menu-lib";
 import { PrepDot } from "./plate-composer";
-import { DISH_COLOR_SWATCHES, DishRail, nearMissDish, normalizeHex, resolveDishColor } from "./dish-color";
+import {
+  DISH_COLOR_SWATCHES, DishSwatch, nearMissDish, normalizeHex, resolveDishColor,
+} from "./dish-color";
 
 /** Mirrors the food_dish_component / food_measurement_unit enums. Exported so
  *  the bulk-import template documents the same accepted values the chips offer. */
@@ -151,13 +153,17 @@ export function DishDrawer({
   const [sideSearch, setSideSearch] = React.useState("");
 
   const [dropConfirmOpen, setDropConfirmOpen] = React.useState(false);
+  const [colorOpen, setColorOpen] = React.useState(false);
   // The hex field is typed into a character at a time, so it can't be driven
   // straight off the draft: "#7a4" is a legitimate keystroke and not a colour.
   // The draft only ever takes a value that parses; this holds what was typed.
   const [colorText, setColorText] = React.useState("");
 
   React.useEffect(() => {
-    if (open) { setIngOpen(false); setIngQuery(""); setSideSearch(""); setDropConfirmOpen(false); }
+    if (open) {
+      setIngOpen(false); setIngQuery(""); setSideSearch("");
+      setDropConfirmOpen(false); setColorOpen(false);
+    }
   }, [open]);
 
   // Keyed on the dish too: the drawer stays mounted when the catalogue switches
@@ -474,70 +480,106 @@ export function DishDrawer({
           {/* ── colour ─────────────────────────────────────────────────────
               Sits under Course deliberately: a dish with no colour of its own
               is drawn in its COURSE's colour, so the thing it falls back to is
-              the field directly above. */}
+              the field directly above.
+
+              Collapsed behind a trigger, and shaped like the ingredient
+              combobox further down, because most dishes never take an override
+              — the board is a whole screenful of swatches for a field whose
+              answer is usually "the course colour". The two messages below stay
+              OUTSIDE the popover: the invalid one is what blocks the save, so
+              it has to be readable at the moment saving is refused, and the
+              near-miss is advice about a colour already chosen. */}
           <div className="mb-4">
             <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Colour on the menu board
             </p>
-            <div className="flex flex-wrap gap-1.5">
-              {DISH_COLOR_SWATCHES.map((c) => {
-                const on = draft.color === c;
-                return (
-                  <button
-                    key={c} type="button" aria-label={`Colour ${c}`} aria-pressed={on}
-                    onClick={() => { patch({ color: c }); setColorText(c); }}
-                    className={`h-7 w-7 rounded-lg border-2 transition-transform hover:scale-110 ${
-                      on ? "scale-110 border-primary" : "border-transparent"
-                    }`}
-                    style={{ backgroundColor: c }}
-                  >
-                    {on && <Check className="mx-auto h-3.5 w-3.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]" />}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {/* The native picker IS the full spectrum — the 24 swatches above
-                  are only the fast path, so no colour is out of reach. */}
-              <input
-                type="color" aria-label="Pick any colour"
-                value={resolveDishColor(draft)}
-                onChange={(e) => {
-                  const hex = normalizeHex(e.target.value);
-                  patch({ color: hex });
-                  setColorText(hex ?? "");
-                }}
-                className="h-8 w-10 cursor-pointer rounded-md border border-border bg-card p-0.5"
-              />
-              <Input
-                value={colorText}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  setColorText(raw);
-                  // A blank field is how the override is cleared — the board
-                  // then draws the dish in its course colour again.
-                  if (!raw.trim()) { patch({ color: null }); return; }
-                  const hex = normalizeHex(raw.trim().startsWith("#") ? raw.trim() : `#${raw.trim()}`);
-                  if (hex) patch({ color: hex });
-                }}
-                placeholder="#7a4ea3" aria-label="Colour hex" aria-invalid={colorInvalid}
-                className={`h-8 w-28 font-mono text-xs ${colorInvalid ? "border-destructive focus-visible:ring-destructive/30" : ""}`}
-              />
-              <DishRail dish={draft} className="h-6" />
-              <span className="text-[11px] text-muted-foreground">
-                {draft.color ? "its own colour" : `${componentLabel(draft.component)} colour`}
-              </span>
-              {draft.color && (
+            <Popover open={colorOpen} onOpenChange={setColorOpen}>
+              <PopoverTrigger asChild>
                 <button
-                  type="button"
-                  onClick={() => { patch({ color: null }); setColorText(""); }}
-                  className="ml-auto text-[11px] font-medium text-accent-strong hover:underline"
+                  type="button" role="combobox" aria-expanded={colorOpen}
+                  className={`flex h-10 w-full items-center gap-2 rounded-lg border bg-card px-2.5 text-sm transition-colors focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 ${
+                    colorInvalid ? "border-destructive" : ""
+                  }`}
                 >
-                  Use the course colour
+                  <DishSwatch dish={draft} className="h-4 w-4" />
+                  {draft.color && <span className="font-mono text-xs">{draft.color}</span>}
+                  <span className="text-xs text-muted-foreground">
+                    {draft.color ? "its own colour" : `${componentLabel(draft.component)} colour`}
+                  </span>
+                  {/* A signal on the trigger itself, so a collapsed board never
+                      hides that something is wrong with the colour inside it. */}
+                  {(colorInvalid || colorNearMiss) && (
+                    <AlertTriangle className={`h-3.5 w-3.5 ${colorInvalid ? "text-destructive" : "text-warning"}`} />
+                  )}
+                  <ChevronsUpDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
                 </button>
-              )}
-            </div>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-auto p-3">
+                {/* Eight per row rather than wrapped: the 24 are laid out as 8
+                    hue families × 3 depths, and the grid is what makes that
+                    readable — each column is one family. */}
+                <div className="grid grid-cols-8 gap-1.5">
+                  {DISH_COLOR_SWATCHES.map((c) => {
+                    const on = draft.color === c;
+                    return (
+                      <button
+                        key={c} type="button" aria-label={`Colour ${c}`} aria-pressed={on}
+                        // Closes on pick: choosing is the whole point of opening
+                        // it, and the trigger shows the result immediately.
+                        onClick={() => { patch({ color: c }); setColorText(c); setColorOpen(false); }}
+                        className={`h-7 w-7 rounded-lg border-2 transition-transform hover:scale-110 ${
+                          on ? "scale-110 border-primary" : "border-transparent"
+                        }`}
+                        style={{ backgroundColor: c }}
+                      >
+                        {on && <Check className="mx-auto h-3.5 w-3.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]" />}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Stays open for these two — a hex is typed a character at a
+                    time, and the native picker is its own dialog. */}
+                <div className="mt-3 flex items-center gap-2 border-t pt-3">
+                  {/* The native picker IS the full spectrum — the 24 swatches
+                      above are only the fast path, so no colour is out of reach. */}
+                  <input
+                    type="color" aria-label="Pick any colour"
+                    value={resolveDishColor(draft)}
+                    onChange={(e) => {
+                      const hex = normalizeHex(e.target.value);
+                      patch({ color: hex });
+                      setColorText(hex ?? "");
+                    }}
+                    className="h-8 w-10 shrink-0 cursor-pointer rounded-md border border-border bg-card p-0.5"
+                  />
+                  <Input
+                    value={colorText}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setColorText(raw);
+                      // A blank field is how the override is cleared — the board
+                      // then draws the dish in its course colour again.
+                      if (!raw.trim()) { patch({ color: null }); return; }
+                      const hex = normalizeHex(raw.trim().startsWith("#") ? raw.trim() : `#${raw.trim()}`);
+                      if (hex) patch({ color: hex });
+                    }}
+                    placeholder="#7a4ea3" aria-label="Colour hex" aria-invalid={colorInvalid}
+                    className={`h-8 flex-1 font-mono text-xs ${colorInvalid ? "border-destructive focus-visible:ring-destructive/30" : ""}`}
+                  />
+                </div>
+
+                {draft.color && (
+                  <button
+                    type="button"
+                    onClick={() => { patch({ color: null }); setColorText(""); setColorOpen(false); }}
+                    className="mt-2.5 text-[11px] font-medium text-accent-strong hover:underline"
+                  >
+                    Use the {componentLabel(draft.component).toLowerCase()} colour
+                  </button>
+                )}
+              </PopoverContent>
+            </Popover>
 
             {colorInvalid && (
               <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-destructive">
