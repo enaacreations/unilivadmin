@@ -14,6 +14,7 @@
     "backfill:payment-property": "tsx ./src/backfill-payment-property.ts",
     "backfill:user-scopes": "tsx ./src/backfill-user-scopes.ts",
     "drop:dead-columns": "tsx ./src/drop-dead-columns.ts",
+    "verify:schema": "tsx ./src/verify-schema.ts",
     "migrate:wallet-namespace": "tsx ./src/migrate-wallet-reference-namespace.ts",
     "seed:demo": "tsx ./src/seed-demo.ts",
     "seed:audit": "tsx ./src/seed-audit.ts",
