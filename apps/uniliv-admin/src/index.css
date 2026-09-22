@@ -106,6 +106,18 @@
   --muted-bg: #F4EDE6;
   --badge-outline: #E0D3C7;
 
+  /* ── Access-control surfaces (from the Access Control redesign) ──────────
+     Three tones the rest of the app had no need for: a third ink for
+     table-header/metadata text that must recede behind --muted; a stronger
+     hairline for controls that sit ON a card rather than between cards; and
+     tinted grounds for the coral/violet pills the permission grids use. */
+  --ink3: #A2938A;
+  --bd2: #E2D6CB;
+  --coral-bg: #FDEDE6;
+  --violet-bg: #F1EDFF;
+  --overlay-shadow: 0 10px 36px rgba(36, 26, 21, .14);
+  --scrim: rgba(36, 26, 21, .45);
+
   --secondary: #F4EDE6;
   --secondary-foreground: #3A2C24;
   --secondary-border: #E6D9CE;
@@ -148,6 +160,16 @@
   --muted: #A99C92;
   --muted-bg: #2A201B;
   --badge-outline: #3A2C24;
+
+  /* Access-control surfaces, dark. The tinted grounds invert to deep washes
+     rather than lightening — a pale coral pill on a dark card reads as a
+     highlight, not a status. */
+  --ink3: #7A6A5F;
+  --bd2: #3F332B;
+  --coral-bg: #3A1C10;
+  --violet-bg: #241D44;
+  --overlay-shadow: 0 10px 36px rgba(0, 0, 0, .5);
+  --scrim: rgba(0, 0, 0, .55);
 
   --secondary: #2A201B;
   --secondary-foreground: #E9DED5;
@@ -331,4 +353,15 @@
     transform: translateY(105vh) rotate(720deg);
     opacity: 0.9;
   }
+}
+
+/* Matrix: computed cells that are inherited rather than stored. Deliberately a
+   texture, not a tint — a tint reads as another state, a hatch reads as "no
+   value here". */
+.hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--bd2) 0 2px,
+    transparent 2px 5px
+  );
 }

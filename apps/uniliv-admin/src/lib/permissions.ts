@@ -17,7 +17,7 @@ export type Module =
   | "SALES_LEADS" | "SALES_DASHBOARD" | "PROPERTY_LEADS"
   | "LEDGER" | "PAYMENTS" | "WALLET" | "BILLING_CYCLES" | "REMINDERS" | "BANKING" | "EXPENSES"
   | "FACILITY" | "ELECTRICITY" | "RESIDENT_ATTENDANCE" | "IOT"
-  | "USERS" | "SETTINGS" | "AUDIT_LOG"
+  | "USERS" | "SETTINGS" | "AUDIT_LOG" | "ACCESS_CONTROL"
   // Food Ordering & Kitchen Operations modules (PRD §5 matrix)
   | "FOOD_DASHBOARD" | "FOOD_ALL_ORDERS" | "FOOD_PLACE_ORDER" | "FOOD_KITCHEN_SUMMARY"
   | "FOOD_DISPATCH" | "FOOD_CONFIRM_DELIVERY" | "FOOD_WASTE_TRACKING" | "FOOD_REPORTS"
@@ -66,7 +66,7 @@ export const ALL_MODULES: Module[] = [
   "SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
   "BILLING_CYCLES","REMINDERS","BANKING","EXPENSES",
   "FACILITY","ELECTRICITY","RESIDENT_ATTENDANCE","IOT",
-  "USERS","SETTINGS","AUDIT_LOG",
+  "USERS","SETTINGS","AUDIT_LOG","ACCESS_CONTROL",
   ...FOOD_MODULES,
   ...AUDIT_MODULES,
 ];
@@ -237,7 +237,37 @@ export function homeForRole(_role: UserRole | undefined): string {
   return "/apps";
 }
 
+/**
+ * Paths that are deliberately not module-gated.
+ *
+ * PageGuard fails CLOSED on anything unmapped, so this is the explicit escape
+ * hatch rather than the old implicit one (an unlisted path used to render
+ * ungated, which meant forgetting a mapping silently opened a page). Keep it
+ * short and argued: pre-auth flows, token-bearing links, and the two surfaces
+ * every signed-in user may see.
+ *
+ * `routes.test.ts` asserts every <Route> in App.tsx is either mapped below or
+ * listed here, so a new route cannot be added without answering the question.
+ */
+export const PUBLIC_PATHS: RegExp[] = [
+  /^\/login/,
+  /^\/reset-password\//,
+  /^\/recover-username\//,
+  /^\/esign\/sign\//,   // the resident's own signing link; the token is the credential
+  /^\/m\//,             // short share link
+  /^\/403/,              // the refusal page itself must never be refused
+  /^\/apps\/?$/,        // the launcher — every signed-in user sees it
+  /^\/$/,                // root redirect
+];
+
+export function isPublicPath(path: string): boolean {
+  return PUBLIC_PATHS.some((re) => re.test(path));
+}
+
 export const PATH_TO_MODULE: Array<[RegExp, Module]> = [
+  // Admin Console -> Access Control. Must be listed: moduleForPath() returns
+  // null for an unmapped path and PageGuard then renders the page ungated.
+  [/^\/access-control/, "ACCESS_CONTROL"],
   // Unit-Lead dashboard (WS7) — top-level, gated on the food module.
   [/^\/home/, "FOOD_DASHBOARD"],
   [/^\/dashboard\/executive/, "EXECUTIVE_DASHBOARD"],

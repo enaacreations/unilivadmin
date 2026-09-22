@@ -52,6 +52,7 @@ import Users from "@/pages/users";
 import Settings from "@/pages/settings";
 import AuditLog from "@/pages/audit-log";
 import AuditAdmin from "@/pages/audits/audit-admin";
+import AccessControl from "@/pages/access-control";
 import AuditTemplates from "@/pages/audits/templates";
 import AuditTemplateDetail from "@/pages/audits/template-detail";
 import TemplateBuilder from "@/pages/audits/template-builder";
@@ -243,6 +244,9 @@ function Router() {
       <Route path="/audits/templates/:id">{() => <ProtectedRoute component={AuditTemplateDetail} />}</Route>
       <Route path="/audits/question-bank">{() => <ProtectedRoute component={QuestionBank} />}</Route>
       <Route path="/audits/admin">{() => <ProtectedRoute component={AuditAdmin} />}</Route>
+      {/* Admin Console -> Access Control (PRD §30/§31). Gated on the
+          ACCESS_CONTROL module, which only the parity roles hold. */}
+      <Route path="/access-control">{() => <ProtectedRoute component={AccessControl} />}</Route>
       {/* Runner must precede the :id catch-all (wouter matches in Switch order) */}
       <Route path="/audits/:id/run">{() => <ProtectedRoute component={AuditRunner} />}</Route>
       <Route path="/audits/:id">{() => <ProtectedRoute component={AuditDetail} />}</Route>

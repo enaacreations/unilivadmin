@@ -8,7 +8,7 @@ import {
   Network, LayoutGrid,
   DoorOpen, CalendarCheck, CalendarX, LineChart, Recycle, Database, ScrollText,
   Gauge, AlertTriangle, ListChecks, Kanban, BadgeCheck, FileBarChart,
-  CalendarClock, FileStack, CookingPot,
+  CalendarClock, FileStack, CookingPot, ShieldCheck,
   type LucideIcon,
 } from "lucide-react"
 import { moduleForPath, type Module, type Permission, type UserRole } from "@/lib/permissions"
@@ -177,6 +177,13 @@ export const navGroups: NavGroup[] = [
        gated on AUDIT_TEMPLATES for direct links. */
     { title: "Reports", href: "/audits/reports", icon: FileBarChart, module: "AUDIT_REPORTS" },
     { title: "Settings", href: "/audits/admin", icon: SlidersHorizontal, module: "AUDIT_ADMIN" },
+  ]},
+  /* Admin Console -> RBAC (PRD §30). A live group of its own rather
+     than an item under the commented-out Settings group, so it is reachable
+     from the launcher today. Gated on ACCESS_CONTROL, which only SUPER_ADMIN
+     and OPS_EXCELLENCE hold, so no other role sees the group at all. */
+  { title: "Admin", items: [
+    { title: "RBAC", href: "/access-control", icon: ShieldCheck, module: "ACCESS_CONTROL" },
   ]},
   /* Hidden for now (user decision 13-Jul-2026) — see the note above.
   { title: "Growth", items: [

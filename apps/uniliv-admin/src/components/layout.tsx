@@ -22,7 +22,7 @@ import { UserAvatar } from "@/components/ui/user-avatar"
 import { NotificationBell } from "@/components/notification-bell"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { usePermissions } from "@/lib/use-permissions"
-import { moduleForPath } from "@/lib/permissions"
+import { moduleForPath, isPublicPath } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 import { clearLocalDrafts } from "@/lib/form-drafts"
 import { navGroups, canViewHref, type NavGroup, type NavItem } from "@/lib/nav"
@@ -599,6 +599,15 @@ export function PageGuard({ children }: { children: React.ReactNode }) {
   const Forbidden = React.lazy(() => import("@/pages/forbidden"))
   const mod = moduleForPath(location)
   if (!me) return <>{children}</> // loading — let children render skeleton
-  if (mod && !can(mod, "view")) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
+
+  // Explicitly public: pre-auth flows, token links, launcher, the 403 itself.
+  if (isPublicPath(location)) return <>{children}</>
+
+  // FAIL CLOSED. This previously rendered any unmapped path ungated, so a route
+  // added without a PATH_TO_MODULE entry was silently open — and the mapping is
+  // a separate hand-maintained list, which is exactly the kind that drifts.
+  // routes.test.ts keeps the two in step so this cannot lock out a real page.
+  if (!mod) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
+  if (!can(mod, "view")) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
   return <>{children}</>
 }
