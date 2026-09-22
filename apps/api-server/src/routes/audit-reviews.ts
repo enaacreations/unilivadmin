@@ -5,7 +5,7 @@
  * module gate (only those roles hold it) plus isSuperAdmin for reopen.
  */
 import { Router, type IRouter } from "express";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   db,
   auditsTable,
@@ -20,6 +20,8 @@ import {
 } from "@workspace/db";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
+import { resolveAuditAccess, scopeAuditsCondition } from "../lib/audit-access.js";
+import { enforceSod, type SodSubject } from "../lib/access/sod.js";
 import { httpError, isSuperAdmin } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -34,10 +36,53 @@ import {
 
 const router: IRouter = Router();
 
-async function loadAudit(id: string) {
+/**
+ * Load an audit for review, refusing one the caller's grants do not cover.
+ *
+ * The single chokepoint for every route in this file — workspace, approve,
+ * reject and reopen all go through it, so guarding here covers all four rather
+ * than four separate checks that can drift apart.
+ *
+ * 404, not 403: a reviewer probing ids should not learn that an audit exists at
+ * a property they cannot see. Matches the register's behaviour.
+ */
+async function loadAudit(req: import("express").Request, id: string) {
   const [audit] = await db.select().from(auditsTable).where(eq(auditsTable.id, id));
   if (!audit) throw httpError(404, "Audit not found");
+
+  const access = await resolveAuditAccess(req.user!);
+  if (!access.isGlobalAdmin) {
+    const [visible] = await db
+      .select({ id: auditsTable.id })
+      .from(auditsTable)
+      .where(and(eq(auditsTable.id, id), scopeAuditsCondition(access)));
+    if (!visible) throw httpError(404, "Audit not found");
+  }
   return audit;
+}
+
+/**
+ * SoD subject for an audit under review (PRD §33).
+ *
+ * The auditor who conducted and submitted the audit must not also sign it off.
+ * Before this, `POST /:id/approve` simply stamped `reviewerId: req.user.id`
+ * with nothing stopping that being the same person as `assigneeId`.
+ */
+async function sodSubjectForAudit(req: import("express").Request): Promise<SodSubject | null> {
+  const id = req.params["id"] as string;
+  const [a] = await db
+    .select({ id: auditsTable.id, createdBy: auditsTable.createdBy, assigneeId: auditsTable.assigneeId })
+    .from(auditsTable)
+    .where(eq(auditsTable.id, id));
+  if (!a) return null;
+  return {
+    type: "audit",
+    id: a.id,
+    // `assigneeId` is the auditor who conducted AND submitted it — the party
+    // whose work is being reviewed. `createdBy` is null for schedule-generated
+    // audits (the system actor), which is why it cannot be the only check.
+    actors: { submittedBy: a.assigneeId, createdBy: a.createdBy },
+  };
 }
 
 /** Review queue (Submitted only — PRD §8.5), oldest first. */
@@ -47,7 +92,12 @@ router.get(
   authorize("AUDIT_REVIEW", "view"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
-    const where = eq(auditsTable.state, "SUBMITTED");
+    // Was every SUBMITTED audit in the company. A REVIEWER grant is scoped by
+    // audit type AND org node, so the queue has to compose the same condition
+    // the register and dashboard already do — otherwise holding AUDIT_REVIEW
+    // anywhere meant reviewing everywhere.
+    const access = await resolveAuditAccess(req.user!);
+    const where = and(eq(auditsTable.state, "SUBMITTED"), scopeAuditsCondition(access));
     const [countRow] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(auditsTable)
@@ -89,7 +139,7 @@ router.get(
   authenticate,
   authorize("AUDIT_REVIEW", "view"),
   async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
+    const audit = await loadAudit(req, req.params["id"] as string);
     const [version] = await db
       .select()
       .from(auditTemplateVersionsTable)
@@ -176,8 +226,9 @@ router.post(
   "/:id/approve",
   authenticate,
   authorize("AUDIT_REVIEW", "edit"),
+  enforceSod({ entity: "audit", action: "approve", load: sodSubjectForAudit }),
   async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
+    const audit = await loadAudit(req, req.params["id"] as string);
     const actor = auditActor(req);
 
     await db.transaction(async (tx) => {
@@ -207,7 +258,7 @@ router.post(
     }
     // PRD §10: Review → Close (unconditional; safety-net job is the catch-up).
     await maybeAutoCloseAudit(audit.id, actor);
-    res.json({ success: true, data: await loadAudit(audit.id) });
+    res.json({ success: true, data: await loadAudit(req, audit.id) });
   },
 );
 
@@ -224,8 +275,9 @@ router.post(
   "/:id/reject",
   authenticate,
   authorize("AUDIT_REVIEW", "edit"),
+  enforceSod({ entity: "audit", action: "reject", load: sodSubjectForAudit }),
   async (req, res) => {
-    const audit = await loadAudit(req.params["id"] as string);
+    const audit = await loadAudit(req, req.params["id"] as string);
     const comment = String(req.body?.comment ?? "").trim();
     if (!comment) throw httpError(422, "A comment is required to reject (FRD-REV-02)");
     const actor = auditActor(req);
@@ -252,7 +304,7 @@ router.post(
         entityId: audit.id,
       });
     }
-    res.json({ success: true, data: await loadAudit(audit.id) });
+    res.json({ success: true, data: await loadAudit(req, audit.id) });
   },
 );
 
@@ -274,11 +326,12 @@ router.post(
   "/:id/reopen",
   authenticate,
   authorize("AUDIT_REVIEW", "edit"),
+  enforceSod({ entity: "audit", action: "verify", load: sodSubjectForAudit }),
   async (req, res) => {
     if (!isSuperAdmin(req.user?.role)) {
       throw httpError(403, "Only Operations Excellence may reopen a closed audit (D-11 / FRD-REV-06)");
     }
-    const audit = await loadAudit(req.params["id"] as string);
+    const audit = await loadAudit(req, req.params["id"] as string);
     const reason = String(req.body?.reason ?? "").trim();
     if (!reason) throw httpError(422, "A reason is required to reopen (FRD-REV-06)");
     if (!REOPENABLE_STATES.includes(audit.state as AuditState)) {
@@ -306,7 +359,7 @@ router.post(
         entityId: audit.id,
       });
     }
-    res.json({ success: true, data: await loadAudit(audit.id) });
+    res.json({ success: true, data: await loadAudit(req, audit.id) });
   },
 );
 

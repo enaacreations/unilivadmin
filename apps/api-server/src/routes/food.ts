@@ -54,6 +54,7 @@ import { canTransition } from "../lib/order-transitions.js";
 import { z } from "zod";
 import { authenticate, authorize as requireRoles } from "../middlewares/auth.js";
 import { authorize, authorizeAny } from "../middlewares/authorize.js";
+import { enforceSod } from "../lib/access/sod.js";
 import { can, FOOD_MODULES, type UserRole } from "../lib/permissions.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -1832,12 +1833,18 @@ foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"
 // authorize() call. Cancel is only valid while the order is still pre-dispatch.
 const cancelOrderSchema = z.object({ reason: zText.nullish() }).passthrough();
 
-foodRouter.post("/orders/:id/cancel", authenticate, async (req, res) => {
+foodRouter.post(
+  "/orders/:id/cancel",
+  authenticate,
+  // Was an inline `can(...) || can(...)` test inside the handler. Same rule,
+  // same 403 — but as middleware it is introspectable, so a route-coverage
+  // sweep can see the gate instead of reading this route as unauthorized.
+  // It also now refuses before body validation, so an unauthorized caller
+  // learns nothing about the schema.
+  authorizeAny(["FOOD_PLACE_ORDER", "FOOD_KITCHEN_SUMMARY"], "edit"),
+  async (req, res) => {
   try {
     if (!validateBody(cancelOrderSchema, req, res)) return;
-    const role = req.user?.role as UserRole | undefined;
-    const canCancel = can(role, "FOOD_PLACE_ORDER", "edit") || can(role, "FOOD_KITCHEN_SUMMARY", "edit");
-    if (!canCancel) { res.status(403).json({ success: false, error: "Forbidden — insufficient permissions" }); return; }
     const id = req.params["id"]!;
     const [order] = await db.select().from(foodOrdersTable).where(eq(foodOrdersTable.id, id));
     if (!order) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -2093,7 +2100,35 @@ const RECEIVED_SURPLUS_MULTIPLE = 10;
 /** Floor so tiny lines (0.5 kg of a garnish) keep usable headroom. */
 const RECEIVED_SURPLUS_MIN_CAP = 10;
 
-foodRouter.post("/orders/:id/confirm-delivery", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "edit"), async (req, res) => {
+foodRouter.post(
+  "/orders/:id/confirm-delivery",
+  authenticate,
+  authorize("FOOD_CONFIRM_DELIVERY", "edit"),
+  // PRD §33, the named example. The MATRIX already keeps shipping and receiving
+  // in different roles (FOOD_SHIP_VS_RECEIVE in access/sod.ts) — but the two
+  // break-glass parity roles hold both edits deliberately, so nothing stopped
+  // one of them dispatching a trip and then certifying its own receipt.
+  // This is the per-RECORD half: same order, same person, refused.
+  enforceSod({
+    entity: "food_order",
+    action: "confirm",
+    conflictsWith: ["dispatchedBy"],
+    load: async (req) => {
+      const [o] = await db
+        .select({ id: foodOrdersTable.id, dispatchId: foodOrdersTable.dispatchId })
+        .from(foodOrdersTable)
+        .where(eq(foodOrdersTable.id, req.params["id"] as string));
+      if (!o) return null;
+      const [d] = o.dispatchId
+        ? await db
+            .select({ dispatchedById: foodDispatchesTable.dispatchedById })
+            .from(foodDispatchesTable)
+            .where(eq(foodDispatchesTable.id, o.dispatchId))
+        : [];
+      return { type: "food_order", id: o.id, actors: { dispatchedBy: d?.dispatchedById ?? null } };
+    },
+  }),
+  async (req, res) => {
   try {
     if (!validateBody(confirmDeliverySchema, req, res)) return;
     const id = req.params["id"]!;
@@ -2258,7 +2293,8 @@ foodRouter.post("/orders/:id/confirm-delivery", authenticate, authorize("FOOD_CO
   } catch (err) {
     fail(req, res, err);
   }
-});
+}
+);
 
 /** Per-dish changes spelled out in the waste audit note before it summarises. */
 const WASTE_NOTE_MAX_ITEMS = 8;

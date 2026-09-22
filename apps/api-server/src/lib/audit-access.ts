@@ -22,6 +22,7 @@ import {
 } from "@workspace/db";
 import type { AuthUser } from "../middlewares/auth.js";
 import { isSuperAdmin } from "./authz.js";
+import { accessResolverMode } from "../config/env.js";
 
 export type AuditType = "UL" | "CM" | "CX";
 export const AUDIT_TYPES: AuditType[] = ["UL", "CM", "CX"];
@@ -53,6 +54,19 @@ export interface AuditAccess {
  * effect immediately (FRD-ACC-02 AC); the daily sweep only writes the event.
  */
 export async function resolveAuditAccess(user: AuthUser): Promise<AuditAccess> {
+  // ── CUTOVER POINT ────────────────────────────────────────────────────────
+  // Under ACCESS_RESOLVER=next, grants come from access_grants (roleKey
+  // "AUDIT.<moduleRole>", audit types in `qualifiers`) and are reshaped by the
+  // adapter into exactly this AuditAccess, so the ~15 call sites are untouched.
+  // Dynamic import keeps the module graph acyclic.
+  if (accessResolverMode() === "next") {
+    const [{ resolveAccess }, { toAuditAccess }] = await Promise.all([
+      import("./access.js"),
+      import("./access/audit-adapter.js"),
+    ]);
+    return toAuditAccess(await resolveAccess(user));
+  }
+
   if (isSuperAdmin(user.role)) {
     return { isGlobalAdmin: true, userId: user.id, byRole: new Map() };
   }

@@ -147,3 +147,49 @@ export const BODY_LIMIT = process.env["BODY_LIMIT"] || "1mb";
  * horizontally so jobs don't double-fire. Defaults on.
  */
 export const RUN_SCHEDULERS = (process.env["RUN_SCHEDULERS"] ?? "true") !== "false";
+
+/**
+ * Which resolver answers "where may this user act".
+ *
+ *   "legacy" (default) — user_scopes + audit_role_grants, as shipped today.
+ *   "next"             — the unified org_nodes / access_grants resolver.
+ *
+ * Defaults to legacy ON PURPOSE. The new resolver reads org_nodes and
+ * access_grants, which exist only where the projection and backfill have been
+ * run; flipping it by default would mean any environment that had not run them
+ * resolves every user to "no access" on deploy. Opt in per environment, AFTER
+ * syncOrgNodes() + backfillAccessGrants() report a clean wouldLoseAccess list.
+ *
+ * Equivalence is asserted two ways: access-equivalence.test.ts /
+ * audit-equivalence.test.ts against fixtures, and a real-data sweep comparing
+ * both resolvers for every active user.
+ */
+export const ACCESS_RESOLVER_CONFIGURED: "legacy" | "next" | "auto" =
+  process.env["ACCESS_RESOLVER"] === "next"
+    ? "next"
+    : process.env["ACCESS_RESOLVER"] === "legacy"
+      ? "legacy"
+      : "auto";
+
+/**
+ * The EFFECTIVE mode, decided once at boot by verifyAccessResolverMode().
+ *
+ * "auto" (the default) means: use the unified resolver IF the projection has
+ * been built, otherwise stay on legacy and say so loudly. That is what makes
+ * shipping `next` by default safe — an environment where syncOrgNodes() has
+ * never run would otherwise resolve every user to "no access" on deploy, which
+ * is a total outage dressed up as a permissions bug.
+ *
+ * An EXPLICIT `next` does not fall back: if you have asked for it and the
+ * projection is missing, that is a deployment error and should be loud, not
+ * quietly papered over.
+ */
+let effectiveResolver: "legacy" | "next" =
+  ACCESS_RESOLVER_CONFIGURED === "next" ? "next" : "legacy";
+
+export function setAccessResolverMode(mode: "legacy" | "next"): void {
+  effectiveResolver = mode;
+}
+export function accessResolverMode(): "legacy" | "next" {
+  return effectiveResolver;
+}

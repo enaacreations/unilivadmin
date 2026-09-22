@@ -49,6 +49,7 @@ import { getObjectUrl, isStorageConfigured } from "@workspace/storage";
 import { canTransition } from "../lib/order-transitions.js";
 import { authenticate, authorize as requireRoles } from "../middlewares/auth.js";
 import { authorize, authorizeAny } from "../middlewares/authorize.js";
+import { enforceSod } from "../lib/access/sod.js";
 import { can, type UserRole } from "../lib/permissions.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { isSuperAdmin } from "../lib/authz.js";
@@ -1842,7 +1843,26 @@ foodOpsRouter.post("/orders/:id/accept", authenticate, authorize("FOOD_KITCHEN_S
 
 const rejectOrderSchema = z.object({ reason: zText.nullish() }).passthrough();
 
-foodOpsRouter.post("/orders/:id/reject", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit"), async (req, res) => {
+foodOpsRouter.post(
+  "/orders/:id/reject",
+  authenticate,
+  authorize("FOOD_KITCHEN_SUMMARY", "edit"),
+  // Rejecting is the KITCHEN declining the unit's order. A unit lead withdrawing
+  // their own order is a CANCEL, which has its own route and its own rules —
+  // routing it through reject would skip those, so the placer is refused here.
+  enforceSod({
+    entity: "food_order",
+    action: "reject",
+    conflictsWith: ["placedBy"],
+    load: async (req) => {
+      const [o] = await db
+        .select({ id: foodOrdersTable.id, unitLeadId: foodOrdersTable.unitLeadId })
+        .from(foodOrdersTable)
+        .where(eq(foodOrdersTable.id, req.params["id"] as string));
+      return o ? { type: "food_order", id: o.id, actors: { placedBy: o.unitLeadId } } : null;
+    },
+  }),
+  async (req, res) => {
   try {
     if (!validateBody(rejectOrderSchema, req, res)) return;
     const order = await loadOrderForActor(req, res); if (!order) return;
@@ -1868,7 +1888,8 @@ foodOpsRouter.post("/orders/:id/reject", authenticate, authorize("FOOD_KITCHEN_S
     req.log.error(mutationLog(req, err, { orderId: req.params["id"] }), "order reject failed");
     res.status(500).json({ success: false, error: "Internal server error" });
   }
-});
+}
+);
 
 /* ════════════════════════════════════════════════════════════════════════
  * Dispatch trips (Persona st.24)

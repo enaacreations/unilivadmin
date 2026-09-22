@@ -8,12 +8,62 @@ import {
 import { eq, sql, ilike, or, and, inArray, gte, lte } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { pick, forbidden } from "../lib/authz.js";
+import {
+  pick,
+  forbidden,
+  badRequest,
+  scopedPropertyId,
+  effectivePropertyFilter,
+  assertPropertyAccess,
+  sendAuthzError,
+} from "../lib/authz.js";
+import { recordActivity, activityCtx } from "../lib/activity/record.js";
+import { enforceSod } from "../lib/access/sod.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId, withUniqueRetry } from "../lib/id.js";
 import { csvEsc } from "../lib/export-service.js";
 
 const router = Router();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property scoping
+//
+// Every route here was gated on EMPLOYEES:view alone, so any role holding it
+// read every employee — and every attendance row — across all properties.
+// Attendance has no propertyId of its own; it is scoped through its employee.
+//
+// `employees.propertyId` is NULLABLE. An unassigned employee (head office, or
+// not yet placed) belongs to no property and is therefore invisible to a
+// property-scoped caller. That is deliberate — fail closed — and consistent
+// with how a null propertyId is treated elsewhere. Org-wide roles are unaffected.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Load an employee, treating one outside the caller's scope as absent (404). */
+async function loadEmployeeInScope(req: import("express").Request, id: string) {
+  const [row] = await db.select().from(employeesTable).where(eq(employeesTable.id, id));
+  if (!row) return null;
+  const scope = scopedPropertyId(req);
+  if (scope && row.propertyId !== scope) return null;
+  return row;
+}
+
+/** 403 unless `employeeId` sits inside the caller's property scope. */
+async function assertEmployeeInScope(req: import("express").Request, employeeId: string | null | undefined): Promise<void> {
+  const scope = scopedPropertyId(req);
+  if (!scope) return;
+  if (!employeeId) throw badRequest("employeeId is required", { code: "SCOPE_REQUIRED" });
+  const [row] = await db
+    .select({ propertyId: employeesTable.propertyId })
+    .from(employeesTable)
+    .where(eq(employeesTable.id, employeeId));
+  if (!row || row.propertyId !== scope) throw forbidden("Outside your property scope");
+}
+
+/** Employee-table filter for the caller's scope, or undefined when unrestricted. */
+function employeeScopeFilter(req: import("express").Request) {
+  const scope = scopedPropertyId(req);
+  return scope ? eq(employeesTable.propertyId, scope) : undefined;
+}
 
 async function nextEmpCode(): Promise<string> {
   const [r] = await db.select({ max: sql<string | null>`MAX(${employeesTable.employeeCode})` }).from(employeesTable);
@@ -29,7 +79,7 @@ router.get("/", authenticate, authorize("EMPLOYEES", "view"), async (req, res) =
     const search = req.query["search"] as string | undefined;
     const department = req.query["department"] as string | undefined;
     const status = req.query["status"] as string | undefined;
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
 
     const conditions = [];
     if (department) conditions.push(eq(employeesTable.department, department));
@@ -42,6 +92,7 @@ router.get("/", authenticate, authorize("EMPLOYEES", "view"), async (req, res) =
     const rows = await db.select().from(employeesTable).where(where).limit(limit).offset(offset).orderBy(employeesTable.createdAt);
     res.json({ success: true, data: rows.map(r => ({ ...r, ctc: r.ctc ? Number(r.ctc) : null })), meta: buildMeta(countResult.count, page, limit) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -54,6 +105,12 @@ router.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res
       "propertyId", "managerId", "joiningDate", "ctc", "basic", "hra", "specialAllowance",
       "bankAccount", "ifscCode", "panNumber", "pfNumber", "esicNumber", "status",
     ]) as Record<string, any>;
+    // Same shape as the resident/room create paths: a scoped caller may only
+    // create within their own property; an org-wide caller may leave it unset
+    // (a head-office employee legitimately belongs to no property).
+    const createScope = scopedPropertyId(req);
+    if (createScope) body.propertyId = createScope;
+    else if (body.propertyId) assertPropertyAccess(req, body.propertyId);
     const row = await withUniqueRetry(async () => {
       const [r] = await db.insert(employeesTable).values({
       id: newId(),
@@ -91,6 +148,7 @@ router.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res
     }
     res.status(201).json({ success: true, data: { ...row, ctc: row.ctc ? Number(row.ctc) : null } });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -98,7 +156,7 @@ router.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res
 
 router.get("/:id", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
   try {
-    const [row] = await db.select().from(employeesTable).where(eq(employeesTable.id, req.params["id"]!));
+    const row = await loadEmployeeInScope(req, req.params["id"]!);
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, ctc: row.ctc ? Number(row.ctc) : null } });
   } catch (err) {
@@ -114,6 +172,13 @@ router.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res
       "propertyId", "managerId", "joiningDate", "ctc", "basic", "hra", "specialAllowance",
       "bankAccount", "ifscCode", "panNumber", "pfNumber", "esicNumber", "status",
     ]) as Record<string, unknown>;
+    const existing = await loadEmployeeInScope(req, req.params["id"]!);
+    if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    // Edit rights on an employee you can see must not become write access to one
+    // you cannot: a scoped caller may not reassign them to another property.
+    if (body["propertyId"] !== undefined && body["propertyId"] !== existing.propertyId) {
+      assertPropertyAccess(req, body["propertyId"] as string | null);
+    }
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     for (const [k, v] of Object.entries(body)) {
       if (k === "dob" && v) updateData["dob"] = new Date(v as string);
@@ -132,7 +197,9 @@ router.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res
 
 router.delete("/:id", authenticate, authorize("EMPLOYEES", "delete"), async (req, res) => {
   try {
-    await db.delete(employeesTable).where(eq(employeesTable.id, req.params["id"]!));
+    const existing = await loadEmployeeInScope(req, req.params["id"]!);
+    if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    await db.delete(employeesTable).where(eq(employeesTable.id, existing.id));
     res.json({ success: true, message: "Deleted" });
   } catch (err) {
     req.log.error(err);
@@ -143,6 +210,7 @@ router.delete("/:id", authenticate, authorize("EMPLOYEES", "delete"), async (req
 // Employee leave balances
 router.get("/:id/leave-balances", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
   try {
+    if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const year = parseInt(req.query["year"] as string || String(new Date().getFullYear()), 10);
     const rows = await db.select().from(leaveBalancesTable).where(and(eq(leaveBalancesTable.employeeId, req.params["id"]!), eq(leaveBalancesTable.year, year)));
     res.json({ success: true, data: rows });
@@ -152,6 +220,7 @@ router.get("/:id/leave-balances", authenticate, authorize("EMPLOYEES", "view"), 
 // Employee attendance for a month
 router.get("/:id/attendance", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
   try {
+    if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const year = parseInt(req.query["year"] as string || String(new Date().getFullYear()), 10);
     const month = parseInt(req.query["month"] as string || String(new Date().getMonth() + 1), 10);
     const start = new Date(year, month - 1, 1);
@@ -165,6 +234,7 @@ router.get("/:id/attendance", authenticate, authorize("EMPLOYEES", "view"), asyn
 // Performance notes
 router.get("/:id/performance", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
   try {
+    if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const rows = await db.select().from(performanceNotesTable).where(eq(performanceNotesTable.employeeId, req.params["id"]!)).orderBy(performanceNotesTable.date);
     res.json({ success: true, data: rows });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
@@ -172,6 +242,7 @@ router.get("/:id/performance", authenticate, authorize("EMPLOYEES", "view"), asy
 
 router.post("/:id/performance", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
   try {
+    if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const [row] = await db.insert(performanceNotesTable).values({
       id: newId(), employeeId: req.params["id"]!, type: req.body.type, text: req.body.text,
       date: req.body.date ? new Date(req.body.date) : new Date(), addedBy: req.user?.id,
@@ -245,7 +316,7 @@ router.post("/exits/:eid/finalize", authenticate, authorize("EMPLOYEES", "edit")
 // Stats
 router.get("/stats/overview", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
   try {
-    const all = await db.select().from(employeesTable);
+    const all = await db.select().from(employeesTable).where(employeeScopeFilter(req));
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
     const totalActive = all.filter(e => e.status === "ACTIVE").length;
@@ -272,16 +343,30 @@ attendanceRouter.get("/", authenticate, authorize("EMPLOYEES", "view"), async (r
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const employeeId = req.query["employeeId"] as string | undefined;
 
-    const where = employeeId ? eq(attendanceTable.employeeId, employeeId) : undefined;
-    const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(attendanceTable).where(where);
-    const rows = await db.select().from(attendanceTable).where(where).limit(limit).offset(offset).orderBy(attendanceTable.date);
+    // Attendance carries no propertyId — it is scoped through its employee, so
+    // the join is what enforces the boundary, not an afterthought filter.
+    // (The join also replaces a per-row query for the employee name.)
+    const scope = scopedPropertyId(req);
+    const conds = [];
+    if (employeeId) conds.push(eq(attendanceTable.employeeId, employeeId));
+    if (scope) conds.push(eq(employeesTable.propertyId, scope));
+    const where = conds.length ? and(...conds) : undefined;
 
-    const enriched = await Promise.all(rows.map(async (r) => {
-      const [emp] = await db.select({ name: employeesTable.name }).from(employeesTable).where(eq(employeesTable.id, r.employeeId));
-      return { ...r, employeeName: emp?.name || null };
-    }));
+    const [countResult] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(attendanceTable)
+      .innerJoin(employeesTable, eq(attendanceTable.employeeId, employeesTable.id))
+      .where(where);
+    const rows = await db
+      .select({ a: attendanceTable, employeeName: employeesTable.name })
+      .from(attendanceTable)
+      .innerJoin(employeesTable, eq(attendanceTable.employeeId, employeesTable.id))
+      .where(where).limit(limit).offset(offset).orderBy(attendanceTable.date);
+
+    const enriched = rows.map((r) => ({ ...r.a, employeeName: r.employeeName ?? null }));
     res.json({ success: true, data: enriched, meta: buildMeta(countResult.count, page, limit) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -294,6 +379,10 @@ attendanceRouter.post("/bulk", authenticate, authorize("EMPLOYEES", "create"), a
     if (!Array.isArray(employeeIds) || !date || !status) {
       res.status(400).json({ success: false, error: "employeeIds, date, status required" }); return;
     }
+    // Validate the whole batch BEFORE the first write: this loop writes row by
+    // row, so checking inside it would leave a partially-applied bulk mark when
+    // an out-of-scope id appears halfway down the list.
+    for (const eid of employeeIds) await assertEmployeeInScope(req, eid);
     const d = new Date(date);
     let inserted = 0;
     const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -316,7 +405,7 @@ attendanceRouter.post("/bulk", authenticate, authorize("EMPLOYEES", "create"), a
       inserted++;
     }
     res.json({ success: true, data: { count: inserted } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Attendance for a specific date (all employees)
@@ -327,7 +416,7 @@ attendanceRouter.get("/by-date", authenticate, authorize("EMPLOYEES", "view"), a
     const d = new Date(date);
     const start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
-    const employees = await db.select().from(employeesTable).where(eq(employeesTable.status, "ACTIVE"));
+    const employees = await db.select().from(employeesTable).where(and(eq(employeesTable.status, "ACTIVE"), employeeScopeFilter(req)));
     const records = await db.select().from(attendanceTable).where(and(gte(attendanceTable.date, start), lte(attendanceTable.date, end)));
     const byEmp: Record<string, typeof attendanceTable.$inferSelect> = {};
     for (const r of records) byEmp[r.employeeId] = r;
@@ -346,7 +435,7 @@ attendanceRouter.get("/export-csv", authenticate, authorize("EMPLOYEES", "view")
     const month = parseInt(req.query["month"] as string || String(new Date().getMonth() + 1), 10);
     const start = new Date(year, month - 1, 1);
     const end = new Date(year, month, 1);
-    const employees = await db.select().from(employeesTable);
+    const employees = await db.select().from(employeesTable).where(employeeScopeFilter(req));
     const records = await db.select().from(attendanceTable).where(and(gte(attendanceTable.date, start), lte(attendanceTable.date, end)));
     const daysInMonth = new Date(year, month, 0).getDate();
     const map: Record<string, Record<number, string>> = {};
@@ -371,6 +460,7 @@ attendanceRouter.get("/export-csv", authenticate, authorize("EMPLOYEES", "view")
 attendanceRouter.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
   try {
     const body = req.body;
+    await assertEmployeeInScope(req, body.employeeId);
     const [row] = await db.insert(attendanceTable).values({
       id: newId(),
       employeeId: body.employeeId,
@@ -383,6 +473,7 @@ attendanceRouter.post("/", authenticate, authorize("EMPLOYEES", "create"), async
     const [emp] = await db.select({ name: employeesTable.name }).from(employeesTable).where(eq(employeesTable.id, row.employeeId));
     res.status(201).json({ success: true, data: { ...row, employeeName: emp?.name || null } });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -391,15 +482,204 @@ attendanceRouter.post("/", authenticate, authorize("EMPLOYEES", "create"), async
 attendanceRouter.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res) => {
   try {
     const body = pick(req.body, ["employeeId", "date", "status", "inTime", "outTime", "notes"]) as Record<string, any>;
-    const [row] = await db.update(attendanceTable).set({ ...body, date: body.date ? new Date(body.date) : undefined }).where(eq(attendanceTable.id, req.params["id"]!)).returning();
+    const [current] = await db.select().from(attendanceTable).where(eq(attendanceTable.id, req.params["id"]!));
+    if (!current) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    // Guard both ends: the row being edited, and any employee it is being moved to.
+    await assertEmployeeInScope(req, current.employeeId);
+    if (body["employeeId"] !== undefined && body["employeeId"] !== current.employeeId) {
+      await assertEmployeeInScope(req, body["employeeId"]);
+    }
+    const [row] = await db.update(attendanceTable).set({ ...body, date: body.date ? new Date(body.date) : undefined }).where(eq(attendanceTable.id, current.id)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const [emp] = await db.select({ name: employeesTable.name }).from(employeesTable).where(eq(employeesTable.id, row.employeeId));
     res.json({ success: true, data: { ...row, employeeName: emp?.name || null } });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
+
+/* ── PRD §16: check-in / check-out, corrections, manager approval ─────────── */
+
+/** Today's row for an employee, in UTC wall-clock terms (the repo convention). */
+async function todaysAttendance(employeeId: string) {
+  const now = new Date();
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const dayEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  const [row] = await db
+    .select()
+    .from(attendanceTable)
+    .where(and(
+      eq(attendanceTable.employeeId, employeeId),
+      gte(attendanceTable.date, dayStart),
+      lte(attendanceTable.date, dayEnd),
+    ));
+  return { row, dayStart };
+}
+
+/**
+ * Self check-in (PRD §16).
+ *
+ * The employee marks THEMSELVES present — so it does not take EMPLOYEES:create,
+ * which would be a manager capability. It is gated on the caller resolving to
+ * an employee record, and it can only ever write that employee's own row.
+ */
+attendanceRouter.post("/check-in", authenticate, async (req, res) => {
+  try {
+    const [emp] = await db
+      .select({ id: employeesTable.id, propertyId: employeesTable.propertyId })
+      .from(employeesTable)
+      .where(eq(employeesTable.email, req.user!.email));
+    if (!emp) {
+      // users and employees are separate tables with no FK; a login with no
+      // employee record cannot mark attendance, and saying so is better than a
+      // 500 from a null id.
+      res.status(404).json({ success: false, error: "No employee record is linked to this account" });
+      return;
+    }
+
+    const { row, dayStart } = await todaysAttendance(emp.id);
+    if (row?.inTime) {
+      res.status(409).json({ success: false, error: "Already checked in today", data: row });
+      return;
+    }
+
+    const now = new Date();
+    const saved = row
+      ? (await db.update(attendanceTable)
+          .set({ inTime: now, selfCheckedIn: true, status: "PRESENT" })
+          .where(eq(attendanceTable.id, row.id)).returning())[0]
+      : (await db.insert(attendanceTable)
+          .values({ id: newId(), employeeId: emp.id, date: dayStart, status: "PRESENT", inTime: now, selfCheckedIn: true })
+          .returning())[0];
+
+    recordActivity(activityCtx(req), {
+      event: "ATTENDANCE_MODIFIED",
+      entityId: saved!.id,
+      entityLabel: `check-in ${emp.id}`,
+      propertyId: emp.propertyId,
+      reason: "Self check-in",
+      before: { inTime: row?.inTime ?? null },
+      after: { inTime: now, status: "PRESENT" },
+    });
+    res.status(201).json({ success: true, data: saved });
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+attendanceRouter.post("/check-out", authenticate, async (req, res) => {
+  try {
+    const [emp] = await db
+      .select({ id: employeesTable.id, propertyId: employeesTable.propertyId })
+      .from(employeesTable)
+      .where(eq(employeesTable.email, req.user!.email));
+    if (!emp) { res.status(404).json({ success: false, error: "No employee record is linked to this account" }); return; }
+
+    const { row } = await todaysAttendance(emp.id);
+    if (!row?.inTime) { res.status(409).json({ success: false, error: "Not checked in today" }); return; }
+    if (row.outTime) { res.status(409).json({ success: false, error: "Already checked out today" }); return; }
+
+    const now = new Date();
+    const [saved] = await db.update(attendanceTable).set({ outTime: now }).where(eq(attendanceTable.id, row.id)).returning();
+    recordActivity(activityCtx(req), {
+      event: "ATTENDANCE_MODIFIED", entityId: row.id, entityLabel: `check-out ${emp.id}`,
+      propertyId: emp.propertyId, reason: "Self check-out",
+      before: { outTime: null }, after: { outTime: now },
+    });
+    res.json({ success: true, data: saved });
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/**
+ * Request a correction (PRD §16).
+ *
+ * Writes the PROPOSED values beside the originals rather than over them. §29
+ * requires the previous value on an attendance change, and an edit that
+ * overwrote first would leave nothing to record.
+ */
+attendanceRouter.post("/:id/correction", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+  try {
+    const [row] = await db.select().from(attendanceTable).where(eq(attendanceTable.id, req.params["id"]!));
+    if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    await assertEmployeeInScope(req, row.employeeId);
+
+    const b = req.body ?? {};
+    if (!b.reason?.trim()) { res.status(400).json({ success: false, error: "A reason is required" }); return; }
+
+    const [saved] = await db.update(attendanceTable).set({
+      correctionRequestedAt: new Date(),
+      correctionRequestedBy: req.user!.id,
+      correctionReason: b.reason,
+      proposedStatus: b.status ?? null,
+      proposedInTime: b.inTime ? new Date(b.inTime) : null,
+      proposedOutTime: b.outTime ? new Date(b.outTime) : null,
+      approvalState: "PENDING",
+    }).where(eq(attendanceTable.id, row.id)).returning();
+
+    res.json({ success: true, data: saved });
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+});
+
+/**
+ * Approve or reject a correction (PRD §16 "Manager approval").
+ *
+ * Under separation of duties the approver must not be the requester — asking
+ * for your own correction and granting it is the §33 case in miniature.
+ */
+attendanceRouter.post(
+  "/:id/approve",
+  authenticate,
+  authorize("EMPLOYEES", "edit"),
+  enforceSod({
+    entity: "attendance",
+    action: "approve",
+    conflictsWith: ["requestedBy"],
+    load: async (req) => {
+      const [r] = await db
+        .select({ id: attendanceTable.id, requestedBy: attendanceTable.correctionRequestedBy })
+        .from(attendanceTable)
+        .where(eq(attendanceTable.id, req.params["id"] as string));
+      return r ? { type: "attendance", id: r.id, actors: { requestedBy: r.requestedBy } } : null;
+    },
+  }),
+  async (req, res) => {
+    try {
+      const [row] = await db.select().from(attendanceTable).where(eq(attendanceTable.id, req.params["id"]!));
+      if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+      await assertEmployeeInScope(req, row.employeeId);
+      if (row.approvalState !== "PENDING") { res.status(409).json({ success: false, error: "No correction is pending" }); return; }
+
+      const approve = req.body?.approve !== false;
+      const before = { status: row.status, inTime: row.inTime, outTime: row.outTime };
+      const after = approve
+        ? {
+            status: row.proposedStatus ?? row.status,
+            inTime: row.proposedInTime ?? row.inTime,
+            outTime: row.proposedOutTime ?? row.outTime,
+          }
+        : before;
+
+      const [saved] = await db.update(attendanceTable).set({
+        ...(approve ? after : {}),
+        approvalState: approve ? "APPROVED" : "REJECTED",
+        approvedBy: req.user!.id,
+        approvedAt: new Date(),
+        proposedStatus: null, proposedInTime: null, proposedOutTime: null,
+      }).where(eq(attendanceTable.id, row.id)).returning();
+
+      const [emp] = await db.select({ propertyId: employeesTable.propertyId }).from(employeesTable).where(eq(employeesTable.id, row.employeeId));
+      recordActivity(activityCtx(req), {
+        event: "ATTENDANCE_MODIFIED",
+        entityId: row.id,
+        entityLabel: `${approve ? "correction approved" : "correction rejected"} ${row.employeeId}`,
+        propertyId: emp?.propertyId ?? null,
+        reason: row.correctionReason ?? "Attendance correction",
+        before, after,
+      });
+      res.json({ success: true, data: saved });
+    } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  },
+);
 
 export { attendanceRouter };
 

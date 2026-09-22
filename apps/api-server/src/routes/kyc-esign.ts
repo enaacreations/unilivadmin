@@ -14,6 +14,8 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { eq, desc, and } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
+import { scopedPropertyId, forbidden, sendAuthzError } from "../lib/authz.js";
+import { enforceSod, type SodSubject } from "../lib/access/sod.js";
 import { newId } from "../lib/id.js";
 import {
   getKYCProvider,
@@ -95,8 +97,44 @@ function kycDetailView(row: KycRow) {
 // =====================================================================
 
 // List for a resident — mounted as /residents/:id/kyc
+
+/**
+ * KYC and e-sign records hold a resident's identity documents, PAN and signed
+ * agreement — the most sensitive rows in the product. Every route here is gated
+ * on RESIDENTS:view/edit only, which any warden holds, so without a property
+ * check one property's warden could pull another property's residents' KYC.
+ *
+ * Scopes through the resident, since neither kyc nor esign carries a propertyId
+ * of its own. Answers 404 rather than 403: a scoped caller probing ids should
+ * not learn that a resident exists elsewhere.
+ */
+async function residentInScope(
+  req: import("express").Request,
+  residentId: string,
+): Promise<boolean> {
+  const scope = scopedPropertyId(req);
+  if (!scope) return true;
+  const [r] = await db
+    .select({ propertyId: residentsTable.propertyId })
+    .from(residentsTable)
+    .where(eq(residentsTable.id, residentId));
+  return !!r && r.propertyId === scope;
+}
+
+/** Same check for a route addressed by kyc/esign row id rather than resident id. */
+async function recordResidentInScope(
+  req: import("express").Request,
+  residentId: string | null | undefined,
+): Promise<boolean> {
+  if (!residentId) return !scopedPropertyId(req);
+  return residentInScope(req, residentId);
+}
+
 kycRouter.get("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
   try {
+    if (!(await residentInScope(req, req.params["id"] as string))) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
     const rows = await db
       .select()
       .from(kycRequestsTable)
@@ -104,6 +142,7 @@ kycRouter.get("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "view")
       .orderBy(desc(kycRequestsTable.createdAt));
     res.json({ success: true, data: rows.map(kycListView) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -112,6 +151,9 @@ kycRouter.get("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "view")
 // Create
 kycRouter.post("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
   try {
+    if (!(await residentInScope(req, req.params["id"] as string))) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
     const residentId = req.params["id"] as string;
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) {
@@ -161,13 +203,33 @@ kycRouter.post("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "edit"
     });
     res.status(201).json({ success: true, data: kycDetailView(row) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
 // Verify / reject — mounted as /kyc/:id/verify
-kycRouter.post("/kyc/:id/verify", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+/**
+ * SoD for KYC verification: the person who RAISED the KYC record must not be
+ * the one who marks it verified. Both sides are RESIDENTS:edit, so the
+ * capability alone kept them the same person.
+ */
+async function sodSubjectForKyc(req: import("express").Request): Promise<SodSubject | null> {
+  const [row] = await db
+    .select({ id: kycRequestsTable.id, createdBy: kycRequestsTable.createdBy })
+    .from(kycRequestsTable)
+    .where(eq(kycRequestsTable.id, req.params["id"] as string));
+  if (!row) return null;
+  return { type: "kyc", id: row.id, actors: { createdBy: row.createdBy } };
+}
+
+kycRouter.post(
+  "/kyc/:id/verify",
+  authenticate,
+  authorize("RESIDENTS", "edit"),
+  enforceSod({ entity: "kyc", action: "verify", load: sodSubjectForKyc }),
+  async (req, res) => {
   try {
     const id = req.params["id"] as string;
     const { status, rejectionReason } = req.body || {};
@@ -177,6 +239,16 @@ kycRouter.post("/kyc/:id/verify", authenticate, authorize("RESIDENTS", "edit"), 
     }
     if (status === "REJECTED" && !rejectionReason) {
       res.status(400).json({ success: false, error: "rejectionReason required when rejecting" });
+      return;
+    }
+    // Check BEFORE the update: verifying or rejecting someone else's property's
+    // KYC must not land and then report an error.
+    const [existingKyc] = await db
+      .select({ residentId: kycRequestsTable.residentId })
+      .from(kycRequestsTable)
+      .where(eq(kycRequestsTable.id, id));
+    if (!existingKyc || !(await recordResidentInScope(req, existingKyc.residentId))) {
+      res.status(404).json({ success: false, error: "Not found" });
       return;
     }
     const [row] = await db
@@ -204,14 +276,23 @@ kycRouter.post("/kyc/:id/verify", authenticate, authorize("RESIDENTS", "edit"), 
     );
     res.json({ success: true, data: kycDetailView(row) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
-});
+}
+);
 
 kycRouter.get("/kyc/:id/events", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
   try {
     const id = req.params["id"] as string;
+    const [parent] = await db
+      .select({ residentId: kycRequestsTable.residentId })
+      .from(kycRequestsTable)
+      .where(eq(kycRequestsTable.id, id));
+    if (!parent || !(await recordResidentInScope(req, parent.residentId))) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
     const events = await db
       .select()
       .from(kycEventsTable)
@@ -219,6 +300,7 @@ kycRouter.get("/kyc/:id/events", authenticate, authorize("RESIDENTS", "view"), a
       .orderBy(desc(kycEventsTable.createdAt));
     res.json({ success: true, data: events });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -243,7 +325,7 @@ kycRouter.get("/kyc/:id/digilocker/initiate", authenticate, authorize("RESIDENTS
     }
     const id = req.params["id"] as string;
     const [row] = await db.select().from(kycRequestsTable).where(eq(kycRequestsTable.id, id));
-    if (!row) {
+    if (!row || !(await recordResidentInScope(req, row.residentId))) {
       res.status(404).json({ success: false, error: "Not found" });
       return;
     }
@@ -255,6 +337,7 @@ kycRouter.get("/kyc/:id/digilocker/initiate", authenticate, authorize("RESIDENTS
     await logKycEvent(id, "DIGILOCKER_INITIATED", req.user?.id ?? null, clientIp(req), req.headers["user-agent"] ?? null);
     res.json({ success: true, data: { authorizeUrl } });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -312,6 +395,7 @@ kycRouter.get("/kyc/digilocker/callback", async (req, res) => {
     });
     res.json({ success: true, data: kycDetailView(updated) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -320,12 +404,16 @@ kycRouter.get("/kyc/digilocker/callback", async (req, res) => {
 kycRouter.get("/kyc/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
   try {
     const [row] = await db.select().from(kycRequestsTable).where(eq(kycRequestsTable.id, req.params["id"] as string));
+    if (!row || !(await recordResidentInScope(req, row.residentId))) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
     if (!row) {
       res.status(404).json({ success: false, error: "Not found" });
       return;
     }
     res.json({ success: true, data: kycDetailView(row) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -471,6 +559,9 @@ export async function createRentAgreementEsign(
 // public /sign/:token flow (no new signing UI). Returns the signerUrl.
 esignRouter.post("/residents/:id/agreement", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
   try {
+    if (!(await residentInScope(req, req.params["id"] as string))) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
     const residentId = req.params["id"] as string;
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) {
@@ -492,6 +583,7 @@ esignRouter.post("/residents/:id/agreement", authenticate, authorize("RESIDENTS"
       data: { ...row, documentBody: undefined, signerUrl: `${origin}/esign/sign/${row.signerToken}` },
     });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -500,6 +592,9 @@ esignRouter.post("/residents/:id/agreement", authenticate, authorize("RESIDENTS"
 // List for a resident — mounted as /residents/:id/esign
 esignRouter.get("/residents/:id/esign", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
   try {
+    if (!(await residentInScope(req, req.params["id"] as string))) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
     const rows = await db
       .select()
       .from(esignRequestsTable)
@@ -507,6 +602,7 @@ esignRouter.get("/residents/:id/esign", authenticate, authorize("RESIDENTS", "vi
       .orderBy(desc(esignRequestsTable.createdAt));
     res.json({ success: true, data: rows.map((r) => ({ ...r, documentBody: undefined })) });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -515,6 +611,9 @@ esignRouter.get("/residents/:id/esign", authenticate, authorize("RESIDENTS", "vi
 // Create — mounted as /residents/:id/esign
 esignRouter.post("/residents/:id/esign", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
   try {
+    if (!(await residentInScope(req, req.params["id"] as string))) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
     const residentId = req.params["id"] as string;
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) {
@@ -557,6 +656,7 @@ esignRouter.post("/residents/:id/esign", authenticate, authorize("RESIDENTS", "e
       data: { ...row, documentBody: undefined, signerUrl: `${origin}/esign/sign/${token}` },
     });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -567,7 +667,7 @@ esignRouter.get("/esign/:id", authenticate, authorize("RESIDENTS", "view"), asyn
   try {
     const id = req.params["id"] as string;
     const [row] = await db.select().from(esignRequestsTable).where(eq(esignRequestsTable.id, id));
-    if (!row) {
+    if (!row || !(await recordResidentInScope(req, row.residentId))) {
       res.status(404).json({ success: false, error: "Not found" });
       return;
     }
@@ -594,6 +694,7 @@ esignRouter.get("/esign/:id", authenticate, authorize("RESIDENTS", "view"), asyn
       },
     });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -604,7 +705,7 @@ esignRouter.get("/esign/:id/pdf", authenticate, authorize("RESIDENTS", "view"), 
   try {
     const id = req.params["id"] as string;
     const [row] = await db.select().from(esignRequestsTable).where(eq(esignRequestsTable.id, id));
-    if (!row || !row.signedPdf) {
+    if (!row || !row.signedPdf || !(await recordResidentInScope(req, row.residentId))) {
       res.status(404).json({ success: false, error: "No signed PDF available" });
       return;
     }
@@ -620,6 +721,7 @@ esignRouter.get("/esign/:id/pdf", authenticate, authorize("RESIDENTS", "view"), 
     res.setHeader("Content-Disposition", `attachment; filename="${row.documentName.replace(/[^a-z0-9_\-]+/gi, "_")}-signed.pdf"`);
     res.send(buf);
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -629,6 +731,18 @@ esignRouter.get("/esign/:id/pdf", authenticate, authorize("RESIDENTS", "view"), 
 esignRouter.post("/esign/:id/void", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
   try {
     const id = req.params["id"] as string;
+    // Check BEFORE writing. This used to UPDATE first and 404 afterwards on a
+    // missing row, so an out-of-scope caller's void had already been applied by
+    // the time anything was validated — the agreement was voided and the caller
+    // simply got an error page.
+    const [existing] = await db
+      .select({ residentId: esignRequestsTable.residentId })
+      .from(esignRequestsTable)
+      .where(eq(esignRequestsTable.id, id));
+    if (!existing || !(await recordResidentInScope(req, existing.residentId))) {
+      res.status(404).json({ success: false, error: "Not found" });
+      return;
+    }
     const [row] = await db
       .update(esignRequestsTable)
       .set({ status: "VOIDED", updatedAt: new Date() })
@@ -641,6 +755,7 @@ esignRouter.post("/esign/:id/void", authenticate, authorize("RESIDENTS", "edit")
     await logEvent(id, "VOIDED", clientIp(req), req.headers["user-agent"] ?? null, { by: req.user?.id });
     res.json({ success: true, data: { ...row, documentBody: undefined } });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -702,6 +817,7 @@ esignPublicRouter.get("/sign/:token", async (req, res) => {
       },
     });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
@@ -836,6 +952,7 @@ esignPublicRouter.post("/sign/:token", async (req, res) => {
       },
     });
   } catch (err) {
+    if (sendAuthzError(err, res)) return;
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });
   }

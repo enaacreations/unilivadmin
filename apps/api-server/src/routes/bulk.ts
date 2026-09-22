@@ -121,6 +121,7 @@ router.post(
     // A menu import REPLACES the slots it names — an edit, not a create.
     if (resource === "menu") return authorize("FOOD_SETTINGS", "edit")(req, res, next);
     res.status(404).json({ success: false, error: "Unknown bulk resource" });
+    return;
   },
   async (req, res) => {
     try {

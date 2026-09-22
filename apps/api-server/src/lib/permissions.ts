@@ -18,7 +18,7 @@ export type Module =
   | "LEDGER" | "PAYMENTS" | "WALLET"
   | "BILLING_CYCLES" | "REMINDERS" | "BANKING" | "EXPENSES"
   | "FACILITY" | "ELECTRICITY" | "RESIDENT_ATTENDANCE" | "IOT"
-  | "USERS" | "SETTINGS" | "AUDIT_LOG"
+  | "USERS" | "SETTINGS" | "AUDIT_LOG" | "ACCESS_CONTROL"
   // Food Ordering & Kitchen Operations modules (PRD §5 matrix)
   | "FOOD_RECEIVE_UPDATE" | "FOOD_DELIVERY_TRACKING" | "FOOD_DASHBOARD"
   | "FOOD_ALL_ORDERS" | "FOOD_PLACE_ORDER" | "FOOD_KITCHEN_SUMMARY"
@@ -38,7 +38,104 @@ export type Module =
   | "AUDIT_REVIEW" | "AUDIT_REPORTS" | "AUDIT_SCHEDULES"
   | "AUDIT_TEMPLATES" | "AUDIT_ADMIN";
 
+/**
+ * PRD §23's 13 actions. The legacy four come FIRST and keep their spelling, so
+ * `Permission` below is a strict subset and every existing
+ * `authorize(module, "view")` call site compiles unchanged.
+ */
+export type Action =
+  | "view" | "create" | "edit" | "delete"
+  | "submit" | "approve" | "reject" | "assign"
+  | "complete" | "verify" | "export" | "download" | "configure";
+
+export const ALL_ACTIONS: Action[] = [
+  "view", "create", "edit", "delete",
+  "submit", "approve", "reject", "assign",
+  "complete", "verify", "export", "download", "configure",
+];
+
+/** @deprecated Use `Action`. Retained so the 4-permission call sites keep typing. */
 export type Permission = "view" | "create" | "edit" | "delete";
+
+/**
+ * Actions a module has BEYOND the legacy four.
+ *
+ * `actionsFor()` returns the legacy four UNIONED with these — it never subtracts.
+ * That is deliberate: the existing matrix grants view/create/edit/delete broadly
+ * (the three parity roles hold all four on all 53 modules), so a hand-curated
+ * "this module only has view and export" list would silently REVOKE rights the
+ * moment actionsFor() started gating the matrix. An invariant test asserts this.
+ *
+ * Narrowing a module's set is a real and worthwhile exercise — a dashboard
+ * cannot meaningfully be deleted — but it revokes access, so it needs product
+ * sign-off per module rather than being smuggled in with the vocabulary change.
+ */
+export const LEGACY_ACTIONS: Action[] = ["view", "create", "edit", "delete"];
+
+/** Extra actions per module, on top of the legacy four. */
+export const MODULE_EXTRA_ACTIONS: Partial<Record<Module, Action[]>> = {
+  DASHBOARD: ["export"],
+  EXECUTIVE_DASHBOARD: ["export"],
+  SALES_DASHBOARD: ["export"],
+  FOOD_DASHBOARD: ["export"],
+  AUDIT_DASHBOARD: ["export"],
+  AUDIT_LOG: ["export"],
+  FOOD_REPORTS: ["export", "download"],
+  AUDIT_REPORTS: ["export", "download", "configure"],
+  AUDIT_REVIEW: ["approve", "reject", "verify"],
+  AUDIT_EXECUTION: ["submit", "complete", "assign"],
+  AUDIT_SCHEDULES: ["assign", "configure"],
+  AUDIT_TEMPLATES: ["configure"],
+  AUDIT_ADMIN: ["configure"],
+  SETTINGS: ["configure"],
+  ACCESS_CONTROL: ["configure"],
+  FOOD_SETTINGS: ["configure"],
+  FOOD_DISPATCH: ["assign", "complete"],
+  FOOD_CONFIRM_DELIVERY: ["verify"],
+  FOOD_PLACE_ORDER: ["submit"],
+  INDENTS: ["submit", "approve", "reject"],
+  PURCHASE_ORDERS: ["submit", "approve", "reject"],
+  EXPENSES: ["submit", "approve", "reject"],
+  PAYMENTS: ["approve", "verify"],
+  WALLET: ["approve", "verify"],
+  COMPLAINTS: ["assign", "complete", "verify"],
+  RECRUITMENT: ["approve", "reject"],
+  EMPLOYEES: ["approve", "reject", "export"],
+  RESIDENTS: ["export"],
+  USERS: ["configure"],
+};
+
+/** Every action a module supports: the legacy four plus its extras. */
+export function actionsFor(module: Module): Action[] {
+  const extra = MODULE_EXTRA_ACTIONS[module] ?? [];
+  return [...LEGACY_ACTIONS, ...extra.filter((a) => !LEGACY_ACTIONS.includes(a))];
+}
+
+/**
+ * Action implication: holding X also confers Y. Only ever WIDENS, never denies.
+ *
+ * The edges are deliberately minimal and one-directional — you cannot approve
+ * what you cannot see, and an export is a download. Nothing implies `edit`,
+ * `delete` or `configure`, so no implication can hand out a write.
+ *
+ * NOT yet consulted by can(): enabling it would retroactively grant `view` to
+ * any cell holding a write WITHOUT view. access-matrix-invariants.test.ts
+ * asserts no such cell exists before decide() turns it on.
+ */
+export const IMPLIES: Partial<Record<Action, Action[]>> = {
+  create: ["view"],
+  edit: ["view"],
+  delete: ["view"],
+  submit: ["view"],
+  approve: ["view"],
+  reject: ["view"],
+  assign: ["view"],
+  complete: ["view"],
+  verify: ["view"],
+  configure: ["view"],
+  export: ["view", "download"],
+  download: ["view"],
+};
 
 const FULL: Record<Permission, boolean> = { view: true, create: true, edit: true, delete: true };
 const VIEW: Record<Permission, boolean> = { view: true, create: false, edit: false, delete: false };
@@ -74,10 +171,82 @@ export const ALL_MODULES: Module[] = [
   "SALES_LEADS","SALES_DASHBOARD","PROPERTY_LEADS","LEDGER","PAYMENTS","WALLET",
   "BILLING_CYCLES","REMINDERS","BANKING","EXPENSES",
   "FACILITY","ELECTRICITY","RESIDENT_ATTENDANCE","IOT",
-  "USERS","SETTINGS","AUDIT_LOG",
+  "USERS","SETTINGS","AUDIT_LOG","ACCESS_CONTROL",
   ...FOOD_MODULES,
   ...AUDIT_MODULES,
 ];
+
+/**
+ * Module families, for grouping in the admin UI.
+ *
+ * Presentation only — nothing authorizes off a family. It exists because 53
+ * flat modules is the reason the access preview reads as a wall: grouped, a
+ * reader scans eight rows and drills into one.
+ *
+ * MODULE_FAMILY is exhaustive by construction (the test below the Module union
+ * would fail on a missing key), so a new module must be filed rather than
+ * silently landing in "Other".
+ */
+export type ModuleFamily =
+  | "Operations" | "Food & Kitchen" | "Audits" | "Finance"
+  | "People" | "Procurement" | "Sales" | "Platform";
+
+export const MODULE_FAMILY: Record<Module, ModuleFamily> = {
+  DASHBOARD: "Operations", EXECUTIVE_DASHBOARD: "Operations", PROPERTIES: "Operations",
+  RESIDENTS: "Operations", COMPLAINTS: "Operations", LAUNDRY: "Operations",
+  COMMUNICATIONS: "Operations", FACILITY: "Operations", ELECTRICITY: "Operations",
+  RESIDENT_ATTENDANCE: "Operations", IOT: "Operations",
+
+  EMPLOYEES: "People", RECRUITMENT: "People", LND: "People",
+
+  VENDORS: "Procurement", INDENTS: "Procurement", PURCHASE_ORDERS: "Procurement",
+  GRN: "Procurement", INVENTORY: "Procurement",
+
+  SALES_LEADS: "Sales", SALES_DASHBOARD: "Sales", PROPERTY_LEADS: "Sales",
+
+  LEDGER: "Finance", PAYMENTS: "Finance", WALLET: "Finance", BILLING_CYCLES: "Finance",
+  REMINDERS: "Finance", BANKING: "Finance", EXPENSES: "Finance",
+
+  USERS: "Platform", SETTINGS: "Platform", AUDIT_LOG: "Platform", ACCESS_CONTROL: "Platform",
+
+  FOOD_RECEIVE_UPDATE: "Food & Kitchen", FOOD_DELIVERY_TRACKING: "Food & Kitchen",
+  FOOD_DASHBOARD: "Food & Kitchen", FOOD_ALL_ORDERS: "Food & Kitchen",
+  FOOD_PLACE_ORDER: "Food & Kitchen", FOOD_KITCHEN_SUMMARY: "Food & Kitchen",
+  FOOD_DISPATCH: "Food & Kitchen", FOOD_CONFIRM_DELIVERY: "Food & Kitchen",
+  FOOD_WASTE_TRACKING: "Food & Kitchen", FOOD_REPORTS: "Food & Kitchen",
+  FOOD_SETTINGS: "Food & Kitchen", FOOD_ORG: "Food & Kitchen", FOOD_CATALOGUE: "Food & Kitchen",
+
+  AUDIT_DASHBOARD: "Audits", AUDIT_REGISTER: "Audits", AUDIT_EXECUTION: "Audits",
+  AUDIT_REVIEW: "Audits", AUDIT_REPORTS: "Audits", AUDIT_SCHEDULES: "Audits",
+  AUDIT_TEMPLATES: "Audits", AUDIT_ADMIN: "Audits",
+};
+
+export const FAMILY_ORDER: ModuleFamily[] = [
+  "Operations", "Food & Kitchen", "Audits", "Finance", "People", "Procurement", "Sales", "Platform",
+];
+
+/** Human label for a module key — the UI leads with this, key as mono subtext. */
+export const MODULE_LABEL: Partial<Record<Module, string>> = {
+  EXECUTIVE_DASHBOARD: "Executive dashboard", RESIDENT_ATTENDANCE: "Resident attendance",
+  LND: "Learning & development", GRN: "Goods received", SALES_LEADS: "Sales CRM",
+  SALES_DASHBOARD: "Sales dashboard", PROPERTY_LEADS: "Property leads",
+  BILLING_CYCLES: "Recurring billing", AUDIT_LOG: "Activity trail",
+  ACCESS_CONTROL: "Access control", FOOD_RECEIVE_UPDATE: "Receive & update",
+  FOOD_DELIVERY_TRACKING: "Delivery tracking", FOOD_DASHBOARD: "Food dashboard",
+  FOOD_ALL_ORDERS: "All orders", FOOD_PLACE_ORDER: "Place order",
+  FOOD_KITCHEN_SUMMARY: "Kitchen summary", FOOD_DISPATCH: "Dispatch",
+  FOOD_CONFIRM_DELIVERY: "Confirm delivery", FOOD_WASTE_TRACKING: "Waste tracking",
+  FOOD_REPORTS: "Food reports", FOOD_SETTINGS: "Food settings", FOOD_ORG: "Kitchen org",
+  FOOD_CATALOGUE: "Service catalogue", AUDIT_DASHBOARD: "Audit dashboard",
+  AUDIT_REGISTER: "Audit register", AUDIT_EXECUTION: "Audit execution",
+  AUDIT_REVIEW: "Audit review", AUDIT_REPORTS: "Audit reports",
+  AUDIT_SCHEDULES: "Audit schedules", AUDIT_TEMPLATES: "Audit templates",
+  AUDIT_ADMIN: "Audit admin",
+};
+
+export function moduleLabel(m: Module): string {
+  return MODULE_LABEL[m] ?? m.charAt(0) + m.slice(1).toLowerCase().replace(/_/g, " ");
+}
 
 type RoleMatrix = Partial<Record<Module, Partial<Record<Permission, boolean>>>>;
 
@@ -229,9 +398,49 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
   },
 };
 
-export function can(role: UserRole | undefined, module: Module, perm: Permission = "view"): boolean {
+/**
+ * Installed resolver, when the matrix has been moved into the database.
+ *
+ * A registration hook rather than a direct import because matrix.ts already
+ * imports THIS module (for ROLE_PERMISSIONS, ALL_MODULES, actionsFor, IMPLIES)
+ * and importing back would close the cycle. It also keeps the switch explicit
+ * and revertable: nothing reads the database until something installs this.
+ */
+type MatrixResolver = (roleKey: string | undefined, module: Module, action: Action) => boolean;
+let installedResolver: MatrixResolver | null = null;
+
+export function installMatrixResolver(fn: MatrixResolver): void {
+  installedResolver = fn;
+}
+/** Test seam — restores the code matrix. */
+export function uninstallMatrixResolver(): void {
+  installedResolver = null;
+}
+export function matrixResolverInstalled(): boolean {
+  return installedResolver !== null;
+}
+
+/**
+ * The single capability question, asked ~200 times across the app.
+ *
+ * Stays SYNCHRONOUS on purpose: most call sites are express middleware that
+ * cannot await, so a database-backed matrix is served from a process snapshot
+ * refreshed out of band, never read inline.
+ */
+/**
+ * Widened from `Permission` to `Action`: `Permission` is the legacy four and a
+ * strict subset, so every existing `can(m, "view")` call keeps compiling while
+ * a route may now gate on `approve`, `assign`, `export` and the rest.
+ *
+ * A non-legacy action against the CODE matrix simply misses and returns false —
+ * the code matrix only ever held four. That is the right fallback: a route
+ * gating on `approve` before the DB matrix is seeded denies, rather than
+ * accidentally allowing.
+ */
+export function can(role: UserRole | undefined, module: Module, perm: Action = "view"): boolean {
   if (!role) return false;
+  if (installedResolver) return installedResolver(role, module, perm);
   const matrix = ROLE_PERMISSIONS[role];
   if (!matrix) return false;
-  return matrix[module]?.[perm] === true;
+  return matrix[module]?.[perm as Permission] === true;
 }

@@ -7,6 +7,23 @@ import {
 import { eq, sql, ilike, and, desc, lte, gte, lt } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
+import { effectivePropertyFilter, scopedPropertyId, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
+import { enforceSod, type SodSubject } from "../lib/access/sod.js";
+
+/**
+ * The property a procurement write lands on.
+ *
+ * Indents, purchase orders and inventory items all took `propertyId` straight
+ * from the body, so a property-bound buyer could raise an indent against
+ * another property's budget. Pins a scoped caller to their own property and
+ * verifies an org-wide caller's target.
+ */
+function assertWritableBody(req: import("express").Request, b: Record<string, unknown>): string {
+  const scope = scopedPropertyId(req);
+  if (scope) return scope;
+  assertPropertyAccess(req, b["propertyId"] as string | null | undefined);
+  return b["propertyId"] as string;
+}
 import { pick } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -40,7 +57,7 @@ procurementRouter.get("/item-suggestions", authenticate, authorize("INVENTORY", 
     `);
     const data = (result.rows as Array<{ name: string }>).map((r) => r.name);
     res.json({ success: true, data });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // =================== VENDORS ===================
@@ -68,7 +85,7 @@ vendorRouter.get("/", authenticate, authorize("VENDORS", "view"), async (req, re
       return { ...r, activePOs: c?.count || 0 };
     }));
     res.json({ success: true, data: enriched, meta: buildMeta(countResult.count, page, limit) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.post("/", authenticate, authorize("VENDORS", "create"), async (req, res) => {
@@ -76,7 +93,7 @@ vendorRouter.post("/", authenticate, authorize("VENDORS", "create"), async (req,
     const data = pick(req.body, VENDOR_FIELDS);
     const [row] = await db.insert(vendorsTable).values({ id: newId(), ...data, categories: req.body.categories || [], updatedAt: new Date() } as typeof vendorsTable.$inferInsert).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.get("/:id", authenticate, authorize("VENDORS", "view"), async (req, res) => {
@@ -84,7 +101,7 @@ vendorRouter.get("/:id", authenticate, authorize("VENDORS", "view"), async (req,
     const [row] = await db.select().from(vendorsTable).where(eq(vendorsTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.put("/:id", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
@@ -93,7 +110,7 @@ vendorRouter.put("/:id", authenticate, authorize("VENDORS", "edit"), async (req,
     const [row] = await db.update(vendorsTable).set({ ...data, updatedAt: new Date() }).where(eq(vendorsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Vendor Rate Contracts
@@ -101,7 +118,7 @@ vendorRouter.get("/:id/rate-contracts", authenticate, authorize("VENDORS", "view
   try {
     const rows = await db.select().from(rateContractsTable).where(eq(rateContractsTable.vendorId, req.params["id"]!)).orderBy(desc(rateContractsTable.createdAt));
     res.json({ success: true, data: rows.map(r => ({ ...r, rate: Number(r.rate) })) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.post("/:id/rate-contracts", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
@@ -112,7 +129,7 @@ vendorRouter.post("/:id/rate-contracts", authenticate, authorize("VENDORS", "edi
       rate: String(b.rate), validFrom: new Date(b.validFrom), validTo: new Date(b.validTo), notes: b.notes,
     }).returning();
     res.status(201).json({ success: true, data: { ...row, rate: Number(row.rate) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.put("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
@@ -125,14 +142,14 @@ vendorRouter.put("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "ed
     const [row] = await db.update(rateContractsTable).set(b).where(eq(rateContractsTable.id, req.params["rcId"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, rate: Number(row.rate) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.delete("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "delete"), async (req, res) => {
   try {
     await db.delete(rateContractsTable).where(eq(rateContractsTable.id, req.params["rcId"]!));
     res.json({ success: true });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Vendor Documents
@@ -149,7 +166,7 @@ vendorRouter.get("/:id/documents", authenticate, authorize("VENDORS", "view"), a
       return { ...r, expiringSoon };
     });
     res.json({ success: true, data: enriched });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.post("/:id/documents", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
@@ -160,14 +177,14 @@ vendorRouter.post("/:id/documents", authenticate, authorize("VENDORS", "edit"), 
       expiryDate: b.expiryDate ? new Date(b.expiryDate) : null, notes: b.notes,
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 vendorRouter.delete("/documents/:docId", authenticate, authorize("VENDORS", "delete"), async (req, res) => {
   try {
     await db.delete(vendorDocumentsTable).where(eq(vendorDocumentsTable.id, req.params["docId"]!));
     res.json({ success: true });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Vendor performance metrics — derived from POs/GRNs
@@ -216,7 +233,7 @@ vendorRouter.get("/:id/performance", authenticate, authorize("VENDORS", "view"),
       });
     }
     res.json({ success: true, data: quarters });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Vendor POs list (for detail page)
@@ -224,11 +241,27 @@ vendorRouter.get("/:id/purchase-orders", authenticate, authorize("VENDORS", "vie
   try {
     const rows = await db.select().from(purchaseOrdersTable).where(eq(purchaseOrdersTable.vendorId, req.params["id"]!)).orderBy(desc(purchaseOrdersTable.createdAt));
     res.json({ success: true, data: rows.map(r => ({ ...r, totalAmount: Number(r.totalAmount), subtotal: Number(r.subtotal), gstAmount: Number(r.gstAmount) })) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // =================== INDENTS ===================
 export const indentRouter = Router();
+
+/**
+ * SoD subject for an indent (PRD §33's worked example, in procurement form).
+ *
+ * Approving your own purchase request is the textbook separation-of-duties
+ * failure: INDENTS:edit is a single capability, so the raiser and the approver
+ * were the same permission and nothing kept them different people.
+ */
+async function sodSubjectForIndent(req: import("express").Request): Promise<SodSubject | null> {
+  const [row] = await db
+    .select({ id: indentsTable.id, createdBy: indentsTable.createdBy })
+    .from(indentsTable)
+    .where(eq(indentsTable.id, req.params["id"] as string));
+  if (!row) return null;
+  return { type: "indent", id: row.id, actors: { createdBy: row.createdBy } };
+}
 
 type DbLike = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 const nextIndentNumber = async (d: DbLike = db): Promise<string> => {
@@ -240,7 +273,7 @@ const nextIndentNumber = async (d: DbLike = db): Promise<string> => {
 indentRouter.get("/", authenticate, authorize("INDENTS", "view"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const department = req.query["department"] as string | undefined;
     const status = req.query["status"] as string | undefined;
     const conditions = [];
@@ -255,7 +288,7 @@ indentRouter.get("/", authenticate, authorize("INDENTS", "view"), async (req, re
       data: rows.map(r => ({ ...r, totalEstimatedValue: Number(r.totalEstimatedValue) })),
       meta: buildMeta(countResult.count, page, limit),
     });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 indentRouter.get("/:id", authenticate, authorize("INDENTS", "view"), async (req, res) => {
@@ -263,7 +296,7 @@ indentRouter.get("/:id", authenticate, authorize("INDENTS", "view"), async (req,
     const [row] = await db.select().from(indentsTable).where(eq(indentsTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, totalEstimatedValue: Number(row.totalEstimatedValue) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 indentRouter.post("/", authenticate, authorize("INDENTS", "create"), async (req, res) => {
@@ -276,7 +309,7 @@ indentRouter.post("/", authenticate, authorize("INDENTS", "create"), async (req,
       const [r] = await db.insert(indentsTable).values({
         id: newId(),
         indentNumber: await nextIndentNumber(),
-        propertyId: b.propertyId,
+        propertyId: assertWritableBody(req, b),
         department: b.department,
         items,
         totalEstimatedValue: String(total),
@@ -291,7 +324,7 @@ indentRouter.post("/", authenticate, authorize("INDENTS", "create"), async (req,
       return r;
     });
     res.status(201).json({ success: true, data: { ...row, totalEstimatedValue: Number(row.totalEstimatedValue) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 indentRouter.put("/:id", authenticate, authorize("INDENTS", "edit"), async (req, res) => {
@@ -305,20 +338,31 @@ indentRouter.put("/:id", authenticate, authorize("INDENTS", "edit"), async (req,
     const [row] = await db.update(indentsTable).set({ ...b, updatedAt: new Date() }).where(eq(indentsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, totalEstimatedValue: Number(row.totalEstimatedValue) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-indentRouter.post("/:id/approve", authenticate, authorize("INDENTS", "edit"), async (req, res) => {
+indentRouter.post(
+  "/:id/approve",
+  authenticate,
+  authorize("INDENTS", "edit"),
+  enforceSod({ entity: "indent", action: "approve", load: sodSubjectForIndent }),
+  async (req, res) => {
   try {
     const [row] = await db.update(indentsTable).set({
       status: "APPROVED", approvedBy: req.user!.id, approvedAt: new Date(), updatedAt: new Date(),
     }).where(eq(indentsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, totalEstimatedValue: Number(row.totalEstimatedValue) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
-});
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+}
+);
 
-indentRouter.post("/:id/reject", authenticate, authorize("INDENTS", "edit"), async (req, res) => {
+indentRouter.post(
+  "/:id/reject",
+  authenticate,
+  authorize("INDENTS", "edit"),
+  enforceSod({ entity: "indent", action: "reject", load: sodSubjectForIndent }),
+  async (req, res) => {
   try {
     const reason = req.body?.reason || "";
     if (!reason) { res.status(400).json({ success: false, error: "reason required" }); return; }
@@ -327,8 +371,9 @@ indentRouter.post("/:id/reject", authenticate, authorize("INDENTS", "edit"), asy
     }).where(eq(indentsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, totalEstimatedValue: Number(row.totalEstimatedValue) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
-});
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+}
+);
 
 // =================== PURCHASE ORDERS ===================
 export const poRouter = Router();
@@ -362,7 +407,7 @@ poRouter.get("/", authenticate, authorize("PURCHASE_ORDERS", "view"), async (req
       };
     }));
     res.json({ success: true, data: enriched, meta: buildMeta(countResult.count, page, limit) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 poRouter.get("/:id", authenticate, authorize("PURCHASE_ORDERS", "view"), async (req, res) => {
@@ -380,7 +425,7 @@ poRouter.get("/:id", authenticate, authorize("PURCHASE_ORDERS", "view"), async (
         grns,
       },
     });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 poRouter.post("/", authenticate, authorize("PURCHASE_ORDERS", "create"), async (req, res) => {
@@ -396,7 +441,7 @@ poRouter.post("/", authenticate, authorize("PURCHASE_ORDERS", "create"), async (
       id: newId(),
       poNumber: await nextPoNumber(),
       vendorId: b.vendorId,
-      propertyId: b.propertyId,
+      propertyId: assertWritableBody(req, b),
       indentId: b.indentId,
       items,
       subtotal: String(subtotal),
@@ -423,7 +468,7 @@ poRouter.post("/", authenticate, authorize("PURCHASE_ORDERS", "create"), async (
         vendorName: v?.name || null,
       },
     });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 poRouter.put("/:id", authenticate, authorize("PURCHASE_ORDERS", "edit"), async (req, res) => {
@@ -441,7 +486,7 @@ poRouter.put("/:id", authenticate, authorize("PURCHASE_ORDERS", "edit"), async (
     const [row] = await db.update(purchaseOrdersTable).set({ ...b, updatedAt: new Date() }).where(eq(purchaseOrdersTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, totalAmount: Number(row.totalAmount), subtotal: Number(row.subtotal), gstAmount: Number(row.gstAmount) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 poRouter.post("/:id/send", authenticate, authorize("PURCHASE_ORDERS", "edit"), async (req, res) => {
@@ -451,7 +496,7 @@ poRouter.post("/:id/send", authenticate, authorize("PURCHASE_ORDERS", "edit"), a
     }).where(eq(purchaseOrdersTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, totalAmount: Number(row.totalAmount), subtotal: Number(row.subtotal), gstAmount: Number(row.gstAmount) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // =================== GRN ===================
@@ -466,7 +511,7 @@ const nextGrnNumber = async (d: DbLike = db): Promise<string> => {
 grnRouter.get("/", authenticate, authorize("GRN", "view"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const where = propertyId ? eq(grnTable.propertyId, propertyId) : undefined;
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(grnTable).where(where);
     const rows = await db.select().from(grnTable).where(where).limit(limit).offset(offset).orderBy(desc(grnTable.createdAt));
@@ -480,7 +525,7 @@ grnRouter.get("/", authenticate, authorize("GRN", "view"), async (req, res) => {
       return { ...r, poNumber: po?.poNumber || null, vendorName };
     }));
     res.json({ success: true, data: enriched, meta: buildMeta(countResult.count, page, limit) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Retry helper for unique-constraint races on auto-generated numbers
@@ -516,7 +561,13 @@ grnRouter.post("/", authenticate, authorize("GRN", "create"), async (req, res) =
         id: newId(),
         grnNumber,
         poId: b.poId,
-        propertyId: b.propertyId || po.propertyId || "",
+        // Inherited from the PO being receipted. A body override that points
+        // elsewhere would book stock into another property's inventory.
+        propertyId: (() => {
+          const target = b.propertyId || po.propertyId || "";
+          assertPropertyAccess(req, target || null);
+          return target;
+        })(),
         items,
         invoiceNumber: b.invoiceNumber,
         invoicePhotoUrl: b.invoicePhotoUrl,
@@ -633,7 +684,7 @@ grnRouter.get("/:id", authenticate, authorize("GRN", "view"), async (req, res) =
       poEnriched = { ...po, totalAmount: Number(po.totalAmount), vendorName: v?.name || null };
     }
     res.json({ success: true, data: { ...row, po: poEnriched } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // =================== INVENTORY ===================
@@ -656,7 +707,7 @@ inventoryRouter.get("/", authenticate, authorize("INVENTORY", "view"), async (re
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const category = req.query["category"] as string | undefined;
     const statusFilter = req.query["status"] as string | undefined;
     const conditions = [];
@@ -675,7 +726,7 @@ inventoryRouter.get("/", authenticate, authorize("INVENTORY", "view"), async (re
     }));
     if (statusFilter) mapped = mapped.filter(r => r.stockStatus === statusFilter);
     res.json({ success: true, data: mapped, meta: buildMeta(countResult.count, page, limit) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.get("/stats", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
@@ -690,7 +741,7 @@ inventoryRouter.get("/stats", authenticate, authorize("INVENTORY", "view"), asyn
       if (s === "EXPIRING_SOON") expiringSoon++;
     }
     res.json({ success: true, data: { totalSkus, lowStock, outOfStock, expiringSoon } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.get("/alerts", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
@@ -703,7 +754,7 @@ inventoryRouter.get("/alerts", authenticate, authorize("INVENTORY", "view"), asy
       ...r, currentStock: Number(r.currentStock), minStock: Number(r.minStock), unitCost: num(r.unitCost),
     });
     res.json({ success: true, data: { lowStock: lowStock.map(fmt), expiring: expiring.map(fmt) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.get("/:id", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
@@ -714,7 +765,7 @@ inventoryRouter.get("/:id", authenticate, authorize("INVENTORY", "view"), async 
       success: true,
       data: { ...row, currentStock: Number(row.currentStock), minStock: Number(row.minStock), unitCost: num(row.unitCost), stockStatus: computeStatus(row) },
     });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.post("/", authenticate, authorize("INVENTORY", "create"), async (req, res) => {
@@ -722,7 +773,7 @@ inventoryRouter.post("/", authenticate, authorize("INVENTORY", "create"), async 
     const b = req.body;
     const [row] = await db.insert(inventoryTable).values({
       id: newId(),
-      propertyId: b.propertyId,
+      propertyId: assertWritableBody(req, b),
       name: b.name,
       sku: b.sku,
       category: b.category,
@@ -741,7 +792,7 @@ inventoryRouter.post("/", authenticate, authorize("INVENTORY", "create"), async 
       success: true,
       data: { ...row, currentStock: Number(row.currentStock), minStock: Number(row.minStock), unitCost: num(row.unitCost), stockStatus: computeStatus(row) },
     });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.put("/:id", authenticate, authorize("INVENTORY", "edit"), async (req, res) => {
@@ -757,14 +808,14 @@ inventoryRouter.put("/:id", authenticate, authorize("INVENTORY", "edit"), async 
       success: true,
       data: { ...row, currentStock: Number(row.currentStock), minStock: Number(row.minStock), unitCost: num(row.unitCost), stockStatus: computeStatus(row) },
     });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.get("/:id/movements", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
   try {
     const rows = await db.select().from(stockMovementsTable).where(eq(stockMovementsTable.inventoryId, req.params["id"]!)).orderBy(desc(stockMovementsTable.createdAt));
     res.json({ success: true, data: rows.map(r => ({ ...r, quantity: Number(r.quantity) })) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.post("/:id/consume", authenticate, authorize("INVENTORY", "edit"), async (req, res) => {
@@ -792,7 +843,7 @@ inventoryRouter.post("/:id/consume", authenticate, authorize("INVENTORY", "edit"
     });
     if (!result) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.status(201).json({ success: true, data: { ...result.mv, quantity: Number(result.mv.quantity), newStock: result.newStock } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 inventoryRouter.post("/:id/audit", authenticate, authorize("INVENTORY", "edit"), async (req, res) => {
@@ -814,7 +865,7 @@ inventoryRouter.post("/:id/audit", authenticate, authorize("INVENTORY", "edit"),
     });
     if (!result) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { variance: result.variance, newStock: physical } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // silence unused import warnings on `lt`

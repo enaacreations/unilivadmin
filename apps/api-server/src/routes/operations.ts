@@ -19,6 +19,7 @@ import {
 import { eq, and, desc, sql, gte, lte, lt } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
+import { effectivePropertyFilter, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
 import { newId } from "../lib/id.js";
 import { rateLimit } from "../middlewares/security.js";
 import { randomBytes, timingSafeEqual } from "crypto";
@@ -36,7 +37,7 @@ export const facilityRouter: Router = Router();
 
 facilityRouter.get("/assets", authenticate, authorize("FACILITY", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const where = propertyId ? eq(facilityAssetsTable.propertyId, propertyId) : undefined;
     const rows = await db.select({
       a: facilityAssetsTable,
@@ -46,7 +47,7 @@ facilityRouter.get("/assets", authenticate, authorize("FACILITY", "view"), async
       .where(where)
       .orderBy(desc(facilityAssetsTable.createdAt));
     res.json({ success: true, data: rows.map((r) => ({ ...r.a, propertyName: r.propertyName })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 const assetSchema = z.object({
@@ -68,6 +69,7 @@ facilityRouter.post("/assets", authenticate, authorize("FACILITY", "create"), as
     const p = assetSchema.safeParse(req.body);
     if (!p.success) { res.status(400).json({ success: false, error: p.error.message }); return; }
     const b = p.data;
+    assertPropertyAccess(req, b.propertyId);
     const [row] = await db.insert(facilityAssetsTable).values({
       id: newId(),
       propertyId: b.propertyId,
@@ -84,7 +86,7 @@ facilityRouter.post("/assets", authenticate, authorize("FACILITY", "create"), as
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.put("/assets/:id", authenticate, authorize("FACILITY", "edit"), async (req, res) => {
@@ -99,20 +101,20 @@ facilityRouter.put("/assets/:id", authenticate, authorize("FACILITY", "edit"), a
     const [row] = await db.update(facilityAssetsTable).set(update as Partial<typeof facilityAssetsTable.$inferInsert>).where(eq(facilityAssetsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.delete("/assets/:id", authenticate, authorize("FACILITY", "delete"), async (req, res) => {
   try {
     await db.delete(facilityAssetsTable).where(eq(facilityAssetsTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.get("/schedules", authenticate, authorize("FACILITY", "view"), async (req, res) => {
   try {
     const assetId = req.query["assetId"] as string | undefined;
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const overdueOnly = req.query["overdueOnly"] === "true";
     const conditions = [];
     if (assetId) conditions.push(eq(facilitySchedulesTable.assetId, assetId));
@@ -132,7 +134,7 @@ facilityRouter.get("/schedules", authenticate, authorize("FACILITY", "view"), as
       .where(where)
       .orderBy(facilitySchedulesTable.nextDueDate);
     res.json({ success: true, data: rows.map((r) => ({ ...r.s, assetName: r.assetName, assetCode: r.assetCode, propertyId: r.propertyId, propertyName: r.propertyName })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.post("/schedules", authenticate, authorize("FACILITY", "create"), async (req, res) => {
@@ -154,7 +156,7 @@ facilityRouter.post("/schedules", authenticate, authorize("FACILITY", "create"),
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.put("/schedules/:id", authenticate, authorize("FACILITY", "edit"), async (req, res) => {
@@ -167,20 +169,20 @@ facilityRouter.put("/schedules/:id", authenticate, authorize("FACILITY", "edit")
     const [row] = await db.update(facilitySchedulesTable).set(update as Partial<typeof facilitySchedulesTable.$inferInsert>).where(eq(facilitySchedulesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.delete("/schedules/:id", authenticate, authorize("FACILITY", "delete"), async (req, res) => {
   try {
     await db.delete(facilitySchedulesTable).where(eq(facilitySchedulesTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.get("/logs", authenticate, authorize("FACILITY", "view"), async (req, res) => {
   try {
     const assetId = req.query["assetId"] as string | undefined;
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const conditions = [];
     if (assetId) conditions.push(eq(facilityLogsTable.assetId, assetId));
     if (propertyId) conditions.push(eq(facilityAssetsTable.propertyId, propertyId));
@@ -193,7 +195,7 @@ facilityRouter.get("/logs", authenticate, authorize("FACILITY", "view"), async (
       .where(where)
       .orderBy(desc(facilityLogsTable.performedAt));
     res.json({ success: true, data: rows.map((r) => ({ ...r.l, assetName: r.assetName, cost: r.l.cost ? Number(r.l.cost) : null })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 facilityRouter.post("/logs", authenticate, authorize("FACILITY", "create"), async (req, res) => {
@@ -222,7 +224,7 @@ facilityRouter.post("/logs", authenticate, authorize("FACILITY", "create"), asyn
       }
     }
     res.status(201).json({ success: true, data: { ...row, cost: row.cost ? Number(row.cost) : null } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 // Electricity
@@ -232,7 +234,7 @@ electricityRouter.get("/tariffs", authenticate, authorize("ELECTRICITY", "view")
   try {
     const rows = await db.select().from(electricityTariffsTable).orderBy(desc(electricityTariffsTable.effectiveFrom));
     res.json({ success: true, data: rows.map((r) => ({ ...r, ratePerUnit: Number(r.ratePerUnit), fixedCharge: Number(r.fixedCharge) })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.post("/tariffs", authenticate, authorize("ELECTRICITY", "create"), async (req, res) => {
@@ -250,7 +252,7 @@ electricityRouter.post("/tariffs", authenticate, authorize("ELECTRICITY", "creat
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: { ...row, ratePerUnit: Number(row.ratePerUnit), fixedCharge: Number(row.fixedCharge) } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.put("/tariffs/:id", authenticate, authorize("ELECTRICITY", "edit"), async (req, res) => {
@@ -266,12 +268,12 @@ electricityRouter.put("/tariffs/:id", authenticate, authorize("ELECTRICITY", "ed
     const [row] = await db.update(electricityTariffsTable).set(u as Partial<typeof electricityTariffsTable.$inferInsert>).where(eq(electricityTariffsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, ratePerUnit: Number(row.ratePerUnit), fixedCharge: Number(row.fixedCharge) } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.get("/meters", authenticate, authorize("ELECTRICITY", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const where = propertyId ? eq(electricityMetersTable.propertyId, propertyId) : undefined;
     const rows = await db.select({
       m: electricityMetersTable,
@@ -295,13 +297,14 @@ electricityRouter.get("/meters", authenticate, authorize("ELECTRICITY", "view"),
       tariffName: r.tariffName,
       ratePerUnit: r.ratePerUnit ? Number(r.ratePerUnit) : null,
     })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.post("/meters", authenticate, authorize("ELECTRICITY", "create"), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.propertyId || !b.meterNo) { res.status(400).json({ success: false, error: "propertyId, meterNo required" }); return; }
+    assertPropertyAccess(req, b.propertyId);
     const [row] = await db.insert(electricityMetersTable).values({
       id: newId(),
       propertyId: b.propertyId,
@@ -314,7 +317,7 @@ electricityRouter.post("/meters", authenticate, authorize("ELECTRICITY", "create
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.put("/meters/:id", authenticate, authorize("ELECTRICITY", "edit"), async (req, res) => {
@@ -325,14 +328,14 @@ electricityRouter.put("/meters/:id", authenticate, authorize("ELECTRICITY", "edi
     const [row] = await db.update(electricityMetersTable).set(u as Partial<typeof electricityMetersTable.$inferInsert>).where(eq(electricityMetersTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.delete("/meters/:id", authenticate, authorize("ELECTRICITY", "delete"), async (req, res) => {
   try {
     await db.delete(electricityMetersTable).where(eq(electricityMetersTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 async function computeReading(meterId: string, reading: number, readingDate: Date) {
@@ -355,7 +358,7 @@ async function computeReading(meterId: string, reading: number, readingDate: Dat
 electricityRouter.get("/readings", authenticate, authorize("ELECTRICITY", "view"), async (req, res) => {
   try {
     const meterId = req.query["meterId"] as string | undefined;
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const conditions = [];
     if (meterId) conditions.push(eq(electricityReadingsTable.meterId, meterId));
     if (propertyId) conditions.push(eq(electricityMetersTable.propertyId, propertyId));
@@ -380,7 +383,7 @@ electricityRouter.get("/readings", authenticate, authorize("ELECTRICITY", "view"
       unitsConsumed: row.r.unitsConsumed != null ? Number(row.r.unitsConsumed) : null,
       amount: row.r.amount != null ? Number(row.r.amount) : null,
     })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.post("/readings", authenticate, authorize("ELECTRICITY", "create"), async (req, res) => {
@@ -433,7 +436,7 @@ electricityRouter.post("/readings/bulk", authenticate, authorize("ELECTRICITY", 
       }
     }
     res.json({ success: true, data: { success, failed, errors } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.post("/readings/:id/post", authenticate, authorize("ELECTRICITY", "edit"), async (req, res) => {
@@ -460,12 +463,12 @@ electricityRouter.post("/readings/:id/post", authenticate, authorize("ELECTRICIT
       return entry;
     });
     res.json({ success: true, data: { ledgerEntryId: ledger.id, amount } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 electricityRouter.get("/summary", authenticate, authorize("ELECTRICITY", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     if (!propertyId) { res.json({ success: true, data: [] }); return; }
     const meters = await db.select().from(electricityMetersTable).where(eq(electricityMetersTable.propertyId, propertyId));
     const out: Array<{ meterId: string; meterNo: string; lastReading: number | null; totalUnits: number; totalAmount: number; postedAmount: number }> = [];
@@ -478,7 +481,7 @@ electricityRouter.get("/summary", authenticate, authorize("ELECTRICITY", "view")
       out.push({ meterId: m.id, meterNo: m.meterNo, lastReading: last ? Number(last.reading) : null, totalUnits, totalAmount, postedAmount });
     }
     res.json({ success: true, data: out });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 // Resident Attendance & Out-pass
@@ -486,7 +489,7 @@ export const residentAttendanceRouter: Router = Router();
 
 residentAttendanceRouter.get("/", authenticate, authorize("RESIDENT_ATTENDANCE", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const date = req.query["date"] as string | undefined;
     if (!propertyId || !date) { res.status(400).json({ success: false, error: "propertyId and date required" }); return; }
     const residents = await db.select().from(residentsTable).where(and(eq(residentsTable.propertyId, propertyId), eq(residentsTable.status, "ACTIVE")));
@@ -502,7 +505,7 @@ residentAttendanceRouter.get("/", authenticate, authorize("RESIDENT_ATTENDANCE",
     const absent = records.filter((r) => r.status === "ABSENT").length;
     const outPass = records.filter((r) => r.status === "OUT_PASS").length;
     res.json({ success: true, data, summary: { total: residents.length, marked: records.length, present, absent, outPass, pct: residents.length ? Math.round(present * 100 / residents.length) : 0 } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 residentAttendanceRouter.post("/mark", authenticate, authorize("RESIDENT_ATTENDANCE", "create"), async (req, res) => {
@@ -529,7 +532,7 @@ residentAttendanceRouter.post("/mark", authenticate, authorize("RESIDENT_ATTENDA
       upserted++;
     }
     res.json({ success: true, data: { upserted } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 residentAttendanceRouter.get("/history/:residentId", authenticate, authorize("RESIDENT_ATTENDANCE", "view"), async (req, res) => {
@@ -539,14 +542,14 @@ residentAttendanceRouter.get("/history/:residentId", authenticate, authorize("RE
       .orderBy(desc(residentAttendanceTable.attendanceDate))
       .limit(120);
     res.json({ success: true, data: rows });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 export const outPassRouter: Router = Router();
 
 outPassRouter.get("/", authenticate, authorize("RESIDENT_ATTENDANCE", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const status = req.query["status"] as string | undefined;
     const residentId = req.query["residentId"] as string | undefined;
     const conditions = [];
@@ -564,7 +567,7 @@ outPassRouter.get("/", authenticate, authorize("RESIDENT_ATTENDANCE", "view"), a
       .where(where)
       .orderBy(desc(outPassesTable.leaveOn));
     res.json({ success: true, data: rows.map((r) => ({ ...r.o, residentName: r.residentName, propertyName: r.propertyName })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 outPassRouter.post("/", authenticate, authorize("RESIDENT_ATTENDANCE", "create"), async (req, res) => {
@@ -584,7 +587,7 @@ outPassRouter.post("/", authenticate, authorize("RESIDENT_ATTENDANCE", "create")
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 outPassRouter.put("/:id", authenticate, authorize("RESIDENT_ATTENDANCE", "edit"), async (req, res) => {
@@ -599,7 +602,7 @@ outPassRouter.put("/:id", authenticate, authorize("RESIDENT_ATTENDANCE", "edit")
     const [row] = await db.update(outPassesTable).set(u as Partial<typeof outPassesTable.$inferInsert>).where(eq(outPassesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 outPassRouter.post("/:id/return", authenticate, authorize("RESIDENT_ATTENDANCE", "edit"), async (req, res) => {
@@ -607,7 +610,7 @@ outPassRouter.post("/:id/return", authenticate, authorize("RESIDENT_ATTENDANCE",
     const [row] = await db.update(outPassesTable).set({ status: "RETURNED", actualReturn: new Date(), updatedAt: new Date() }).where(eq(outPassesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 // IoT
@@ -615,7 +618,7 @@ export const iotRouter: Router = Router();
 
 iotRouter.get("/devices", authenticate, authorize("IOT", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const roomId = req.query["roomId"] as string | undefined;
     const conditions = [];
     if (propertyId) conditions.push(eq(iotDevicesTable.propertyId, propertyId));
@@ -632,7 +635,7 @@ iotRouter.get("/devices", authenticate, authorize("IOT", "view"), async (req, re
       .orderBy(desc(iotDevicesTable.createdAt));
     // Mask token in list view (last 4 chars only)
     res.json({ success: true, data: rows.map((r) => ({ ...r.d, propertyName: r.propertyName, roomNumber: r.roomNumber, ingestionToken: `••••${r.d.ingestionToken.slice(-4)}` })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 iotRouter.post("/devices", authenticate, authorize("IOT", "create"), async (req, res) => {
@@ -656,7 +659,7 @@ iotRouter.post("/devices", authenticate, authorize("IOT", "create"), async (req,
     }).returning();
     // Return full token on creation (only time it's shown)
     res.status(201).json({ success: true, data: row });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 iotRouter.put("/devices/:id", authenticate, authorize("IOT", "edit"), async (req, res) => {
@@ -667,7 +670,7 @@ iotRouter.put("/devices/:id", authenticate, authorize("IOT", "edit"), async (req
     const [row] = await db.update(iotDevicesTable).set(u as Partial<typeof iotDevicesTable.$inferInsert>).where(eq(iotDevicesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, ingestionToken: `••••${row.ingestionToken.slice(-4)}` } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 iotRouter.post("/devices/:id/rotate-token", authenticate, authorize("IOT", "edit"), async (req, res) => {
@@ -676,20 +679,20 @@ iotRouter.post("/devices/:id/rotate-token", authenticate, authorize("IOT", "edit
     const [row] = await db.update(iotDevicesTable).set({ ingestionToken: token, updatedAt: new Date() }).where(eq(iotDevicesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ingestionToken: token } });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 iotRouter.delete("/devices/:id", authenticate, authorize("IOT", "delete"), async (req, res) => {
   try {
     await db.delete(iotDevicesTable).where(eq(iotDevicesTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 iotRouter.get("/readings", authenticate, authorize("IOT", "view"), async (req, res) => {
   try {
     const deviceId = req.query["deviceId"] as string | undefined;
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const roomId = req.query["roomId"] as string | undefined;
     const conditions = [];
     if (deviceId) conditions.push(eq(iotReadingsTable.deviceId, deviceId));
@@ -706,12 +709,12 @@ iotRouter.get("/readings", authenticate, authorize("IOT", "view"), async (req, r
       .orderBy(desc(iotReadingsTable.recordedAt))
       .limit(200);
     res.json({ success: true, data: rows.map((r) => ({ ...r.r, deviceName: r.deviceName, deviceType: r.deviceType, value: r.r.value != null ? Number(r.r.value) : null })) });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 iotRouter.get("/latest", authenticate, authorize("IOT", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const roomId = req.query["roomId"] as string | undefined;
     const conditions = [];
     if (propertyId) conditions.push(eq(iotDevicesTable.propertyId, propertyId));
@@ -733,7 +736,7 @@ iotRouter.get("/latest", authenticate, authorize("IOT", "view"), async (req, res
       });
     }
     res.json({ success: true, data: out });
-  } catch (e) { req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
+  } catch (e) { if (sendAuthzError(e, res)) return; req.log.error(e); res.status(500).json({ success: false, error: "Internal" }); }
 });
 
 // Public ingestion endpoint — uses device-specific token, no JWT

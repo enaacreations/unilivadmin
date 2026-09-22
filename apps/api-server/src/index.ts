@@ -12,7 +12,9 @@ import {
 } from "./lib/audit-jobs.js";
 import { runReportWorker } from "./lib/audit-report-service.js";
 import { sweepPendingOutbox } from "@workspace/notify-core";
-import { RUN_SCHEDULERS } from "./config/env.js";
+import { RUN_SCHEDULERS, ACCESS_RESOLVER_CONFIGURED, accessResolverMode, setAccessResolverMode } from "./config/env.js";
+import { loadMatrix, matrixCan } from "./lib/access/matrix.js";
+import { installMatrixResolver } from "./lib/permissions.js";
 
 const rawPort = process.env["PORT"];
 
@@ -46,7 +48,57 @@ const server: Server = app.listen(port, "0.0.0.0", (err?: Error) => {
     process.exit(1);
   }
 
+  // accessResolver is logged because "which resolver is live" is otherwise
+  // invisible — both return identical answers, which is the point, so the only
+  // way to know which one served a request is to state it at boot.
   logger.info({ port, schedulers: RUN_SCHEDULERS }, "Server listening");
+
+  // Decide the resolver mode BEFORE anything serves a request. "auto" uses the
+  // unified resolver only when the projection exists; an explicit "next" with
+  // no projection is a deployment error and stays loud rather than silently
+  // resolving everyone to nothing.
+  void (async () => {
+    try {
+      const { db, orgNodesTable } = await import("@workspace/db");
+      const { sql } = await import("drizzle-orm");
+      const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(orgNodesTable);
+      const projected = (row?.n ?? 0) > 0;
+
+      if (ACCESS_RESOLVER_CONFIGURED === "next" && !projected) {
+        logger.fatal(
+          "ACCESS_RESOLVER=next but org_nodes is EMPTY — run syncOrgNodes() and backfillAccessGrants() first. Staying on the legacy resolver.",
+        );
+        setAccessResolverMode("legacy");
+      } else if (ACCESS_RESOLVER_CONFIGURED === "auto") {
+        setAccessResolverMode(projected ? "next" : "legacy");
+        if (!projected) {
+          logger.warn("org_nodes is empty — staying on the legacy resolver. Run the projection to switch over.");
+        }
+      }
+      logger.info(
+        { configured: ACCESS_RESOLVER_CONFIGURED, effective: accessResolverMode(), orgNodes: row?.n ?? 0 },
+        "access resolver mode",
+      );
+    } catch (err) {
+      logger.error({ err }, "could not check the org projection — staying on the legacy resolver");
+      setAccessResolverMode("legacy");
+    }
+  })();
+
+  // Load the permission matrix into the process snapshot, then let can() read
+  // it. Ordering matters: installing the resolver before the first load would
+  // briefly answer from an empty snapshot, i.e. deny everything to everyone.
+  // If the load fails or the table is empty, loadMatrix() leaves the code
+  // matrix in place and this still installs — matrixCan() then serves the same
+  // answers can() would have given anyway.
+  void loadMatrix()
+    .then((snap) => {
+      installMatrixResolver(matrixCan);
+      logger.info({ matrixSource: snap.source, matrixVersion: snap.version }, "permission matrix loaded");
+    })
+    .catch((err) => {
+      logger.error({ err }, "permission matrix load failed — staying on the code matrix");
+    });
 
   if (RUN_SCHEDULERS) {
     // SLA breach check every 5 minutes (+ once on startup).

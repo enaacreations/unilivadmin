@@ -4,11 +4,15 @@
  * repeated bad passwords; OTP limits configured in system_config.
  */
 import { Router, type Response } from "express";
+import { overridesFor, overrideKey } from "../lib/access/overrides.js";
 import bcrypt from "bcryptjs";
 import { db } from "@workspace/db";
 import { usersTable, refreshTokensTable } from "@workspace/db";
 import { eq, or } from "drizzle-orm";
 import { authenticate, signAccessToken, signRefreshToken } from "../middlewares/auth.js";
+import { can, ALL_MODULES, actionsFor } from "../lib/permissions.js";
+import { matrixVersion } from "../lib/access/matrix.js";
+import { resolveAccess } from "../lib/access.js";
 import { authRateLimiter } from "../middlewares/security.js";
 import { COOKIE_SECURE, DISABLE_SINGLE_SESSION } from "../config/env.js";
 import { newId } from "../lib/id.js";
@@ -456,7 +460,57 @@ router.get("/me", authenticate, async (req, res) => {
   try {
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.user!.id));
     if (!user) { res.status(404).json({ success: false, error: "User not found" }); return; }
-    res.json({ success: true, data: publicUser(user) });
+
+    // The caller's RESOLVED capabilities, not the matrix (PRD §32).
+    //
+    // Served rather than bundled for three reasons: a bundled copy cannot
+    // follow a database-backed matrix and is stale the moment an admin saves;
+    // it removes the second source of truth the sync test exists to police; and
+    // it leaks strictly less — today every browser downloads the full 22x53
+    // matrix including SUPER_ADMIN's shape, when a user needs only their own.
+    //
+    // This is a HINT for the UI. The server refuses regardless; a stale hint
+    // produces a 403, which the client then uses to refetch and self-correct.
+    // Personal exceptions are folded in here, in the same DENY-beats-GRANT
+    // order decide() and the gate use. Without this the nav would offer a page
+    // the server refuses (or hide one it allows) for exactly the people whose
+    // access someone deliberately adjusted.
+    const overrides = await overridesFor(user.id);
+    const capabilities: Record<string, string[]> = {};
+    for (const m of ALL_MODULES) {
+      const held = actionsFor(m).filter((a) => {
+        const effect = overrides.get(overrideKey(m, a));
+        if (effect === "DENY") return false;
+        if (effect === "GRANT") return true;
+        return can(user.role as never, m, a);
+      });
+      if (held.length) capabilities[m] = held;
+    }
+
+    let scope: {
+      unrestricted: boolean; propertyIds: string[] | null; dataScope: string; primaryPropertyId: string | null;
+    } | null = null;
+    try {
+      const access = await resolveAccess({
+        id: user.id, email: user.email, role: user.role,
+        propertyId: user.propertyId, roleKey: user.roleKey,
+      } as never);
+      scope = {
+        unrestricted: access.propertyIds === null,
+        propertyIds: access.propertyIds,
+        dataScope: access.dataScope,
+        primaryPropertyId: user.propertyId,
+      };
+    } catch (err) {
+      // Never fail /auth/me over the scope blob: losing it degrades a hint,
+      // whereas failing the call logs the user out.
+      req.log.warn({ err }, "could not resolve scope for /auth/me");
+    }
+
+    res.json({
+      success: true,
+      data: { ...publicUser(user), access: { version: matrixVersion(), capabilities, scope } },
+    });
   } catch (err) {
     req.log.error(err);
     res.status(500).json({ success: false, error: "Internal server error" });

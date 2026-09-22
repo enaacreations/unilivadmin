@@ -21,6 +21,7 @@ import {
 } from "@workspace/db";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
+import { resolveAuditAccess, visibleAuditTypes } from "../lib/audit-access.js";
 import { httpError } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -257,7 +258,21 @@ router.get(
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const status = (req.query["status"] as string | undefined)?.toUpperCase();
 
-    const where = status ? eq(auditSchedulesTable.status, status) : undefined;
+    // Schedules were listed org-wide. An audit grant is scoped by audit TYPE
+    // (UL / CM / CX) as well as org node, and auditType is the dimension a
+    // schedule actually carries — its org reach lives in a JSON rule, which SQL
+    // cannot filter on. Restricting by type is what is enforceable here; the
+    // occurrences a schedule produces are themselves scoped by the audit list.
+    const access = await resolveAuditAccess(req.user!);
+    const typeCond = access.isGlobalAdmin
+      ? undefined
+      : (() => {
+          const types = visibleAuditTypes(access);
+          // No types ⇒ no schedules, rather than all of them.
+          return types.length ? inArray(auditSchedulesTable.auditType, types) : sql`false`;
+        })();
+    const conds = [status ? eq(auditSchedulesTable.status, status) : undefined, typeCond].filter(Boolean);
+    const where = conds.length ? and(...(conds as never[])) : undefined;
     const [countRow] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(auditSchedulesTable)

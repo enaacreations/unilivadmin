@@ -11,6 +11,7 @@ import {
 import { eq, sql, ilike, or, and, gte, lte, desc, inArray } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
+import { effectivePropertyFilter, scopedPropertyId, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
 import { pick } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -54,7 +55,7 @@ leadsRouter.get("/", authenticate, authorize("SALES_LEADS", "view"), async (req,
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
     const stage = req.query["stage"] as string | undefined;
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const source = req.query["source"] as string | undefined;
     const assignedTo = req.query["assignedTo"] as string | undefined;
     const dateFrom = req.query["dateFrom"] as string | undefined;
@@ -62,6 +63,9 @@ leadsRouter.get("/", authenticate, authorize("SALES_LEADS", "view"), async (req,
     const conditions = [];
     if (stage) conditions.push(eq(leadsTable.stage, stage as "NEW"));
     if (propertyId) conditions.push(eq(leadsTable.propertyId, propertyId));
+    // A lead with no property is pre-assignment — it belongs to no property, so
+    // a scoped caller should not see it either. Fail closed, not open.
+    else if (scopedPropertyId(req)) conditions.push(eq(leadsTable.propertyId, scopedPropertyId(req)!));
     if (source) conditions.push(eq(leadsTable.source, source as "WEBSITE"));
     if (assignedTo) conditions.push(eq(leadsTable.assignedTo, assignedTo));
     if (dateFrom) conditions.push(gte(leadsTable.createdAt, new Date(dateFrom)));
@@ -72,7 +76,7 @@ leadsRouter.get("/", authenticate, authorize("SALES_LEADS", "view"), async (req,
     const rows = await db.select().from(leadsTable).where(where).limit(limit).offset(offset).orderBy(desc(leadsTable.createdAt));
     const enriched = await Promise.all(rows.map(enrichLead));
     res.json({ success: true, data: enriched, meta: buildMeta(c.count, page, limit) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.get("/stats", authenticate, authorize("SALES_LEADS", "view"), async (req, res) => {
@@ -105,7 +109,7 @@ leadsRouter.get("/stats", authenticate, authorize("SALES_LEADS", "view"), async 
     }));
 
     res.json({ success: true, data: { stageCounts: counts, total, conversionRate, bySource, performance: performance.filter((p) => p.assigned > 0) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.get("/export-csv", authenticate, authorize("SALES_LEADS", "view"), async (req, res) => {
@@ -119,7 +123,7 @@ leadsRouter.get("/export-csv", authenticate, authorize("SALES_LEADS", "view"), a
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="leads-${new Date().toISOString().slice(0, 10)}.csv"`);
     res.send(lines.join("\n"));
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.post("/", authenticate, authorize("SALES_LEADS", "create"), async (req, res) => {
@@ -134,7 +138,14 @@ leadsRouter.post("/", authenticate, authorize("SALES_LEADS", "create"), async (r
       phone: body.phone,
       email: body.email,
       source: body.source,
-      propertyId: body.propertyId,
+      propertyId: (() => {
+        // Pin to the creator's property when scoped; otherwise verify the
+        // target is one they may reach.
+        const sc = scopedPropertyId(req);
+        if (sc) return sc;
+        if (body.propertyId) assertPropertyAccess(req, body.propertyId);
+        return body.propertyId;
+      })(),
       stage: body.stage || "NEW",
       assignedTo: body.assignedTo,
       budgetMin: body.budgetMin?.toString(),
@@ -147,7 +158,7 @@ leadsRouter.post("/", authenticate, authorize("SALES_LEADS", "create"), async (r
     }).returning();
     await logActivity(row.id, "STAGE_CHANGE", `Lead created (${row.stage})`, undefined, req.user?.id);
     res.status(201).json({ success: true, data: await enrichLead(row) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.get("/:id", authenticate, authorize("SALES_LEADS", "view"), async (req, res) => {
@@ -155,7 +166,7 @@ leadsRouter.get("/:id", authenticate, authorize("SALES_LEADS", "view"), async (r
     const [row] = await db.select().from(leadsTable).where(eq(leadsTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: await enrichLead(row) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.put("/:id", authenticate, authorize("SALES_LEADS", "edit"), async (req, res) => {
@@ -180,7 +191,7 @@ leadsRouter.put("/:id", authenticate, authorize("SALES_LEADS", "edit"), async (r
     const [row] = await db.update(leadsTable).set({ ...body, updatedAt: new Date() }).where(eq(leadsTable.id, id)).returning();
     if (body.stage && body.stage !== prev.stage) await logActivity(id, "STAGE_CHANGE", `${prev.stage} → ${body.stage}`, undefined, req.user?.id);
     res.json({ success: true, data: await enrichLead(row) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.delete("/:id", authenticate, authorize("SALES_LEADS", "delete"), async (req, res) => {
@@ -188,7 +199,7 @@ leadsRouter.delete("/:id", authenticate, authorize("SALES_LEADS", "delete"), asy
     await db.delete(leadActivitiesTable).where(eq(leadActivitiesTable.leadId, req.params["id"]!));
     await db.delete(leadsTable).where(eq(leadsTable.id, req.params["id"]!));
     res.json({ success: true, message: "Deleted" });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // activities
@@ -196,7 +207,7 @@ leadsRouter.get("/:id/activities", authenticate, authorize("SALES_LEADS", "view"
   try {
     const rows = await db.select().from(leadActivitiesTable).where(eq(leadActivitiesTable.leadId, req.params["id"]!)).orderBy(desc(leadActivitiesTable.createdAt));
     res.json({ success: true, data: rows });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.post("/:id/activities", authenticate, authorize("SALES_LEADS", "edit"), async (req, res) => {
@@ -206,7 +217,7 @@ leadsRouter.post("/:id/activities", authenticate, authorize("SALES_LEADS", "edit
       id: newId(), leadId: req.params["id"]!, type: type || "NOTE", note, meta, createdBy: req.user?.id || null,
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // schedule visit
@@ -223,7 +234,7 @@ leadsRouter.post("/:id/schedule-visit", authenticate, authorize("SALES_LEADS", "
     // would land in plaintext in centralized logs. Log only the leadId.
     req.log.info({ leadId: id }, "[SMS stub] visit confirmation would be sent");
     res.json({ success: true, data: await enrichLead(row) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.post("/:id/visit-outcome", authenticate, authorize("SALES_LEADS", "edit"), async (req, res) => {
@@ -237,7 +248,7 @@ leadsRouter.post("/:id/visit-outcome", authenticate, authorize("SALES_LEADS", "e
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     await logActivity(id, "VISIT_OUTCOME", `Visit outcome: ${outcome}${feedback ? ` — ${feedback}` : ""}`, { outcome, feedback, lostReason }, req.user?.id);
     res.json({ success: true, data: await enrichLead(row) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.post("/:id/follow-up", authenticate, authorize("SALES_LEADS", "edit"), async (req, res) => {
@@ -248,7 +259,7 @@ leadsRouter.post("/:id/follow-up", authenticate, authorize("SALES_LEADS", "edit"
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     await logActivity(id, "FOLLOWUP_SET", `Follow-up set for ${new Date(followUpAt).toLocaleString()}${followUpNote ? ` — ${followUpNote}` : ""}`, undefined, req.user?.id);
     res.json({ success: true, data: await enrichLead(row) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.post("/:id/mark-lost", authenticate, authorize("SALES_LEADS", "edit"), async (req, res) => {
@@ -260,7 +271,7 @@ leadsRouter.post("/:id/mark-lost", authenticate, authorize("SALES_LEADS", "edit"
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     await logActivity(id, "STAGE_CHANGE", `Lost — ${lostReason}`, { lostReason }, req.user?.id);
     res.json({ success: true, data: await enrichLead(row) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 leadsRouter.post("/:id/convert", authenticate, authorize("SALES_LEADS", "edit"), async (req, res) => {
@@ -269,7 +280,10 @@ leadsRouter.post("/:id/convert", authenticate, authorize("SALES_LEADS", "edit"),
     const [lead] = await db.select().from(leadsTable).where(eq(leadsTable.id, id));
     if (!lead) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const body = req.body || {};
-    const propertyId = body.propertyId || lead.propertyId;
+    // Conversion creates a RESIDENT at this property — the one write here that
+    // crosses from CRM into tenancy, so the scope check matters most.
+    const propertyId = scopedPropertyId(req) ?? (body.propertyId || lead.propertyId);
+    assertPropertyAccess(req, propertyId);
     const email = body.email || lead.email;
     if (!propertyId) { res.status(400).json({ success: false, error: "propertyId is required to convert" }); return; }
     if (!email) { res.status(400).json({ success: false, error: "email is required to convert" }); return; }
@@ -300,7 +314,7 @@ leadsRouter.post("/:id/convert", authenticate, authorize("SALES_LEADS", "edit"),
       return r;
     });
     res.json({ success: true, data: { lead: id, residentId: resident.id, resident } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // =====================================================
@@ -318,7 +332,7 @@ propertyLeadsRouter.get("/", authenticate, authorize("PROPERTY_LEADS", "view"), 
     const [c] = await db.select({ count: sql<number>`count(*)::int` }).from(propertyLeadsTable).where(where);
     const rows = await db.select().from(propertyLeadsTable).where(where).limit(limit).offset(offset).orderBy(desc(propertyLeadsTable.createdAt));
     res.json({ success: true, data: rows.map((r) => ({ ...r, askingRent: r.askingRent ? Number(r.askingRent) : null })), meta: buildMeta(c.count, page, limit) });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 propertyLeadsRouter.post("/", authenticate, authorize("PROPERTY_LEADS", "create"), async (req, res) => {
@@ -348,7 +362,7 @@ propertyLeadsRouter.post("/", authenticate, authorize("PROPERTY_LEADS", "create"
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: { ...row, askingRent: row.askingRent ? Number(row.askingRent) : null } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 propertyLeadsRouter.get("/:id", authenticate, authorize("PROPERTY_LEADS", "view"), async (req, res) => {
@@ -356,7 +370,7 @@ propertyLeadsRouter.get("/:id", authenticate, authorize("PROPERTY_LEADS", "view"
     const [row] = await db.select().from(propertyLeadsTable).where(eq(propertyLeadsTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, askingRent: row.askingRent ? Number(row.askingRent) : null } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 propertyLeadsRouter.put("/:id", authenticate, authorize("PROPERTY_LEADS", "edit"), async (req, res) => {
@@ -370,14 +384,14 @@ propertyLeadsRouter.put("/:id", authenticate, authorize("PROPERTY_LEADS", "edit"
     const [row] = await db.update(propertyLeadsTable).set({ ...body, updatedAt: new Date() }).where(eq(propertyLeadsTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: { ...row, askingRent: row.askingRent ? Number(row.askingRent) : null } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 propertyLeadsRouter.delete("/:id", authenticate, authorize("PROPERTY_LEADS", "delete"), async (req, res) => {
   try {
     await db.delete(propertyLeadsTable).where(eq(propertyLeadsTable.id, req.params["id"]!));
     res.json({ success: true, message: "Deleted" });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 void inArray;

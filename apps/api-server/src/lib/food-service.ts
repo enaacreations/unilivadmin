@@ -29,6 +29,7 @@ import {
 } from "@workspace/db";
 import { and, eq, or, isNull, lte, gte, sql, inArray, notInArray, desc } from "drizzle-orm";
 import type { AuthUser } from "../middlewares/auth.js";
+import { accessResolverMode } from "../config/env.js";
 import { httpError } from "./authz.js";
 import { atIst, istDayYmd, istParts } from "./tz.js";
 import { logger } from "./logger.js";
@@ -396,6 +397,16 @@ async function expandZonesToCities(scopes: ScopeRow[]): Promise<Set<string>> {
 export async function resolveAccessiblePropertyIds(
   user: AuthUser,
 ): Promise<string[] | null> {
+  // ── CUTOVER POINT ────────────────────────────────────────────────────────
+  // Under ACCESS_RESOLVER=next this delegates to the unified resolver, which
+  // returns the SAME null / [] / ids contract — so none of the ~75 call sites
+  // below change. Verified against live data: identical output for all active
+  // users, food and audit both.
+  if (accessResolverMode() === "next") {
+    const { resolveAccess } = await import("./access.js");
+    return (await resolveAccess(user)).propertyIds;
+  }
+
   if (ALWAYS_GLOBAL.has(user.role)) return null;
 
   const scopes = await activeScopesFor(user.id);

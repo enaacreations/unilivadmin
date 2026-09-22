@@ -5,7 +5,8 @@ import { usersTable, announcementsTable } from "@workspace/db";
 import { eq, sql, ilike, and } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { pick, assertCanAssignRole, ROLE_RANK, isSuperAdmin } from "../lib/authz.js";
+import { pick, assertCanAssignRole, ROLE_RANK, isSuperAdmin, scopedPropertyId, assertPropertyAccess } from "../lib/authz.js";
+import { recordActivity, activityCtx } from "../lib/activity/record.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { writeAuditLog } from "../lib/wallet-service.js";
@@ -42,6 +43,12 @@ usersRouter.get("/", authenticate, authorize("USERS", "view"), async (req, res) 
     const conditions = [];
     if (role) conditions.push(eq(usersTable.role, role as typeof usersTable.$inferSelect.role));
     if (search) conditions.push(ilike(usersTable.name, `%${search}%`));
+    // A property-bound caller administers only their own property's users.
+    // Without this, USERS:view listed every account in the company — including
+    // the org-wide roles, whose existence and email are themselves a target.
+    // Org-wide callers are unaffected (scopedPropertyId returns null for them).
+    const userScope = scopedPropertyId(req);
+    if (userScope) conditions.push(eq(usersTable.propertyId, userScope));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(usersTable).where(where);
     const rows = await db.select().from(usersTable).where(where).limit(limit).offset(offset).orderBy(usersTable.createdAt);
@@ -52,6 +59,12 @@ usersRouter.post("/", authenticate, authorize("USERS", "create"), async (req, re
   try {
     const fields = pick(req.body, WRITABLE_USER_FIELDS);
     if (fields.role) assertCanAssignRole(req.user!.role, fields.role);
+    // Pin the new account to the creator's property when they are scoped —
+    // otherwise a warden could mint a user at another property (or an
+    // unscoped one, which reads as org-wide to isPropertyScoped).
+    const createScope = scopedPropertyId(req);
+    if (createScope) fields.propertyId = createScope;
+    else if (fields.propertyId) assertPropertyAccess(req, fields.propertyId);
     const passwordHash = await bcrypt.hash(req.body?.password || "TempPass@123", 12);
     const [row] = await db.insert(usersTable).values({ id: newId(), ...fields, passwordHash, updatedAt: new Date() }).returning();
     // Audit (fire-and-forget; never blocks the create).
@@ -71,6 +84,36 @@ usersRouter.put("/:id", authenticate, authorize("USERS", "edit"), async (req, re
     // its own profile); only editing a STRICTLY higher-ranked user is blocked.
     const [target] = await db.select().from(usersTable).where(eq(usersTable.id, req.params["id"]!));
     if (!target) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    // Editing rights on a user you can see must not become rights over one you
+    // cannot: refuse a target outside scope, and refuse moving one out of it.
+    const editScope = scopedPropertyId(req);
+    if (editScope && target.propertyId !== editScope && !isSelf) {
+      res.status(404).json({ success: false, error: "Not found" }); return;
+    }
+    if (fields.propertyId !== undefined && fields.propertyId !== target.propertyId) {
+      assertPropertyAccess(req, fields.propertyId);
+    }
+
+    // PRD §29 names both of these explicitly, and both demand a reason: a role
+    // change and a property reassignment are the two edits that silently
+    // redefine what someone can reach.
+    const reason = (req.body?.reason as string | undefined) ?? null;
+    if (fields.role !== undefined && fields.role !== target.role) {
+      recordActivity(activityCtx(req), {
+        event: "ROLE_CHANGED", entityId: target.id, entityLabel: target.email,
+        fromState: target.role, toState: fields.role as string,
+        before: { role: target.role }, after: { role: fields.role },
+        reason: reason ?? `Role changed by ${req.user!.email}`,
+      });
+    }
+    if (fields.propertyId !== undefined && fields.propertyId !== target.propertyId) {
+      recordActivity(activityCtx(req), {
+        event: "PROPERTY_ASSIGNMENT_CHANGED", entityId: target.id, entityLabel: target.email,
+        propertyId: (fields.propertyId as string | null) ?? null,
+        before: { propertyId: target.propertyId }, after: { propertyId: fields.propertyId },
+        reason: reason ?? `Property reassigned by ${req.user!.email}`,
+      });
+    }
     if (!isSuperAdmin(callerRole) && !isSelf) {
       const callerRank = ROLE_RANK[callerRole] ?? 0;
       const targetRank = ROLE_RANK[target.role] ?? 0;

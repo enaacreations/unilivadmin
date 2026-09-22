@@ -21,6 +21,8 @@ import {
 import { and, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
+import { effectivePropertyFilter, scopedPropertyId, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
+import { propertyScopeOrGlobal } from "../lib/scoped-query.js";
 import { newId } from "../lib/id.js";
 import { logger } from "../lib/logger.js";
 import { badRequest, httpError } from "../lib/authz.js";
@@ -33,7 +35,13 @@ export const financeRouter: Router = Router();
 // ───────────────────────────────────────────────────────
 financeRouter.get("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "view"), async (_req, res) => {
   try {
-    const rows = await db.select().from(billingCyclesTable).orderBy(desc(billingCyclesTable.createdAt));
+    // A NULL propertyId is an ORG-WIDE cycle that bills this caller's property
+    // too, so it must stay visible — hiding it would leave a warden unable to
+    // see the cycle actually charging their residents. Other properties' cycles
+    // are excluded.
+    const rows = await db.select().from(billingCyclesTable)
+      .where(propertyScopeOrGlobal(_req, billingCyclesTable.propertyId))
+      .orderBy(desc(billingCyclesTable.createdAt));
     const enriched = await Promise.all(rows.map(async (r) => {
       let propertyName: string | null = null;
       if (r.propertyId) {
@@ -43,13 +51,18 @@ financeRouter.get("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "
       return { ...r, propertyName };
     }));
     res.json({ success: true, data: enriched });
-  } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "create"), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.name) { res.status(400).json({ success: false, error: "name required" }); return; }
+    // A scoped caller gets their own property pinned, and cannot mint the
+    // NULL (= org-wide) cycle that would bill every property in the company.
+    const cycleScope = scopedPropertyId(req);
+    if (cycleScope) b.propertyId = cycleScope;
+    else if (b.propertyId) assertPropertyAccess(req, b.propertyId);
     const [row] = await db.insert(billingCyclesTable).values({
       id: newId(),
       name: b.name,
@@ -64,27 +77,28 @@ financeRouter.post("/billing-cycles", authenticate, authorize("BILLING_CYCLES", 
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.put("/billing-cycles/:id", authenticate, authorize("BILLING_CYCLES", "edit"), async (req, res) => {
   try {
     const b = req.body || {};
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (req.body?.propertyId !== undefined) assertPropertyAccess(req, req.body.propertyId);
     for (const k of ["name", "propertyId", "cadence", "dayOfMonth", "customDays", "ledgerType", "descriptionTemplate", "isActive"]) {
       if (b[k] !== undefined) updates[k] = b[k];
     }
     const [row] = await db.update(billingCyclesTable).set(updates as never).where(eq(billingCyclesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.delete("/billing-cycles/:id", authenticate, authorize("BILLING_CYCLES", "delete"), async (req, res) => {
   try {
     await db.delete(billingCyclesTable).where(eq(billingCyclesTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.get("/billing-runs", authenticate, authorize("BILLING_CYCLES", "view"), async (req, res) => {
@@ -93,7 +107,7 @@ financeRouter.get("/billing-runs", authenticate, authorize("BILLING_CYCLES", "vi
     const where = cycleId ? eq(billingRunsTable.cycleId, cycleId) : undefined;
     const rows = await db.select().from(billingRunsTable).where(where as never).orderBy(desc(billingRunsTable.createdAt)).limit(100);
     res.json({ success: true, data: rows });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/billing-cycles/:id/run", authenticate, authorize("BILLING_CYCLES", "create"), async (req, res) => {
@@ -102,7 +116,7 @@ financeRouter.post("/billing-cycles/:id/run", authenticate, authorize("BILLING_C
     if (!cycle) { res.status(404).json({ success: false, error: "Cycle not found" }); return; }
     const result = await runBillingCycle(cycle, req.user?.id || "MANUAL");
     res.json({ success: true, data: result });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Compute the period label, due date, and idempotency reference tag for the
@@ -211,7 +225,7 @@ financeRouter.get("/reminder-rules", authenticate, authorize("REMINDERS", "view"
   try {
     const rows = await db.select().from(reminderRulesTable).orderBy(reminderRulesTable.offsetDays);
     res.json({ success: true, data: rows });
-  } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/reminder-rules", authenticate, authorize("REMINDERS", "create"), async (req, res) => {
@@ -230,7 +244,7 @@ financeRouter.post("/reminder-rules", authenticate, authorize("REMINDERS", "crea
       updatedAt: new Date(),
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.put("/reminder-rules/:id", authenticate, authorize("REMINDERS", "edit"), async (req, res) => {
@@ -243,14 +257,14 @@ financeRouter.put("/reminder-rules/:id", authenticate, authorize("REMINDERS", "e
     const [row] = await db.update(reminderRulesTable).set(updates as never).where(eq(reminderRulesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
     res.json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.delete("/reminder-rules/:id", authenticate, authorize("REMINDERS", "delete"), async (req, res) => {
   try {
     await db.delete(reminderRulesTable).where(eq(reminderRulesTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.get("/reminder-logs", authenticate, authorize("REMINDERS", "view"), async (req, res) => {
@@ -264,7 +278,7 @@ financeRouter.get("/reminder-logs", authenticate, authorize("REMINDERS", "view")
       return { ...r, residentName: res2?.name || null };
     }));
     res.json({ success: true, data: enriched });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/reminder-rules/:id/run", authenticate, authorize("REMINDERS", "create"), async (req, res) => {
@@ -273,7 +287,7 @@ financeRouter.post("/reminder-rules/:id/run", authenticate, authorize("REMINDERS
     if (!rule) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const sent = await runReminderRule(rule, req.user?.id || "MANUAL");
     res.json({ success: true, data: { sent } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Manually re-send a reminder for a specific ledger entry.
@@ -288,7 +302,7 @@ financeRouter.post("/reminders/send", authenticate, authorize("REMINDERS", "crea
     if (!resident) { res.status(404).json({ success: false, error: "Resident not found" }); return; }
     const log = await sendReminder(rule, entry, resident, req.user?.id || "MANUAL");
     res.json({ success: true, data: log });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 function fillTemplate(text: string, vars: Record<string, string | number>) {
@@ -441,7 +455,7 @@ financeRouter.get("/bank-imports", authenticate, authorize("BANKING", "view"), a
   try {
     const rows = await db.select().from(bankImportsTable).orderBy(desc(bankImportsTable.createdAt));
     res.json({ success: true, data: rows });
-  } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/bank-imports", authenticate, authorize("BANKING", "create"), async (req, res) => {
@@ -486,7 +500,7 @@ financeRouter.post("/bank-imports", authenticate, authorize("BANKING", "create")
       inserted++;
     }
     res.status(201).json({ success: true, data: { ...imp, inserted } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.get("/bank-imports/:id/lines", authenticate, authorize("BANKING", "view"), async (req, res) => {
@@ -501,7 +515,7 @@ financeRouter.get("/bank-imports/:id/lines", authenticate, authorize("BANKING", 
       return { ...r, amount: Number(r.amount), residentName };
     }));
     res.json({ success: true, data: enriched });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/bank-lines/:id/confirm", authenticate, authorize("BANKING", "create"), async (req, res) => {
@@ -609,7 +623,7 @@ financeRouter.post("/bank-lines/:id/ignore", authenticate, authorize("BANKING", 
   try {
     await db.update(bankStatementLinesTable).set({ status: "IGNORED" }).where(eq(bankStatementLinesTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 function parseCsv(csv: string): Array<{ date: Date; description: string; reference: string | null; amount: number; direction: "CREDIT" | "DEBIT" }> {
@@ -705,7 +719,7 @@ financeRouter.get("/expense-categories", authenticate, authorize("EXPENSES", "vi
   try {
     const rows = await db.select().from(expenseCategoriesTable).orderBy(expenseCategoriesTable.name);
     res.json({ success: true, data: rows });
-  } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/expense-categories", authenticate, authorize("EXPENSES", "create"), async (req, res) => {
@@ -716,24 +730,26 @@ financeRouter.post("/expense-categories", authenticate, authorize("EXPENSES", "c
       id: newId(), name: b.name, description: b.description || null, isActive: b.isActive ?? true,
     }).returning();
     res.status(201).json({ success: true, data: row });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.delete("/expense-categories/:id", authenticate, authorize("EXPENSES", "delete"), async (req, res) => {
   try {
     await db.delete(expenseCategoriesTable).where(eq(expenseCategoriesTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.get("/expenses", authenticate, authorize("EXPENSES", "view"), async (req, res) => {
   try {
-    const propertyId = req.query["propertyId"] as string | undefined;
+    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const status = req.query["status"] as string | undefined;
     const categoryId = req.query["categoryId"] as string | undefined;
     const search = req.query["search"] as string | undefined;
     const conds = [];
     if (propertyId) conds.push(eq(expensesTable.propertyId, propertyId));
+    // An expense with no property is a head-office cost, not one of theirs.
+    else if (scopedPropertyId(req)) conds.push(eq(expensesTable.propertyId, scopedPropertyId(req)!));
     if (status) conds.push(eq(expensesTable.status, status));
     if (categoryId) conds.push(eq(expensesTable.categoryId, categoryId));
     if (search) conds.push(or(ilike(expensesTable.vendor, `%${search}%`), ilike(expensesTable.description, `%${search}%`))!);
@@ -759,13 +775,18 @@ financeRouter.get("/expenses", authenticate, authorize("EXPENSES", "view"), asyn
       return acc;
     }, { total: 0 } as Record<string, number>);
     res.json({ success: true, data: enriched, meta: { totals } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/expenses", authenticate, authorize("EXPENSES", "create"), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.amount || !b.expenseDate) { res.status(400).json({ success: false, error: "amount and expenseDate required" }); return; }
+    // Pin to the caller's property so a scoped user cannot book a cost against
+    // another property (or against head office, which their list cannot see).
+    const expScope = scopedPropertyId(req);
+    if (expScope) b.propertyId = expScope;
+    else if (b.propertyId) assertPropertyAccess(req, b.propertyId);
     const [row] = await db.insert(expensesTable).values({
       id: newId(),
       categoryId: b.categoryId || null,
@@ -784,13 +805,14 @@ financeRouter.post("/expenses", authenticate, authorize("EXPENSES", "create"), a
       id: newId(), expenseId: row.id, type: "CREATED", actorId: req.user?.id, actorName: req.user?.email,
     });
     res.status(201).json({ success: true, data: { ...row, amount: Number(row.amount) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.put("/expenses/:id", authenticate, authorize("EXPENSES", "edit"), async (req, res) => {
   try {
     const b = req.body || {};
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (req.body?.propertyId !== undefined) assertPropertyAccess(req, req.body.propertyId);
     for (const k of ["categoryId", "propertyId", "vendor", "description", "reference", "attachment"]) {
       if (b[k] !== undefined) updates[k] = b[k];
     }
@@ -802,7 +824,7 @@ financeRouter.put("/expenses/:id", authenticate, authorize("EXPENSES", "edit"), 
       id: newId(), expenseId: row.id, type: "UPDATED", actorId: req.user?.id, actorName: req.user?.email,
     });
     res.json({ success: true, data: { ...row, amount: Number(row.amount) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.post("/expenses/:id/transition", authenticate, authorize("EXPENSES", "edit"), async (req, res) => {
@@ -835,21 +857,21 @@ financeRouter.post("/expenses/:id/transition", authenticate, authorize("EXPENSES
       id: newId(), expenseId: row.id, type: action, actorId: req.user?.id, actorName: req.user?.email, note: note || null,
     });
     res.json({ success: true, data: { ...row, amount: Number(row.amount) } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.delete("/expenses/:id", authenticate, authorize("EXPENSES", "delete"), async (req, res) => {
   try {
     await db.delete(expensesTable).where(eq(expensesTable.id, req.params["id"]!));
     res.json({ success: true });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 financeRouter.get("/expenses/:id/events", authenticate, authorize("EXPENSES", "view"), async (req, res) => {
   try {
     const rows = await db.select().from(expenseEventsTable).where(eq(expenseEventsTable.expenseId, req.params["id"]!)).orderBy(desc(expenseEventsTable.createdAt));
     res.json({ success: true, data: rows });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // ───────────────────────────────────────────────────────
@@ -910,11 +932,16 @@ export async function runDueReminders() {
 // Surface a touch-up: enriched ledger summary used by exec dashboard
 financeRouter.get("/finance-summary", authenticate, authorize("LEDGER", "view"), async (_req, res) => {
   try {
-    const [expense] = await db.select({ sum: sql<number>`COALESCE(SUM(amount::numeric),0)::float` }).from(expensesTable).where(eq(expensesTable.status, "PAID"));
-    const [pending] = await db.select({ sum: sql<number>`COALESCE(SUM(amount::numeric),0)::float` }).from(expensesTable).where(eq(expensesTable.status, "SUBMITTED"));
+    // Summed org-wide before this: a property-bound caller read the whole
+    // company's paid and pending expense totals off their own summary card.
+    const sumScope = scopedPropertyId(_req);
+    const expenseScope = (st: string) =>
+      sumScope ? and(eq(expensesTable.status, st), eq(expensesTable.propertyId, sumScope)) : eq(expensesTable.status, st);
+    const [expense] = await db.select({ sum: sql<number>`COALESCE(SUM(amount::numeric),0)::float` }).from(expensesTable).where(expenseScope("PAID"));
+    const [pending] = await db.select({ sum: sql<number>`COALESCE(SUM(amount::numeric),0)::float` }).from(expensesTable).where(expenseScope("SUBMITTED"));
     const [reminderTotal] = await db.select({ count: sql<number>`count(*)::int` }).from(reminderLogsTable);
     res.json({ success: true, data: { paidExpenses: expense.sum, pendingExpenses: pending.sum, reminderTotal: reminderTotal.count } });
-  } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
 // Reminder count for a single resident (used by resident detail page)
@@ -922,5 +949,5 @@ financeRouter.get("/residents/:id/reminder-count", authenticate, authorize("RESI
   try {
     const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(reminderLogsTable).where(eq(reminderLogsTable.residentId, req.params["id"]!));
     res.json({ success: true, data: { count: row?.count ?? 0 } });
-  } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
+  } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });

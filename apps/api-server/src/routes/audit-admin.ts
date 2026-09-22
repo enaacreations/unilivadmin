@@ -22,7 +22,8 @@ import {
 } from "@workspace/db";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { httpError } from "../lib/authz.js";
+import { httpError, isSuperAdmin, assertCanAssignRole } from "../lib/authz.js";
+import { recordActivity, activityCtx } from "../lib/activity/record.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { writeConfigChange } from "../lib/audit-events.js";
@@ -127,10 +128,36 @@ router.post(
     if (nodeError) throw httpError(400, nodeError);
 
     const [user] = await db
-      .select({ id: usersTable.id })
+      .select({ id: usersTable.id, role: usersTable.role, isActive: usersTable.isActive })
       .from(usersTable)
       .where(eq(usersTable.id, parsed.data.userId));
     if (!user) throw httpError(404, "User not found");
+
+    // ── Grant guards ────────────────────────────────────────────────────────
+    // POST /food/scopes has had these since it shipped; this endpoint — which
+    // mints AUDIT access, including ADMIN — had none, which made it the
+    // cheapest privilege-escalation path in the product.
+    const actorRole = req.user!.role;
+
+    // 1. No self-grant. Otherwise any AUDIT_ADMIN holder widens their own reach
+    //    to the whole estate in one request, and the trail shows them doing it
+    //    to themselves.
+    if (parsed.data.userId === req.user!.id && !isSuperAdmin(actorRole)) {
+      throw httpError(403, "You cannot grant audit access to yourself");
+    }
+
+    // 2. An inactive user must not be granted access that activates silently
+    //    if the account is later re-enabled.
+    if (!user.isActive) throw httpError(422, "User is inactive");
+
+    // 3. GLOBAL scope is org-wide access: parity roles only.
+    if (parsed.data.scopeLevel === "GLOBAL" && !isSuperAdmin(actorRole)) {
+      throw httpError(403, "Only a super administrator may grant GLOBAL audit scope");
+    }
+
+    // 4. No privilege escalation by proxy: you may not hand someone a platform
+    //    role above your own via an audit grant on their account.
+    assertCanAssignRole(actorRole, user.role);
 
     const actor = auditActor(req);
     const grant = await db.transaction(async (tx) => {
@@ -161,6 +188,19 @@ router.post(
         kind: "GRANT_CHANGE",
       });
       return row!;
+    });
+    // The grant surface is the escalation path, so its writes belong on the
+    // chained ACCESS stream, not only in the module's own config trail.
+    recordActivity(activityCtx(req), {
+      event: "GRANT_CREATED",
+      entityId: grant.id,
+      entityLabel: `${parsed.data.moduleRole} -> ${parsed.data.userId}`,
+      after: {
+        userId: parsed.data.userId,
+        moduleRole: parsed.data.moduleRole,
+        auditTypes: parsed.data.auditTypes,
+        scopeLevel: parsed.data.scopeLevel,
+      },
     });
     res.status(201).json({ success: true, data: grant });
   },
@@ -196,6 +236,17 @@ router.post(
         kind: "GRANT_CHANGE",
       });
       return row!;
+    });
+    // GRANT_REVOKED requires a reason (ACTIVITY_EVENTS). Revoking someone's
+    // access without recording why is the change most likely to be questioned
+    // later, so the writer refuses it rather than accepting a blank.
+    recordActivity(activityCtx(req), {
+      event: "GRANT_REVOKED",
+      entityId: existing.id,
+      entityLabel: `${existing.moduleRole} -> ${existing.userId}`,
+      reason: (req.body?.reason as string) ?? null,
+      before: { revokedAt: null },
+      after: { revokedAt: updated.revokedAt, revokedBy: updated.revokedBy },
     });
     res.json({ success: true, data: updated });
   },

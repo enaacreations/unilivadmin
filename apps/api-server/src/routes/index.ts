@@ -20,6 +20,7 @@ import { notificationsRouter } from "./notifications.js";
 import { pushRouter } from "./push.js";
 import { executiveRouter } from "./executive.js";
 import { settingsRouter } from "./settings.js";
+import { activityRouter } from "./activity.js";
 import { kycRouter, esignRouter, esignPublicRouter } from "./kyc-esign.js";
 import { financeRouter } from "./finance.js";
 import { facilityRouter, electricityRouter, residentAttendanceRouter, outPassRouter, iotRouter, iotIngestionRouter } from "./operations.js";
@@ -35,6 +36,7 @@ import { auditSchedulesRouter } from "./audit-schedules.js";
 import { auditReviewsRouter } from "./audit-reviews.js";
 import { auditReportsRouter, auditSharedPublicRouter } from "./audit-reports.js";
 import { auditAdminRouter } from "./audit-admin.js";
+import { accessRouter } from "./access.js";
 import { formDraftsRouter } from "./form-drafts.js";
 
 const router: IRouter = Router();
@@ -73,6 +75,8 @@ router.use("/notifications", notificationsRouter);
 router.use("/push", pushRouter);
 router.use("/executive", executiveRouter);
 router.use("/settings", settingsRouter);
+// Platform activity trail (PRD §29) — auth + AUDIT_LOG per route inside.
+router.use("/activity", activityRouter);
 router.use(kycRouter);
 router.use(esignRouter);
 router.use("/esign", esignPublicRouter);
@@ -100,5 +104,8 @@ router.use("/audit/reviews", auditReviewsRouter);
 router.use("/audit/reports", auditReportsRouter);
 router.use("/audit-shared", auditSharedPublicRouter); // public expiring share links (D-5)
 router.use("/audit/admin", auditAdminRouter);
+
+// Access-control introspection (PRD §31). Read-only; gated on ACCESS_CONTROL.
+router.use("/access", accessRouter);
 
 export default router;
