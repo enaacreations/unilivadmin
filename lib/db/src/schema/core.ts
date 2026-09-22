@@ -19,6 +19,11 @@ export const propertyStatusEnum = pgEnum("property_status", [
   "ACTIVE",
   "INACTIVE",
   "UNDER_RENOVATION",
+  // PRD §7's list. Appended, never substituted: a pg enum cannot drop a value,
+  // and live rows hold UNDER_RENOVATION — which is a narrower case of
+  // TEMPORARILY_CLOSED and is kept rather than rewritten.
+  "TEMPORARILY_CLOSED",
+  "UNDER_SETUP",
 ]);
 export const roomTypeEnum = pgEnum("room_type", [
   "SINGLE",
@@ -31,6 +36,12 @@ export const roomStatusEnum = pgEnum("room_status", [
   "OCCUPIED",
   "MAINTENANCE",
   "RESERVED",
+  // PRD §8's seven. VACANT is our spelling of "Available" and RESERVED has no
+  // PRD equivalent but is in use, so both stay; the rest are appended.
+  "PARTIALLY_OCCUPIED",
+  "CLEANING",
+  "BLOCKED",
+  "OUT_OF_SERVICE",
 ]);
 export const userRoleEnum = pgEnum("user_role", [
   "SUPER_ADMIN",
@@ -170,6 +181,17 @@ export const propertiesTable = pgTable("properties", {
    */
   clusterId: text("cluster_id"),
   /**
+   * PRD §7 lists "Region" as a property attribute and §20 reports by it.
+   *
+   * Deliberately a LABEL, not a second hierarchy: reach is resolved through
+   * org_nodes (Zone → City → Cluster), and adding a parallel region column that
+   * scoping also read would recreate the two-sources-of-truth problem the whole
+   * access rewrite exists to remove. Nothing authorizes off this.
+   */
+  region: text("region"),
+  /** PRD §7: "Opening date". */
+  openingDate: timestamp("opening_date"),
+  /**
    * Food-ops links (hierarchy City → Kitchen → Property; property → one brand).
    * Plain text / no FK — same core→food decoupling as `clusterId`; integrity is
    * enforced at the app layer. `brand` is a food_brands.code; `kitchenId` a kitchens.id.
@@ -216,6 +238,16 @@ export const roomsTable = pgTable("rooms", {
   type: roomTypeEnum("type").notNull(),
   capacity: integer("capacity").notNull(),
   status: roomStatusEnum("status").default("VACANT").notNull(),
+  /**
+   * PRD §8 asks each room to maintain housekeeping, maintenance and audit
+   * status ALONGSIDE its occupancy status. Kept as separate nullable columns
+   * rather than folded into `status`, because a room can be occupied AND
+   * awaiting a re-clean AND overdue an audit at the same time — one column
+   * would force those to overwrite each other.
+   */
+  housekeepingStatus: text("housekeeping_status"),
+  maintenanceStatus: text("maintenance_status"),
+  auditStatus: text("audit_status"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -231,6 +263,13 @@ export const usersTable = pgTable("users", {
   phone: text("phone"),
   passwordHash: text("password_hash").notNull(),
   role: userRoleEnum("role").notNull(),
+  /**
+   * Configurable-role key, joinable to access_roles.key (Access Controls PRD §22).
+   * Nullable until backfilled; readers use `roleKey ?? role`. `role` above stays
+   * the pg enum and is written only when roleKey is one of its 22 values, so the
+   * legacy role taxonomies keep resolving during the transition.
+   */
+  roleKey: text("role_key"),
   propertyId: text("property_id"),
   isActive: boolean("is_active").default(true).notNull(),
   /** OTP/login throttling (Persona st.5/6). */

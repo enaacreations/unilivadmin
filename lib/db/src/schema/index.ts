@@ -13,3 +13,5 @@ export * from "./operations";
 export * from "./wallet";
 export * from "./audit-config";
 export * from "./audit";
+export * from "./access";
+export * from "./activity";

@@ -7,7 +7,9 @@ import {
   numeric,
   pgEnum,
   doublePrecision,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const employeeStatusEnum = pgEnum("employee_status", [
   "ACTIVE",
@@ -21,6 +23,12 @@ export const attendanceStatusEnum = pgEnum("attendance_status", [
   "HALF_DAY",
   "WFH",
   "ON_LEAVE",
+  // PRD §16's nine states. ON_LEAVE is our spelling of "Leave"; WFH has no PRD
+  // equivalent but is in use. Appended, never substituted.
+  "LATE",
+  "WEEKLY_OFF",
+  "HOLIDAY",
+  "ON_DUTY",
 ]);
 export const leaveTypeEnum = pgEnum("leave_type", [
   "CL",
@@ -49,6 +57,13 @@ export const employeesTable = pgTable("employees", {
   designation: text("designation").notNull(),
   propertyId: text("property_id"),
   managerId: text("manager_id"),
+  /**
+   * Link to the login identity (users.id). Nullable, no FK — the same
+   * core↔domain decoupling properties.clusterId already uses, and an employee
+   * legitimately may have no login. Backfilled by unique-email match; an
+   * unmatched user simply gets no TEAM scope, which fails closed.
+   */
+  userId: text("user_id"),
   joiningDate: timestamp("joining_date").notNull(),
   ctc: numeric("ctc"),
   basic: numeric("basic"),
@@ -63,7 +78,11 @@ export const employeesTable = pgTable("employees", {
   exitedAt: timestamp("exited_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => [
+  // One employee per login. Partial so the many rows with no login stay valid;
+  // plain column + plain IS NOT NULL predicate keeps `push` round-trippable.
+  uniqueIndex("employees_user_id_uq").on(t.userId).where(sql`user_id is not null`),
+]);
 
 export const leaveBalancesTable = pgTable("leave_balances", {
   id: text("id").primaryKey(),
@@ -137,6 +156,24 @@ export const attendanceTable = pgTable("attendance", {
   inTime: timestamp("in_time"),
   outTime: timestamp("out_time"),
   notes: text("notes"),
+  /**
+   * PRD §16: self-service check-in/out, corrections, and manager approval.
+   *
+   * A correction is recorded as a PROPOSED value beside the original rather
+   * than overwriting it — §29 requires the previous value, and an attendance
+   * edit is one of the thirteen events it names. The original stays in
+   * status/inTime/outTime until a manager approves.
+   */
+  selfCheckedIn: boolean("self_checked_in").default(false).notNull(),
+  correctionRequestedAt: timestamp("correction_requested_at"),
+  correctionRequestedBy: text("correction_requested_by"),
+  correctionReason: text("correction_reason"),
+  proposedStatus: attendanceStatusEnum("proposed_status"),
+  proposedInTime: timestamp("proposed_in_time"),
+  proposedOutTime: timestamp("proposed_out_time"),
+  approvalState: text("approval_state").default("NONE").notNull(),
+  approvedBy: text("approved_by"),
+  approvedAt: timestamp("approved_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
