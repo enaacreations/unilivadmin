@@ -1,80 +1,85 @@
 /**
- * Invariants the capability matrix must hold BEFORE action implication or a
- * DB-backed matrix can be switched on.
+ * Invariants the capability matrix must hold, whatever anyone edits into it.
  *
- * These are the assertions that license the next phase. Each one, if it fails,
- * means a specific downstream change would silently grant something.
+ * These were written against the old global-verb model (does any cell hold
+ * `edit` without `view`? is `Permission` a subset of `Action`?). Those
+ * questions no longer exist: actions are declared per functionality, and a cell
+ * is a LEVEL expanded through the manifest. The invariants that survive are the
+ * ones that were never really about verbs.
  */
 import { describe, expect, it } from "vitest";
 import {
   ROLE_PERMISSIONS,
-  ALL_MODULES,
-  ALL_ACTIONS,
-  IMPLIES,
-  actionsFor,
-  type Module,
-  type Action,
+  ALL_FUNCTIONALITIES,
+  actionDef,
+  expandCell,
+  namedActionsFor,
+  readActionOf,
+  type Cell,
+  type Functionality,
   type UserRole,
 } from "../permissions.js";
 
 const ROLES = Object.keys(ROLE_PERMISSIONS) as UserRole[];
-const granted = (role: UserRole, module: Module, action: Action): boolean =>
-  (ROLE_PERMISSIONS[role] as Record<string, Record<string, boolean> | undefined>)[module]?.[action] === true;
+const cellOf = (role: UserRole, f: Functionality): Cell | undefined =>
+  (ROLE_PERMISSIONS[role] as Partial<Record<Functionality, Cell>>)[f];
 
 describe("capability matrix invariants", () => {
-  it("has no write granted without the matching read", () => {
-    // THE gate for action implication. IMPLIES maps every write to `view`, so if
-    // any cell today holds edit/create/delete WITHOUT view, switching implication
-    // on would retroactively hand that role a read it was never given.
+  /**
+   * The read-implication in decide() and matrixCan() widens toward the read.
+   * It cannot do that if a cell grants a write on a functionality whose read it
+   * does not also grant — the holder would be able to act on something they
+   * cannot open. FULL and VIEW make this true by construction; an explicit list
+   * is where somebody can get it wrong.
+   */
+  it("grants no action without the matching read", () => {
     const offenders: string[] = [];
     for (const role of ROLES) {
-      for (const module of ALL_MODULES) {
-        for (const action of ["create", "edit", "delete"] as Action[]) {
-          if (granted(role, module, action) && !granted(role, module, "view")) {
-            offenders.push(`${role}.${module}.${action} without view`);
-          }
+      for (const f of ALL_FUNCTIONALITIES) {
+        const cell = cellOf(role, f);
+        if (!cell) continue;
+        const held = expandCell(f, cell);
+        const read = readActionOf(f);
+        if (held.length && read && !held.includes(read)) {
+          offenders.push(`${role}.${f} holds [${held.join(", ")}] without ${read}`);
         }
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it("maps every implication onto a real action", () => {
-    for (const [from, tos] of Object.entries(IMPLIES)) {
-      expect(ALL_ACTIONS).toContain(from as Action);
-      for (const to of tos ?? []) expect(ALL_ACTIONS).toContain(to);
-    }
-  });
-
-  it("never implies a write", () => {
-    // An implication that conferred edit/delete/configure would turn a read
-    // grant into a write grant. Keep the edges read-only, forever.
-    const writes: Action[] = ["create", "edit", "delete", "configure", "approve", "reject"];
-    for (const [from, tos] of Object.entries(IMPLIES)) {
-      for (const to of tos ?? []) {
-        expect(writes, `${from} must not imply the write "${to}"`).not.toContain(to);
-      }
-    }
-  });
-
-  it("declares an action set for every module, containing the legacy four where used", () => {
-    // A module whose action set omits an action some role already holds would
-    // silently revoke it the moment actionsFor() starts gating the matrix.
-    const lost: string[] = [];
-    for (const module of ALL_MODULES) {
-      const allowed = new Set(actionsFor(module));
-      for (const role of ROLES) {
-        for (const action of ["view", "create", "edit", "delete"] as Action[]) {
-          if (granted(role, module, action) && !allowed.has(action)) {
-            lost.push(`${role}.${module}.${action} is granted but not in actionsFor(${module})`);
-          }
+  /**
+   * An explicit list is the one cell shape that can name a permission that does
+   * not exist. `expandCell` filters those out, so a typo grants nothing — but
+   * silently, which is how a role ends up with less than its author intended.
+   */
+  it("names only real permissions in explicit cells", () => {
+    const unknown: string[] = [];
+    for (const role of ROLES) {
+      for (const f of ALL_FUNCTIONALITIES) {
+        const cell = cellOf(role, f);
+        if (!Array.isArray(cell)) continue;
+        for (const a of cell) {
+          if (!actionDef(f, a)) unknown.push(`${role}.${f}.${a}`);
         }
       }
     }
-    expect(lost).toEqual([]);
+    expect(unknown).toEqual([]);
   });
 
-  it("keeps Permission a strict subset of Action", () => {
-    for (const p of ["view", "create", "edit", "delete"]) expect(ALL_ACTIONS).toContain(p as Action);
+  it("gives every functionality at least one action to grant", () => {
+    for (const f of ALL_FUNCTIONALITIES) {
+      expect(namedActionsFor(f).length, f).toBeGreaterThan(0);
+      expect(readActionOf(f), f).toBeTruthy();
+    }
+  });
+
+  it("expands the levels to what they say", () => {
+    // FULL is everything the functionality declares; VIEW is its read alone.
+    expect(expandCell("PROPERTIES", "FULL")).toEqual(
+      namedActionsFor("PROPERTIES").map((d) => d.key),
+    );
+    expect(expandCell("PROPERTIES", "VIEW")).toEqual(["view_property"]);
+    expect(expandCell("AUDIT_EXECUTION", "VIEW")).toEqual(["view_audit"]);
   });
 });

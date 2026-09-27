@@ -253,7 +253,7 @@ function recurrenceColumns(
 router.get(
   "/",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "view"),
+  authorize("AUDIT_SCHEDULES", "view_schedule"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const status = (req.query["status"] as string | undefined)?.toUpperCase();
@@ -337,7 +337,7 @@ router.get(
 router.post(
   "/",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "create"),
+  authorize("AUDIT_SCHEDULES", "add_schedule"),
   async (req, res) => {
     const parsed = scheduleSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid schedule", parsed.error.flatten());
@@ -397,7 +397,7 @@ router.post(
 router.get(
   "/view/scope-options",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "view"),
+  authorize("AUDIT_SCHEDULES", "view_schedule"),
   async (req, res) => {
     const level = String(req.query["level"] ?? "").toUpperCase();
     const propertyId = req.query["propertyId"] as string | undefined;
@@ -454,7 +454,7 @@ router.get(
 router.get(
   "/:id",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "view"),
+  authorize("AUDIT_SCHEDULES", "view_schedule"),
   async (req, res) => {
     const [schedule] = await db
       .select()
@@ -515,7 +515,7 @@ router.get(
 router.patch(
   "/:id",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "edit"),
+  authorize("AUDIT_SCHEDULES", "edit_schedule"),
   async (req, res) => {
     const [existing] = await db
       .select()
@@ -616,7 +616,7 @@ for (const action of ["pause", "resume", "end"] as const) {
   router.post(
     `/:id/${action}`,
     authenticate,
-    authorize("AUDIT_SCHEDULES", "edit"),
+    authorize("AUDIT_SCHEDULES", "edit_schedule"),
     async (req, res) => {
       const [existing] = await db
         .select()
@@ -702,7 +702,7 @@ for (const action of ["skip", "restore"] as const) {
   router.post(
     `/:id/occurrences/${action}`,
     authenticate,
-    authorize("AUDIT_SCHEDULES", "edit"),
+    authorize("AUDIT_SCHEDULES", "edit_schedule"),
     async (req, res) => {
       const parsed = occurrenceSchema.safeParse(req.body);
       if (!parsed.success) throw httpError(400, "Invalid occurrence", parsed.error.flatten());
@@ -770,7 +770,7 @@ const splitSchema = z.object({
 router.post(
   "/:id/split",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "edit"),
+  authorize("AUDIT_SCHEDULES", "edit_schedule"),
   async (req, res) => {
     const parsed = splitSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid split", parsed.error.flatten());
@@ -883,7 +883,7 @@ router.post(
 router.get(
   "/view/calendar",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "view"),
+  authorize("AUDIT_SCHEDULES", "view_schedule"),
   async (req, res) => {
     const from = req.query["from"] ? new Date(req.query["from"] as string) : new Date();
     const to = req.query["to"]

@@ -59,7 +59,7 @@ export default function Laundry() {
   const mutUpdate = useMutation({
     mutationFn: (args: {id: string, data: any}) => apiFetch(`/laundry/${args.id}`, { method: "PUT", body: JSON.stringify(args.data) }),
     onSuccess: () => {
-      toast({ title: "Updated" });
+      toast({ variant: "success", title: "Updated" });
       qc.invalidateQueries({ queryKey: ["laundry"] });
     }
   });
@@ -186,7 +186,7 @@ function LogInwardModal({ open, onOpenChange }: { open: boolean, onOpenChange: (
   const mut = useMutation({
     mutationFn: (data: any) => apiFetch("/laundry", { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
-      toast({ title: "Logged successfully" });
+      toast({ variant: "success", title: "Logged successfully" });
       qc.invalidateQueries({ queryKey: ["laundry"] });
       onOpenChange(false);
     }

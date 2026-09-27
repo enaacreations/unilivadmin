@@ -269,10 +269,10 @@ function RoomFormModal({
       const body: any = { ...values, propertyId, wing: values.wing || undefined };
       if (isEdit && room) {
         await updateMut.mutateAsync({ id: room.id, data: body });
-        toast({ title: "Room updated" });
+        toast({ variant: "success", title: "Room updated" });
       } else {
         await createMut.mutateAsync({ data: body });
-        toast({ title: "Room created" });
+        toast({ variant: "success", title: "Room created" });
       }
       qc.invalidateQueries({ queryKey: getGetRoomsQueryKey({ propertyId }) });
       draft.clearDraft();
@@ -349,7 +349,7 @@ function RoomFormModal({
 
 function RoomIoTBadge({ propertyId, roomId }: { propertyId: string; roomId: string }) {
   const { can } = usePermissions();
-  if (!can("IOT", "view")) return null;
+  if (!can("IOT", "view_iot")) return null;
   return <RoomIoTBadgeInner propertyId={propertyId} roomId={roomId} />;
 }
 
@@ -589,8 +589,8 @@ export default function PropertyDetail() {
   }, [calStart]);
   const isShortStay = property?.portfolioType === "SERVICED_APARTMENTS";
   const { can } = usePermissions();
-  const showIot = can("IOT", "view");
-  const showElec = can("ELECTRICITY", "view");
+  const showIot = can("IOT", "view_iot");
+  const showElec = can("ELECTRICITY", "view_electricity");
 
   const { data: bookingsRes, isLoading: bookingsLoading } = useGetBookings(
     { propertyId: id },
@@ -621,7 +621,7 @@ export default function PropertyDetail() {
   const deleteBookingMut = useDeleteBooking({
     mutation: {
       onSuccess: () => {
-        toast({ title: "Booking cancelled" });
+        toast({ variant: "success", title: "Booking cancelled" });
         queryClient.invalidateQueries({
           queryKey: getGetBookingsQueryKey({ propertyId: id }),
         });
@@ -674,7 +674,7 @@ export default function PropertyDetail() {
         <StatusBadge status={property.status} className="px-3 py-1" />
       </div>
 
-      <PropertyPhotoGallery propertyId={id} canEdit={can("PROPERTIES", "edit")} />
+      <PropertyPhotoGallery propertyId={id} canEdit={can("PROPERTIES", "edit_property")} />
 
       <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
         <Card>
@@ -1111,8 +1111,8 @@ export default function PropertyDetail() {
                         setBookingModalOpen(true);
                       },
                       onDelete: (b) => setBookingToDelete(b),
-                      canEdit: can("RESIDENTS", "edit"),
-                      canDelete: can("RESIDENTS", "delete"),
+                      canEdit: can("RESIDENTS", "edit_resident"),
+                      canDelete: can("RESIDENTS", "delete_resident"),
                     })}
                     data={bookings}
                   />

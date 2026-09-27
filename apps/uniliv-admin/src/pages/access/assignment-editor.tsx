@@ -65,7 +65,7 @@ export function AssignmentEditor({
         reason,
       }),
     onSuccess: () => {
-      toast({ title: "Assignment saved", description: "Recorded on the activity trail." });
+      toast({ variant: "success", title: "Assignment saved", description: "Recorded on the activity trail." });
       setDirty(false);
       setReason("");
       void qc.invalidateQueries({ queryKey: ["access"] });
@@ -207,6 +207,7 @@ export function CopyAccessPanel({ userId, onDone }: { userId: string; onDone?: (
       accessApi.cloneAccess({ fromUserId: copyFrom!, toUserId: userId, reason: copyReason, ...parts }),
     onSuccess: (d) => {
       toast({
+        variant: "success",
         title: "Access copied",
         description: `${d.grants} grants and ${d.overrides} exceptions applied${d.role ? ", role changed" : ""}.`,
       });

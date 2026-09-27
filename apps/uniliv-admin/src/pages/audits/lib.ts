@@ -39,6 +39,24 @@ export type BadgeVariant =
 
 export type AuditType = "UL" | "CM" | "CX";
 export type TargetType = "PROPERTY" | "ROOM";
+
+/**
+ * Where a schedule applies, as a rule against the org hierarchy.
+ *
+ * Mirrors `AuditScopeRule` in lib/db/src/schema/audit.ts — the web app depends
+ * on neither @workspace/db nor the server, so the shape is restated here. It is
+ * four lines and changes rarely; the server validates every rule it is sent, so
+ * a drifted copy is a rejected save, never a wrong scope.
+ *
+ * `within` narrows a branch: `{ cl_1: ["p_1"] }` is "under cluster cl_1, only
+ * property p_1". A parent with no entry stays LIVE and picks up properties
+ * added later — which is the whole reason a rule is stored instead of a list.
+ */
+export interface AuditScopeRule {
+  level: "ORG" | "ZONE" | "CITY" | "CLUSTER" | "PROPERTY" | "ROOM";
+  ids: string[];
+  within?: Record<string, string[]>;
+}
 export type Lifecycle = "DRAFT" | "PENDING_APPROVAL" | "PUBLISHED" | "DEPRECATED" | "ARCHIVED";
 
 export const AUDIT_TYPES: AuditType[] = ["UL", "CM", "CX"];

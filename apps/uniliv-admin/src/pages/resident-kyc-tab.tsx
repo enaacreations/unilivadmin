@@ -74,7 +74,7 @@ export function ResidentKycTab({ residentId }: { residentId: string }) {
     onSuccess: (resp) => {
       setDigilockerConfigured(true);
       window.open(resp.data.authorizeUrl, "_blank", "noopener,noreferrer");
-      toast({ title: "DigiLocker opened", description: "Complete verification in the new tab, then return here." });
+      toast({ variant: "success", title: "DigiLocker opened", description: "Complete verification in the new tab, then return here." });
     },
     onError: (e: Error) => {
       if (e.message === DIGILOCKER_NOT_CONFIGURED) {
@@ -91,7 +91,7 @@ export function ResidentKycTab({ residentId }: { residentId: string }) {
       apiFetch(`/kyc/${id}/verify`, { method: "POST", body: JSON.stringify({ status, rejectionReason }) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kyc", residentId] });
-      toast({ title: "KYC updated" });
+      toast({ variant: "success", title: "KYC updated" });
       setRejectFor(null); setRejectReason("");
     },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
@@ -252,7 +252,7 @@ function CreateKycModal({
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kyc", residentId] });
-      toast({ title: "KYC request created" });
+      toast({ variant: "success", title: "KYC request created" });
       onOpenChange(false);
     },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),

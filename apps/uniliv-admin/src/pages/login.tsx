@@ -122,7 +122,7 @@ export default function Login() {
         const res = await auth.verifyOtp(challenge.challengeId, c);
         queryClient.clear(); // never inherit a previous user's cached identity/data
         setToken(res.accessToken, remember);
-        toast({ title: `Welcome back, ${res.user?.name?.split(" ")[0] ?? ""}`.trim() });
+        toast({ variant: "success", title: `Welcome back, ${res.user?.name?.split(" ")[0] ?? ""}`.trim() });
         setLocation(homeForRole(res.user?.role as UserRole | undefined));
       } else if (flow === "FORGOT_USERNAME") {
         const res = await auth.forgotUsernameVerify(challenge.challengeId, c);
@@ -145,7 +145,7 @@ export default function Login() {
       const res = await auth.resendOtp(challenge.challengeId);
       setChallenge((c) => ({ ...(c as ChallengeData), ...res.data }));
       setCode(""); resend.start(30);
-      toast({ title: "A new code has been sent" });
+      toast({ variant: "success", title: "A new code has been sent" });
     } catch (err: any) {
       toast({ title: err?.message || "Could not resend", variant: "destructive" });
     }
@@ -202,7 +202,7 @@ export default function Login() {
         queryClient.clear(); // never inherit a previous user's cached data
         setToken(token, remember);
         const me = await apiFetch<{ data: { name?: string; role?: string } }>("/auth/me");
-        toast({ title: `Welcome back, ${me.data?.name?.split(" ")[0] ?? ""}`.trim() });
+        toast({ variant: "success", title: `Welcome back, ${me.data?.name?.split(" ")[0] ?? ""}`.trim() });
         setLocation(homeForRole(me.data?.role as UserRole | undefined));
       } catch (err: any) {
         toast({ title: err?.message || "Google sign-in failed", variant: "destructive" });

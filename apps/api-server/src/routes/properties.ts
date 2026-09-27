@@ -10,6 +10,7 @@ import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import { resolveKitchenForPincode, isActiveBrand, resolveAccessiblePropertyIds } from "../lib/food-service.js";
 import { writeAuditLog } from "../lib/wallet-service.js";
+import { syncPropertyNode, removeOrgNode } from "../lib/org-sync.js";
 
 const router = Router();
 
@@ -64,6 +65,11 @@ const PROPERTY_FIELDS = [
   "brand",
   "kitchenId",
   "code",
+  // The cluster this property sits in. Absent from this list until now, which
+  // meant every property created through the API had a null clusterId and hung
+  // off the company root in the org tree — outside every CLUSTER, CITY and ZONE
+  // grant. The place could be set by nobody and inherited by nobody.
+  "clusterId",
 ] as const;
 
 /** Roles that can be tagged as a property's unit-lead in the property form. */
@@ -243,7 +249,7 @@ async function heroImageUrlMap(propertyIds: string[]): Promise<Record<string, st
 //
 // The handler's own resolveAccessiblePropertyIds narrowing is unchanged, so a
 // property-bound caller keeps seeing only their own.
-router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+router.get("/", authenticate, authorize("PROPERTIES", "view_property"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
@@ -294,7 +300,7 @@ router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) 
  * those already tagged to this property). Gated on PROPERTIES view since it's used
  * exclusively by the property add/edit form.
  */
-router.get("/assignable-unit-leads", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+router.get("/assignable-unit-leads", authenticate, authorize("PROPERTIES", "view_property"), async (req, res) => {
   try {
     const rows = await db
       .select({ id: usersTable.id, name: usersTable.name, email: usersTable.email, role: usersTable.role, propertyId: usersTable.propertyId })
@@ -308,7 +314,7 @@ router.get("/assignable-unit-leads", authenticate, authorize("PROPERTIES", "view
   }
 });
 
-router.post("/", authenticate, authorize("PROPERTIES", "create"), async (req, res) => {
+router.post("/", authenticate, authorize("PROPERTIES", "add_property"), async (req, res) => {
   try {
     const body = pick(req.body, PROPERTY_FIELDS);
 
@@ -368,8 +374,15 @@ router.post("/", authenticate, authorize("PROPERTIES", "create"), async (req, re
       amenities: body.amenities || [],
       brand,
       kitchenId: kitchen.id,
+      clusterId: body.clusterId ?? null,
       updatedAt: new Date(),
     }).returning();
+
+    // Project the new property into org_nodes NOW, not at the next manual sync.
+    // A grant stores a cluster/city/zone anchor and expands through the closure
+    // at read time, so until this row exists the property is inside nobody's
+    // scope — the manager of its cluster simply would not see it.
+    await syncPropertyNode(newPropertyId);
 
     // Tag unit-leads to this property and upsert its kitchen cut-off override.
     await assignUnitLeads(newPropertyId, req.body?.unitLeadIds);
@@ -382,7 +395,7 @@ router.post("/", authenticate, authorize("PROPERTIES", "create"), async (req, re
   }
 });
 
-router.get("/:id", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+router.get("/:id", authenticate, authorize("PROPERTIES", "view_property"), async (req, res) => {
   try {
     // Property-scoped callers may only open a property in their accessible set.
     const accessibleIds = await resolveAccessiblePropertyIds(req.user!);
@@ -419,7 +432,7 @@ router.get("/:id", authenticate, authorize("PROPERTIES", "view"), async (req, re
   }
 });
 
-router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, res) => {
+router.put("/:id", authenticate, authorize("PROPERTIES", "edit_property"), async (req, res) => {
   try {
     const body = pick(req.body, PROPERTY_FIELDS);
 
@@ -478,6 +491,11 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
       }).catch(() => {});
     }
 
+    // Keep the projection honest: a rename, a status flip (ACTIVE↔INACTIVE
+    // decides whether descendants resolve at all) or a cluster move all change
+    // who inherits this property.
+    await syncPropertyNode(row.id);
+
     // Re-tag unit-leads and upsert the cut-off override (brand = the just-saved value).
     await assignUnitLeads(row.id, req.body?.unitLeadIds);
     await upsertPropertyCutoff(row.id, row.brand, req.body?.cutoffTime);
@@ -490,11 +508,14 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
   }
 });
 
-router.delete("/:id", authenticate, authorize("PROPERTIES", "delete"), async (req, res) => {
+router.delete("/:id", authenticate, authorize("PROPERTIES", "delete_property"), async (req, res) => {
   try {
     const propertyId = req.params["id"]!;
     const [existing] = await db.select().from(propertiesTable).where(eq(propertiesTable.id, propertyId));
     await db.delete(propertiesTable).where(eq(propertiesTable.id, propertyId));
+    // A node left behind keeps granting: a deleted property would carry on
+    // resolving under every cluster/city/zone grant above it.
+    await removeOrgNode(propertyId);
     // Audit (fire-and-forget) — capture identifying fields before they're gone.
     void writeAuditLog(req.user!.id, "PROPERTY_DELETED", "property", propertyId, {
       name: existing?.name ?? null, code: existing?.code ?? null, city: existing?.city ?? null, status: existing?.status ?? null,
@@ -529,12 +550,12 @@ function sendAuthzError(err: any, res: import("express").Response): boolean {
   return false;
 }
 
-router.get("/:id/photos", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+router.get("/:id/photos", authenticate, authorize("PROPERTIES", "view_property"), async (req, res) => {
   try {
     const propertyId = req.params["id"]!;
     const prop = await loadPropertyOr404(propertyId, res);
     if (!prop) return;
-    assertPropertyAccess(req, propertyId);
+    await assertPropertyAccess(req, propertyId);
 
     const rows = await db
       .select()
@@ -565,7 +586,7 @@ router.get("/:id/photos", authenticate, authorize("PROPERTIES", "view"), async (
 router.post(
   "/:id/photos",
   authenticate,
-  authorize("PROPERTIES", "edit"),
+  authorize("PROPERTIES", "edit_property"),
   // Route-LOCAL parser: the global body limit is small; images need headroom.
   json({ limit: "12mb" }),
   async (req, res) => {
@@ -577,7 +598,7 @@ router.post(
       const propertyId = req.params["id"]!;
       const prop = await loadPropertyOr404(propertyId, res);
       if (!prop) return;
-      assertPropertyAccess(req, propertyId);
+      await assertPropertyAccess(req, propertyId);
 
       const parsed = parseImageDataUrl(req.body?.dataUrl);
       if (!parsed) {
@@ -635,13 +656,13 @@ router.post(
   }
 );
 
-router.patch("/:id/photos/:photoId", authenticate, authorize("PROPERTIES", "edit"), async (req, res) => {
+router.patch("/:id/photos/:photoId", authenticate, authorize("PROPERTIES", "edit_property"), async (req, res) => {
   try {
     const propertyId = req.params["id"]!;
     const photoId = req.params["photoId"]!;
     const prop = await loadPropertyOr404(propertyId, res);
     if (!prop) return;
-    assertPropertyAccess(req, propertyId);
+    await assertPropertyAccess(req, propertyId);
 
     const [existing] = await db
       .select()
@@ -693,13 +714,13 @@ router.patch("/:id/photos/:photoId", authenticate, authorize("PROPERTIES", "edit
   }
 });
 
-router.delete("/:id/photos/:photoId", authenticate, authorize("PROPERTIES", "edit"), async (req, res) => {
+router.delete("/:id/photos/:photoId", authenticate, authorize("PROPERTIES", "edit_property"), async (req, res) => {
   try {
     const propertyId = req.params["id"]!;
     const photoId = req.params["photoId"]!;
     const prop = await loadPropertyOr404(propertyId, res);
     if (!prop) return;
-    assertPropertyAccess(req, propertyId);
+    await assertPropertyAccess(req, propertyId);
 
     const [existing] = await db
       .select()

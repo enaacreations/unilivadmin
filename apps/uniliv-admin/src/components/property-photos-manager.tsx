@@ -88,7 +88,7 @@ export function PropertyPhotosManager({
         dataUrl,
         isHero: photos.length === 0, // first photo becomes the hero by default
       });
-      toast({ title: "Photo uploaded" });
+      toast({ variant: "success", title: "Photo uploaded" });
       invalidate();
     } catch (e: any) {
       toast({ title: e?.message || "Upload failed", variant: "destructive" });
@@ -113,7 +113,7 @@ export function PropertyPhotosManager({
     setBusyId(photoId);
     try {
       await foodApi.deletePropertyPhoto(propertyId, photoId);
-      toast({ title: "Photo deleted" });
+      toast({ variant: "success", title: "Photo deleted" });
       invalidate();
     } catch (e: any) {
       toast({ title: e?.message || "Failed to delete", variant: "destructive" });

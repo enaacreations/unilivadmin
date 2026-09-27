@@ -104,7 +104,7 @@ function GrantsTab() {
   const revokeMut = useMutation({
     mutationFn: (id: string) => apiFetch(`/audit/admin/grants/${id}/revoke`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: () => {
-      toast({ title: "Grant revoked" });
+      toast({ variant: "success", title: "Grant revoked" });
       qc.invalidateQueries({ queryKey: ["/audit/admin/grants"] });
     },
     onError: (e: Error) => toast({ title: e.message || "Revoke failed", variant: "destructive" }),
@@ -153,7 +153,7 @@ function GrantsTab() {
       });
     },
     onSuccess: () => {
-      toast({ title: "Grant created" });
+      toast({ variant: "success", title: "Grant created" });
       setCreateOpen(false);
       qc.invalidateQueries({ queryKey: ["/audit/admin/grants"] });
     },
@@ -403,7 +403,7 @@ function BandsTab() {
         }),
       }),
     onSuccess: () => {
-      toast({ title: "Performance bands saved" });
+      toast({ variant: "success", title: "Performance bands saved" });
       setRows(null); // re-hydrate from server
       qc.invalidateQueries({ queryKey: ["/audit/admin/performance-bands"] });
     },
@@ -532,7 +532,7 @@ function SettingRow({ def, value }: { def: (typeof SETTING_DEFS)[number]; value:
         body: JSON.stringify({ value: v }),
       }),
     onSuccess: () => {
-      toast({ title: `${def.label} saved` });
+      toast({ variant: "success", title: `${def.label} saved` });
       qc.invalidateQueries({ queryKey: ["/audit/admin/settings"] });
     },
     onError: (e: Error) => toast({ title: e.message || "Save failed", variant: "destructive" }),

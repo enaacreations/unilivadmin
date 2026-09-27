@@ -3,8 +3,8 @@
  * `authorize(module, perm)` middleware:
  *
  *  - pick()                 — allow-list a request body (anti mass-assignment)
- *  - isPropertyScoped()     — is THIS user limited to a single property?
- *  - scopedPropertyId()     — that property id, or null (= unrestricted)
+ *  - isPropertyScoped()     — is THIS user limited to a property at all?
+ *  - scopedPropertyIds()    — EVERY property they may act on, or null (= unrestricted)
  *  - assertPropertyAccess() — 403 if a scoped user reaches outside their property
  *  - forbidden()/badRequest() — typed errors the central error handler renders
  *
@@ -157,15 +157,107 @@ export function assertCanAssignRole(callerRole: string, targetRole: string): voi
   throw forbidden("You cannot assign a role above your own privilege level");
 }
 
-/** True when the caller is bound to a single property (e.g. WARDEN / UNIT_LEAD). */
+/* ── Multi-role folds ──────────────────────────────────────────────────────
+ *
+ * A user holds a SET of roles. Each helper below has to decide how a set
+ * collapses to one answer, and the two folds pull in opposite directions:
+ *
+ *   rank      → MAX   (your strongest role decides what you may assign)
+ *   org-wide  → ANY   (your broadest role decides your reach)
+ *
+ * Both amount to "the strongest role wins", which is the only fold that never
+ * silently strips access someone was deliberately granted. The alternative —
+ * intersecting — would mean assigning a second role could REDUCE what a person
+ * can do, which no administrator would predict.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** The highest-ranked role in a set — the one shown wherever one role is shown. */
+export function primaryRoleOf(roles: string[] | undefined): string | null {
+  if (!roles?.length) return null;
+  return [...roles].sort((a, b) => (ROLE_RANK[b] ?? 0) - (ROLE_RANK[a] ?? 0))[0] ?? null;
+}
+
+/** The effective rank of a set: the highest any member carries. */
+export function rankOf(roles: string[] | undefined): number {
+  if (!roles?.length) return 0;
+  return Math.max(...roles.map((r) => ROLE_RANK[r] ?? 0));
+}
+
+/** Any parity role in the set makes the holder a parity user. */
+export function isSuperAdminAny(roles: string[] | undefined): boolean {
+  return !!roles?.some((r) => isSuperAdmin(r));
+}
+
+/** Any org-wide role in the set unscopes the holder. */
+export function isOrgWideAny(roles: string[] | undefined): boolean {
+  return !!roles?.some((r) => ORG_WIDE_ROLES.has(r));
+}
+
+/**
+ * Multi-role form of assertCanAssignRole: compares the caller's HIGHEST rank
+ * against the target's highest. Without the max fold, holding a junior role
+ * alongside a senior one would quietly strip the senior one's authority.
+ */
+export function assertCanAssignRoles(callerRoles: string[], targetRoles: string[]): void {
+  if (isSuperAdminAny(callerRoles)) return;
+  const callerRank = rankOf(callerRoles);
+  for (const target of targetRoles) {
+    if ((ROLE_RANK[target] ?? 0) > callerRank) {
+      throw forbidden("You cannot assign a role above your own privilege level");
+    }
+  }
+}
+
+/** True when the caller is bound to a property (e.g. WARDEN / UNIT_LEAD). */
 export function isPropertyScoped(req: Request): boolean {
   const role = req.user?.role;
   return !!role && !ORG_WIDE_ROLES.has(role) && !!req.user?.propertyId;
 }
 
-/** The property a scoped caller is limited to, or null when unrestricted. */
-export function scopedPropertyId(req: Request): string | null {
-  return isPropertyScoped(req) ? req.user?.propertyId ?? null : null;
+/**
+ * EVERY property the caller may act on, or null when unrestricted.
+ *
+ * Resolved by the access engine — grants included — so a Cluster Manager given
+ * a cluster gets every property under it, and a Unit Lead placed at two gets
+ * both. `users.propertyId` alone could only ever answer with one, which is why
+ * this is the read-side helper and `primaryPropertyId` is not.
+ *
+ * ── Why a resolver is injected rather than imported ────────────────────────
+ * This module is a LEAF: lib/access.ts imports it, so importing lib/access.ts
+ * back would be a cycle. The resolver is installed once at startup, and until
+ * it is, this falls back to the home property — which is exactly the old
+ * single-property behaviour, so an uninstalled resolver degrades to the
+ * previous answer rather than to "everything".
+ *
+ * ── What this deliberately does NOT change ─────────────────────────────────
+ * A caller with no property at all still reads as UNRESTRICTED here, because
+ * `isPropertyScoped` is false for them. That is a pre-existing hole — 29 of the
+ * 32 seeded accounts have no property — and closing it would flip those users
+ * from "sees everything" to "sees nothing" on every legacy-scoped route at
+ * once. It is called out rather than fixed in the same change that widens one
+ * property to many.
+ */
+export type PropertyScopeResolver = (req: Request) => Promise<string[] | null>;
+
+let propertyScopeResolver: PropertyScopeResolver | null = null;
+
+/** Pass null to clear it — used by tests to get back to the home-property fallback. */
+export function installPropertyScopeResolver(fn: PropertyScopeResolver | null): void {
+  propertyScopeResolver = fn;
+}
+
+export async function scopedPropertyIds(req: Request): Promise<string[] | null> {
+  if (!isPropertyScoped(req)) return null;
+  const home = req.user?.propertyId ?? null;
+  if (!propertyScopeResolver) return home ? [home] : null;
+
+  const resolved = await propertyScopeResolver(req);
+  // null from the resolver means an org-wide grant — genuinely unrestricted.
+  if (resolved === null) return null;
+  const ids = [...new Set([...resolved, ...(home ? [home] : [])])];
+  // Never widen to "everything" because a resolve came back empty: the home
+  // property is the floor, and an empty answer with no home is a real "nowhere".
+  return ids.length ? ids : home ? [home] : [];
 }
 
 /**
@@ -181,11 +273,11 @@ export function scopedPropertyId(req: Request): string | null {
  * freely: for them a null propertyId legitimately means "all properties"
  * (announcements, tariffs).
  */
-export function assertPropertyAccess(req: Request, propertyId: string | null | undefined): void {
-  const scope = scopedPropertyId(req);
+export async function assertPropertyAccess(req: Request, propertyId: string | null | undefined): Promise<void> {
+  const scope = await scopedPropertyIds(req);
   if (!scope) return;
   if (!propertyId) throw badRequest("propertyId is required", { code: "SCOPE_REQUIRED" });
-  if (propertyId !== scope) throw forbidden("Outside your property scope");
+  if (!scope.includes(propertyId)) throw forbidden("Outside your property scope");
 }
 
 /**
@@ -199,13 +291,18 @@ export function assertPropertyAccess(req: Request, propertyId: string | null | u
  * propertyId) : undefined` — that pattern returns EVERY row when the caller
  * omits the filter, which is how a warden can list another property's rooms.
  */
-export function effectivePropertyFilter(
+export async function effectivePropertyFilter(
   req: Request,
   requested: string | null | undefined,
-): string | null {
-  const scope = scopedPropertyId(req);
-  if (!scope) return requested ?? null;
-  if (requested && requested !== scope) throw forbidden("Outside your property scope");
+): Promise<string[] | null> {
+  const scope = await scopedPropertyIds(req);
+  if (!scope) return requested ? [requested] : null;
+  if (requested) {
+    if (!scope.includes(requested)) throw forbidden("Outside your property scope");
+    // Narrowing to one of their own is legitimate — it is the filter they asked
+    // for, inside the set they are allowed.
+    return [requested];
+  }
   return scope;
 }
 

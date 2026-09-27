@@ -16,14 +16,19 @@
 import type { Request, RequestHandler } from "express";
 import { httpError, isSuperAdmin } from "../authz.js";
 import { recordActivity, activityCtx } from "../activity/record.js";
-import type { Module, Permission } from "../permissions.js";
+import type { Functionality, NamedAction } from "../permissions.js";
 
 /* ── Static: capability pairs ──────────────────────────────────────────────── */
 
 export interface ConflictRule {
   id: string;
-  a: { module: Module; perm: Permission };
-  b: { module: Module; perm: Permission };
+  /**
+   * A conflict is between two FUNCTIONALITIES, never two modules. Both halves
+   * of the shipping/receiving rule live inside the FOOD module, so a
+   * module-level rule could not express it at all.
+   */
+  a: { functionality: Functionality; perm: NamedAction };
+  b: { functionality: Functionality; perm: NamedAction };
   /** Break-glass parity roles permitted to hold both. */
   exempt: readonly string[];
   /** Surfaced in the 409 body and (later) the matrix editor's tooltip. */
@@ -41,8 +46,8 @@ const PARITY = ["SUPER_ADMIN", "OPS_EXCELLENCE"] as const;
 export const CAPABILITY_CONFLICTS: readonly ConflictRule[] = [
   {
     id: "FOOD_SHIP_VS_RECEIVE",
-    a: { module: "FOOD_DISPATCH", perm: "edit" },
-    b: { module: "FOOD_CONFIRM_DELIVERY", perm: "edit" },
+    a: { functionality: "FOOD_DISPATCH", perm: "edit" },
+    b: { functionality: "FOOD_CONFIRM_DELIVERY", perm: "edit" },
     exempt: PARITY,
     rationale:
       "The party that SHIPS must never be the party that CERTIFIES RECEIPT. A 403 here means a dispatch path is trying to confirm its own delivery; the route is what has to change, not the grant.",
@@ -52,14 +57,70 @@ export const CAPABILITY_CONFLICTS: readonly ConflictRule[] = [
 /** Conflicts a role would violate, given a predicate for what it holds. */
 export function staticConflicts(
   roleKey: string,
-  holds: (module: Module, perm: Permission) => boolean,
+  holds: (functionality: Functionality, perm: NamedAction) => boolean,
 ): ConflictRule[] {
   return CAPABILITY_CONFLICTS.filter(
     (r) =>
       !r.exempt.includes(roleKey) &&
-      holds(r.a.module, r.a.perm) &&
-      holds(r.b.module, r.b.perm),
+      holds(r.a.functionality, r.a.perm) &&
+      holds(r.b.functionality, r.b.perm),
   );
+}
+
+/**
+ * Conflicts a SET of roles would violate together.
+ *
+ * Multi-role opened a hole the single-role check could not see: the pair may be
+ * split ACROSS two roles, each innocent on its own. "Dispatch" holds one half,
+ * "Delivery" the other, and nobody holding just one ever trips the rule — but
+ * the person holding both ships and certifies their own shipment.
+ *
+ * Exemption is deliberately ALL-or-nothing: a rule is waived only when every
+ * held role is exempt. Holding one parity role does not licence the
+ * combination, because the point of a break-glass exemption is that the person
+ * is operating AS that role, not that they happen to also have it.
+ */
+export function crossRoleConflicts(
+  roleKeys: string[],
+  holds: (roleKey: string, functionality: Functionality, perm: NamedAction) => boolean,
+): Array<ConflictRule & { via: [string, string] }> {
+  const out: Array<ConflictRule & { via: [string, string] }> = [];
+  for (const rule of CAPABILITY_CONFLICTS) {
+    if (roleKeys.length && roleKeys.every((r) => rule.exempt.includes(r))) continue;
+    const aHolders = roleKeys.filter((r) => holds(r, rule.a.functionality, rule.a.perm));
+    const bHolders = roleKeys.filter((r) => holds(r, rule.b.functionality, rule.b.perm));
+    if (!aHolders.length || !bHolders.length) continue;
+    // Prefer naming two DIFFERENT roles — that is the case the single-role
+    // check already misses, and the one an administrator will not expect.
+    const split = aHolders.find((a) => bHolders.some((b) => b !== a));
+    const via: [string, string] = split
+      ? [split, bHolders.find((b) => b !== split)!]
+      : [aHolders[0]!, bHolders[0]!];
+    out.push({ ...rule, via });
+  }
+  return out;
+}
+
+/**
+ * Refuse a role assignment that would complete a conflicting pair.
+ *
+ * Checked at ASSIGNMENT rather than at decide(), because the combination is
+ * what is forbidden — refusing it at request time would leave a person
+ * configured with an impossible role set and an error they cannot act on.
+ */
+export function assertNoCrossRoleConflict(
+  roleKeys: string[],
+  holds: (roleKey: string, functionality: Functionality, perm: NamedAction) => boolean,
+): void {
+  const violated = crossRoleConflicts(roleKeys, holds);
+  if (!violated.length) return;
+  const first = violated[0]!;
+  throw httpError(409, `These roles together violate separation of duties: ${first.rationale}`, {
+    code: "SOD_CONFLICT",
+    rule: first.id,
+    via: first.via,
+    roles: roleKeys,
+  });
 }
 
 /* ── Dynamic: creator ≠ approver, on THIS record ───────────────────────────── */

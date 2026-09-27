@@ -104,7 +104,7 @@ export default function Inventory() {
       const body: Record<string, unknown> = { ...v };
       Object.keys(body).forEach((k) => (body[k] === "" || body[k] === undefined) && delete body[k]);
       await apiFetch(`/inventory`, { method: "POST", body: JSON.stringify(body) });
-      toast({ title: "Inventory item created" });
+      toast({ variant: "success", title: "Inventory item created" });
       qc.invalidateQueries({ queryKey: ["inventory"] });
       qc.invalidateQueries({ queryKey: ["inventory-stats"] });
       draft.clearDraft();
@@ -301,7 +301,7 @@ function InventoryDetailSheet({ id, onClose, propName }: { id: string | null; on
     setBusy(true);
     try {
       await apiFetch(`/inventory/${id}/consume`, { method: "POST", body: JSON.stringify({ quantity: Number(consumeForm.quantity), purpose: consumeForm.purpose, notes: consumeForm.notes || undefined }) });
-      toast({ title: "Consumption recorded" });
+      toast({ variant: "success", title: "Consumption recorded" });
       qc.invalidateQueries({ queryKey: [`/api/inventory/${id}`, id] });
       qc.invalidateQueries({ queryKey: [`/api/inventory/${id}/movements`, id] });
       qc.invalidateQueries({ queryKey: ["inventory"] });
@@ -316,7 +316,7 @@ function InventoryDetailSheet({ id, onClose, propName }: { id: string | null; on
     setBusy(true);
     try {
       const r = await apiFetch<{ success: boolean; data: { variance: number; newStock: number } }>(`/inventory/${id}/audit`, { method: "POST", body: JSON.stringify({ physicalCount: Number(auditForm.physicalCount), notes: auditForm.notes || undefined }) });
-      toast({ title: "Audit recorded", description: `Variance: ${r.data.variance}, New Stock: ${r.data.newStock}` });
+      toast({ variant: "success", title: "Audit recorded", description: `Variance: ${r.data.variance}, New Stock: ${r.data.newStock}` });
       qc.invalidateQueries({ queryKey: [`/api/inventory/${id}`, id] });
       qc.invalidateQueries({ queryKey: [`/api/inventory/${id}/movements`, id] });
       qc.invalidateQueries({ queryKey: ["inventory"] });

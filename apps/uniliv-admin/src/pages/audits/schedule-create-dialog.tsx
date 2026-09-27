@@ -211,7 +211,7 @@ export function ScheduleCreateDialog({
       return apiFetch("/audit/schedules", { method: "POST", body: JSON.stringify(body) });
     },
     onSuccess: () => {
-      toast({ title: "Schedule created — instances will generate on cadence" });
+      toast({ variant: "success", title: "Schedule created — instances will generate on cadence" });
       reset();
       onOpenChange(false);
       qc.invalidateQueries({ queryKey: ["/audit/schedules"] });

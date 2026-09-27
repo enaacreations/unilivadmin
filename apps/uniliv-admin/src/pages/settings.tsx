@@ -49,7 +49,7 @@ function GeneralTab({ canEdit }: { canEdit: boolean }) {
   const onSave = () => {
     localStorage.setItem("uniliv_general_settings", JSON.stringify(form));
     setSaved(form);
-    toast({ title: "General settings saved" });
+    toast({ variant: "success", title: "General settings saved" });
   };
 
   return (
@@ -103,7 +103,7 @@ function SLATab({ canEdit }: { canEdit: boolean }) {
   const update = useMutation({
     mutationFn: ({ category, slaHours }: { category: string; slaHours: number }) =>
       apiFetch(`/settings/sla/${category}`, { method: "PUT", body: JSON.stringify({ slaHours }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/sla"] }); toast({ title: "SLA updated" }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/sla"] }); toast({ variant: "success", title: "SLA updated" }); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
   });
   const map = new Map((data?.data || []).map((r) => [r.category, r.slaHours]));
@@ -148,7 +148,7 @@ function RoutingTab({ canEdit }: { canEdit: boolean }) {
 
   const create = useMutation({
     mutationFn: () => apiFetch("/settings/routing", { method: "POST", body: JSON.stringify({ propertyId, category, assignedTo }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/routing"] }); toast({ title: "Routing rule added" }); setPropertyId(""); setCategory(""); setAssignedTo(""); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/routing"] }); toast({ variant: "success", title: "Routing rule added" }); setPropertyId(""); setCategory(""); setAssignedTo(""); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
   });
   const remove = useMutation({
@@ -267,7 +267,7 @@ function KycGateTab({ canEdit }: { canEdit: boolean }) {
   const enabled = !!data?.data?.enabled;
   const update = useMutation({
     mutationFn: (next: boolean) => apiFetch("/settings/kyc-gate", { method: "PUT", body: JSON.stringify({ enabled: next }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/kyc-gate"] }); toast({ title: "Saved" }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/kyc-gate"] }); toast({ variant: "success", title: "Saved" }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
   return (
@@ -345,7 +345,7 @@ function WalletConfigTab({ canEdit }: { canEdit: boolean }) {
         topupNotes: form.topupNotes || null,
       }),
     }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: configQK }); toast({ title: "Wallet config saved" }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: configQK }); toast({ variant: "success", title: "Wallet config saved" }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -443,7 +443,7 @@ function ElectricityTariffsTab({ canEdit }: { canEdit: boolean }) {
       method: "POST",
       body: JSON.stringify({ ...form, ratePerUnit: Number(form.ratePerUnit), fixedCharge: Number(form.fixedCharge), isActive: true }),
     }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/electricity/tariffs"] }); toast({ title: "Tariff added" }); setForm({ name: "", ratePerUnit: "", fixedCharge: "0", effectiveFrom: new Date().toISOString().slice(0, 10) }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/electricity/tariffs"] }); toast({ variant: "success", title: "Tariff added" }); setForm({ name: "", ratePerUnit: "", fixedCharge: "0", effectiveFrom: new Date().toISOString().slice(0, 10) }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
   return (
@@ -507,7 +507,7 @@ function OtpSecurityTab() {
       method: "PUT",
       body: JSON.stringify(Object.fromEntries(OTP_FIELDS.map((f) => [f.key, Number(form[f.key])]))),
     }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/otp-config"] }); toast({ title: "OTP settings saved" }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/settings/otp-config"] }); toast({ variant: "success", title: "OTP settings saved" }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -551,8 +551,8 @@ function OtpSecurityTab() {
 
 export default function Settings() {
   const { can, role } = usePermissions();
-  const canEdit = can("SETTINGS", "edit");
-  const canEditElectricity = can("ELECTRICITY", "edit");
+  const canEdit = can("SETTINGS", "edit_setting");
+  const canEditElectricity = can("ELECTRICITY", "edit_electricity");
   const isSuperAdmin = isSuperAdminRole(role);
   return (
     <>

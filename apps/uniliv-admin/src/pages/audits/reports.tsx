@@ -56,7 +56,7 @@ function RegistryTab() {
     mutationFn: (id: string) =>
       apiFetch(`/audit/reports/${id}/generate`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: () => {
-      toast({ title: "Report regeneration queued" });
+      toast({ variant: "success", title: "Report regeneration queued" });
       qc.invalidateQueries({ queryKey: ["/audit/reports"] });
     },
     onError: (e: Error) => toast({ title: e.message || "Regenerate failed", variant: "destructive" }),
@@ -65,7 +65,7 @@ function RegistryTab() {
   const rows = listQuery.data?.data ?? [];
   const total = listQuery.data?.meta.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const isAdmin = can("AUDIT_REPORTS", "edit");
+  const isAdmin = can("AUDIT_REPORTS", "edit_audit_report");
 
   return (
     <div className="space-y-4">

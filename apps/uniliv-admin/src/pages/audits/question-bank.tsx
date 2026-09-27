@@ -238,7 +238,7 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
         : apiFetch("/audit/bank", { method: "POST", body: JSON.stringify(body) });
     },
     onSuccess: () => {
-      toast({ title: editing ? "Question updated" : "Question added to the bank" });
+      toast({ variant: "success", title: editing ? "Question updated" : "Question added to the bank" });
       setEditorOpen(false);
       invalidate();
     },
@@ -252,7 +252,7 @@ export function QuestionBankPanel({ embedded = false }: { embedded?: boolean }) 
         body: JSON.stringify(restore ? { restore: true } : {}),
       }),
     onSuccess: (_r, vars) => {
-      toast({ title: vars.restore ? "Question restored" : "Question archived" });
+      toast({ variant: "success", title: vars.restore ? "Question restored" : "Question archived" });
       setEditorOpen(false);
       invalidate();
     },

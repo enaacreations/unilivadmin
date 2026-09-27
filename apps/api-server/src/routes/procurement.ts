@@ -4,10 +4,10 @@ import {
   vendorsTable, indentsTable, purchaseOrdersTable, grnTable, inventoryTable,
   rateContractsTable, vendorDocumentsTable, stockMovementsTable, complaintsTable,
 } from "@workspace/db";
-import { eq, sql, ilike, and, desc, lte, gte, lt } from "drizzle-orm";
+import { eq, sql, ilike, and, desc, lte, gte, lt, inArray} from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { effectivePropertyFilter, scopedPropertyId, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
+import { effectivePropertyFilter, scopedPropertyIds, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
 import { enforceSod, type SodSubject } from "../lib/access/sod.js";
 
 /**
@@ -18,13 +18,24 @@ import { enforceSod, type SodSubject } from "../lib/access/sod.js";
  * another property's budget. Pins a scoped caller to their own property and
  * verifies an org-wide caller's target.
  */
-function assertWritableBody(req: import("express").Request, b: Record<string, unknown>): string {
-  const scope = scopedPropertyId(req);
-  if (scope) return scope;
-  assertPropertyAccess(req, b["propertyId"] as string | null | undefined);
-  return b["propertyId"] as string;
+async function assertWritableBody(req: import("express").Request, b: Record<string, unknown>): Promise<string> {
+  const scope = await scopedPropertyIds(req);
+  const asked = (b["propertyId"] as string | null | undefined) || null;
+  if (scope) {
+    // A buyer who covers several properties must still say which one they are
+    // raising against; pinning them to the first would book the spend to the
+    // wrong budget. Only someone with exactly one property gets it filled in.
+    if (!asked) {
+      if (scope.length === 1) return scope[0]!;
+      throw badRequest("propertyId is required", { code: "SCOPE_REQUIRED" });
+    }
+    if (!scope.includes(asked)) throw forbidden("Outside your property scope");
+    return asked;
+  }
+  await assertPropertyAccess(req, asked);
+  return asked as string;
 }
-import { pick } from "../lib/authz.js";
+import { pick, badRequest, forbidden } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 
@@ -40,7 +51,7 @@ export const procurementRouter = Router();
 // for powering creatable item-name comboboxes in indent/PO forms.
 // Line items live in JSON `items` arrays on indents/purchase_orders (each entry has
 // an `itemName` key); rate_contracts has a real `item_name` text column. UNION all.
-procurementRouter.get("/item-suggestions", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
+procurementRouter.get("/item-suggestions", authenticate, authorize("INVENTORY", "view_inventory"), async (req, res) => {
   try {
     const result = await db.execute(sql`
       SELECT DISTINCT name FROM (
@@ -63,7 +74,7 @@ procurementRouter.get("/item-suggestions", authenticate, authorize("INVENTORY", 
 // =================== VENDORS ===================
 export const vendorRouter = Router();
 
-vendorRouter.get("/", authenticate, authorize("VENDORS", "view"), async (req, res) => {
+vendorRouter.get("/", authenticate, authorize("VENDORS", "view_vendor"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
@@ -88,7 +99,7 @@ vendorRouter.get("/", authenticate, authorize("VENDORS", "view"), async (req, re
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.post("/", authenticate, authorize("VENDORS", "create"), async (req, res) => {
+vendorRouter.post("/", authenticate, authorize("VENDORS", "add_vendor"), async (req, res) => {
   try {
     const data = pick(req.body, VENDOR_FIELDS);
     const [row] = await db.insert(vendorsTable).values({ id: newId(), ...data, categories: req.body.categories || [], updatedAt: new Date() } as typeof vendorsTable.$inferInsert).returning();
@@ -96,7 +107,7 @@ vendorRouter.post("/", authenticate, authorize("VENDORS", "create"), async (req,
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.get("/:id", authenticate, authorize("VENDORS", "view"), async (req, res) => {
+vendorRouter.get("/:id", authenticate, authorize("VENDORS", "view_vendor"), async (req, res) => {
   try {
     const [row] = await db.select().from(vendorsTable).where(eq(vendorsTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -104,7 +115,7 @@ vendorRouter.get("/:id", authenticate, authorize("VENDORS", "view"), async (req,
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.put("/:id", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
+vendorRouter.put("/:id", authenticate, authorize("VENDORS", "edit_vendor"), async (req, res) => {
   try {
     const data = pick(req.body, VENDOR_FIELDS);
     const [row] = await db.update(vendorsTable).set({ ...data, updatedAt: new Date() }).where(eq(vendorsTable.id, req.params["id"]!)).returning();
@@ -114,14 +125,14 @@ vendorRouter.put("/:id", authenticate, authorize("VENDORS", "edit"), async (req,
 });
 
 // Vendor Rate Contracts
-vendorRouter.get("/:id/rate-contracts", authenticate, authorize("VENDORS", "view"), async (req, res) => {
+vendorRouter.get("/:id/rate-contracts", authenticate, authorize("VENDORS", "view_vendor"), async (req, res) => {
   try {
     const rows = await db.select().from(rateContractsTable).where(eq(rateContractsTable.vendorId, req.params["id"]!)).orderBy(desc(rateContractsTable.createdAt));
     res.json({ success: true, data: rows.map(r => ({ ...r, rate: Number(r.rate) })) });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.post("/:id/rate-contracts", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
+vendorRouter.post("/:id/rate-contracts", authenticate, authorize("VENDORS", "edit_vendor"), async (req, res) => {
   try {
     const b = req.body;
     const [row] = await db.insert(rateContractsTable).values({
@@ -132,7 +143,7 @@ vendorRouter.post("/:id/rate-contracts", authenticate, authorize("VENDORS", "edi
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.put("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
+vendorRouter.put("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "edit_vendor"), async (req, res) => {
   try {
     // Allow-list writable columns only (block mass-assignment of id/vendorId/createdAt).
     const b = pick(req.body, RATE_CONTRACT_FIELDS);
@@ -145,7 +156,7 @@ vendorRouter.put("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "ed
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.delete("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "delete"), async (req, res) => {
+vendorRouter.delete("/rate-contracts/:rcId", authenticate, authorize("VENDORS", "delete_vendor"), async (req, res) => {
   try {
     await db.delete(rateContractsTable).where(eq(rateContractsTable.id, req.params["rcId"]!));
     res.json({ success: true });
@@ -153,7 +164,7 @@ vendorRouter.delete("/rate-contracts/:rcId", authenticate, authorize("VENDORS", 
 });
 
 // Vendor Documents
-vendorRouter.get("/:id/documents", authenticate, authorize("VENDORS", "view"), async (req, res) => {
+vendorRouter.get("/:id/documents", authenticate, authorize("VENDORS", "view_vendor"), async (req, res) => {
   try {
     const rows = await db.select().from(vendorDocumentsTable).where(eq(vendorDocumentsTable.vendorId, req.params["id"]!));
     const now = new Date();
@@ -169,7 +180,7 @@ vendorRouter.get("/:id/documents", authenticate, authorize("VENDORS", "view"), a
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.post("/:id/documents", authenticate, authorize("VENDORS", "edit"), async (req, res) => {
+vendorRouter.post("/:id/documents", authenticate, authorize("VENDORS", "edit_vendor"), async (req, res) => {
   try {
     const b = req.body;
     const [row] = await db.insert(vendorDocumentsTable).values({
@@ -180,7 +191,7 @@ vendorRouter.post("/:id/documents", authenticate, authorize("VENDORS", "edit"), 
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-vendorRouter.delete("/documents/:docId", authenticate, authorize("VENDORS", "delete"), async (req, res) => {
+vendorRouter.delete("/documents/:docId", authenticate, authorize("VENDORS", "delete_vendor"), async (req, res) => {
   try {
     await db.delete(vendorDocumentsTable).where(eq(vendorDocumentsTable.id, req.params["docId"]!));
     res.json({ success: true });
@@ -188,7 +199,7 @@ vendorRouter.delete("/documents/:docId", authenticate, authorize("VENDORS", "del
 });
 
 // Vendor performance metrics — derived from POs/GRNs
-vendorRouter.get("/:id/performance", authenticate, authorize("VENDORS", "view"), async (req, res) => {
+vendorRouter.get("/:id/performance", authenticate, authorize("VENDORS", "view_vendor"), async (req, res) => {
   try {
     const vendorId = req.params["id"]!;
     // Last 4 quarters
@@ -237,7 +248,7 @@ vendorRouter.get("/:id/performance", authenticate, authorize("VENDORS", "view"),
 });
 
 // Vendor POs list (for detail page)
-vendorRouter.get("/:id/purchase-orders", authenticate, authorize("VENDORS", "view"), async (req, res) => {
+vendorRouter.get("/:id/purchase-orders", authenticate, authorize("VENDORS", "view_vendor"), async (req, res) => {
   try {
     const rows = await db.select().from(purchaseOrdersTable).where(eq(purchaseOrdersTable.vendorId, req.params["id"]!)).orderBy(desc(purchaseOrdersTable.createdAt));
     res.json({ success: true, data: rows.map(r => ({ ...r, totalAmount: Number(r.totalAmount), subtotal: Number(r.subtotal), gstAmount: Number(r.gstAmount) })) });
@@ -270,14 +281,14 @@ const nextIndentNumber = async (d: DbLike = db): Promise<string> => {
   return `IND-${String(next).padStart(5, "0")}`;
 };
 
-indentRouter.get("/", authenticate, authorize("INDENTS", "view"), async (req, res) => {
+indentRouter.get("/", authenticate, authorize("INDENTS", "view_indent"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
-    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
+    const propertyId = await effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const department = req.query["department"] as string | undefined;
     const status = req.query["status"] as string | undefined;
     const conditions = [];
-    if (propertyId) conditions.push(eq(indentsTable.propertyId, propertyId));
+    if (propertyId) conditions.push(inArray(indentsTable.propertyId, propertyId));
     if (department) conditions.push(eq(indentsTable.department, department));
     if (status) conditions.push(eq(indentsTable.status, status as any));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -291,7 +302,7 @@ indentRouter.get("/", authenticate, authorize("INDENTS", "view"), async (req, re
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-indentRouter.get("/:id", authenticate, authorize("INDENTS", "view"), async (req, res) => {
+indentRouter.get("/:id", authenticate, authorize("INDENTS", "view_indent"), async (req, res) => {
   try {
     const [row] = await db.select().from(indentsTable).where(eq(indentsTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -299,7 +310,7 @@ indentRouter.get("/:id", authenticate, authorize("INDENTS", "view"), async (req,
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-indentRouter.post("/", authenticate, authorize("INDENTS", "create"), async (req, res) => {
+indentRouter.post("/", authenticate, authorize("INDENTS", "add_indent"), async (req, res) => {
   try {
     const b = req.body;
     const items = (b.items || []) as Array<Record<string, unknown>>;
@@ -309,7 +320,7 @@ indentRouter.post("/", authenticate, authorize("INDENTS", "create"), async (req,
       const [r] = await db.insert(indentsTable).values({
         id: newId(),
         indentNumber: await nextIndentNumber(),
-        propertyId: assertWritableBody(req, b),
+        propertyId: await assertWritableBody(req, b),
         department: b.department,
         items,
         totalEstimatedValue: String(total),
@@ -327,7 +338,7 @@ indentRouter.post("/", authenticate, authorize("INDENTS", "create"), async (req,
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-indentRouter.put("/:id", authenticate, authorize("INDENTS", "edit"), async (req, res) => {
+indentRouter.put("/:id", authenticate, authorize("INDENTS", "edit_indent"), async (req, res) => {
   try {
     const b = { ...req.body };
     if (b.items) {
@@ -344,7 +355,7 @@ indentRouter.put("/:id", authenticate, authorize("INDENTS", "edit"), async (req,
 indentRouter.post(
   "/:id/approve",
   authenticate,
-  authorize("INDENTS", "edit"),
+  authorize("INDENTS", "edit_indent"),
   enforceSod({ entity: "indent", action: "approve", load: sodSubjectForIndent }),
   async (req, res) => {
   try {
@@ -360,7 +371,7 @@ indentRouter.post(
 indentRouter.post(
   "/:id/reject",
   authenticate,
-  authorize("INDENTS", "edit"),
+  authorize("INDENTS", "edit_indent"),
   enforceSod({ entity: "indent", action: "reject", load: sodSubjectForIndent }),
   async (req, res) => {
   try {
@@ -386,7 +397,7 @@ const nextPoNumber = async (d: DbLike = db): Promise<string> => {
   return `PO-${yyyymmdd}-${String(next).padStart(3, "0")}`;
 };
 
-poRouter.get("/", authenticate, authorize("PURCHASE_ORDERS", "view"), async (req, res) => {
+poRouter.get("/", authenticate, authorize("PURCHASE_ORDERS", "view_purchase_order"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const status = req.query["status"] as string | undefined;
@@ -410,7 +421,7 @@ poRouter.get("/", authenticate, authorize("PURCHASE_ORDERS", "view"), async (req
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-poRouter.get("/:id", authenticate, authorize("PURCHASE_ORDERS", "view"), async (req, res) => {
+poRouter.get("/:id", authenticate, authorize("PURCHASE_ORDERS", "view_purchase_order"), async (req, res) => {
   try {
     const [row] = await db.select().from(purchaseOrdersTable).where(eq(purchaseOrdersTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -428,7 +439,7 @@ poRouter.get("/:id", authenticate, authorize("PURCHASE_ORDERS", "view"), async (
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-poRouter.post("/", authenticate, authorize("PURCHASE_ORDERS", "create"), async (req, res) => {
+poRouter.post("/", authenticate, authorize("PURCHASE_ORDERS", "add_purchase_order"), async (req, res) => {
   try {
     const b = req.body;
     const items = (b.items || []) as Array<Record<string, unknown>>;
@@ -441,7 +452,7 @@ poRouter.post("/", authenticate, authorize("PURCHASE_ORDERS", "create"), async (
       id: newId(),
       poNumber: await nextPoNumber(),
       vendorId: b.vendorId,
-      propertyId: assertWritableBody(req, b),
+      propertyId: await assertWritableBody(req, b),
       indentId: b.indentId,
       items,
       subtotal: String(subtotal),
@@ -471,7 +482,7 @@ poRouter.post("/", authenticate, authorize("PURCHASE_ORDERS", "create"), async (
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-poRouter.put("/:id", authenticate, authorize("PURCHASE_ORDERS", "edit"), async (req, res) => {
+poRouter.put("/:id", authenticate, authorize("PURCHASE_ORDERS", "edit_purchase_order"), async (req, res) => {
   try {
     const b = { ...req.body };
     if (b.items) {
@@ -489,7 +500,7 @@ poRouter.put("/:id", authenticate, authorize("PURCHASE_ORDERS", "edit"), async (
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-poRouter.post("/:id/send", authenticate, authorize("PURCHASE_ORDERS", "edit"), async (req, res) => {
+poRouter.post("/:id/send", authenticate, authorize("PURCHASE_ORDERS", "edit_purchase_order"), async (req, res) => {
   try {
     const [row] = await db.update(purchaseOrdersTable).set({
       status: "SENT", sentAt: new Date(), updatedAt: new Date(),
@@ -508,11 +519,11 @@ const nextGrnNumber = async (d: DbLike = db): Promise<string> => {
   return `GRN-${String(next).padStart(5, "0")}`;
 };
 
-grnRouter.get("/", authenticate, authorize("GRN", "view"), async (req, res) => {
+grnRouter.get("/", authenticate, authorize("GRN", "view_goods_received"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
-    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
-    const where = propertyId ? eq(grnTable.propertyId, propertyId) : undefined;
+    const propertyId = await effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
+    const where = propertyId ? inArray(grnTable.propertyId, propertyId) : undefined;
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(grnTable).where(where);
     const rows = await db.select().from(grnTable).where(where).limit(limit).offset(offset).orderBy(desc(grnTable.createdAt));
     const enriched = await Promise.all(rows.map(async (r) => {
@@ -543,7 +554,7 @@ async function withUniqueRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T
   throw lastErr;
 }
 
-grnRouter.post("/", authenticate, authorize("GRN", "create"), async (req, res) => {
+grnRouter.post("/", authenticate, authorize("GRN", "add_goods_received"), async (req, res) => {
   try {
     const b = req.body;
     if (!b.poId) { res.status(400).json({ success: false, error: "poId required" }); return; }
@@ -557,17 +568,20 @@ grnRouter.post("/", authenticate, authorize("GRN", "create"), async (req, res) =
       if (!po) throw Object.assign(new Error("PO not found"), { httpStatus: 404 });
 
       const grnNumber = await nextGrnNumber(tx);
+      // Inherited from the PO being receipted. A body override that points
+      // elsewhere would book stock into another property's inventory. Checked
+      // before the insert rather than inside it — the check is async now, and
+      // an await cannot live in a value expression.
+      const grnPropertyId = b.propertyId || po.propertyId || "";
+      await assertPropertyAccess(req, grnPropertyId || null);
+
       const [row] = await tx.insert(grnTable).values({
         id: newId(),
         grnNumber,
         poId: b.poId,
         // Inherited from the PO being receipted. A body override that points
         // elsewhere would book stock into another property's inventory.
-        propertyId: (() => {
-          const target = b.propertyId || po.propertyId || "";
-          assertPropertyAccess(req, target || null);
-          return target;
-        })(),
+        propertyId: grnPropertyId,
         items,
         invoiceNumber: b.invoiceNumber,
         invoicePhotoUrl: b.invoicePhotoUrl,
@@ -673,7 +687,7 @@ grnRouter.post("/", authenticate, authorize("GRN", "create"), async (req, res) =
   }
 });
 
-grnRouter.get("/:id", authenticate, authorize("GRN", "view"), async (req, res) => {
+grnRouter.get("/:id", authenticate, authorize("GRN", "view_goods_received"), async (req, res) => {
   try {
     const [row] = await db.select().from(grnTable).where(eq(grnTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -703,15 +717,15 @@ const computeStatus = (item: typeof inventoryTable.$inferSelect): string => {
   return "OK";
 };
 
-inventoryRouter.get("/", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
+inventoryRouter.get("/", authenticate, authorize("INVENTORY", "view_inventory"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
-    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
+    const propertyId = await effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const category = req.query["category"] as string | undefined;
     const statusFilter = req.query["status"] as string | undefined;
     const conditions = [];
-    if (propertyId) conditions.push(eq(inventoryTable.propertyId, propertyId));
+    if (propertyId) conditions.push(inArray(inventoryTable.propertyId, propertyId));
     if (category) conditions.push(eq(inventoryTable.category, category));
     if (search) conditions.push(ilike(inventoryTable.name, `%${search}%`));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -729,7 +743,7 @@ inventoryRouter.get("/", authenticate, authorize("INVENTORY", "view"), async (re
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.get("/stats", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
+inventoryRouter.get("/stats", authenticate, authorize("INVENTORY", "view_inventory"), async (req, res) => {
   try {
     const all = await db.select().from(inventoryTable);
     const totalSkus = all.length;
@@ -744,7 +758,7 @@ inventoryRouter.get("/stats", authenticate, authorize("INVENTORY", "view"), asyn
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.get("/alerts", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
+inventoryRouter.get("/alerts", authenticate, authorize("INVENTORY", "view_inventory"), async (req, res) => {
   try {
     const all = await db.select().from(inventoryTable);
     const lowStock = all.filter(r => Number(r.currentStock) <= Number(r.minStock));
@@ -757,7 +771,7 @@ inventoryRouter.get("/alerts", authenticate, authorize("INVENTORY", "view"), asy
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.get("/:id", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
+inventoryRouter.get("/:id", authenticate, authorize("INVENTORY", "view_inventory"), async (req, res) => {
   try {
     const [row] = await db.select().from(inventoryTable).where(eq(inventoryTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -768,12 +782,12 @@ inventoryRouter.get("/:id", authenticate, authorize("INVENTORY", "view"), async 
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.post("/", authenticate, authorize("INVENTORY", "create"), async (req, res) => {
+inventoryRouter.post("/", authenticate, authorize("INVENTORY", "add_inventory"), async (req, res) => {
   try {
     const b = req.body;
     const [row] = await db.insert(inventoryTable).values({
       id: newId(),
-      propertyId: assertWritableBody(req, b),
+      propertyId: await assertWritableBody(req, b),
       name: b.name,
       sku: b.sku,
       category: b.category,
@@ -795,7 +809,7 @@ inventoryRouter.post("/", authenticate, authorize("INVENTORY", "create"), async 
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.put("/:id", authenticate, authorize("INVENTORY", "edit"), async (req, res) => {
+inventoryRouter.put("/:id", authenticate, authorize("INVENTORY", "edit_inventory"), async (req, res) => {
   try {
     const b = { ...req.body };
     if (b.currentStock !== undefined) b.currentStock = String(b.currentStock);
@@ -811,14 +825,14 @@ inventoryRouter.put("/:id", authenticate, authorize("INVENTORY", "edit"), async 
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.get("/:id/movements", authenticate, authorize("INVENTORY", "view"), async (req, res) => {
+inventoryRouter.get("/:id/movements", authenticate, authorize("INVENTORY", "view_inventory"), async (req, res) => {
   try {
     const rows = await db.select().from(stockMovementsTable).where(eq(stockMovementsTable.inventoryId, req.params["id"]!)).orderBy(desc(stockMovementsTable.createdAt));
     res.json({ success: true, data: rows.map(r => ({ ...r, quantity: Number(r.quantity) })) });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.post("/:id/consume", authenticate, authorize("INVENTORY", "edit"), async (req, res) => {
+inventoryRouter.post("/:id/consume", authenticate, authorize("INVENTORY", "edit_inventory"), async (req, res) => {
   try {
     const b = req.body;
     const qty = Number(b.quantity);
@@ -846,7 +860,7 @@ inventoryRouter.post("/:id/consume", authenticate, authorize("INVENTORY", "edit"
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-inventoryRouter.post("/:id/audit", authenticate, authorize("INVENTORY", "edit"), async (req, res) => {
+inventoryRouter.post("/:id/audit", authenticate, authorize("INVENTORY", "edit_inventory"), async (req, res) => {
   try {
     const physical = Number(req.body?.physicalCount);
     if (Number.isNaN(physical)) { res.status(400).json({ success: false, error: "physicalCount required" }); return; }

@@ -183,7 +183,7 @@ export function MenuRulesEditor({
       const where = scopeName ? ` for ${scopeName}` : " everywhere";
       const [[key, value]] = Object.entries(sent) as [[keyof MenuRuleSettings, boolean | number]];
       if (key === "repeatWithinDays") {
-        toast({ title: `Repeats now flagged within ${value} day${value === 1 ? "" : "s"}${where}` });
+        toast({ variant: "success", title: `Repeats now flagged within ${value} day${value === 1 ? "" : "s"}${where}` });
         return;
       }
       const label = key === "ingredientClashBlocks"
@@ -197,7 +197,7 @@ export function MenuRulesEditor({
               : key === "flagIngredientDayCap"
                 ? "Ingredient daily limits"
                 : "Repeat flag";
-      toast({ title: `${label} turned ${value ? "on" : "off"}${where}` });
+      toast({ variant: "success", title: `${label} turned ${value ? "on" : "off"}${where}` });
     },
     onError: (e: any) => {
       // The star rule is the one refusal a user can act on: it fails because the
@@ -362,6 +362,7 @@ export function MenuRulesEditor({
     },
     onSuccess: () => {
       toast({
+        variant: "success",
         title: scopeName
           ? `${scopeName} ${MEAL_LABEL[meal]} rule saved`
           : `${brandName} ${MEAL_LABEL[meal]} rule saved`,

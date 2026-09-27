@@ -5,7 +5,7 @@ import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
 
 export const executiveRouter = Router();
-executiveRouter.use(authenticate, authorize("EXECUTIVE_DASHBOARD", "view"));
+executiveRouter.use(authenticate, authorize("EXECUTIVE_DASHBOARD", "view_executive_dashboard"));
 
 executiveRouter.get("/kpis", async (_req, res) => {
   try {

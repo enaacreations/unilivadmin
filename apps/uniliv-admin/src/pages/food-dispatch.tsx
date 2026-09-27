@@ -127,12 +127,12 @@ export default function FoodDispatch() {
   // POST/PATCH /dispatches). PageGuard only checks view, so leadership and
   // audit roles reach this page read-only — mirror the server and show them a
   // board instead of a fully-armed trip builder where each action 403s.
-  const canDispatch = can("FOOD_DISPATCH", "edit");
+  const canDispatch = can("FOOD_DISPATCH", "edit_dispatch");
   // Certifying RECEIPT is a different grant from running the trip (C3): the FNB
   // roles that live on this page hold FOOD_DISPATCH:VE with
   // FOOD_CONFIRM_DELIVERY:VIEW, so marking a stop delivered 403s for them. Gate
   // the control rather than let them click it and be told no.
-  const canCertify = can("FOOD_CONFIRM_DELIVERY", "edit");
+  const canCertify = can("FOOD_CONFIRM_DELIVERY", "amend_delivery");
 
   const [tab, setTab] = React.useState<"queue" | "transit" | "trips">("queue");
   const [propertyId, setPropertyId] = React.useState<string>(storeProperty ?? ALL);
@@ -1138,6 +1138,7 @@ function TripDetailSheet({
     onSuccess: (d) => {
       const kept = d.deliveredCount ?? 0;
       toast({
+        variant: "success",
         title: "Trip cancelled",
         description: `${d.revertedCount} order(s) returned to the kitchen`
           + (kept ? `, ${kept} already delivered and left as delivered.` : "."),

@@ -66,7 +66,7 @@ function HierarchyTab() {
   // checks view, so read-only principals (AUDIT_READONLY) reach it. Mirror the
   // server — the same gate food-agencies.tsx already applies.
   const { can } = usePermissions();
-  const canManage = can("FOOD_ORG", "edit");
+  const canManage = can("FOOD_ORG", "edit_kitchen_org");
 
   const { data: tree, isLoading, isError, refetch } = useQuery<HierarchyTree>({
     queryKey: foodKeys.hierarchy(),
@@ -94,7 +94,7 @@ function HierarchyTab() {
 
   const createCity = useMutation({
     mutationFn: () => foodApi.createCity({ name: cityName.trim() }),
-    onSuccess: () => { toast({ title: "City added" }); invalidate(); setCityOpen(false); setCityName(""); },
+    onSuccess: () => { toast({ variant: "success", title: "City added" }); invalidate(); setCityOpen(false); setCityName(""); },
     onError: () => toast({ title: "Could not add city", variant: "destructive" }),
   });
 
@@ -102,7 +102,7 @@ function HierarchyTab() {
     mutationFn: () => kEdit
       ? foodApi.updateKitchen(kEdit.id, { name: kForm.name.trim(), cityId: kForm.cityId || null })
       : foodApi.createKitchen({ name: kForm.name.trim(), code: kForm.code.trim().toUpperCase(), cityId: kForm.cityId || null }),
-    onSuccess: () => { toast({ title: kEdit ? "Kitchen updated" : "Kitchen added" }); invalidate(); setKitchenOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: kEdit ? "Kitchen updated" : "Kitchen added" }); invalidate(); setKitchenOpen(false); },
     onError: () => toast({ title: "Could not save kitchen", variant: "destructive" }),
   });
 
@@ -118,7 +118,7 @@ function HierarchyTab() {
       await foodApi.assignKitchen(propTarget.id, pForm.kitchenId || null);
       await foodApi.assignBrand(propTarget.id, pForm.brand || null);
     },
-    onSuccess: () => { toast({ title: "Property updated" }); invalidate(); setPropTarget(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Property updated" }); invalidate(); setPropTarget(null); },
     onError: (e: Error) => { invalidate(); toast({ title: "Could not update property", description: e.message, variant: "destructive" }); },
   });
 
@@ -387,7 +387,7 @@ function SpineTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { can } = usePermissions();
-  const canManage = can("FOOD_ORG", "edit");
+  const canManage = can("FOOD_ORG", "edit_kitchen_org");
 
   const zonesQ = useQuery<Zone[]>({ queryKey: foodKeys.zones(), queryFn: () => foodApi.listZones() });
   const citiesQ = useQuery<City[]>({ queryKey: foodKeys.cities(), queryFn: () => foodApi.listCities() });
@@ -437,12 +437,12 @@ function SpineTab() {
     mutationFn: () => zoneEdit
       ? foodApi.updateZone(zoneEdit.id, { name: zoneForm.name.trim(), code: zoneForm.code.trim() || null, isActive: zoneForm.isActive })
       : foodApi.createZone({ name: zoneForm.name.trim(), code: zoneForm.code.trim() || null, isActive: zoneForm.isActive }),
-    onSuccess: () => { toast({ title: zoneEdit ? "Zone updated" : "Zone added" }); invalidate(); setZoneOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: zoneEdit ? "Zone updated" : "Zone added" }); invalidate(); setZoneOpen(false); },
     onError: failToast("Could not save zone"),
   });
   const delZone = useMutation({
     mutationFn: (id: string) => foodApi.deleteZone(id),
-    onSuccess: () => { toast({ title: "Zone deleted" }); invalidate(); setZoneDel(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Zone deleted" }); invalidate(); setZoneDel(null); },
     onError: failToast("Could not delete zone"),
   });
 
@@ -451,12 +451,12 @@ function SpineTab() {
       const b = { name: cityForm.name.trim(), zoneId: cityForm.zoneId || null, isActive: cityForm.isActive };
       return cityEdit ? foodApi.updateCity(cityEdit.id, b) : foodApi.createCity(b);
     },
-    onSuccess: () => { toast({ title: cityEdit ? "City updated" : "City added" }); invalidate(); setCityOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: cityEdit ? "City updated" : "City added" }); invalidate(); setCityOpen(false); },
     onError: failToast("Could not save city"),
   });
   const delCity = useMutation({
     mutationFn: (id: string) => foodApi.deleteCity(id),
-    onSuccess: () => { toast({ title: "City deleted" }); invalidate(); setCityDel(null); },
+    onSuccess: () => { toast({ variant: "success", title: "City deleted" }); invalidate(); setCityDel(null); },
     onError: failToast("Could not delete city"),
   });
 
@@ -465,18 +465,18 @@ function SpineTab() {
       const b = { name: clusterForm.name.trim(), cityId: clusterForm.cityId, isActive: clusterForm.isActive };
       return clusterEdit ? foodApi.updateCluster(clusterEdit.id, b) : foodApi.createCluster(b);
     },
-    onSuccess: () => { toast({ title: clusterEdit ? "Cluster updated" : "Cluster added" }); invalidate(); setClusterOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: clusterEdit ? "Cluster updated" : "Cluster added" }); invalidate(); setClusterOpen(false); },
     onError: failToast("Could not save cluster"),
   });
   const delCluster = useMutation({
     mutationFn: (id: string) => foodApi.deleteCluster(id),
-    onSuccess: () => { toast({ title: "Cluster deleted" }); invalidate(); setClusterDel(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Cluster deleted" }); invalidate(); setClusterDel(null); },
     onError: failToast("Could not delete cluster"),
   });
 
   const moveProperty = useMutation({
     mutationFn: () => foodApi.assignCluster(moveTarget!.id, moveClusterId),
-    onSuccess: () => { toast({ title: "Property re-pointed" }); invalidate(); setMoveTarget(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Property re-pointed" }); invalidate(); setMoveTarget(null); },
     // The server explains a refusal (unknown/inactive cluster, outside your
     // scope, or "a property cannot be left outside the org spine") — show it.
     onError: failToast("Could not move property"),
@@ -949,7 +949,7 @@ function BrandsTab() {
   const { toast } = useToast();
   // Brand CRUD is FOOD_ORG edit server-side — same gate as the hierarchy tab.
   const { can } = usePermissions();
-  const canManage = can("FOOD_ORG", "edit");
+  const canManage = can("FOOD_ORG", "edit_kitchen_org");
   const { data: brands = [], isLoading, isError, refetch } = useQuery<FoodBrandRow[]>({ queryKey: foodKeys.brands({ all: true }), queryFn: () => foodApi.listBrands({ all: true }) });
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["food", "brands"] }); qc.invalidateQueries({ queryKey: foodKeys.lookups() }); };
 
@@ -962,12 +962,12 @@ function BrandsTab() {
     mutationFn: () => edit
       ? foodApi.updateBrand(edit.id, { name: form.name.trim(), isActive: form.isActive })
       : foodApi.createBrand({ code: form.code.trim(), name: form.name.trim(), isActive: form.isActive }),
-    onSuccess: () => { toast({ title: edit ? "Brand updated" : "Brand added" }); invalidate(); setOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: edit ? "Brand updated" : "Brand added" }); invalidate(); setOpen(false); },
     onError: (e: any) => toast({ title: String(e?.message || "Could not save brand"), variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: string) => foodApi.deleteBrand(id),
-    onSuccess: () => { toast({ title: "Brand deactivated" }); invalidate(); setDelTarget(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Brand deactivated" }); invalidate(); setDelTarget(null); },
     onError: () => toast({ title: "Could not delete brand", variant: "destructive" }),
   });
 
@@ -1071,7 +1071,7 @@ function UnitLeadsTab() {
   const { toast } = useToast();
   // Granting/revoking a scope is FOOD_ORG edit/delete server-side.
   const { can } = usePermissions();
-  const canManage = can("FOOD_ORG", "edit");
+  const canManage = can("FOOD_ORG", "edit_kitchen_org");
   const { data: users = [], isError: usersError, refetch: refetchUsers } = useQuery<FoodUser[]>({ queryKey: foodKeys.users(), queryFn: () => foodApi.foodUsers() });
   const { data: lookups } = useQuery<FoodLookups>({ queryKey: foodKeys.lookups(), queryFn: () => foodApi.lookups() });
   const { data: zones = [] } = useQuery<Zone[]>({ queryKey: foodKeys.zones(), queryFn: () => foodApi.listZones() });
@@ -1119,14 +1119,14 @@ function UnitLeadsTab() {
 
   const add = useMutation({
     mutationFn: () => foodApi.createScope({ userId, scopeLevel: addLevel, [levelField]: addTargetId }),
-    onSuccess: () => { toast({ title: "Access granted" }); refresh(); setAddOpen(false); setAddTargetId(""); },
+    onSuccess: () => { toast({ variant: "success", title: "Access granted" }); refresh(); setAddOpen(false); setAddTargetId(""); },
     // The server explains itself (already held / not active / self-grant), so
     // show its message rather than a generic failure the admin cannot act on.
     onError: (e: Error) => toast({ title: "Could not grant access", description: e.message, variant: "destructive" }),
   });
   const remove = useMutation({
     mutationFn: (id: string) => foodApi.deleteScope(id),
-    onSuccess: () => { toast({ title: "Access revoked" }); refresh(); },
+    onSuccess: () => { toast({ variant: "success", title: "Access revoked" }); refresh(); },
     onError: (e: Error) => toast({ title: "Could not revoke", description: e.message, variant: "destructive" }),
   });
 

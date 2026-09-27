@@ -179,7 +179,7 @@ export default function ScheduleForm() {
         : apiFetch("/audit/schedules", { method: "POST", body: JSON.stringify(body) });
     },
     onSuccess: () => {
-      toast({ title: editId ? "Schedule updated — future occurrences only" : "Schedule created" });
+      toast({ variant: "success", title: editId ? "Schedule updated — future occurrences only" : "Schedule created" });
       qc.invalidateQueries({ queryKey: ["/audit/schedules"] });
       navigate("/audits/schedules");
     },

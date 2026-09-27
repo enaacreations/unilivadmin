@@ -22,10 +22,10 @@ export default function Dashboard() {
   const scope = propertyId ?? undefined;
 
   // What this role can actually work with — the dashboard adapts to it.
-  const showResidents = can("RESIDENTS", "view");
-  const showComplaints = can("COMPLAINTS", "view");
-  const showOccupancy = can("PROPERTIES", "view");
-  const showFinance = can("PAYMENTS", "view") || can("LEDGER", "view") || can("WALLET", "view");
+  const showResidents = can("RESIDENTS", "view_resident");
+  const showComplaints = can("COMPLAINT_TICKETS", "view_complaint");
+  const showOccupancy = can("PROPERTIES", "view_property");
+  const showFinance = can("PAYMENTS", "view_payment") || can("LEDGER", "view_ledger") || can("WALLET", "view_wallet");
   const showCharts = showResidents || showComplaints || showOccupancy;
 
   const { data: statsRes, isLoading: statsLoading } = useGetDashboardStats({ propertyId: scope } as any, { query: { queryKey: getGetDashboardStatsQueryKey({ propertyId: scope } as any) } });

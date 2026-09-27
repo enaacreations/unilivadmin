@@ -302,8 +302,8 @@ export function ReviewQueuePanel({ embedded = false }: { embedded?: boolean }) {
 export default function ReviewQueue() {
   const [, navigate] = useLocation();
   const { can } = usePermissions();
-  const showPrevious = can("AUDIT_REGISTER", "view");
-  const showSchedules = can("AUDIT_SCHEDULES", "view");
+  const showPrevious = can("AUDIT_REGISTER", "view_audit_register");
+  const showSchedules = can("AUDIT_SCHEDULES", "view_schedule");
   const [scheduleOpen, setScheduleOpen] = React.useState(false);
 
   if (!showPrevious && !showSchedules) return <ReviewQueuePanel />;

@@ -53,7 +53,7 @@ export default function ResidentAttendancePage() {
       const items = ids.map((residentId) => ({ residentId, propertyId: propId, attendanceDate: date, status }));
       return apiFetch(`/resident-attendance/mark`, { method: "POST", body: JSON.stringify({ items }) });
     },
-    onSuccess: () => { toast({ title: "Marked" }); qc.invalidateQueries({ queryKey: getGetResidentAttendanceQueryKey(attParams) }); setSelected({}); },
+    onSuccess: () => { toast({ variant: "success", title: "Marked" }); qc.invalidateQueries({ queryKey: getGetResidentAttendanceQueryKey(attParams) }); setSelected({}); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -62,7 +62,7 @@ export default function ResidentAttendancePage() {
       const items = rows.filter((r) => !r.record).map((r) => ({ residentId: r.residentId, propertyId: propId, attendanceDate: date, status: "PRESENT" }));
       return apiFetch(`/resident-attendance/mark`, { method: "POST", body: JSON.stringify({ items }) });
     },
-    onSuccess: () => { toast({ title: "Marked unmarked residents present" }); qc.invalidateQueries({ queryKey: getGetResidentAttendanceQueryKey(attParams) }); },
+    onSuccess: () => { toast({ variant: "success", title: "Marked unmarked residents present" }); qc.invalidateQueries({ queryKey: getGetResidentAttendanceQueryKey(attParams) }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -75,17 +75,17 @@ export default function ResidentAttendancePage() {
   const [opForm, setOpForm] = React.useState<any>({});
   const saveOp = useMutation({
     mutationFn: (d: any) => apiFetch(`/out-passes`, { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: "Out-pass created" }); qc.invalidateQueries({ queryKey: getGetOutPassesQueryKey(opParams) }); setOpOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: "Out-pass created" }); qc.invalidateQueries({ queryKey: getGetOutPassesQueryKey(opParams) }); setOpOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
   const updateOp = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => apiFetch(`/out-passes/${id}`, { method: "PUT", body: JSON.stringify({ status }) }),
-    onSuccess: () => { toast({ title: "Updated" }); qc.invalidateQueries({ queryKey: getGetOutPassesQueryKey(opParams) }); },
+    onSuccess: () => { toast({ variant: "success", title: "Updated" }); qc.invalidateQueries({ queryKey: getGetOutPassesQueryKey(opParams) }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
   const markReturn = useMutation({
     mutationFn: (id: string) => apiFetch(`/out-passes/${id}/return`, { method: "POST", body: "{}" }),
-    onSuccess: () => { toast({ title: "Returned" }); qc.invalidateQueries({ queryKey: getGetOutPassesQueryKey(opParams) }); },
+    onSuccess: () => { toast({ variant: "success", title: "Returned" }); qc.invalidateQueries({ queryKey: getGetOutPassesQueryKey(opParams) }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -125,7 +125,7 @@ export default function ResidentAttendancePage() {
               </Select>
             </div>}
             <div className="flex-1" />
-            {can("RESIDENT_ATTENDANCE", "create") && (
+            {can("RESIDENT_ATTENDANCE", "add_resident_attendance") && (
               <>
                 <Button variant="outline" onClick={() => markAllPresent.mutate()} data-testid="button-mark-all-present">Mark unmarked Present</Button>
                 <Button onClick={() => markMut.mutate("PRESENT")} disabled={!Object.values(selected).some(Boolean)} data-testid="button-bulk-present">Bulk Present</Button>
@@ -166,7 +166,7 @@ export default function ResidentAttendancePage() {
 
         <TabsContent value="outpass" className="space-y-4">
           <div className="flex justify-end">
-            {can("RESIDENT_ATTENDANCE", "create") && (
+            {can("RESIDENT_ATTENDANCE", "add_resident_attendance") && (
               <Button onClick={() => { setOpForm({ propertyId: propId, leaveOn: new Date().toISOString().slice(0,16), expectedReturn: "" }); setOpOpen(true); }} data-testid="button-add-outpass"><Plus className="w-4 h-4 mr-2" />New Out-pass</Button>
             )}
           </div>
@@ -193,13 +193,13 @@ export default function ResidentAttendancePage() {
                             <Badge variant={o.status === "APPROVED" ? "default" : o.status === "REJECTED" ? "destructive" : o.status === "RETURNED" ? "secondary" : "outline"}>{o.status}</Badge>}
                         </td>
                         <td className="px-4 py-3 text-right space-x-2">
-                          {can("RESIDENT_ATTENDANCE", "edit") && o.status === "PENDING" && (
+                          {can("RESIDENT_ATTENDANCE", "edit_resident_attendance") && o.status === "PENDING" && (
                             <>
                               <Button size="sm" variant="outline" onClick={() => updateOp.mutate({ id: o.id, status: "APPROVED" })} data-testid={`button-approve-${o.id}`}>Approve</Button>
                               <Button size="sm" variant="ghost" onClick={() => updateOp.mutate({ id: o.id, status: "REJECTED" })}>Reject</Button>
                             </>
                           )}
-                          {can("RESIDENT_ATTENDANCE", "edit") && o.status === "APPROVED" && !o.actualReturn && (
+                          {can("RESIDENT_ATTENDANCE", "edit_resident_attendance") && o.status === "APPROVED" && !o.actualReturn && (
                             <Button size="sm" variant="outline" onClick={() => markReturn.mutate(o.id)} data-testid={`button-return-${o.id}`}>Mark Returned</Button>
                           )}
                         </td>

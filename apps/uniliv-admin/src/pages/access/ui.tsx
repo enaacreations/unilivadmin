@@ -19,7 +19,8 @@ import { cn } from "@/lib/utils";
 export function ScreenHeader({
   kicker, title, sub, actions,
 }: {
-  kicker: string;
+  /** A node, not just a string: detail screens put a back-link here. */
+  kicker: React.ReactNode;
   title: string;
   sub?: React.ReactNode;
   actions?: React.ReactNode;

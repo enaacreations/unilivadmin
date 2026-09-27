@@ -62,14 +62,14 @@ export default function FoodKitchenSummary() {
   // Opening an order navigates to /food/orders/:id, which is server- AND route-
   // gated on FOOD_ALL_ORDERS. F&B roles run the kitchen board without that grant,
   // so for them the order number is plain text, not a link to a Forbidden page.
-  const canReadOrders = can("FOOD_ALL_ORDERS", "view");
+  const canReadOrders = can("FOOD_ALL_ORDERS", "view_order");
   // M16 — accepting an order is FOOD_KITCHEN_SUMMARY:edit server-side
   // (food-ops.ts POST /orders/:id/accept), but this page only ever checked
   // view. SENIOR_VICE_PRESIDENT and AUDIT_READONLY hold the view grant, reach
   // the page from the nav, and got a fully armed bulk Accept whose every call
   // 403s — swallowed by the fail++ counters into "0 accepted, N failed".
   // Same gate as the sibling board in food-kitchen-home.tsx.
-  const canAccept = can("FOOD_KITCHEN_SUMMARY", "edit");
+  const canAccept = can("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary");
 
   const [date, setDate] = React.useState(() => format(new Date(), "yyyy-MM-dd"));
   const [brand, setBrand] = React.useState<string>(ALL);

@@ -85,7 +85,7 @@ export default function FacilityPage() {
   };
   const saveAsset = useMutation({
     mutationFn: (d: any) => apiFetch(`/facility/assets${editAsset ? `/${editAsset.id}` : ""}`, { method: editAsset ? "PUT" : "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: editAsset ? "Asset updated" : "Asset created" }); qc.invalidateQueries({ queryKey: getGetFacilityAssetsQueryKey(assetParams) }); setAssetOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: editAsset ? "Asset updated" : "Asset created" }); qc.invalidateQueries({ queryKey: getGetFacilityAssetsQueryKey(assetParams) }); setAssetOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -100,7 +100,7 @@ export default function FacilityPage() {
   };
   const saveSched = useMutation({
     mutationFn: (d: any) => apiFetch(`/facility/schedules${editSched ? `/${editSched.id}` : ""}`, { method: editSched ? "PUT" : "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: editSched ? "Schedule updated" : "Schedule created" }); qc.invalidateQueries({ queryKey: getGetFacilitySchedulesQueryKey(schedParams) }); setSchedOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: editSched ? "Schedule updated" : "Schedule created" }); qc.invalidateQueries({ queryKey: getGetFacilitySchedulesQueryKey(schedParams) }); setSchedOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -129,7 +129,7 @@ export default function FacilityPage() {
   };
   const saveLog = useMutation({
     mutationFn: (d: any) => apiFetch(`/facility/logs`, { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: "Log recorded" }); qc.invalidateQueries({ queryKey: getGetFacilityLogsQueryKey(logsParams) }); qc.invalidateQueries({ queryKey: getGetFacilitySchedulesQueryKey(schedParams) }); setLogOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: "Log recorded" }); qc.invalidateQueries({ queryKey: getGetFacilityLogsQueryKey(logsParams) }); qc.invalidateQueries({ queryKey: getGetFacilitySchedulesQueryKey(schedParams) }); setLogOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -155,7 +155,7 @@ export default function FacilityPage() {
 
         <TabsContent value="assets" className="space-y-4">
           <div className="flex justify-end">
-            {can("FACILITY", "create") && <Button onClick={() => openAssetModal()} data-testid="button-add-asset"><Plus className="w-4 h-4 mr-2" />Add Asset</Button>}
+            {can("FACILITY", "add_facility") && <Button onClick={() => openAssetModal()} data-testid="button-add-asset"><Plus className="w-4 h-4 mr-2" />Add Asset</Button>}
           </div>
           <Card><CardContent className="p-0">
             {assetsLoading ? <div className="p-6 space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-12" />)}</div> : assets.length === 0 ? (
@@ -175,7 +175,7 @@ export default function FacilityPage() {
                       {!isSingleProperty && <td className="px-4 py-3">{a.propertyName || "—"}</td>}
                       <td className="px-4 py-3"><Badge variant={a.status === "ACTIVE" ? "default" : "secondary"}>{a.status}</Badge></td>
                       <td className="px-4 py-3 text-xs">{a.warrantyExpiry ? format(new Date(a.warrantyExpiry), "dd MMM yyyy") : "—"}</td>
-                      <td className="px-4 py-3 text-right">{can("FACILITY", "edit") && <Button size="sm" variant="ghost" onClick={() => openAssetModal(a)} data-testid={`button-edit-asset-${a.id}`}>Edit</Button>}</td>
+                      <td className="px-4 py-3 text-right">{can("FACILITY", "edit_facility") && <Button size="sm" variant="ghost" onClick={() => openAssetModal(a)} data-testid={`button-edit-asset-${a.id}`}>Edit</Button>}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -187,7 +187,7 @@ export default function FacilityPage() {
 
         <TabsContent value="schedules" className="space-y-4">
           <div className="flex justify-end">
-            {can("FACILITY", "create") && <Button onClick={() => openSchedModal()} disabled={assets.length === 0} data-testid="button-add-schedule"><Plus className="w-4 h-4 mr-2" />Add Schedule</Button>}
+            {can("FACILITY", "add_facility") && <Button onClick={() => openSchedModal()} disabled={assets.length === 0} data-testid="button-add-schedule"><Plus className="w-4 h-4 mr-2" />Add Schedule</Button>}
           </div>
           <Card><CardContent className="p-0">
             {schedLoading ? <div className="p-6 space-y-2">{[1,2,3].map(i => <Skeleton key={i} className="h-12" />)}</div> : schedules.length === 0 ? (
@@ -210,8 +210,8 @@ export default function FacilityPage() {
                         <td className="px-4 py-3 text-xs">{s.lastDoneAt ? format(new Date(s.lastDoneAt), "dd MMM yyyy") : "—"}</td>
                         <td className="px-4 py-3">{!s.isActive ? <Badge variant="secondary">Paused</Badge> : overdue ? <Badge variant="destructive">Overdue</Badge> : <Badge>Active</Badge>}</td>
                         <td className="px-4 py-3 text-right space-x-2">
-                          {can("FACILITY", "create") && <Button size="sm" variant="outline" onClick={() => openLogModal(s)} data-testid={`button-log-${s.id}`}><CheckCircle2 className="w-3 h-3 mr-1" />Log</Button>}
-                          {can("FACILITY", "edit") && <Button size="sm" variant="ghost" onClick={() => openSchedModal(s)}>Edit</Button>}
+                          {can("FACILITY", "add_facility") && <Button size="sm" variant="outline" onClick={() => openLogModal(s)} data-testid={`button-log-${s.id}`}><CheckCircle2 className="w-3 h-3 mr-1" />Log</Button>}
+                          {can("FACILITY", "edit_facility") && <Button size="sm" variant="ghost" onClick={() => openSchedModal(s)}>Edit</Button>}
                         </td>
                       </tr>
                     );

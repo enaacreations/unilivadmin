@@ -1,6 +1,6 @@
 import * as React from "react";
 import { usePermissions } from "@/lib/use-permissions";
-import type { Module } from "@/lib/permissions";
+import { functionalityPath, type Functionality } from "@/lib/permissions";
 
 /**
  * Per-action gating for write controls (PRD §32).
@@ -13,24 +13,25 @@ import type { Module } from "@/lib/permissions";
  * boundary; the point is that a user is not invited to do something that will
  * fail. When it does fail, the 403's sentence is what explains it.
  */
-export function useCan(module: Module, action = "view"): boolean {
+export function useCan(functionality: Functionality, action = "view"): boolean {
   const { can, isLoading } = usePermissions();
   // FALSE while loading. Rendering a control enabled before authorization is
   // known invites the one click that produces a 403 — better a moment's
   // disabled than a refusal the user has to interpret.
   if (isLoading) return false;
-  return can(module, action);
+  return can(functionality, action);
 }
 
 export function Can({
-  module,
+  functionality,
   action = "view",
   mode = "hide",
   reason,
   fallback = null,
   children,
 }: {
-  module: Module;
+  /** The FUNCTIONALITY this control needs. A control is one capability. */
+  functionality: Functionality;
   action?: string;
   /**
    * `hide` removes the control — right when its presence would only confuse.
@@ -43,11 +44,11 @@ export function Can({
   fallback?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const allowed = useCan(module, action);
+  const allowed = useCan(functionality, action);
   if (allowed) return <>{children}</>;
   if (mode === "hide") return <>{fallback}</>;
 
-  const title = reason ?? `You need ${module}:${action} to do this.`;
+  const title = reason ?? `You need ${action} on ${functionalityPath(functionality)} to do this.`;
   return (
     <span title={title} aria-disabled className="inline-flex cursor-not-allowed opacity-55 [&_*]:pointer-events-none">
       {children}

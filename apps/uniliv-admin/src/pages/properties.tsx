@@ -46,8 +46,8 @@ export default function Properties() {
   // View-only roles (wardens, unit leads, auditors) get no mutation
   // affordances — their PUT/POST calls would only 403 server-side.
   const { can } = usePermissions();
-  const canEditProperties = can("PROPERTIES", "edit");
-  const canCreateProperties = can("PROPERTIES", "create");
+  const canEditProperties = can("PROPERTIES", "edit_property");
+  const canCreateProperties = can("PROPERTIES", "add_property");
   const { data: propertiesRes, isLoading } = useGetProperties(undefined, {
     query: { queryKey: getGetPropertiesQueryKey() },
   });
@@ -117,6 +117,7 @@ export default function Properties() {
       await updateMut.mutateAsync({ id: p.id, data: { status: next } as any });
       queryClient.invalidateQueries({ queryKey: getGetPropertiesQueryKey() });
       toast({
+        variant: "success",
         title: next === "ACTIVE" ? "Property activated" : "Property deactivated",
       });
     } catch (e: any) {

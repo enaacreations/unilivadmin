@@ -120,7 +120,7 @@ export default function WalletDetail() {
     mutationFn: (body: object) =>
       apiFetch(`/wallet/residents/${residentId}/topup`, { method: "POST", body: JSON.stringify(body) }),
     onSuccess: () => {
-      toast({ title: "Top-up successful" });
+      toast({ variant: "success", title: "Top-up successful" });
       invalidate();
       setTopupOpen(false);
       setTopupAmount("");
@@ -133,7 +133,7 @@ export default function WalletDetail() {
     mutationFn: (body: object) =>
       apiFetch(`/wallet/residents/${residentId}/reversal`, { method: "POST", body: JSON.stringify(body) }),
     onSuccess: () => {
-      toast({ title: "Reversal applied" });
+      toast({ variant: "success", title: "Reversal applied" });
       invalidate();
       setReversalOpen(false);
       setReversalTxId("");

@@ -68,7 +68,7 @@ function validateGrantNode(g: z.infer<typeof grantSchema>): string | null {
 router.get(
   "/grants",
   authenticate,
-  authorize("AUDIT_ADMIN", "view"),
+  authorize("AUDIT_ADMIN", "view_audit_admin"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const userId = req.query["userId"] as string | undefined;
@@ -118,7 +118,7 @@ router.get(
 router.post(
   "/grants",
   authenticate,
-  authorize("AUDIT_ADMIN", "create"),
+  authorize("AUDIT_ADMIN", "add_audit_admin"),
   async (req, res) => {
     const parsed = grantSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -209,7 +209,7 @@ router.post(
 router.post(
   "/grants/:id/revoke",
   authenticate,
-  authorize("AUDIT_ADMIN", "edit"),
+  authorize("AUDIT_ADMIN", "edit_audit_admin"),
   async (req, res) => {
     const [existing] = await db
       .select()
@@ -260,7 +260,7 @@ router.post(
 router.get(
   "/org-nodes",
   authenticate,
-  authorize("AUDIT_ADMIN", "view"),
+  authorize("AUDIT_ADMIN", "view_audit_admin"),
   async (_req, res) => {
     const [zones, cities, clusters, properties] = await Promise.all([
       db.select({ id: zonesTable.id, name: zonesTable.name }).from(zonesTable).orderBy(zonesTable.name),
@@ -291,7 +291,7 @@ const scaleSchema = z.object({
 router.get(
   "/rating-scales",
   authenticate,
-  authorize("AUDIT_ADMIN", "view"),
+  authorize("AUDIT_ADMIN", "view_audit_admin"),
   async (_req, res) => {
     const scales = await db.select().from(auditRatingScalesTable);
     const options = await db
@@ -311,7 +311,7 @@ router.get(
 router.post(
   "/rating-scales",
   authenticate,
-  authorize("AUDIT_ADMIN", "create"),
+  authorize("AUDIT_ADMIN", "add_audit_admin"),
   async (req, res) => {
     const parsed = scaleSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid rating scale", parsed.error.flatten());
@@ -359,7 +359,7 @@ router.post(
 router.put(
   "/rating-scales/:id",
   authenticate,
-  authorize("AUDIT_ADMIN", "edit"),
+  authorize("AUDIT_ADMIN", "edit_audit_admin"),
   async (req, res) => {
     const parsed = scaleSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid rating scale", parsed.error.flatten());
@@ -431,7 +431,7 @@ const bandsSchema = z.object({
 router.get(
   "/performance-bands",
   authenticate,
-  authorize("AUDIT_ADMIN", "view"),
+  authorize("AUDIT_ADMIN", "view_audit_admin"),
   async (_req, res) => {
     const rows = await db
       .select()
@@ -445,7 +445,7 @@ router.get(
 router.put(
   "/performance-bands",
   authenticate,
-  authorize("AUDIT_ADMIN", "edit"),
+  authorize("AUDIT_ADMIN", "edit_audit_admin"),
   async (req, res) => {
     const parsed = bandsSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid bands", parsed.error.flatten());
@@ -510,7 +510,7 @@ const SETTING_KEYS = [
 router.get(
   "/settings",
   authenticate,
-  authorize("AUDIT_ADMIN", "view"),
+  authorize("AUDIT_ADMIN", "view_audit_admin"),
   async (_req, res) => {
     const rows = await db.select().from(auditAppSettingsTable);
     res.json({
@@ -523,7 +523,7 @@ router.get(
 router.put(
   "/settings/:key",
   authenticate,
-  authorize("AUDIT_ADMIN", "edit"),
+  authorize("AUDIT_ADMIN", "edit_audit_admin"),
   async (req, res) => {
     const key = req.params["key"] as string;
     if (!(SETTING_KEYS as readonly string[]).includes(key)) {

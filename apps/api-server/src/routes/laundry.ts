@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { laundryBatchesTable, residentsTable, propertiesTable } from "@workspace/db";
-import { eq, sql, and } from "drizzle-orm";
+import { eq, sql, and, inArray} from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { pick, scopedPropertyId, assertPropertyAccess } from "../lib/authz.js";
+import { pick, scopedPropertyIds, assertPropertyAccess } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 
@@ -32,15 +32,15 @@ async function enrichBatch(b: typeof laundryBatchesTable.$inferSelect) {
   return { ...b, residentName: r?.name || null, residentPhone: r?.phone || null, propertyName: p?.name || null, totalItems };
 }
 
-router.get("/", authenticate, authorize("LAUNDRY", "view"), async (req, res) => {
+router.get("/", authenticate, authorize("LAUNDRY_BATCHES", "view_laundry_batche"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const propertyId = req.query["propertyId"] as string | undefined;
     const status = req.query["status"] as string | undefined;
     const conditions = [];
     if (propertyId) conditions.push(eq(laundryBatchesTable.propertyId, propertyId));
-    const scope = scopedPropertyId(req);
-    if (scope) conditions.push(eq(laundryBatchesTable.propertyId, scope));
+    const scope = await scopedPropertyIds(req);
+    if (scope) conditions.push(inArray(laundryBatchesTable.propertyId, scope));
     if (status) conditions.push(eq(laundryBatchesTable.status, status as "RECEIVED" | "IN_WASH" | "READY" | "PICKED_UP" | "DAMAGED"));
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(laundryBatchesTable).where(where);
@@ -50,7 +50,7 @@ router.get("/", authenticate, authorize("LAUNDRY", "view"), async (req, res) => 
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-router.post("/", authenticate, authorize("LAUNDRY", "create"), async (req, res) => {
+router.post("/", authenticate, authorize("LAUNDRY_BATCHES", "add_laundry_batche"), async (req, res) => {
   try {
     const body = pick(req.body, ["residentId", "dropDate", "commitTatDays", "items", "specialInstructions", "damageNote", "status"]) as {
       residentId?: string;
@@ -63,7 +63,7 @@ router.post("/", authenticate, authorize("LAUNDRY", "create"), async (req, res) 
     };
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, body.residentId!));
     if (!resident) { res.status(400).json({ success: false, error: "Resident not found" }); return; }
-    assertPropertyAccess(req, resident.propertyId);
+    await assertPropertyAccess(req, resident.propertyId);
     const rid = newId();
     let row!: typeof laundryBatchesTable.$inferSelect;
     for (let attempt = 0; ; attempt++) {
@@ -95,11 +95,11 @@ router.post("/", authenticate, authorize("LAUNDRY", "create"), async (req, res) 
   }
 });
 
-router.get("/:id", authenticate, authorize("LAUNDRY", "view"), async (req, res) => {
+router.get("/:id", authenticate, authorize("LAUNDRY_BATCHES", "view_laundry_batche"), async (req, res) => {
   try {
     const [row] = await db.select().from(laundryBatchesTable).where(eq(laundryBatchesTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, row.propertyId);
+    await assertPropertyAccess(req, row.propertyId);
     res.json({ success: true, data: await enrichBatch(row) });
   } catch (err: any) {
     if (err?.statusCode) { res.status(err.statusCode).json({ success: false, error: err.message }); return; }
@@ -107,11 +107,11 @@ router.get("/:id", authenticate, authorize("LAUNDRY", "view"), async (req, res) 
   }
 });
 
-router.put("/:id", authenticate, authorize("LAUNDRY", "edit"), async (req, res) => {
+router.put("/:id", authenticate, authorize("LAUNDRY_BATCHES", "edit_laundry_batche"), async (req, res) => {
   try {
     const [existing] = await db.select().from(laundryBatchesTable).where(eq(laundryBatchesTable.id, req.params["id"]!));
     if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, existing.propertyId);
+    await assertPropertyAccess(req, existing.propertyId);
     const body = pick(req.body, ["status", "items", "specialInstructions", "damageNote", "commitTatDays"]) as Record<string, unknown>;
     const updateData: Record<string, unknown> = { ...body, updatedAt: new Date() };
     if (body["status"] === "PICKED_UP") updateData["pickedUpAt"] = new Date();
@@ -124,11 +124,11 @@ router.put("/:id", authenticate, authorize("LAUNDRY", "edit"), async (req, res) 
   }
 });
 
-router.delete("/:id", authenticate, authorize("LAUNDRY", "delete"), async (req, res) => {
+router.delete("/:id", authenticate, authorize("LAUNDRY_BATCHES", "delete_laundry_batche"), async (req, res) => {
   try {
     const [existing] = await db.select().from(laundryBatchesTable).where(eq(laundryBatchesTable.id, req.params["id"]!));
     if (!existing) { res.json({ success: true, message: "Deleted" }); return; }
-    assertPropertyAccess(req, existing.propertyId);
+    await assertPropertyAccess(req, existing.propertyId);
     await db.delete(laundryBatchesTable).where(eq(laundryBatchesTable.id, req.params["id"]!));
     res.json({ success: true, message: "Deleted" });
   } catch (err: any) {

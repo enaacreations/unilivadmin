@@ -31,6 +31,8 @@ import {
   type OrgNodeType,
 } from "@workspace/db";
 import { newId } from "./id.js";
+import { logger } from "./logger.js";
+import { insertNode } from "./org-tree.js";
 
 /** The implicit root every zone and unparented city hangs from. */
 export const COMPANY_NODE_ID = "org-root";
@@ -317,6 +319,153 @@ export async function backfillAccessGrants(): Promise<BackfillReport> {
   }
 
   return report;
+}
+
+/**
+ * Project ONE org entity into org_nodes the moment it is created or edited.
+ *
+ * Without this the projection only moved when somebody ran syncOrgNodes() by
+ * hand, so a property added to a cluster was invisible to every CLUSTER/CITY/
+ * ZONE grant covering it — a grant stores an ANCHOR and expands through the
+ * closure at read time, so a node that never reached the closure is a node
+ * nobody inherits. "New places show up under whoever manages that cluster" is
+ * behaviour that depends entirely on this being called.
+ *
+ * Incremental rather than a full rebuild, because syncOrgNodes() DELETEs the
+ * whole closure before reinserting it: cheap, but a concurrent resolve landing
+ * mid-rebuild would see an empty closure and answer "placed nowhere". A subtree
+ * MOVE is the one case worth not being clever about, so a changed parent falls
+ * back to the full rebuild — reparenting is rare, and nothing incremental would
+ * be obviously correct.
+ *
+ * Idempotent.
+ */
+export type OrgSyncKind = "ZONE" | "CITY" | "CLUSTER" | "KITCHEN" | "PROPERTY" | "ROOM";
+export type OrgSyncResult = "created" | "updated" | "moved" | "unchanged" | "missing" | "unparented";
+
+/**
+ * The projection for one entity, mirroring syncOrgNodes() EXACTLY.
+ *
+ * If these two ever disagree, a place means one thing when it is created and
+ * another after the next rebuild — the kind of drift that shows up months later
+ * as "why can she see Baner?".
+ */
+async function projectOne(
+  kind: OrgSyncKind,
+  id: string,
+): Promise<{ nodeType: OrgNodeType; parentId: string | null; name: string; code: string | null; isActive: boolean } | null> {
+  switch (kind) {
+    case "ZONE": {
+      const [z] = await db.select().from(zonesTable).where(eq(zonesTable.id, id));
+      return z ? { nodeType: "ZONE", parentId: COMPANY_NODE_ID, name: z.name, code: z.code ?? null, isActive: z.isActive } : null;
+    }
+    case "CITY": {
+      // cities.zoneId is nullable by design — an unzoned city attaches to the
+      // company node rather than being dropped.
+      const [c] = await db.select().from(citiesTable).where(eq(citiesTable.id, id));
+      return c ? { nodeType: "CITY", parentId: c.zoneId ?? COMPANY_NODE_ID, name: c.name, code: null, isActive: c.isActive } : null;
+    }
+    case "CLUSTER": {
+      const [cl] = await db.select().from(clustersTable).where(eq(clustersTable.id, id));
+      return cl ? { nodeType: "CLUSTER", parentId: cl.cityId, name: cl.name, code: null, isActive: cl.isActive } : null;
+    }
+    case "KITCHEN": {
+      const [k] = await db.select().from(kitchensTable).where(eq(kitchensTable.id, id));
+      if (!k) return null;
+      // A kitchen with no city cannot be placed. syncOrgNodes() records it as an
+      // orphan and skips it; there is nothing else honest to do here either.
+      if (!k.cityId) return { nodeType: "KITCHEN", parentId: null, name: k.name, code: k.code, isActive: k.isActive };
+      return { nodeType: "KITCHEN", parentId: k.cityId, name: k.name, code: k.code, isActive: k.isActive };
+    }
+    case "PROPERTY": {
+      const [p] = await db.select().from(propertiesTable).where(eq(propertiesTable.id, id));
+      return p
+        ? { nodeType: "PROPERTY", parentId: p.clusterId ?? COMPANY_NODE_ID, name: p.name, code: p.code ?? null, isActive: p.status === "ACTIVE" }
+        : null;
+    }
+    case "ROOM": {
+      const [r] = await db.select().from(roomsTable).where(eq(roomsTable.id, id));
+      return r ? { nodeType: "ROOM", parentId: r.propertyId, name: r.number, code: null, isActive: true } : null;
+    }
+  }
+}
+
+export async function syncOrgNode(kind: OrgSyncKind, id: string): Promise<OrgSyncResult> {
+  const want = await projectOne(kind, id);
+  if (!want) return "missing";
+  // A KITCHEN with no city is the one shape the tree cannot hold. Reported
+  // rather than guessed at: attaching it to the root would put every city's
+  // kitchen inside every city-level grant.
+  if (!want.parentId) return "unparented";
+
+  const [existing] = await db
+    .select({ parentId: orgNodesTable.parentId, name: orgNodesTable.name, isActive: orgNodesTable.isActive, code: orgNodesTable.code })
+    .from(orgNodesTable)
+    .where(eq(orgNodesTable.id, id));
+
+  if (!existing) {
+    await insertNode(db, {
+      id, nodeType: want.nodeType, parentId: want.parentId,
+      name: want.name, code: want.code, isActive: want.isActive,
+    });
+    return "created";
+  }
+
+  if ((existing.parentId ?? COMPANY_NODE_ID) !== want.parentId) {
+    await syncOrgNodes();
+    return "moved";
+  }
+
+  if (existing.name === want.name && existing.isActive === want.isActive && (existing.code ?? null) === want.code) {
+    return "unchanged";
+  }
+
+  await db
+    .update(orgNodesTable)
+    .set({ name: want.name, code: want.code, isActive: want.isActive, updatedAt: new Date() })
+    .where(eq(orgNodesTable.id, id));
+  return "updated";
+}
+
+/** Back-compat alias — properties were the first level to get this. */
+export const syncPropertyNode = (propertyId: string) => syncOrgNode("PROPERTY", propertyId);
+
+/**
+ * Drop an org entity's node when the entity itself is deleted.
+ *
+ * A node left behind is worse than a missing one: grants keep resolving through
+ * it, so a deleted cluster carries on granting its old properties. A node with
+ * descendants falls back to the full rebuild, because detaching a subtree
+ * correctly is exactly the case not to be clever about.
+ */
+export async function removeOrgNode(id: string): Promise<"removed" | "rebuilt" | "absent" | "blocked"> {
+  const [node] = await db.select({ id: orgNodesTable.id }).from(orgNodesTable).where(eq(orgNodesTable.id, id));
+  if (!node) return "absent";
+
+  const kids = await db
+    .select({ id: orgNodeClosureTable.descendantId })
+    .from(orgNodeClosureTable)
+    .where(eq(orgNodeClosureTable.ancestorId, id));
+  // Every node is its own descendant at depth 0, so "just me" is length 1.
+  if (kids.filter((k) => k.id !== id).length > 0) {
+    await syncOrgNodes();
+    return "rebuilt";
+  }
+
+  await db.delete(orgNodeClosureTable).where(eq(orgNodeClosureTable.descendantId, id));
+  await db.delete(orgNodeClosureTable).where(eq(orgNodeClosureTable.ancestorId, id));
+  try {
+    await db.delete(orgNodesTable).where(eq(orgNodesTable.id, id));
+  } catch (err) {
+    // access_grants.node_id references this row. The callers' delete guards
+    // refuse while a grant exists, so reaching here means one was written
+    // between the guard and now — and by this point the SOURCE row is already
+    // gone, so throwing would 500 a write that has already happened and leave
+    // the caller with no idea what state anything is in. Reported instead.
+    logger.warn({ err, nodeId: id }, "org node still referenced — left in place, run syncOrgNodes() after clearing it");
+    return "blocked";
+  }
+  return "removed";
 }
 
 /**

@@ -202,7 +202,7 @@ export default function FoodReports() {
       // Refetch the on-time calc so the % reflects the new tolerance.
       qc.invalidateQueries({ queryKey: ["food", "reports-ontime"] });
       setToleranceDraft(String(data.minutes));
-      toast({ title: "Tolerance updated", description: `On-time within ${data.minutes} minutes` });
+      toast({ variant: "success", title: "Tolerance updated", description: `On-time within ${data.minutes} minutes` });
     },
     onError: (e: any) => toast({ title: e?.message || "Failed to save tolerance", variant: "destructive" }),
   });
@@ -396,7 +396,7 @@ export default function FoodReports() {
         foodApi.reportsExportFmtUrl(fmt, buildExportParams(report)),
         filename,
       );
-      toast({ title: "Export ready", description: filename });
+      toast({ variant: "success", title: "Export ready", description: filename });
     } catch (e: any) {
       toast({ title: e?.message || "Download failed", variant: "destructive" });
     } finally {

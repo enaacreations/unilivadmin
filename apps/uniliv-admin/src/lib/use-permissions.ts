@@ -1,7 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "./api-fetch";
 import { useAuthStore } from "./store";
-import { can, moduleForPath, type Module, type Permission, type UserRole } from "./permissions";
+import {
+  can, canModule, functionalityForPath, functionalitiesOf,
+  readActionOf,
+  type Functionality, type Module, type NamedAction, type UserRole,
+} from "./permissions";
 
 /**
  * The caller's RESOLVED capabilities, served by /auth/me (PRD §32).
@@ -14,7 +18,15 @@ import { can, moduleForPath, type Module, type Permission, type UserRole } from 
  */
 export interface MeAccess {
   version: number;
+  /** functionality key → the actions held on it. The enforced unit. */
   capabilities: Record<string, string[]>;
+  /**
+   * module key → the union of actions held anywhere inside it. A ROLLUP the
+   * server folds from `capabilities`, sent so the sidebar and launcher do not
+   * each re-derive the tree. Never a grant: holding a module says nothing about
+   * which of its screens may be opened.
+   */
+  modules?: Record<string, string[]>;
   scope: {
     unrestricted: boolean;
     propertyIds: string[] | null;
@@ -61,9 +73,32 @@ export function usePermissions() {
    * the blob arrives. The bundled copy cannot see a matrix edit, so trusting it
    * once the server has spoken would show a stale answer indefinitely.
    */
-  const check = (module: Module, action: string): boolean => {
-    if (access?.capabilities) return (access.capabilities[module] ?? []).includes(action);
-    return can(role, module, action as Permission);
+  const check = (functionality: Functionality, action?: string): boolean => {
+    // Omitting the action means "can they SEE this", which is that
+    // functionality's own read — there is no global "view" to fall back on.
+    const a = action ?? readActionOf(functionality);
+    if (!a) return false;
+    if (access?.capabilities) return (access.capabilities[functionality] ?? []).includes(a);
+    return can(role, functionality, a as NamedAction);
+  };
+
+  /**
+   * The MODULE question — "is there anything here for this person?" — which is
+   * what decides whether a nav section or a launcher card appears.
+   *
+   * Folded from the same `capabilities` the functionality check reads, falling
+   * back to the served rollup and then to the bundled matrix, in that order. It
+   * is never a separate lookup, so it cannot disagree with `can()`.
+   */
+  const checkModule = (module: Module, action?: string): boolean => {
+    if (access?.capabilities) {
+      return functionalitiesOf(module).some((f) => {
+        const a = action ?? readActionOf(f);
+        return a != null && (access.capabilities[f] ?? []).includes(a);
+      });
+    }
+    if (action && access?.modules) return (access.modules[module] ?? []).includes(action);
+    return canModule(role, module, action as NamedAction | undefined);
   };
 
   return {
@@ -72,19 +107,26 @@ export function usePermissions() {
     me: data?.data,
     access,
     isLoading,
-    can: (module: Module, perm: string = "view") => check(module, perm),
+    /** Does the caller hold `perm` on this FUNCTIONALITY? Gates a screen or a control. */
+    can: (functionality: Functionality, perm?: string) => check(functionality, perm),
+    /** Does the caller hold `perm` on ANYTHING in this MODULE? Gates a nav section. */
+    canModule: (module: Module, perm?: string) => checkModule(module, perm),
     /**
      * FAIL CLOSED on an unmapped path.
      *
-     * This returned `true` for anything PATH_TO_MODULE did not list, so every
+     * This returned `true` for anything the path map did not list, so every
      * route added without a mapping was ungated — and the mapping is a separate
      * hand-maintained list, so that happened silently. An unmapped path is now
      * a refusal, and routes.test.ts makes it impossible to ship one.
+     *
+     * Resolves to a FUNCTIONALITY, not a module: a route is one screen, and
+     * gating it on its module would let anyone with any Audit access open the
+     * review queue.
      */
-    canPath: (path: string, perm: string = "view") => {
-      const m = moduleForPath(path);
-      if (!m) return false;
-      return check(m, perm);
+    canPath: (path: string, perm?: string) => {
+      const f = functionalityForPath(path);
+      if (!f) return false;
+      return check(f, perm);
     },
   };
 }

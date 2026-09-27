@@ -27,7 +27,7 @@ import {
   usersTable,
 } from "@workspace/db";
 import { authenticate } from "../middlewares/auth.js";
-import { authorize, authorizeAny } from "../middlewares/authorize.js";
+import { authorize, authorizeAny, on } from "../middlewares/authorize.js";
 import { httpError } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
@@ -128,7 +128,7 @@ async function enrich(rows: (typeof auditsTable.$inferSelect)[]) {
 router.get(
   "/",
   authenticate,
-  authorize("AUDIT_REGISTER", "view"),
+  authorize("AUDIT_REGISTER", "view_audit_register"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const q = req.query as Record<string, string | undefined>;
@@ -194,7 +194,7 @@ router.get(
 router.get(
   "/visible-types",
   authenticate,
-  authorize("AUDIT_REGISTER", "view"),
+  authorize("AUDIT_REGISTER", "view_audit_register"),
   async (req, res) => {
     const access = await resolveAuditAccess(req.user!);
     res.json({ success: true, data: visibleAuditTypes(access) });
@@ -227,7 +227,7 @@ const oneOffSchema = z.object({
 router.post(
   "/",
   authenticate,
-  authorize("AUDIT_EXECUTION", "create"),
+  authorize("AUDIT_EXECUTION", "start_audit"),
   async (req, res) => {
     const parsed = oneOffSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid audit", parsed.error.flatten());
@@ -380,7 +380,7 @@ router.post(
 router.get(
   "/conductable-templates",
   authenticate,
-  authorize("AUDIT_EXECUTION", "create"),
+  authorize("AUDIT_EXECUTION", "start_audit"),
   async (req, res) => {
     const access = await resolveAuditAccess(req.user!);
     const types = conductableAuditTypes(access);
@@ -420,7 +420,7 @@ router.get(
 router.get(
   "/target-properties",
   authenticate,
-  authorize("AUDIT_EXECUTION", "create"),
+  authorize("AUDIT_EXECUTION", "start_audit"),
   async (req, res) => {
     const auditType = String(req.query["auditType"] ?? "") as AuditType;
     if (!(["UL", "CM", "CX"] as string[]).includes(auditType)) {
@@ -452,7 +452,7 @@ router.get(
 router.get(
   "/template-version/:vid",
   authenticate,
-  authorize("AUDIT_EXECUTION", "create"),
+  authorize("AUDIT_EXECUTION", "start_audit"),
   async (req, res) => {
     const [version] = await db
       .select({ id: auditTemplateVersionsTable.id, versionNo: auditTemplateVersionsTable.versionNo, templateId: auditTemplateVersionsTable.templateId })
@@ -490,7 +490,7 @@ router.get(
 router.get(
   "/target-rooms",
   authenticate,
-  authorize("AUDIT_EXECUTION", "create"),
+  authorize("AUDIT_EXECUTION", "start_audit"),
   async (req, res) => {
     const propertyId = String(req.query["propertyId"] ?? "");
     const auditType = String(req.query["auditType"] ?? "UL") as AuditType;
@@ -527,7 +527,7 @@ router.get(
 router.get(
   "/my",
   authenticate,
-  authorize("AUDIT_EXECUTION", "view"),
+  authorize("AUDIT_EXECUTION", "view_audit"),
   async (req, res) => {
     const segment = String(req.query["segment"] ?? "pending").toLowerCase();
     if (!["pending", "completed", "all"].includes(segment)) {
@@ -571,7 +571,7 @@ router.get(
 router.get(
   "/:id",
   authenticate,
-  authorize("AUDIT_REGISTER", "view"),
+  authorize("AUDIT_REGISTER", "view_audit_register"),
   async (req, res) => {
     const [audit] = await db
       .select()
@@ -646,7 +646,7 @@ router.get(
 router.get(
   "/:id/events",
   authenticate,
-  authorize("AUDIT_REGISTER", "view"),
+  authorize("AUDIT_REGISTER", "view_audit_register"),
   async (req, res) => {
     const auditId = req.params["id"] as string;
     const [audit] = await db
@@ -749,7 +749,7 @@ async function transitionOrLogDenial(
 router.post(
   "/:id/start",
   authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
+  authorize("AUDIT_EXECUTION", "record_answers"),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     assertAssignee(audit, req.user!.id);
@@ -791,7 +791,7 @@ const REASSIGNABLE_STATES = ["DRAFT", "SCHEDULED", "IN_PROGRESS", "PAUSED", "REJ
 router.post(
   "/reassign",
   authenticate,
-  authorize("AUDIT_SCHEDULES", "edit"),
+  authorize("AUDIT_SCHEDULES", "edit_schedule"),
   async (req, res) => {
     const parsed = z
       .object({
@@ -867,7 +867,7 @@ router.post(
 router.patch(
   "/:id",
   authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
+  authorize("AUDIT_EXECUTION", "record_answers"),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     const body: Record<string, unknown> = {};
@@ -895,7 +895,7 @@ router.get(
   // mirrors the detail route (AUDIT_REGISTER) so oversight roles that can view
   // an audit can also see its answers; the canView() check below does the real
   // per-audit-type/property scoping. Conducting mutations stay AUDIT_EXECUTION.
-  authorizeAny(["AUDIT_REGISTER", "AUDIT_EXECUTION", "AUDIT_REPORTS", "AUDIT_DASHBOARD"], "view"),
+  authorizeAny([on("AUDIT_REGISTER", "view_audit_register"), on("AUDIT_EXECUTION", "view_audit"), on("AUDIT_REPORTS", "view_audit_report"), on("AUDIT_DASHBOARD", "view_audit_dashboard")]),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     const access = await resolveAuditAccess(req.user!);
@@ -994,7 +994,7 @@ async function assertAnswerable(audit: typeof auditsTable.$inferSelect, userId: 
 router.put(
   "/:id/responses/:questionId",
   authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
+  authorize("AUDIT_EXECUTION", "record_answers"),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     await assertAnswerable(audit, req.user!.id);
@@ -1073,7 +1073,7 @@ const evidenceJson = express.json({ limit: "40mb" });
 router.post(
   "/:id/evidence",
   authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
+  authorize("AUDIT_EXECUTION", "record_answers"),
   evidenceJson,
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
@@ -1184,7 +1184,7 @@ router.post(
 router.delete(
   "/:id/evidence/:eid",
   authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
+  authorize("AUDIT_EXECUTION", "record_answers"),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     assertAssignee(audit, req.user!.id);
@@ -1205,7 +1205,7 @@ router.delete(
 router.get(
   "/:id/submit-check",
   authenticate,
-  authorize("AUDIT_EXECUTION", "view"),
+  authorize("AUDIT_EXECUTION", "view_audit"),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     assertAssignee(audit, req.user!.id);
@@ -1217,7 +1217,7 @@ router.get(
 router.post(
   "/:id/submit",
   authenticate,
-  authorize("AUDIT_EXECUTION", "edit"),
+  authorize("AUDIT_EXECUTION", "record_answers"),
   async (req, res) => {
     const audit = await loadAudit(req.params["id"] as string);
     assertAssignee(audit, req.user!.id);

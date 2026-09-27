@@ -23,7 +23,7 @@ async function enrichCourse(c: typeof coursesTable.$inferSelect) {
   return { ...c, enrollmentCount: enrolled, completedCount: completed, completionRate: enrolled ? Math.round((completed / enrolled) * 1000) / 10 : 0 };
 }
 
-coursesRouter.get("/", authenticate, authorize("LND", "view"), async (req, res) => {
+coursesRouter.get("/", authenticate, authorize("LND", "view_learning_development"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
@@ -43,7 +43,7 @@ coursesRouter.get("/", authenticate, authorize("LND", "view"), async (req, res) 
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-coursesRouter.get("/stats", authenticate, authorize("LND", "view"), async (_req, res) => {
+coursesRouter.get("/stats", authenticate, authorize("LND", "view_learning_development"), async (_req, res) => {
   try {
     // department-wise completion rate
     const allEmps = await db.select().from(employeesTable);
@@ -93,7 +93,7 @@ coursesRouter.get("/stats", authenticate, authorize("LND", "view"), async (_req,
   } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-coursesRouter.get("/:id", authenticate, authorize("LND", "view"), async (req, res) => {
+coursesRouter.get("/:id", authenticate, authorize("LND", "view_learning_development"), async (req, res) => {
   try {
     const [row] = await db.select().from(coursesTable).where(eq(coursesTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -101,7 +101,7 @@ coursesRouter.get("/:id", authenticate, authorize("LND", "view"), async (req, re
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-coursesRouter.post("/", authenticate, authorize("LND", "create"), async (req, res) => {
+coursesRouter.post("/", authenticate, authorize("LND", "add_learning_development"), async (req, res) => {
   try {
     const body = req.body;
     const [row] = await db.insert(coursesTable).values({
@@ -125,7 +125,7 @@ coursesRouter.post("/", authenticate, authorize("LND", "create"), async (req, re
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-coursesRouter.put("/:id", authenticate, authorize("LND", "edit"), async (req, res) => {
+coursesRouter.put("/:id", authenticate, authorize("LND", "edit_learning_development"), async (req, res) => {
   try {
     const body = pick(req.body, [
       "title", "description", "category", "targetRoles", "contentUrl", "contentType",
@@ -138,7 +138,7 @@ coursesRouter.put("/:id", authenticate, authorize("LND", "edit"), async (req, re
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-coursesRouter.delete("/:id", authenticate, authorize("LND", "delete"), async (req, res) => {
+coursesRouter.delete("/:id", authenticate, authorize("LND", "delete_learning_development"), async (req, res) => {
   try {
     await db.delete(courseEnrollmentsTable).where(eq(courseEnrollmentsTable.courseId, req.params["id"]!));
     await db.delete(coursesTable).where(eq(coursesTable.id, req.params["id"]!));
@@ -147,7 +147,7 @@ coursesRouter.delete("/:id", authenticate, authorize("LND", "delete"), async (re
 });
 
 // course enrollments listing for a course (with employee info)
-coursesRouter.get("/:id/enrollments", authenticate, authorize("LND", "view"), async (req, res) => {
+coursesRouter.get("/:id/enrollments", authenticate, authorize("LND", "view_learning_development"), async (req, res) => {
   try {
     const rows = await db.select().from(courseEnrollmentsTable).where(eq(courseEnrollmentsTable.courseId, req.params["id"]!)).orderBy(desc(courseEnrollmentsTable.createdAt));
     const enriched = await Promise.all(rows.map(async (r) => {
@@ -159,7 +159,7 @@ coursesRouter.get("/:id/enrollments", authenticate, authorize("LND", "view"), as
 });
 
 // bulk enroll
-coursesRouter.post("/:id/enroll", authenticate, authorize("LND", "edit"), async (req, res) => {
+coursesRouter.post("/:id/enroll", authenticate, authorize("LND", "edit_learning_development"), async (req, res) => {
   try {
     const courseId = req.params["id"]!;
     const { employeeIds } = req.body;
@@ -179,7 +179,7 @@ coursesRouter.post("/:id/enroll", authenticate, authorize("LND", "edit"), async 
 });
 
 // send reminders to incomplete enrollments
-coursesRouter.post("/:id/remind", authenticate, authorize("LND", "edit"), async (req, res) => {
+coursesRouter.post("/:id/remind", authenticate, authorize("LND", "edit_learning_development"), async (req, res) => {
   try {
     const courseId = req.params["id"]!;
     const incomplete = await db.select().from(courseEnrollmentsTable).where(and(eq(courseEnrollmentsTable.courseId, courseId), eq(courseEnrollmentsTable.completed, false)));
@@ -230,7 +230,7 @@ coursesRouter.post("/:id/remind", authenticate, authorize("LND", "edit"), async 
 // =====================================================
 export const enrollmentsRouter: Router = Router();
 
-enrollmentsRouter.get("/", authenticate, authorize("LND", "view"), async (req, res) => {
+enrollmentsRouter.get("/", authenticate, authorize("LND", "view_learning_development"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const courseId = req.query["courseId"] as string | undefined;
@@ -250,7 +250,7 @@ enrollmentsRouter.get("/", authenticate, authorize("LND", "view"), async (req, r
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-enrollmentsRouter.post("/", authenticate, authorize("LND", "create"), async (req, res) => {
+enrollmentsRouter.post("/", authenticate, authorize("LND", "add_learning_development"), async (req, res) => {
   try {
     const data = pick(req.body, ["courseId", "employeeId", "progress", "completed", "completedAt", "score", "attempts"]);
     const [row] = await db.insert(courseEnrollmentsTable).values({ id: newId(), ...data, updatedAt: new Date() }).returning();
@@ -258,7 +258,7 @@ enrollmentsRouter.post("/", authenticate, authorize("LND", "create"), async (req
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-enrollmentsRouter.put("/:id", authenticate, authorize("LND", "edit"), async (req, res) => {
+enrollmentsRouter.put("/:id", authenticate, authorize("LND", "edit_learning_development"), async (req, res) => {
   try {
     const body = pick(req.body, ["courseId", "employeeId", "progress", "completed", "completedAt", "score", "attempts"]) as Record<string, unknown>;
     if (body["completed"] && !body["completedAt"]) body["completedAt"] = new Date();
@@ -269,7 +269,7 @@ enrollmentsRouter.put("/:id", authenticate, authorize("LND", "edit"), async (req
 });
 
 // progress update — auto-flag completion when >= 80
-enrollmentsRouter.post("/:id/progress", authenticate, authorize("LND", "edit"), async (req, res) => {
+enrollmentsRouter.post("/:id/progress", authenticate, authorize("LND", "edit_learning_development"), async (req, res) => {
   try {
     const { progress } = req.body;
     const p = Math.max(0, Math.min(100, Number(progress)));
@@ -282,7 +282,7 @@ enrollmentsRouter.post("/:id/progress", authenticate, authorize("LND", "edit"), 
 });
 
 // quiz submission — score MCQs, mark complete if pass
-enrollmentsRouter.post("/:id/quiz", authenticate, authorize("LND", "edit"), async (req, res) => {
+enrollmentsRouter.post("/:id/quiz", authenticate, authorize("LND", "edit_learning_development"), async (req, res) => {
   try {
     const { answers } = req.body; // {questionIdx: selectedIdx}
     const id = req.params["id"]!;

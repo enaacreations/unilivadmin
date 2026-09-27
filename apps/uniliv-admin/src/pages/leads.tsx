@@ -86,7 +86,7 @@ export default function Leads() {
       const payload: any = { ...values };
       if (!payload.email) delete payload.email;
       await apiFetch("/leads", { method: "POST", body: JSON.stringify(payload) });
-      toast({ title: "Lead created" });
+      toast({ variant: "success", title: "Lead created" });
       draft.clearDraft();
       setOpen(false); form.reset();
       qc.invalidateQueries({ queryKey: ["leads"] });
@@ -234,7 +234,7 @@ function LeadDetail({ id, onClose, properties }: { id: string; onClose: () => vo
     if (!noteText.trim()) return;
     try {
       await apiFetch(`/leads/${id}/activities`, { method: "POST", body: JSON.stringify({ type: "NOTE", note: noteText }) });
-      setNoteText(""); refresh(); toast({ title: "Note added" });
+      setNoteText(""); refresh(); toast({ variant: "success", title: "Note added" });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
@@ -320,7 +320,7 @@ function ScheduleVisitDialog({ id, onClose, onDone }: any) {
       if (!dt) return;
       try {
         await apiFetch(`/leads/${id}/schedule-visit`, { method: "POST", body: JSON.stringify({ visitDate: new Date(dt).toISOString() }) });
-        toast({ title: "Visit scheduled — confirmation SMS queued" }); onClose(); onDone();
+        toast({ variant: "success", title: "Visit scheduled — confirmation SMS queued" }); onClose(); onDone();
       } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <Label>Visit date &amp; time</Label><DateTimePicker value={dt} onChange={setDt} />
@@ -337,7 +337,7 @@ function VisitOutcomeDialog({ id, onClose, onDone }: any) {
     <FormModal open={true} onOpenChange={(o) => !o && onClose()} title="Visit Outcome" onSave={async () => {
       try {
         await apiFetch(`/leads/${id}/visit-outcome`, { method: "POST", body: JSON.stringify({ outcome, feedback, lostReason: outcome === "NO" ? lostReason : undefined }) });
-        toast({ title: "Outcome recorded" }); onClose(); onDone();
+        toast({ variant: "success", title: "Outcome recorded" }); onClose(); onDone();
       } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <div className="space-y-3">
@@ -362,7 +362,7 @@ function FollowUpDialog({ id, onClose, onDone }: any) {
       if (!dt) return;
       try {
         await apiFetch(`/leads/${id}/follow-up`, { method: "POST", body: JSON.stringify({ followUpAt: new Date(dt).toISOString(), followUpNote: note }) });
-        toast({ title: "Follow-up set" }); onClose(); onDone();
+        toast({ variant: "success", title: "Follow-up set" }); onClose(); onDone();
       } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <div className="space-y-3"><div><Label>When</Label><DateTimePicker value={dt} onChange={setDt} /></div><div><Label>Reminder note</Label><Textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} /></div></div>
@@ -377,7 +377,7 @@ function MarkLostDialog({ id, onClose, onDone }: any) {
     <FormModal open={true} onOpenChange={(o) => !o && onClose()} title="Mark Lead Lost" onSave={async () => {
       try {
         await apiFetch(`/leads/${id}/mark-lost`, { method: "POST", body: JSON.stringify({ lostReason: reason }) });
-        toast({ title: "Lead marked lost" }); onClose(); onDone();
+        toast({ variant: "success", title: "Lead marked lost" }); onClose(); onDone();
       } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <Label>Reason *</Label>
@@ -397,7 +397,7 @@ function ConvertDialog({ lead, properties, onClose, onDone }: any) {
     <FormModal open={true} onOpenChange={(o) => !o && onClose()} title={`Convert ${lead.name} to Resident`} onSave={async () => {
       try {
         await apiFetch(`/leads/${lead.id}/convert`, { method: "POST", body: JSON.stringify({ propertyId, planType, monthlyRent, depositAmount, checkInDate: checkInDate || undefined }) });
-        toast({ title: "Resident created and lead converted" }); onClose(); onDone();
+        toast({ variant: "success", title: "Resident created and lead converted" }); onClose(); onDone();
       } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
     }}>
       <div className="space-y-3">

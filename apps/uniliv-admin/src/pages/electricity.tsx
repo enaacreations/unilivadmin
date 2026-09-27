@@ -82,7 +82,7 @@ export default function ElectricityPage() {
   };
   const saveMeter = useMutation({
     mutationFn: (d: any) => apiFetch(`/electricity/meters${editMeter ? `/${editMeter.id}` : ""}`, { method: editMeter ? "PUT" : "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: "Saved" }); qc.invalidateQueries({ queryKey: getGetElectricityMetersQueryKey(meterParams) }); setMeterOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: "Saved" }); qc.invalidateQueries({ queryKey: getGetElectricityMetersQueryKey(meterParams) }); setMeterOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -91,7 +91,7 @@ export default function ElectricityPage() {
   const [tariffForm, setTariffForm] = React.useState<any>({});
   const saveTariff = useMutation({
     mutationFn: (d: any) => apiFetch(`/electricity/tariffs`, { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: "Tariff saved" }); qc.invalidateQueries({ queryKey: getGetElectricityTariffsQueryKey() }); setTariffOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: "Tariff saved" }); qc.invalidateQueries({ queryKey: getGetElectricityTariffsQueryKey() }); setTariffOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -101,7 +101,7 @@ export default function ElectricityPage() {
   const openReading = (m: Meter) => { setReadingForm({ meterId: m.id, meterNo: m.meterNo, reading: "", readingDate: new Date().toISOString().slice(0, 10) }); setReadingOpen(true); };
   const saveReading = useMutation({
     mutationFn: (d: any) => apiFetch(`/electricity/readings`, { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: "Reading recorded" }); qc.invalidateQueries({ queryKey: getGetElectricityReadingsQueryKey(readingParams) }); setReadingOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: "Reading recorded" }); qc.invalidateQueries({ queryKey: getGetElectricityReadingsQueryKey(readingParams) }); setReadingOpen(false); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -127,7 +127,7 @@ export default function ElectricityPage() {
     onSuccess: (res: any) => {
       const succ = res?.data?.success ?? 0;
       const fail = res?.data?.failed ?? 0;
-      toast({ title: `Uploaded ${succ} reading(s)`, description: fail ? `${fail} row(s) failed` : undefined });
+      toast({ variant: "success", title: `Uploaded ${succ} reading(s)`, description: fail ? `${fail} row(s) failed` : undefined });
       qc.invalidateQueries({ queryKey: getGetElectricityReadingsQueryKey(readingParams) });
       setBulkOpen(false);
       setBulkText("");
@@ -137,7 +137,7 @@ export default function ElectricityPage() {
 
   const postReading = useMutation({
     mutationFn: (id: string) => apiFetch(`/electricity/readings/${id}/post`, { method: "POST", body: "{}" }),
-    onSuccess: () => { toast({ title: "Posted to ledger" }); qc.invalidateQueries({ queryKey: getGetElectricityReadingsQueryKey(readingParams) }); },
+    onSuccess: () => { toast({ variant: "success", title: "Posted to ledger" }); qc.invalidateQueries({ queryKey: getGetElectricityReadingsQueryKey(readingParams) }); },
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -163,7 +163,7 @@ export default function ElectricityPage() {
 
         <TabsContent value="meters" className="space-y-4">
           <div className="flex justify-end">
-            {can("ELECTRICITY", "create") && <Button onClick={() => openMeter()} data-testid="button-add-meter"><Plus className="w-4 h-4 mr-2" />Add Meter</Button>}
+            {can("ELECTRICITY", "add_electricity") && <Button onClick={() => openMeter()} data-testid="button-add-meter"><Plus className="w-4 h-4 mr-2" />Add Meter</Button>}
           </div>
           <Card><CardContent className="p-0">
             {metersLoading ? <div className="p-8 text-center text-muted-foreground">Loading...</div> : meters.length === 0 ? (
@@ -184,8 +184,8 @@ export default function ElectricityPage() {
                       <td className="px-4 py-3">{m.residentName || <span className="text-muted-foreground">—</span>}</td>
                       <td className="px-4 py-3 text-xs">{m.tariffName ? `${m.tariffName} · ₹${m.ratePerUnit}/u` : <span className="text-muted-foreground">—</span>}</td>
                       <td className="px-4 py-3 text-right space-x-2">
-                        {can("ELECTRICITY", "create") && <Button size="sm" variant="outline" onClick={() => openReading(m)} data-testid={`button-record-${m.id}`}>Record</Button>}
-                        {can("ELECTRICITY", "edit") && <Button size="sm" variant="ghost" onClick={() => openMeter(m)}>Edit</Button>}
+                        {can("ELECTRICITY", "add_electricity") && <Button size="sm" variant="outline" onClick={() => openReading(m)} data-testid={`button-record-${m.id}`}>Record</Button>}
+                        {can("ELECTRICITY", "edit_electricity") && <Button size="sm" variant="ghost" onClick={() => openMeter(m)}>Edit</Button>}
                       </td>
                     </tr>
                   ))}
@@ -198,7 +198,7 @@ export default function ElectricityPage() {
 
         <TabsContent value="readings" className="space-y-4">
           <div className="flex justify-end">
-            {can("ELECTRICITY", "create") && <Button variant="outline" onClick={() => setBulkOpen(true)} data-testid="button-bulk-upload"><Upload className="w-4 h-4 mr-2" />Bulk Upload</Button>}
+            {can("ELECTRICITY", "add_electricity") && <Button variant="outline" onClick={() => setBulkOpen(true)} data-testid="button-bulk-upload"><Upload className="w-4 h-4 mr-2" />Bulk Upload</Button>}
           </div>
           <Card><CardContent className="p-0">
             {readings.length === 0 ? (
@@ -219,7 +219,7 @@ export default function ElectricityPage() {
                       <td className="px-4 py-3 font-mono">₹{(r.amount || 0).toFixed(2)}</td>
                       <td className="px-4 py-3">{r.posted ? <Badge>Posted</Badge> : <Badge variant="secondary">Draft</Badge>}</td>
                       <td className="px-4 py-3 text-right">
-                        {!r.posted && can("ELECTRICITY", "edit") && (r.amount || 0) > 0 && (
+                        {!r.posted && can("ELECTRICITY", "edit_electricity") && (r.amount || 0) > 0 && (
                           <Button size="sm" variant="outline" onClick={() => postReading.mutate(r.id)} disabled={postReading.isPending} data-testid={`button-post-${r.id}`}><Send className="w-3 h-3 mr-1" />Post</Button>
                         )}
                       </td>
@@ -234,7 +234,7 @@ export default function ElectricityPage() {
 
         <TabsContent value="tariffs" className="space-y-4">
           <div className="flex justify-end">
-            {can("ELECTRICITY", "create") && <Button onClick={() => { setTariffForm({ name: "", ratePerUnit: 0, fixedCharge: 0, effectiveFrom: new Date().toISOString().slice(0, 10), isActive: true }); setTariffOpen(true); }} data-testid="button-add-tariff"><Plus className="w-4 h-4 mr-2" />Add Tariff</Button>}
+            {can("ELECTRICITY", "add_electricity") && <Button onClick={() => { setTariffForm({ name: "", ratePerUnit: 0, fixedCharge: 0, effectiveFrom: new Date().toISOString().slice(0, 10), isActive: true }); setTariffOpen(true); }} data-testid="button-add-tariff"><Plus className="w-4 h-4 mr-2" />Add Tariff</Button>}
           </div>
           <Card><CardContent className="p-0">
             {tariffs.length === 0 ? (

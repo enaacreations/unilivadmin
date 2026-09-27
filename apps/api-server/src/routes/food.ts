@@ -10,7 +10,8 @@
  * that set and 403 when out of scope.
  */
 import { Router, type Request, type Response } from "express";
-import { db } from "@workspace/db";
+import { db,
+  accessGrantsTable,} from "@workspace/db";
 import {
   foodOrdersTable,
   foodOrderItemsTable,
@@ -53,11 +54,12 @@ import type { AnyColumn } from "drizzle-orm";
 import { canTransition } from "../lib/order-transitions.js";
 import { z } from "zod";
 import { authenticate, authorize as requireRoles } from "../middlewares/auth.js";
-import { authorize, authorizeAny } from "../middlewares/authorize.js";
+import { authorize, authorizeAny, on, reads } from "../middlewares/authorize.js";
 import { enforceSod } from "../lib/access/sod.js";
-import { can, FOOD_MODULES, type UserRole } from "../lib/permissions.js";
+import { can, FOOD_FUNCTIONALITIES, type UserRole } from "../lib/permissions.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
+import { syncOrgNode, removeOrgNode } from "../lib/org-sync.js";
 import {
   resolveAccessiblePropertyIds,
   scopeOrdersCondition,
@@ -471,7 +473,7 @@ const zBrand = z.string().min(1).max(128);
  * Dashboard
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/dashboard", authenticate, authorize("FOOD_DASHBOARD", "view"), async (req, res) => {
+foodRouter.get("/dashboard", authenticate, authorize("FOOD_DASHBOARD", "view_food_dashboard"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const scope = scopeOrdersCondition(ids);
@@ -632,7 +634,7 @@ foodRouter.get("/dashboard", authenticate, authorize("FOOD_DASHBOARD", "view"), 
  * — the instant the window CLOSES — so the client can render a live "NN min left"
  * countdown against it.
  */
-foodRouter.get("/waste-pending", authenticate, authorize("FOOD_DASHBOARD", "view"), async (req, res) => {
+foodRouter.get("/waste-pending", authenticate, authorize("FOOD_DASHBOARD", "view_food_dashboard"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const scope = scopeOrdersCondition(ids);
@@ -695,7 +697,7 @@ foodRouter.get("/waste-pending", authenticate, authorize("FOOD_DASHBOARD", "view
 //     (DELIVERED/CANCELLED/REJECTED), which stays FOOD_ALL_ORDERS-only. That
 //     mirrors the sibling /orders/:id and /orders/track restrictions.
 const OPERATIONAL_ORDER_STATUSES = ["PLACED", "ACCEPTED", "DISPATCHED"];
-foodRouter.get("/orders", authenticate, authorizeAny(["FOOD_ALL_ORDERS", "FOOD_DISPATCH", "FOOD_KITCHEN_SUMMARY"], "view"), async (req, res) => {
+foodRouter.get("/orders", authenticate, authorizeAny([on("FOOD_ALL_ORDERS", "view_order"), on("FOOD_DISPATCH", "view_dispatch_queue"), on("FOOD_KITCHEN_SUMMARY", "view_kitchen_summary")]), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const ids = await resolveAccessiblePropertyIds(req.user!);
@@ -798,7 +800,7 @@ const placeOrderSchema = z.object({
   notes: zText.nullish(),
 }).passthrough();
 
-foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "create"), async (req, res) => {
+foodRouter.post("/orders", authenticate, authorize("FOOD_PLACE_ORDER", "draft_order"), async (req, res) => {
   try {
     if (!validateBody(placeOrderSchema, req, res)) return;
     const b = req.body || {};
@@ -1003,7 +1005,7 @@ function parseDraftKey(req: { query: Record<string, unknown> }, res: {
   return { propertyId, serviceDate: ymdToIstDayStart(sdRaw) };
 }
 
-foodRouter.get("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "create"), async (req, res) => {
+foodRouter.get("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "draft_order"), async (req, res) => {
   try {
     const key = parseDraftKey(req, res);
     if (!key) return;
@@ -1022,7 +1024,7 @@ foodRouter.get("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "crea
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.put("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "create"), async (req, res) => {
+foodRouter.put("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "draft_order"), async (req, res) => {
   try {
     if (!validateBody(putDraftSchema, req, res)) return;
     const { propertyId, serviceDate, payload } = req.body as {
@@ -1064,7 +1066,7 @@ foodRouter.put("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "crea
 });
 
 // Called after a successful order placement to clear the saved draft.
-foodRouter.delete("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "create"), async (req, res) => {
+foodRouter.delete("/order-draft", authenticate, authorize("FOOD_PLACE_ORDER", "draft_order"), async (req, res) => {
   try {
     const key = parseDraftKey(req, res);
     if (!key) return;
@@ -1083,7 +1085,7 @@ const dispatchBulkSchema = z.object({
   deliveryPartnerId: zId.nullish(),
 }).passthrough();
 
-foodRouter.post("/orders/dispatch/bulk", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+foodRouter.post("/orders/dispatch/bulk", authenticate, authorize("FOOD_DISPATCH", "edit_dispatch"), async (req, res) => {
   try {
     if (!validateBody(dispatchBulkSchema, req, res)) return;
     const b = req.body || {};
@@ -1151,7 +1153,7 @@ foodRouter.post("/orders/dispatch/bulk", authenticate, authorize("FOOD_DISPATCH"
  * GET /orders/:id. Scoped to the caller's accessible properties, so a user can
  * only track orders in properties they can see. Used by the /food/track page.
  */
-foodRouter.get("/orders/track", authenticate, authorize("FOOD_ALL_ORDERS", "view"), async (req, res) => {
+foodRouter.get("/orders/track", authenticate, authorize("FOOD_ALL_ORDERS", "view_order"), async (req, res) => {
   try {
     const orderNumber = String(req.query["orderNumber"] ?? "").trim();
     const rawId = String(req.query["id"] ?? "").trim();
@@ -1237,7 +1239,7 @@ foodRouter.get("/orders/track", authenticate, authorize("FOOD_ALL_ORDERS", "view
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view"), async (req, res) => {
+foodRouter.get("/orders/:id", authenticate, authorize("FOOD_ALL_ORDERS", "view_order"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     const [row] = await db.select({
@@ -1348,7 +1350,7 @@ const additionalFoodSchema = z.object({
   requestId: zId.optional(),
 }).passthrough();
 
-foodRouter.post("/orders/:id/additional-food", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "edit"), async (req, res) => {
+foodRouter.post("/orders/:id/additional-food", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "amend_delivery"), async (req, res) => {
   try {
     if (!validateBody(additionalFoodSchema, req, res)) return;
     const id = req.params["id"]!;
@@ -1424,7 +1426,7 @@ foodRouter.post("/orders/:id/additional-food", authenticate, authorize("FOOD_CON
 
 // Flat property list (id / name / city) for the Additional Food source picker.
 // Any food user who can receive an order may read it — names only, not sensitive.
-foodRouter.get("/property-options", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "view"), async (req, res) => {
+foodRouter.get("/property-options", authenticate, authorize("FOOD_CONFIRM_DELIVERY", "view_deliveries"), async (req, res) => {
   try {
     const rows = await db.select({ id: propertiesTable.id, name: propertiesTable.name, city: propertiesTable.city })
       .from(propertiesTable).orderBy(propertiesTable.city, propertiesTable.name);
@@ -1467,7 +1469,7 @@ const updateOrderSchema = z.object({
   })).optional(),
 }).passthrough();
 
-foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit"), async (req, res) => {
+foodRouter.put("/orders/:id", authenticate, authorize("FOOD_PLACE_ORDER", "edit_order"), async (req, res) => {
   try {
     if (!validateBody(updateOrderSchema, req, res)) return;
     const id = req.params["id"]!;
@@ -1841,7 +1843,7 @@ foodRouter.post(
   // sweep can see the gate instead of reading this route as unauthorized.
   // It also now refuses before body validation, so an unauthorized caller
   // learns nothing about the schema.
-  authorizeAny(["FOOD_PLACE_ORDER", "FOOD_KITCHEN_SUMMARY"], "edit"),
+  authorizeAny([on("FOOD_PLACE_ORDER", "edit_order"), on("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary")]),
   async (req, res) => {
   try {
     if (!validateBody(cancelOrderSchema, req, res)) return;
@@ -1896,7 +1898,7 @@ foodRouter.post(
  * Deliberately gated on FOOD_KITCHEN_SUMMARY (not FOOD_ALL_ORDERS): it exposes
  * only kitchen-relevant fields, no order history or tracking.
  * ──────────────────────────────────────────────────────────────────────────── */
-foodRouter.get("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "view"), async (req, res) => {
+foodRouter.get("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "view_kitchen_summary"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     const [order] = await db.select().from(foodOrdersTable).where(eq(foodOrdersTable.id, id));
@@ -1936,7 +1938,7 @@ const kitchenItemsSchema = z.object({
   reason: z.string().trim().min(1, "A reason is required for a quantity change"),
 }).passthrough();
 
-foodRouter.patch("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit"), async (req, res) => {
+foodRouter.patch("/orders/:id/kitchen-items", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary"), async (req, res) => {
   try {
     if (!validateBody(kitchenItemsSchema, req, res)) return;
     const id = req.params["id"]!;
@@ -1996,7 +1998,7 @@ const dispatchOrderSchema = z.object({
   deliveryPartnerId: zId.nullish(),
 }).passthrough();
 
-foodRouter.post("/orders/:id/dispatch", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+foodRouter.post("/orders/:id/dispatch", authenticate, authorize("FOOD_DISPATCH", "edit_dispatch"), async (req, res) => {
   try {
     if (!validateBody(dispatchOrderSchema, req, res)) return;
     const id = req.params["id"]!;
@@ -2103,7 +2105,7 @@ const RECEIVED_SURPLUS_MIN_CAP = 10;
 foodRouter.post(
   "/orders/:id/confirm-delivery",
   authenticate,
-  authorize("FOOD_CONFIRM_DELIVERY", "edit"),
+  authorize("FOOD_CONFIRM_DELIVERY", "amend_delivery"),
   // PRD §33, the named example. The MATRIX already keeps shipping and receiving
   // in different roles (FOOD_SHIP_VS_RECEIVE in access/sod.ts) — but the two
   // break-glass parity roles hold both edits deliberately, so nothing stopped
@@ -2306,7 +2308,7 @@ const wasteSchema = z.object({
   }).passthrough()).optional(),
 }).passthrough();
 
-foodRouter.post("/orders/:id/waste", authenticate, authorize("FOOD_WASTE_TRACKING", "edit"), async (req, res) => {
+foodRouter.post("/orders/:id/waste", authenticate, authorize("FOOD_WASTE_TRACKING", "edit_waste_tracking"), async (req, res) => {
   try {
     if (!validateBody(wasteSchema, req, res)) return;
     const id = req.params["id"]!;
@@ -2427,7 +2429,7 @@ foodRouter.post("/orders/:id/waste", authenticate, authorize("FOOD_WASTE_TRACKIN
  */
 const KITCHEN_SUMMARY_ROW_CAP = 20000;
 
-foodRouter.get("/kitchen-summary", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "view"), async (req, res) => {
+foodRouter.get("/kitchen-summary", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "view_kitchen_summary"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const scope = scopeOrdersCondition(ids);
@@ -2582,7 +2584,7 @@ function reportConds(
   return conds.length ? and(...conds) : undefined;
 }
 
-foodRouter.get("/reports", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
+foodRouter.get("/reports", authenticate, authorize("FOOD_REPORTS", "view_food_report"), async (req, res) => {
   try {
     // reportConds casts `status` onto the enum column; check it here, where a
     // response can still be written (L6). `brand` is the same filter one column
@@ -2653,7 +2655,7 @@ foodRouter.get("/reports", authenticate, authorize("FOOD_REPORTS", "view"), asyn
 // union of the food modules rather than any single one, and the property list is
 // narrowed to the caller's scope — an unscoped roster is exactly what let C5's
 // attacker enumerate property ids to re-point at their own kitchen.
-foodRouter.get("/lookups", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/lookups", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const accessible = await resolveAccessiblePropertyIds(req.user!);
     const allProperties = await db.select({
@@ -2700,7 +2702,7 @@ foodRouter.get("/lookups", authenticate, authorizeAny(FOOD_MODULES, "view"), asy
  * Master data — Dishes
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/dishes", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/dishes", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const component = req.query["component"] as string | undefined;
     const search = req.query["search"] as string | undefined;
@@ -3062,7 +3064,7 @@ const createDishSchema = z.object({
   sideDishIds: z.array(zId).optional(),
 }).passthrough();
 
-foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
+foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "add_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(createDishSchema, req, res)) return;
     const b = req.body || {};
@@ -3104,7 +3106,7 @@ foodRouter.post("/dishes", authenticate, authorize("FOOD_CATALOGUE", "create"), 
 });
 
 // Same gate as its list sibling (H8) — the by-id read was the one left behind.
-foodRouter.get("/dishes/:id", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/dishes/:id", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const [row] = await db.select().from(dishesTable).where(eq(dishesTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -3139,7 +3141,7 @@ const updateDishSchema = z.object({
   sideDishIds: z.array(zId).optional(),
 }).passthrough();
 
-foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
+foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(updateDishSchema, req, res)) return;
     const b = req.body || {};
@@ -3196,7 +3198,7 @@ foodRouter.put("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"),
   }
 });
 
-foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
+foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "delete_service_catalogue"), async (req, res) => {
   try {
     const [before] = await db.select().from(dishesTable).where(eq(dishesTable.id, req.params["id"]!));
     // Same invariant as PUT above — this soft-delete IS the isActive=false write,
@@ -3214,7 +3216,7 @@ foodRouter.delete("/dishes/:id", authenticate, authorize("FOOD_CATALOGUE", "dele
  * Master data — Ingredients
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/ingredients", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/ingredients", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const search = req.query["search"] as string | undefined;
     const active = req.query["active"] as string | undefined;
@@ -3234,7 +3236,7 @@ const createIngredientSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/ingredients", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
+foodRouter.post("/ingredients", authenticate, authorize("FOOD_CATALOGUE", "add_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(createIngredientSchema, req, res)) return;
     const b = req.body || {};
@@ -3265,7 +3267,7 @@ const updateIngredientSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
+foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "edit_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(updateIngredientSchema, req, res)) return;
     const b = req.body || {};
@@ -3290,7 +3292,7 @@ foodRouter.put("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "ed
   }
 });
 
-foodRouter.delete("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
+foodRouter.delete("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", "delete_service_catalogue"), async (req, res) => {
   try {
     const [before] = await db.select().from(ingredientsTable).where(eq(ingredientsTable.id, req.params["id"]!));
     const [row] = await db.update(ingredientsTable).set({ isActive: false, updatedAt: new Date() }).where(eq(ingredientsTable.id, req.params["id"]!)).returning();
@@ -3304,7 +3306,7 @@ foodRouter.delete("/ingredients/:id", authenticate, authorize("FOOD_CATALOGUE", 
  * Master data — Menu rotation
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/menu-rotation/resolve", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/resolve", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const propertyId = req.query["propertyId"] as string | undefined;
     let brand = req.query["brand"] as string | undefined;
@@ -3366,7 +3368,7 @@ async function deniedKitchen(
 // Gated on FOOD_SETTINGS (the Food Settings page is the only caller) and scoped
 // to the caller's kitchens — without the scope filter, omitting ?kitchenId
 // returned every kitchen's menu to anyone logged in.
-foodRouter.get("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     await assertKnownBrand(brand);
@@ -3509,7 +3511,7 @@ function rotationFilename(kitchenName: string | null, brand: string | null, ext:
 }
 
 // Export the current menu rotation (honours the same filters as the list) as CSV.
-foodRouter.get("/menu-rotation/export.csv", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/export.csv", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const { rows, kitchenName, brand } = await fetchRotationForExport(req);
     const csv = toCsv({ title: "Menu Rotation", headers: ROTATION_HEADERS, rows, propertyName: kitchenName });
@@ -3523,7 +3525,7 @@ foodRouter.get("/menu-rotation/export.csv", authenticate, authorize("FOOD_SETTIN
 // (toMenuRotationPdf), not the flat one-row-per-dish table the CSV uses. The
 // table form repeated the kitchen, brand, week and day on all ~450 lines of a
 // single cycle, so "what do we cook on Tuesday" meant reading the whole file.
-foodRouter.get("/menu-rotation/export.pdf", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/export.pdf", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const { rows, raw, kitchenName, brand } = await fetchRotationForExport(req);
     // Tighter than the CSV cap: the calendar lays out every cell (H11).
@@ -3621,7 +3623,7 @@ function dedupeSideRows<P extends { id: string; sortOrder: number | null }>(
   return rows;
 }
 
-foodRouter.post("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/menu-rotation", authenticate, authorize("FOOD_SETTINGS", "add_food_setting"), async (req, res) => {
   try {
     if (!validateBody(createRotationSchema, req, res)) return;
     const b = req.body || {};
@@ -3729,7 +3731,7 @@ const bulkRotationSchema = z.object({
   items: z.array(zRotationItem).optional(),
 }).passthrough();
 
-foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/menu-rotation/bulk", authenticate, authorize("FOOD_SETTINGS", "add_food_setting"), async (req, res) => {
   try {
     if (!validateBody(bulkRotationSchema, req, res)) return;
     const b = req.body || {};
@@ -3802,7 +3804,7 @@ const slotRotationSchema = z.object({
   items: z.array(zRotationItem).optional(),
 }).passthrough();
 
-foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(slotRotationSchema, req, res)) return;
     const b = req.body || {};
@@ -3899,7 +3901,7 @@ foodRouter.put("/menu-rotation/slot", authenticate, authorize("FOOD_SETTINGS", "
 });
 
 // Validate the chosen dishes against the composition rule + flag shared ingredients.
-foodRouter.get("/menu-rotation/validate", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/validate", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     await assertKnownBrand(brand);
@@ -3937,7 +3939,7 @@ foodRouter.get("/menu-rotation/validate", authenticate, authorizeAny(FOOD_MODULE
 });
 
 // Suggested dishes to satisfy the composition rule for a (kitchen, brand, meal).
-foodRouter.get("/menu-rotation/auto-fill", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/menu-rotation/auto-fill", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     await assertKnownBrand(brand);
@@ -3978,7 +3980,7 @@ const updateRotationSchema = z.object({
   effectiveTo: zEffectiveDate,
 }).passthrough();
 
-foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(updateRotationSchema, req, res)) return;
     const b = req.body || {};
@@ -4067,7 +4069,7 @@ foodRouter.put("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "e
   }
 });
 
-foodRouter.delete("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodRouter.delete("/menu-rotation/:id", authenticate, authorize("FOOD_SETTINGS", "delete_food_setting"), async (req, res) => {
   try {
     // Whole row, not just kitchenId: this is a HARD delete, so the audit entry
     // is the only surviving copy of what was on the plate (M17).
@@ -4138,7 +4140,7 @@ async function refusePortionRuleInUse(
   return true;
 }
 
-foodRouter.get("/rules", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/rules", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     await assertKnownBrand(brand);
@@ -4178,7 +4180,7 @@ const createRuleSchema = z.object({
  *  Shares one wording so the dish drawer treats create and edit identically. */
 const RULE_QTY_NEGATIVE_ERROR = "Portion per resident cannot be negative.";
 
-foodRouter.post("/rules", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
+foodRouter.post("/rules", authenticate, authorize("FOOD_CATALOGUE", "add_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(createRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -4228,7 +4230,7 @@ const updateRuleSchema = z.object({
   qtyPerResident: z.coerce.number().min(0).finite().optional(),
 }).passthrough();
 
-foodRouter.put("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
+foodRouter.put("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "edit_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(updateRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -4263,7 +4265,7 @@ foodRouter.put("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), 
   }
 });
 
-foodRouter.delete("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
+foodRouter.delete("/rules/:id", authenticate, authorize("FOOD_CATALOGUE", "delete_service_catalogue"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     if (await deniedGlobalConfig(req, res)) return;
@@ -4301,7 +4303,7 @@ const slotValues = (ruleId: string, slots: any[]) =>
       updatedAt: new Date(),
     }));
 
-foodRouter.get("/composition-rules", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/composition-rules", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const brand = req.query["brand"] as string | undefined;
     await assertKnownBrand(brand);
@@ -4361,7 +4363,7 @@ const createCompositionRuleSchema = z.object({
   slots: z.array(zCompositionSlot).optional(),
 }).passthrough();
 
-foodRouter.post("/composition-rules", authenticate, authorize("FOOD_CATALOGUE", "create"), async (req, res) => {
+foodRouter.post("/composition-rules", authenticate, authorize("FOOD_CATALOGUE", "add_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(createCompositionRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -4399,7 +4401,7 @@ const updateCompositionRuleSchema = z.object({
   slots: z.array(zCompositionSlot).optional(),
 }).passthrough();
 
-foodRouter.put("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
+foodRouter.put("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE", "edit_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(updateCompositionRuleSchema, req, res)) return;
     const b = req.body || {};
@@ -4436,7 +4438,7 @@ foodRouter.put("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE", "delete"), async (req, res) => {
+foodRouter.delete("/composition-rules/:id", authenticate, authorize("FOOD_CATALOGUE", "delete_service_catalogue"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     // Load-then-check, as the sibling writes do (H4). A blind DELETE let a
@@ -4474,7 +4476,7 @@ function mayReadPartnerContacts(req: Request): boolean {
 // and vehicle number are contact PII that only the two administrative modules
 // need. `authenticate` alone published the whole fleet register to any account
 // with a login.
-foodRouter.get("/delivery-partners", authenticate, authorizeAny(FOOD_MODULES, "view"), async (req, res) => {
+foodRouter.get("/delivery-partners", authenticate, authorizeAny(reads(FOOD_FUNCTIONALITIES)), async (req, res) => {
   try {
     const active = req.query["active"] as string | undefined;
     const where = active !== undefined ? eq(deliveryPartnersTable.isActive, active === "true") : undefined;
@@ -4491,7 +4493,7 @@ const createDeliveryPartnerSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/delivery-partners", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodRouter.post("/delivery-partners", authenticate, authorize("FOOD_SETTINGS", "add_food_setting"), async (req, res) => {
   try {
     if (!validateBody(createDeliveryPartnerSchema, req, res)) return;
     const b = req.body || {};
@@ -4516,7 +4518,7 @@ const updateDeliveryPartnerSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/delivery-partners/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodRouter.put("/delivery-partners/:id", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(updateDeliveryPartnerSchema, req, res)) return;
     const b = req.body || {};
@@ -4530,7 +4532,7 @@ foodRouter.put("/delivery-partners/:id", authenticate, authorize("FOOD_SETTINGS"
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/delivery-partners/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodRouter.delete("/delivery-partners/:id", authenticate, authorize("FOOD_SETTINGS", "delete_food_setting"), async (req, res) => {
   try {
     const [before] = await db.select().from(deliveryPartnersTable).where(eq(deliveryPartnersTable.id, req.params["id"]!));
     const [row] = await db.update(deliveryPartnersTable).set({ isActive: false, updatedAt: new Date() }).where(eq(deliveryPartnersTable.id, req.params["id"]!)).returning();
@@ -4544,7 +4546,7 @@ foodRouter.delete("/delivery-partners/:id", authenticate, authorize("FOOD_SETTIN
  * Master data — Delivery agencies (→ locations + vehicles)
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/agencies", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/agencies", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const active = req.query["active"] as string | undefined;
     const search = (req.query["search"] as string | undefined)?.trim();
@@ -4579,7 +4581,7 @@ const createAgencySchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/agencies", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodRouter.post("/agencies", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createAgencySchema, req, res)) return;
     const b = req.body || {};
@@ -4601,7 +4603,7 @@ const updateAgencySchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/agencies/:id", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.put("/agencies/:id", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(updateAgencySchema, req, res)) return;
     const b = req.body || {};
@@ -4615,7 +4617,7 @@ foodRouter.put("/agencies/:id", authenticate, authorize("FOOD_ORG", "edit"), asy
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/agencies/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodRouter.delete("/agencies/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     const [before] = await db.select().from(agenciesTable).where(eq(agenciesTable.id, req.params["id"]!));
     const [row] = await db.update(agenciesTable).set({ isActive: false, updatedAt: new Date() }).where(eq(agenciesTable.id, req.params["id"]!)).returning();
@@ -4632,7 +4634,7 @@ foodRouter.delete("/agencies/:id", authenticate, authorize("FOOD_ORG", "delete")
  * ──────────────────────────────────────────────────────────────────────────── */
 
 // Linked (active) kitchens for an agency, joined to kitchen name/code.
-foodRouter.get("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const rows = await db.select({
       id: kitchensTable.id, name: kitchensTable.name, code: kitchensTable.code,
@@ -4649,7 +4651,7 @@ foodRouter.get("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "vi
 // provided ids active, so the unique (agencyId,kitchenId) index never collides.
 const setAgencyKitchensSchema = z.object({ kitchenIds: z.array(zId) }).passthrough();
 
-foodRouter.put("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.put("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(setAgencyKitchensSchema, req, res)) return;
     const agencyId = req.params["id"]!;
@@ -4677,7 +4679,7 @@ foodRouter.put("/agencies/:id/kitchens", authenticate, authorize("FOOD_ORG", "ed
 });
 
 // Reverse lookup — active agencies linked to a kitchen, joined to agency name.
-foodRouter.get("/kitchens/:id/agencies", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/kitchens/:id/agencies", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const rows = await db.select({
       id: agenciesTable.id, name: agenciesTable.name, isActive: agenciesTable.isActive,
@@ -4702,7 +4704,7 @@ const createAgencyLocationSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/agencies/:id/locations", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodRouter.post("/agencies/:id/locations", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createAgencyLocationSchema, req, res)) return;
     const b = req.body || {};
@@ -4728,7 +4730,7 @@ const updateAgencyLocationSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/agency-locations/:id", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.put("/agency-locations/:id", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(updateAgencyLocationSchema, req, res)) return;
     const b = req.body || {};
@@ -4742,7 +4744,7 @@ foodRouter.put("/agency-locations/:id", authenticate, authorize("FOOD_ORG", "edi
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/agency-locations/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodRouter.delete("/agency-locations/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     // Hard delete — read the row first or nothing survives it (M17).
     const [before] = await db.select().from(agencyLocationsTable).where(eq(agencyLocationsTable.id, req.params["id"]!));
@@ -4761,7 +4763,7 @@ const createAgencyVehicleSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/agencies/:id/vehicles", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodRouter.post("/agencies/:id/vehicles", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createAgencyVehicleSchema, req, res)) return;
     const b = req.body || {};
@@ -4782,7 +4784,7 @@ const updateAgencyVehicleSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/agency-vehicles/:id", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.put("/agency-vehicles/:id", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(updateAgencyVehicleSchema, req, res)) return;
     const b = req.body || {};
@@ -4796,7 +4798,7 @@ foodRouter.put("/agency-vehicles/:id", authenticate, authorize("FOOD_ORG", "edit
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/agency-vehicles/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodRouter.delete("/agency-vehicles/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     // Hard delete — read the row first or nothing survives it (M17).
     const [before] = await db.select().from(agencyVehiclesTable).where(eq(agencyVehiclesTable.id, req.params["id"]!));
@@ -4814,6 +4816,22 @@ foodRouter.delete("/agency-vehicles/:id", authenticate, authorize("FOOD_ORG", "d
 async function countGeoRefs(q: Promise<{ c: number }[]>): Promise<number> {
   const [row] = await q;
   return row?.c ?? 0;
+}
+
+/**
+ * Access grants pinned to this node in the NEW model.
+ *
+ * The guards below already counted `user_scopes`, the legacy scope table, and
+ * missed `access_grants` entirely — so a cluster somebody had been granted
+ * deleted cleanly, and the node behind it could not be removed afterwards
+ * because of the very foreign key nobody had checked. Revoked rows count too:
+ * a soft-revoked grant still holds the FK, so it is still what makes the delete
+ * fail.
+ */
+async function countNodeGrants(nodeId: string): Promise<number> {
+  return countGeoRefs(
+    db.select({ c: sql<number>`count(*)::int` }).from(accessGrantsTable).where(eq(accessGrantsTable.nodeId, nodeId)),
+  );
 }
 
 /**
@@ -4838,7 +4856,7 @@ function refuseGeoDelete(res: Response, label: string, parts: string[]): void {
   });
 }
 
-foodRouter.get("/zones", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/zones", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const rows = await db.select().from(zonesTable).orderBy(zonesTable.name);
     res.json({ success: true, data: rows });
@@ -4851,7 +4869,7 @@ const createZoneSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/zones", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodRouter.post("/zones", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createZoneSchema, req, res)) return;
     const b = req.body || {};
@@ -4859,6 +4877,10 @@ foodRouter.post("/zones", authenticate, authorize("FOOD_ORG", "create"), async (
     const [row] = await db.insert(zonesTable).values({
       id: newId(), name: b.name, code: b.code ?? null, isActive: b.isActive !== false, updatedAt: new Date(),
     }).returning();
+    // Keep the access tree in step. A place that never reaches org_nodes is
+    // a place no CLUSTER/CITY/ZONE grant can expand to, so it would be
+    // invisible to everyone who manages the branch it sits in.
+    await syncOrgNode("ZONE", row.id);
     auditConfig(req, "FOOD_CONFIG_CREATED", "zone", row.id, { after: row });
     res.status(201).json({ success: true, data: row });
   } catch (err) { fail(req, res, err); }
@@ -4870,7 +4892,7 @@ const updateZoneSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/zones/:id", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.put("/zones/:id", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(updateZoneSchema, req, res)) return;
     const b = req.body || {};
@@ -4879,30 +4901,33 @@ foodRouter.put("/zones/:id", authenticate, authorize("FOOD_ORG", "edit"), async 
     const [before] = await db.select().from(zonesTable).where(eq(zonesTable.id, req.params["id"]!));
     const [row] = await db.update(zonesTable).set(u as Partial<typeof zonesTable.$inferInsert>).where(eq(zonesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    await syncOrgNode("ZONE", row.id);
     auditConfig(req, "FOOD_CONFIG_UPDATED", "zone", row.id, { before, after: row });
     res.json({ success: true, data: row });
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/zones/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodRouter.delete("/zones/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     // Grants are counted regardless of isActive: a soft-revoked row still holds
     // the FK, so it is still what makes the delete fail.
     const cities = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(citiesTable).where(eq(citiesTable.zoneId, id)));
-    const grants = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(userScopesTable).where(eq(userScopesTable.zoneId, id)));
+    const grants = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(userScopesTable).where(eq(userScopesTable.zoneId, id)))
+      + await countNodeGrants(id);
     const parts: string[] = [];
     if (cities) parts.push(`${cities} ${cities === 1 ? "city" : "cities"}`);
     if (grants) parts.push(`${grants} access grant${grants === 1 ? "" : "s"}`);
     if (parts.length) { refuseGeoDelete(res, "zone", parts); return; }
     const [before] = await db.select().from(zonesTable).where(eq(zonesTable.id, id));
     await db.delete(zonesTable).where(eq(zonesTable.id, id));
+    await removeOrgNode(id);
     if (before) auditConfig(req, "FOOD_CONFIG_DELETED", "zone", id, { before });
     res.json({ success: true });
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.get("/cities", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/cities", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const zoneId = req.query["zoneId"] as string | undefined;
     const where = zoneId ? eq(citiesTable.zoneId, zoneId) : undefined;
@@ -4917,7 +4942,7 @@ const createCitySchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/cities", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodRouter.post("/cities", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createCitySchema, req, res)) return;
     const b = req.body || {};
@@ -4925,6 +4950,10 @@ foodRouter.post("/cities", authenticate, authorize("FOOD_ORG", "create"), async 
     const [row] = await db.insert(citiesTable).values({
       id: newId(), name: b.name, zoneId: b.zoneId ?? null, isActive: b.isActive !== false, updatedAt: new Date(),
     }).returning();
+    // Keep the access tree in step. A place that never reaches org_nodes is
+    // a place no CLUSTER/CITY/ZONE grant can expand to, so it would be
+    // invisible to everyone who manages the branch it sits in.
+    await syncOrgNode("CITY", row.id);
     auditConfig(req, "FOOD_CONFIG_CREATED", "city", row.id, { after: row });
     res.status(201).json({ success: true, data: row });
   } catch (err) { fail(req, res, err); }
@@ -4936,7 +4965,7 @@ const updateCitySchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/cities/:id", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.put("/cities/:id", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(updateCitySchema, req, res)) return;
     const b = req.body || {};
@@ -4945,18 +4974,20 @@ foodRouter.put("/cities/:id", authenticate, authorize("FOOD_ORG", "edit"), async
     const [before] = await db.select().from(citiesTable).where(eq(citiesTable.id, req.params["id"]!));
     const [row] = await db.update(citiesTable).set(u as Partial<typeof citiesTable.$inferInsert>).where(eq(citiesTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    await syncOrgNode("CITY", row.id);
     auditConfig(req, "FOOD_CONFIG_UPDATED", "city", row.id, { before, after: row });
     res.json({ success: true, data: row });
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/cities/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodRouter.delete("/cities/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     const clusters = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(clustersTable).where(eq(clustersTable.cityId, id)));
     // kitchens.city_id carries no FK, so this is the link that used to break silently.
     const kitchens = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(kitchensTable).where(eq(kitchensTable.cityId, id)));
-    const grants = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(userScopesTable).where(eq(userScopesTable.cityId, id)));
+    const grants = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(userScopesTable).where(eq(userScopesTable.cityId, id)))
+      + await countNodeGrants(id);
     const parts: string[] = [];
     if (clusters) parts.push(`${clusters} cluster${clusters === 1 ? "" : "s"}`);
     if (kitchens) parts.push(`${kitchens} kitchen${kitchens === 1 ? "" : "s"}`);
@@ -4964,12 +4995,13 @@ foodRouter.delete("/cities/:id", authenticate, authorize("FOOD_ORG", "delete"), 
     if (parts.length) { refuseGeoDelete(res, "city", parts); return; }
     const [before] = await db.select().from(citiesTable).where(eq(citiesTable.id, id));
     await db.delete(citiesTable).where(eq(citiesTable.id, id));
+    await removeOrgNode(id);
     if (before) auditConfig(req, "FOOD_CONFIG_DELETED", "city", id, { before });
     res.json({ success: true });
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.get("/clusters", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/clusters", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const cityId = req.query["cityId"] as string | undefined;
     const where = cityId ? eq(clustersTable.cityId, cityId) : undefined;
@@ -4985,7 +5017,7 @@ const createClusterSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.post("/clusters", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodRouter.post("/clusters", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createClusterSchema, req, res)) return;
     const b = req.body || {};
@@ -4993,6 +5025,10 @@ foodRouter.post("/clusters", authenticate, authorize("FOOD_ORG", "create"), asyn
     const [row] = await db.insert(clustersTable).values({
       id: newId(), name: b.name, cityId: b.cityId, managerId: b.managerId ?? null, isActive: b.isActive !== false, updatedAt: new Date(),
     }).returning();
+    // Keep the access tree in step. A place that never reaches org_nodes is
+    // a place no CLUSTER/CITY/ZONE grant can expand to, so it would be
+    // invisible to everyone who manages the branch it sits in.
+    await syncOrgNode("CLUSTER", row.id);
     auditConfig(req, "FOOD_CONFIG_CREATED", "cluster", row.id, { after: row });
     res.status(201).json({ success: true, data: row });
   } catch (err) { fail(req, res, err); }
@@ -5005,7 +5041,7 @@ const updateClusterSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodRouter.put("/clusters/:id", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.put("/clusters/:id", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(updateClusterSchema, req, res)) return;
     const b = req.body || {};
@@ -5014,19 +5050,21 @@ foodRouter.put("/clusters/:id", authenticate, authorize("FOOD_ORG", "edit"), asy
     const [before] = await db.select().from(clustersTable).where(eq(clustersTable.id, req.params["id"]!));
     const [row] = await db.update(clustersTable).set(u as Partial<typeof clustersTable.$inferInsert>).where(eq(clustersTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    await syncOrgNode("CLUSTER", row.id);
     auditConfig(req, "FOOD_CONFIG_UPDATED", "cluster", row.id, { before, after: row });
     res.json({ success: true, data: row });
   } catch (err) { fail(req, res, err); }
 });
 
-foodRouter.delete("/clusters/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodRouter.delete("/clusters/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     // properties.cluster_id has no FK — this is the count that was silently
     // detaching properties from the org spine on every cluster delete.
     const props = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(propertiesTable).where(eq(propertiesTable.clusterId, id)));
     const kitchens = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(kitchensTable).where(eq(kitchensTable.clusterId, id)));
-    const grants = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(userScopesTable).where(eq(userScopesTable.clusterId, id)));
+    const grants = await countGeoRefs(db.select({ c: sql<number>`count(*)::int` }).from(userScopesTable).where(eq(userScopesTable.clusterId, id)))
+      + await countNodeGrants(id);
     const parts: string[] = [];
     if (props) parts.push(`${props} propert${props === 1 ? "y" : "ies"}`);
     if (kitchens) parts.push(`${kitchens} kitchen${kitchens === 1 ? "" : "s"}`);
@@ -5034,6 +5072,7 @@ foodRouter.delete("/clusters/:id", authenticate, authorize("FOOD_ORG", "delete")
     if (parts.length) { refuseGeoDelete(res, "cluster", parts); return; }
     const [before] = await db.select().from(clustersTable).where(eq(clustersTable.id, id));
     await db.delete(clustersTable).where(eq(clustersTable.id, id));
+    await removeOrgNode(id);
     if (before) auditConfig(req, "FOOD_CONFIG_DELETED", "cluster", id, { before });
     res.json({ success: true });
   } catch (err) { fail(req, res, err); }
@@ -5078,7 +5117,7 @@ async function deniedClusterScope(req: Request, res: Response, clusterId: string
 // something the server will honour (C5). Its twin, assign-kitchen, is closed too.
 const assignClusterSchema = z.object({ clusterId: zId.nullish() }).strict();
 
-foodRouter.post("/properties/:id/assign-cluster", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.post("/properties/:id/assign-cluster", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(assignClusterSchema, req, res)) return;
     const clusterId = req.body?.clusterId ? String(req.body.clusterId) : null;
@@ -5124,7 +5163,7 @@ foodRouter.post("/properties/:id/assign-cluster", authenticate, authorize("FOOD_
  * Master data — User scopes
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/scopes", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/scopes", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const userId = req.query["userId"] as string | undefined;
     // Revocation is soft (isActive), so the default listing must show LIVE
@@ -5186,7 +5225,7 @@ async function scopeTargetIsLive(level: GeoScopeLevel, id: string): Promise<bool
   }
 }
 
-foodRouter.post("/scopes", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodRouter.post("/scopes", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createScopeSchema, req, res)) return;
     const b = req.body || {};
@@ -5279,7 +5318,7 @@ foodRouter.post("/scopes", authenticate, authorize("FOOD_ORG", "edit"), async (r
   }
 });
 
-foodRouter.delete("/scopes/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodRouter.delete("/scopes/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     // Soft revoke. A hard DELETE left "never configured" and "deliberately
     // revoked" indistinguishable, with no record of who lost what; the resolver
@@ -5298,7 +5337,7 @@ foodRouter.delete("/scopes/:id", authenticate, authorize("FOOD_ORG", "delete"), 
  * Master data — Food users
  * ──────────────────────────────────────────────────────────────────────────── */
 
-foodRouter.get("/food-users", authenticate, authorize("FOOD_ORG", "view"), async (req, res) => {
+foodRouter.get("/food-users", authenticate, authorize("FOOD_ORG", "view_kitchen_org"), async (req, res) => {
   try {
     const rows = await db.select({
       id: usersTable.id,

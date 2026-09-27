@@ -69,7 +69,7 @@ export default function IoTPage() {
   const saveDev = useMutation({
     mutationFn: (d: any) => apiFetch<{ data: Device }>(`/iot/devices${editDev ? `/${editDev.id}` : ""}`, { method: editDev ? "PUT" : "POST", body: JSON.stringify(d) }),
     onSuccess: (res) => {
-      toast({ title: editDev ? "Device updated" : "Device registered" });
+      toast({ variant: "success", title: editDev ? "Device updated" : "Device registered" });
       qc.invalidateQueries({ queryKey: ["iot-devices"] });
       setDevOpen(false);
       if (!editDev && res.data?.ingestionToken) {
@@ -89,7 +89,7 @@ export default function IoTPage() {
     onError: (e: Error) => toast({ title: e.message, variant: "destructive" }),
   });
 
-  const copyToken = (t: string) => { navigator.clipboard.writeText(t); toast({ title: "Token copied" }); };
+  const copyToken = (t: string) => { navigator.clipboard.writeText(t); toast({ variant: "success", title: "Token copied" }); };
 
   return (
     <div className="space-y-6">
@@ -113,7 +113,7 @@ export default function IoTPage() {
 
         <TabsContent value="devices" className="space-y-4">
           <div className="flex justify-end">
-            {can("IOT", "create") && <Button onClick={() => openDev()} data-testid="button-add-device"><Plus className="w-4 h-4 mr-2" />Register Device</Button>}
+            {can("IOT", "add_iot") && <Button onClick={() => openDev()} data-testid="button-add-device"><Plus className="w-4 h-4 mr-2" />Register Device</Button>}
           </div>
           <Card><CardContent className="p-0">
             {isLoading ? <div className="p-8 text-center text-muted-foreground">Loading...</div> : devices.length === 0 ? (
@@ -134,8 +134,8 @@ export default function IoTPage() {
                       <td className="px-4 py-3"><Badge variant={d.status === "ACTIVE" ? "default" : "secondary"}>{d.status}</Badge></td>
                       <td className="px-4 py-3 text-xs">{d.lastSeenAt ? formatDistanceToNow(new Date(d.lastSeenAt), { addSuffix: true }) : "Never"}</td>
                       <td className="px-4 py-3 text-right space-x-2">
-                        {can("IOT", "edit") && <Button size="sm" variant="outline" onClick={() => rotateMut.mutate(d.id)} data-testid={`button-rotate-${d.id}`}><KeyRound className="w-3 h-3 mr-1" />Rotate</Button>}
-                        {can("IOT", "edit") && <Button size="sm" variant="ghost" onClick={() => openDev(d)}>Edit</Button>}
+                        {can("IOT", "edit_iot") && <Button size="sm" variant="outline" onClick={() => rotateMut.mutate(d.id)} data-testid={`button-rotate-${d.id}`}><KeyRound className="w-3 h-3 mr-1" />Rotate</Button>}
+                        {can("IOT", "edit_iot") && <Button size="sm" variant="ghost" onClick={() => openDev(d)}>Edit</Button>}
                       </td>
                     </tr>
                   ))}

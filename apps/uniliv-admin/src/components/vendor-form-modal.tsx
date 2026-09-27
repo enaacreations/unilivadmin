@@ -98,10 +98,10 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: Props) 
       Object.keys(body).forEach((k) => body[k] === "" && delete body[k]);
       if (vendor?.id) {
         await apiFetch(`/vendors/${vendor.id}`, { method: "PUT", body: JSON.stringify(body) });
-        toast({ title: "Vendor updated" });
+        toast({ variant: "success", title: "Vendor updated" });
       } else {
         await apiFetch(`/vendors`, { method: "POST", body: JSON.stringify(body) });
-        toast({ title: "Vendor created" });
+        toast({ variant: "success", title: "Vendor created" });
       }
       qc.invalidateQueries({ queryKey: ["vendors"] });
       qc.invalidateQueries({ queryKey: [`/api/vendors/${vendor?.id}`] });

@@ -18,7 +18,7 @@ import {
 import { eq, desc, and, sql, inArray, asc } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { assertPropertyAccess, scopedPropertyId, httpError, isSuperAdmin } from "../lib/authz.js";
+import { assertPropertyAccess, scopedPropertyIds, httpError, isSuperAdmin } from "../lib/authz.js";
 import { newId } from "../lib/id.js";
 import {
   getOrCreateWallet,
@@ -206,7 +206,7 @@ function serializeTxn(txn: {
 walletRouter.get(
   "/wallet/residents/:residentId",
   authenticate,
-  authorize("WALLET", "view"),
+  authorize("WALLET", "view_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -222,7 +222,7 @@ walletRouter.get(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
       const wallet = await getOrCreateWallet(residentId);
       const [txCount] = await db
         .select({ count: sql<number>`count(*)::int` })
@@ -256,7 +256,7 @@ walletRouter.get(
 walletRouter.get(
   "/wallet/residents/:residentId/transactions",
   authenticate,
-  authorize("WALLET", "view"),
+  authorize("WALLET", "view_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -271,7 +271,7 @@ walletRouter.get(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
 
       const wallet = await getOrCreateWallet(residentId);
       const rows = await db
@@ -316,7 +316,7 @@ walletRouter.get(
 walletRouter.post(
   "/wallet/residents/:residentId/topup",
   authenticate,
-  authorize("WALLET", "create"),
+  authorize("WALLET", "add_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -340,7 +340,7 @@ walletRouter.post(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
       if (!resident.walletEnabled) {
         res.status(400).json({ success: false, error: "Wallet is disabled for this resident" });
         return;
@@ -433,7 +433,7 @@ walletRouter.post(
 walletRouter.post(
   "/wallet/:residentId/topup-link",
   authenticate,
-  authorize("WALLET", "create"),
+  authorize("WALLET", "add_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -452,7 +452,7 @@ walletRouter.post(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
       if (!resident.walletEnabled) {
         res.status(400).json({ success: false, error: "Wallet is disabled for this resident" });
         return;
@@ -506,7 +506,7 @@ walletRouter.post(
 walletRouter.post(
   "/wallet/residents/:residentId/pay",
   authenticate,
-  authorize("WALLET", "create"),
+  authorize("WALLET", "add_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -530,7 +530,7 @@ walletRouter.post(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
       if (!resident.walletEnabled) {
         res.status(400).json({ success: false, error: "Wallet is disabled for this resident" });
         return;
@@ -727,7 +727,7 @@ walletRouter.post(
 walletRouter.post(
   "/wallet/residents/:residentId/partial-pay",
   authenticate,
-  authorize("WALLET", "create"),
+  authorize("WALLET", "add_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -767,7 +767,7 @@ walletRouter.post(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
       if (!resident.walletEnabled) {
         res.status(400).json({ success: false, error: "Wallet is disabled for this resident" });
         return;
@@ -996,7 +996,7 @@ walletRouter.post(
 walletRouter.post(
   "/wallet/residents/:residentId/checkout-refund",
   authenticate,
-  authorize("WALLET", "create"),
+  authorize("WALLET", "add_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -1009,7 +1009,7 @@ walletRouter.post(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
 
       const wallet = await getOrCreateWallet(residentId);
       const currentBalance = Number(wallet.balance);
@@ -1192,7 +1192,7 @@ walletRouter.post(
 walletRouter.post(
   "/wallet/residents/:residentId/adjust",
   authenticate,
-  authorize("WALLET", "create"),
+  authorize("WALLET", "add_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -1228,7 +1228,7 @@ walletRouter.post(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
 
       const wallet = await getOrCreateWallet(residentId);
       const config = await getWalletConfig(resident.propertyId);
@@ -1314,7 +1314,7 @@ walletRouter.post(
 walletRouter.post(
   "/wallet/residents/:residentId/reversal",
   authenticate,
-  authorize("WALLET", "create"),
+  authorize("WALLET", "add_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -1352,7 +1352,7 @@ walletRouter.post(
         }
 
         // For property-scoped callers, ensure the reversed txn is in their scope.
-        assertPropertyAccess(req, original.propertyId);
+        await assertPropertyAccess(req, original.propertyId);
 
         // Direction and the credit/debit dispatch live in wallet-service so the
         // C2 arithmetic (REFUND_WITHDRAWAL reverses as a CREDIT, not a second
@@ -1405,7 +1405,7 @@ walletRouter.post(
 walletRouter.patch(
   "/wallet/residents/:residentId/toggle",
   authenticate,
-  authorize("WALLET", "edit"),
+  authorize("WALLET", "edit_wallet"),
   async (req, res) => {
     try {
       const { residentId } = req.params as { residentId: string };
@@ -1418,7 +1418,7 @@ walletRouter.patch(
         res.status(404).json({ success: false, error: "Resident not found" });
         return;
       }
-      assertPropertyAccess(req, resident.propertyId);
+      await assertPropertyAccess(req, resident.propertyId);
       const walletEnabled =
         typeof body.walletEnabled === "boolean" ? body.walletEnabled : !resident.walletEnabled;
       await db
@@ -1444,11 +1444,11 @@ walletRouter.patch(
 walletRouter.get(
   "/wallet/config/:propertyId",
   authenticate,
-  authorize("WALLET", "view"),
+  authorize("WALLET", "view_wallet"),
   async (req, res) => {
     try {
       const { propertyId } = req.params as { propertyId: string };
-      assertPropertyAccess(req, propertyId);
+      await assertPropertyAccess(req, propertyId);
       const [config] = await db
         .select()
         .from(walletConfigTable)
@@ -1504,11 +1504,11 @@ walletRouter.get(
 walletRouter.put(
   "/wallet/config/:propertyId",
   authenticate,
-  authorize("WALLET", "edit"),
+  authorize("WALLET", "edit_wallet"),
   async (req, res) => {
     try {
       const { propertyId } = req.params as { propertyId: string };
-      assertPropertyAccess(req, propertyId);
+      await assertPropertyAccess(req, propertyId);
       const body = req.body || {};
 
       const [existing] = await db
@@ -1584,7 +1584,7 @@ walletRouter.put(
 walletRouter.get(
   "/wallet/overview",
   authenticate,
-  authorize("WALLET", "view"),
+  authorize("WALLET", "view_wallet"),
   async (req, res) => {
     try {
       const propertyId = req.query["propertyId"] as string | undefined;
@@ -1594,11 +1594,11 @@ walletRouter.get(
 
       // Best-effort row scoping: property-bound callers (WARDEN/UNIT_LEAD) only
       // ever see their own property; org-wide roles are unaffected (scope=null).
-      const scope = scopedPropertyId(req);
+      const scope = await scopedPropertyIds(req);
 
       // Build conditions
       const conditions = [];
-      if (scope) conditions.push(eq(residentsTable.propertyId, scope));
+      if (scope) conditions.push(inArray(residentsTable.propertyId, scope));
       if (propertyId) conditions.push(eq(residentsTable.propertyId, propertyId));
       if (search) {
         const { ilike, or } = await import("drizzle-orm");
@@ -1648,7 +1648,7 @@ walletRouter.get(
         .from(walletsTable)
         .innerJoin(residentsTable, eq(walletsTable.residentId, residentsTable.id));
       const [countRow] = await (scope
-        ? countQuery.where(eq(residentsTable.propertyId, scope))
+        ? countQuery.where(inArray(residentsTable.propertyId, scope))
         : countQuery);
 
       const totalsQuery = db
@@ -1659,7 +1659,7 @@ walletRouter.get(
         .from(walletsTable)
         .innerJoin(residentsTable, eq(walletsTable.residentId, residentsTable.id));
       const [totalsRow] = await (scope
-        ? totalsQuery.where(eq(residentsTable.propertyId, scope))
+        ? totalsQuery.where(inArray(residentsTable.propertyId, scope))
         : totalsQuery);
 
       res.json({

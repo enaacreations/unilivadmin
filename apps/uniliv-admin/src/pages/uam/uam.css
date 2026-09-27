@@ -1,0 +1,387 @@
+/*
+ * User & Access Management — theme bridge.
+ *
+ * This module used to carry its own palette and type (warm paper, Newsreader
+ * serif titles, Instrument Sans) because it was drawn from a standalone design
+ * prototype. Scoping it to `.uam` kept it from repainting fourteen other
+ * screens — but it also meant the module never looked like the product it
+ * lives in: different fonts, a brown accent where the app is coral, and titles
+ * up to 32px where every other page header is 24px.
+ *
+ * So the token NAMES stay (no component churn) and their VALUES now come from
+ * the app's own theme in src/index.css. Two consequences worth knowing:
+ *
+ *   1. The aliases are declared on :root, not on .uam. A `--surface` inside
+ *      .uam would shadow the app's `--surface`, so `--bg: var(--surface)`
+ *      would read its own value back. Resolving one level up avoids that.
+ *   2. Dark mode is inherited. The app's `.dark` block already flips every
+ *      token these point at, so this file no longer needs a dark override.
+ */
+:root {
+  --uam-bg: var(--surface);
+  --uam-side: var(--muted-bg);
+  --uam-panel: var(--card);
+  --uam-sunk: var(--muted-bg);
+  --uam-sel: var(--coral-bg);
+  --uam-line: var(--border);
+  --uam-line2: var(--bd2);
+  --uam-ink: var(--ink);
+  --uam-ink2: var(--muted);
+  --uam-ink3: var(--ink3);
+
+  /* Two coral tokens on purpose: --accent-strong passes AA as TEXT on light,
+     --accent is the solid fill behind white. The module used one for both. */
+  --uam-accent: var(--accent-strong);
+  --uam-accent-fill: var(--accent);
+  --uam-on-accent: var(--accent-foreground);
+  --uam-accent-soft: var(--coral-bg);
+
+  --uam-allow: var(--success);
+  --uam-allow-soft: var(--success-bg);
+  --uam-block: var(--danger);
+  --uam-block-soft: var(--danger-bg);
+  --uam-warn: var(--warning);
+  --uam-warn-soft: var(--warning-bg);
+}
+
+.uam {
+  --sans: var(--app-font-sans);
+  --mono: var(--app-font-mono);
+  /* Title face, weight and tracking: one knob, so a title never drifts.
+     Matches PageHeader — font-display, bold, tracking-tight. */
+  --tf: var(--app-font-display);
+  --tw: 700;
+  --tt: -0.02em;
+  --r: var(--radius);
+  --r-sm: calc(var(--radius) - 2px);
+
+  --bg: var(--uam-bg);
+  --side: var(--uam-side);
+  --surface: var(--uam-panel);
+  --sunk: var(--uam-sunk);
+  --sel: var(--uam-sel);
+  --line: var(--uam-line);
+  --line2: var(--uam-line2);
+  --ink: var(--uam-ink);
+  --ink2: var(--uam-ink2);
+  --ink3: var(--uam-ink3);
+
+  --accent: var(--uam-accent);
+  --accent-fill: var(--uam-accent-fill);
+  --on-accent: var(--uam-on-accent);
+  --accent-soft: var(--uam-accent-soft);
+
+  /* Semantic pair. An access tool says yes and no more than anything else, so
+     allow/block stay first-class names — pointed at the app's semantics. */
+  --allow: var(--uam-allow);
+  --allow-soft: var(--uam-allow-soft);
+  --block: var(--uam-block);
+  --block-soft: var(--uam-block-soft);
+  --block-line: var(--uam-block);
+  --warn: var(--uam-warn);
+  --warn-soft: var(--uam-warn-soft);
+  --warn-line: var(--uam-warn);
+
+  /* --scrim is inherited from :root; redeclaring it here would be a cycle. */
+  --sheet-shadow: var(--overlay-shadow);
+  --modal-shadow: var(--overlay-shadow);
+  /* The app's surfaces are "flat — separated by hairlines, not shadows"
+     (index.css). Cards here now follow that rather than lifting. */
+  --lift: none;
+
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--bg);
+}
+
+/* ── Type ──────────────────────────────────────────────────────────────── */
+
+/* The page question, at the same size and face as every other page title in
+   the app (PageHeader's text-2xl font-display). */
+.uam-title {
+  font-family: var(--tf);
+  font-weight: var(--tw);
+  letter-spacing: var(--tt);
+  font-size: 24px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.uam-kicker {
+  font-size: 12px;
+  color: var(--ink3);
+}
+.uam-lede {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink2);
+  text-wrap: pretty;
+}
+/* Technical keys. Present for the engineer reading over a shoulder, never the
+   thing an operator has to parse. */
+.uam-key {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink3);
+  text-transform: uppercase;
+}
+
+/* ── Surfaces ──────────────────────────────────────────────────────────── */
+
+.uam-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--lift);
+}
+.uam-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.uam-row:last-child { border-bottom: 0; }
+.uam-row-link:hover { background: var(--sunk); }
+.uam-row-selected { background: var(--sel); }
+
+/* ── Controls ──────────────────────────────────────────────────────────── */
+
+.uam-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line2);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.uam-btn:hover { background: var(--sunk); }
+.uam-btn-primary {
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
+}
+.uam-btn-primary:hover { filter: brightness(1.06); background: var(--accent-fill); }
+/* Outline red OPENS a modal; filled red COMMITS, and only inside one, after a
+   reason. The weight difference is the tell. */
+.uam-btn-danger { border-color: var(--block-line); color: var(--block); background: transparent; }
+.uam-btn-danger:hover { background: var(--block-soft); }
+.uam-btn-danger-solid {
+  background: var(--block);
+  border-color: var(--block);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.uam-btn:disabled { opacity: 0.45; pointer-events: none; }
+
+/* Chip — a filter, a preset, a removable value. */
+.uam-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line2);
+  background: var(--surface);
+  color: var(--ink2);
+  padding: 5px 11px;
+  font-size: 12.5px;
+}
+.uam-chip:hover { background: var(--sunk); }
+.uam-chip-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* Badge — a state, never a control. */
+.uam-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border: 1px solid var(--line);
+  background: var(--sunk);
+  color: var(--ink2);
+}
+.uam-badge-allow { background: var(--allow-soft); border-color: transparent; color: var(--allow); }
+.uam-badge-block { background: var(--block-soft); border-color: var(--block-line); color: var(--block); }
+.uam-badge-warn  { background: var(--warn-soft);  border-color: var(--warn-line);  color: var(--warn); }
+
+/* Segmented control — few, mutually exclusive views of one thing. */
+.uam-seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 9px;
+  background: var(--sunk);
+  border: 1px solid var(--line);
+}
+.uam-seg-item {
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  color: var(--ink2);
+}
+.uam-seg-item[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: var(--lift);
+}
+
+.uam-input {
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line2);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 8px 11px;
+  font-size: 13.5px;
+  font-family: inherit;
+}
+.uam-input-fill { width: 100%; }
+.uam-input::placeholder { color: var(--ink3); }
+.uam-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* Tabs — sibling views of ONE object, which is why they sit under its title. */
+.uam-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.uam-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 42px;
+  padding: 0 14px;
+  /* -1px pulls the indicator onto the bar's own hairline. */
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  /* Rounded at the top only: a tab is attached to the bar below it, and
+     squaring the bottom corners is what makes it read as attached rather than
+     as a floating button. */
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--ink3);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
+}
+/* Inactive tabs answer to the pointer, which is most of what tells somebody
+   the row is interactive at all — without it a tab strip reads as a heading. */
+.uam-tab:hover {
+  background: var(--sunk);
+  color: var(--ink2);
+}
+.uam-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.uam-tab[aria-selected="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--surface);
+  border-bottom-color: var(--accent);
+}
+.uam-tab[aria-selected="true"]:hover {
+  background: var(--surface);
+}
+.uam-count {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--sunk);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink2);
+}
+
+/* ── Overlays ──────────────────────────────────────────────────────────── */
+
+.uam-scrim { background: var(--scrim); }
+.uam-sheet {
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--sheet-shadow);
+}
+.uam-modal {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--modal-shadow);
+}
+@keyframes uam-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes uam-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.uam-sheet-enter { animation: uam-slide-in 180ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+.uam-scrim-enter { animation: uam-fade-in 140ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .uam-sheet-enter, .uam-scrim-enter { animation: none; }
+}
+
+/* Keyboard users get a ring the prototype never drew. */
+.uam :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── Subject picker popover ─────────────────────────────────────────────
+ * The shared cmdk/Command parts carry the app's own border and focus
+ * treatment. Inside this module's palette that read as a second heavy box
+ * stacked under the trigger, so the popover is restyled here rather than with
+ * a pile of arbitrary Tailwind variants at the call site.
+ */
+.uam-picker [cmdk-input-wrapper] {
+  border-bottom: 1px solid var(--line);
+  padding: 0 10px;
+}
+/* The popover IS the focus context; ringing the field inside it boxes a box. */
+.uam-picker [cmdk-input]:focus-visible { outline: none; }
+.uam-picker [cmdk-input] { color: var(--ink); }
+.uam-picker [cmdk-input]::placeholder { color: var(--ink3); }
+.uam-picker [cmdk-group-heading] {
+  padding: 8px 10px 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+.uam-picker [cmdk-group] { padding: 2px 4px 4px; }
+.uam-picker [cmdk-item] { border-radius: var(--r-sm); }
+
+/* ── Date field ─────────────────────────────────────────────────────────
+ * The native control, quietened. The module's global :focus-visible ring is
+ * a 2px accent outline, which on a field that opens its own popup read as a
+ * second, louder box around an already-bordered input.
+ */
+.uam-date {
+  width: 190px;
+  color: var(--ink);
+}
+.uam-date:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.uam-date::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 120ms ease;
+}
+.uam-date::-webkit-calendar-picker-indicator:hover { opacity: 0.9; }
+/* Dark mode inverts the native glyph, which otherwise stays black on dark. */
+.dark .uam-date::-webkit-calendar-picker-indicator { filter: invert(0.85); }

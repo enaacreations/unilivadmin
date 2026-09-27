@@ -117,14 +117,14 @@ export default function FoodSettings() {
   // without the grant (F&B Manager) build the rotation from the agreed
   // catalogue instead of editing it, so those three tabs are not shown —
   // the write endpoints refuse them too, this is not the only gate.
-  const canCatalogue = can("FOOD_CATALOGUE", "view");
+  const canCatalogue = can("FOOD_CATALOGUE", "view_service_catalogue");
   // Food Defaults are org-wide (default cut-off + waste edit window) — Super
   // Admin only (backend PUT mirrors this). F&B Manager manages day-to-day food
   // config but not these org-wide fallbacks.
   const canFoodDefaults = isSuperAdmin;
   // Every other write here is FOOD_SETTINGS edit server-side; PageGuard only
   // checks view, so read-only principals (AUDIT_READONLY) reach this page.
-  const canEdit = can("FOOD_SETTINGS", "edit");
+  const canEdit = can("FOOD_SETTINGS", "edit_food_setting");
   // Two config surfaces here are BRAND-WIDE by construction — the per-resident
   // portion rules (no property/kitchen column at all) and the composition rules'
   // brand-level row. The server refuses both for a scope-restricted caller (H4),
@@ -345,7 +345,7 @@ function MealTypesSection({
         sortOrder: v.sortOrder,
         isEnabled: v.isEnabled,
       }),
-    onSuccess: () => { toast({ title: scopeId ? "Property meal type saved" : "Meal type updated" }); invalidate(); setEditing(null); },
+    onSuccess: () => { toast({ variant: "success", title: scopeId ? "Property meal type saved" : "Meal type updated" }); invalidate(); setEditing(null); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
   const toggleMut = useMutation({
@@ -356,12 +356,12 @@ function MealTypesSection({
         sortOrder: c.sortOrder,
         isEnabled: !c.isEnabled,
       }),
-    onSuccess: () => { toast({ title: "Meal type updated" }); invalidate(); },
+    onSuccess: () => { toast({ variant: "success", title: "Meal type updated" }); invalidate(); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
   const resetMut = useMutation({
     mutationFn: (c: MealConfig) => foodApi.deleteMealConfigOverride(c.mealType, c.propertyId!),
-    onSuccess: () => { toast({ title: "Reverted to the organisation default" }); invalidate(); setResetTarget(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Reverted to the organisation default" }); invalidate(); setResetTarget(null); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
 
@@ -555,12 +555,12 @@ function CutoffConfigPanel({ properties, propName, canEdit }: { properties: Food
       const body = { brand: form.brand, cutoffTime: form.cutoffTime.trim(), propertyId: form.propertyId || null };
       return editing ? foodApi.updateCutoffConfig(editing.id, body) : foodApi.createCutoffConfig(body);
     },
-    onSuccess: () => { toast({ title: editing ? "Cut-off updated" : "Cut-off added" }); invalidate(); setOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: editing ? "Cut-off updated" : "Cut-off added" }); invalidate(); setOpen(false); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
   const del = useMutation({
     mutationFn: (id: string) => foodApi.deleteCutoffConfig(id),
-    onSuccess: () => { toast({ title: "Cut-off removed" }); invalidate(); setDelTarget(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Cut-off removed" }); invalidate(); setDelTarget(null); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
 
@@ -686,12 +686,12 @@ function ServiceTimesSection({ properties, propName, canEdit }: { properties: Fo
       };
       return editing ? foodApi.updateMealWindow(editing.id, body) : foodApi.createMealWindow(body);
     },
-    onSuccess: () => { toast({ title: editing ? "Cut-off window updated" : "Cut-off window created" }); invalidate(); setModalOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: editing ? "Cut-off window updated" : "Cut-off window created" }); invalidate(); setModalOpen(false); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
   const delMut = useMutation({
     mutationFn: (id: string) => foodApi.deleteMealWindow(id),
-    onSuccess: () => { toast({ title: "Cut-off window deleted" }); invalidate(); setDelTarget(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Cut-off window deleted" }); invalidate(); setDelTarget(null); },
     onError: (e: any) => toast({ title: e?.message || "Failed", variant: "destructive" }),
   });
 
@@ -841,7 +841,7 @@ function FoodDefaultsTab() {
       return foodApi.updateFoodDefaults({ defaultCutoff: defaultCutoff.trim(), wasteWindowMinutes });
     },
     onSuccess: () => {
-      toast({ title: "Food defaults saved" });
+      toast({ variant: "success", title: "Food defaults saved" });
       qc.invalidateQueries({ queryKey: ["food", "system-config", "food-defaults"] });
     },
     onError: (e: any) => toast({ title: e?.message || "Failed to save", variant: "destructive" }),
@@ -916,6 +916,7 @@ function OrderHeadroomCard() {
     },
     onSuccess: (saved) => {
       toast({
+        variant: "success",
         title: "Ordering headroom saved",
         description: `Orders may now go up to ${saved.pct}% above the derived headcount and quantity.`,
       });

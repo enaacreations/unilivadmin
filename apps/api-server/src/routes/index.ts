@@ -37,6 +37,8 @@ import { auditReviewsRouter } from "./audit-reviews.js";
 import { auditReportsRouter, auditSharedPublicRouter } from "./audit-reports.js";
 import { auditAdminRouter } from "./audit-admin.js";
 import { accessRouter } from "./access.js";
+import { roleImpactRouter } from "./role-impact.js";
+import { privilegeSetsRouter } from "./privilege-sets.js";
 import { formDraftsRouter } from "./form-drafts.js";
 
 const router: IRouter = Router();
@@ -106,6 +108,12 @@ router.use("/audit-shared", auditSharedPublicRouter); // public expiring share l
 router.use("/audit/admin", auditAdminRouter);
 
 // Access-control introspection (PRD §31). Read-only; gated on ACCESS_CONTROL.
+// Mounted before accessRouter: distinct paths, but first-registered wins here
+// and keeping the order explicit is cheaper than rediscovering that later.
+router.use("/access", roleImpactRouter);
+// Same reason as roleImpactRouter above: distinct paths, registered before
+// accessRouter so a future `/privilege-*` there cannot shadow these.
+router.use("/access", privilegeSetsRouter);
 router.use("/access", accessRouter);
 
 export default router;

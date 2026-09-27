@@ -177,6 +177,7 @@ export function BulkUploadDialog({
       if (res.updated) parts.push(`${res.updated} updated`);
       if (res.skipped) parts.push(`${res.skipped} skipped`);
       toast({
+        variant: "success",
         title: `Imported ${written} ${resource}`,
         ...(parts.length > 1 ? { description: `${parts.join(", ")}.` } : {}),
       });

@@ -24,7 +24,8 @@
 import { and, eq, gt, inArray, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { Request } from "express";
-import { overridesFor, type OverrideMap } from "./access/overrides.js";
+import { privilegesFor, type PrivilegeMap } from "./access/privileges.js";
+import { rolesFor } from "./access/roles.js";
 import {
   db,
   accessGrantsTable,
@@ -33,7 +34,8 @@ import {
   type AccessDataScope,
 } from "@workspace/db";
 import type { AuthUser } from "../middlewares/auth.js";
-import { isSuperAdmin, forbidden, badRequest } from "./authz.js";
+import { isSuperAdmin, primaryRoleOf, forbidden, badRequest, installPropertyScopeResolver } from "./authz.js";
+import { MODULE_ROLES } from "./access/matrix.js";
 import { descendantIds } from "./org-tree.js";
 
 export type DataScope = AccessDataScope;
@@ -74,14 +76,21 @@ export interface EffectiveAccess {
   /** Direct + indirect reports. Lazy and memoized — only TEAM handlers pay. */
   teamEmployeeIds: () => Promise<string[]>;
   /**
-   * This person's exceptions to their role's matrix ("MODULE:action" → effect).
-   * Empty for almost everyone; decide() consults it before answering.
+   * Every role this person holds. Capability is the UNION across them.
    *
-   * OPTIONAL so that a hand-built EffectiveAccess (tests, the audit adapter's
-   * fixtures) means "no exceptions" rather than failing to compile. resolveAccess
-   * always populates it.
+   * `roleKey` above remains the PRIMARY role for display, audit-trail actor
+   * strings and the legacy single-role helpers; it is the highest-ranked member
+   * of this set, never an independent source of truth.
    */
-  overrides?: OverrideMap;
+  roleKeys: string[];
+  /**
+   * Property-scoped privileges — this person's own plus those of every role
+   * they hold, keyed by "MODULE:action". Empty for almost everyone.
+   *
+   * OPTIONAL so a hand-built EffectiveAccess (tests, the audit adapter's
+   * fixtures) means "no exceptions" rather than failing to compile.
+   */
+  privileges?: PrivilegeMap;
 }
 
 /**
@@ -94,7 +103,33 @@ export interface EffectiveAccess {
  * `grants[]` for their own adapter (see access/audit-adapter.ts) to read.
  */
 export const GENERAL_ROLE_KEY = "*";
-const isGeneralGrant = (g: { roleKey: string }) => g.roleKey === GENERAL_ROLE_KEY;
+
+/** The module personas — the roles whose grants must NOT widen general scope. */
+const MODULE_ROLE_KEYS = new Set(MODULE_ROLES.map((r) => r.key));
+
+/**
+ * Does this grant contribute to the caller's general property scope?
+ *
+ *   '*'            — yes. The person's own placement, whatever they hold.
+ *   a PLATFORM role — yes, if they still hold it. This is how "Unit Lead at
+ *                     Marasali and Koramangala" reaches both: the place is
+ *                     stored per role, so excluding per-role grants left the
+ *                     new model correct on the Access screens and invisible to
+ *                     every property-scoped list.
+ *   a MODULE role   — no, ever. An AUDIT.VIEWER grant written org-wide once
+ *                     made the FOOD scope unrestricted and handed a City Head
+ *                     the whole estate; a module persona confers reach inside
+ *                     its own module and nowhere else.
+ *
+ * The held-role test matters: a grant left behind by a revoked role must not
+ * keep widening scope. Revoking deletes those rows, so this is a backstop.
+ */
+function generalGrantPredicate(heldRoles: string[]) {
+  const held = new Set(heldRoles);
+  return (g: { roleKey: string }) =>
+    g.roleKey === GENERAL_ROLE_KEY ||
+    (!MODULE_ROLE_KEYS.has(g.roleKey) && held.has(g.roleKey));
+}
 
 /** ALL is widest; SELF narrowest. A user holding several grants gets the widest. */
 const SCOPE_WIDTH: Record<DataScope, number> = { ALL: 3, TEAM: 2, ASSIGNED: 1, SELF: 0 };
@@ -109,22 +144,32 @@ function liveGrantWindow(now: Date) {
 }
 
 export async function resolveAccess(user: AuthUser, now = new Date()): Promise<EffectiveAccess> {
-  const roleKey = (user as { roleKey?: string | null }).roleKey || user.role;
-  const [employeeId, overrides] = await Promise.all([
+  // Membership first: the privilege lookup needs the role set, because a role's
+  // privileges reach every holder.
+  const roleKeys = await rolesFor(user.id, (user as { roleKey?: string | null }).roleKey || user.role);
+  // The primary role, for display and for the legacy single-role helpers. The
+  // highest-ranked member rather than an arbitrary one, so a user who holds
+  // both WARDEN and CITY_HEAD reads as the latter everywhere a single role is
+  // still shown.
+  const roleKey = primaryRoleOf(roleKeys) || (user as { roleKey?: string | null }).roleKey || user.role;
+  const [employeeId, privileges] = await Promise.all([
     resolveEmployeeId(user.id),
-    overridesFor(user.id),
+    privilegesFor(user.id, roleKeys),
   ]);
   const base = {
     userId: user.id,
     role: user.role,
     roleKey,
+    roleKeys,
     employeeId,
-    overrides,
+    privileges,
     teamEmployeeIds: memoizedTeam(employeeId),
   };
 
-  // Super-admin short-circuits with zero queries, exactly as resolveAuditAccess does.
-  if (isSuperAdmin(user.role)) {
+  // Super-admin short-circuits, exactly as resolveAuditAccess does. Checked
+  // against the SET: holding a parity role in addition to an ordinary one still
+  // makes you a parity user.
+  if (roleKeys.some((r) => isSuperAdmin(r)) || isSuperAdmin(user.role)) {
     return {
       ...base,
       isGlobalAdmin: true,
@@ -144,7 +189,8 @@ export async function resolveAccess(user: AuthUser, now = new Date()): Promise<E
       and(
         or(
           and(eq(accessGrantsTable.subjectType, "USER"), eq(accessGrantsTable.subjectId, user.id)),
-          and(eq(accessGrantsTable.subjectType, "ROLE"), eq(accessGrantsTable.subjectId, roleKey)),
+          // Grants bound to a ROLE reach every holder of that role — plural now.
+          and(eq(accessGrantsTable.subjectType, "ROLE"), inArray(accessGrantsTable.subjectId, roleKeys.length ? roleKeys : [roleKey])),
         ),
         liveGrantWindow(now),
       ),
@@ -152,6 +198,7 @@ export async function resolveAccess(user: AuthUser, now = new Date()): Promise<E
 
   const grants: ResolvedGrant[] = [];
   let unrestricted = false;
+  const isGeneralGrant = generalGrantPredicate(roleKeys);
 
   for (const g of rows) {
     if (g.nodeId === null) {
@@ -342,6 +389,17 @@ const ACCESS_KEY = Symbol.for("uniliv.access");
  * resolver caches anything today, which costs 4-6 duplicated queries per handler
  * across ~90 call sites.
  */
+/**
+ * Teach the legacy property-scope helpers to answer with the resolver's full
+ * set instead of `users.propertyId` alone.
+ *
+ * Installed here because authz.ts is a leaf this module already imports —
+ * importing it back would be a cycle. Registered at module load, which happens
+ * before any request is served, because every route file reaches this module
+ * through the gate.
+ */
+installPropertyScopeResolver(async (req) => (await getAccess(req)).propertyIds);
+
 export function getAccess(req: Request): Promise<EffectiveAccess> {
   const holder = req as unknown as Record<symbol, Promise<EffectiveAccess> | undefined>;
   const cached = holder[ACCESS_KEY];

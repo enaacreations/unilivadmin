@@ -64,16 +64,16 @@ function RulesTab() {
     mutationFn: (d: ReminderRuleForm) => editing
       ? apiFetch(`/reminder-rules/${editing.id}`, { method: "PUT", body: JSON.stringify(d) })
       : apiFetch(`/reminder-rules`, { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: editing ? "Rule updated" : "Rule created" }); qc.invalidateQueries({ queryKey: ["reminder-rules"] }); setOpen(false); setEditing(null); },
+    onSuccess: () => { toast({ variant: "success", title: editing ? "Rule updated" : "Rule created" }); qc.invalidateQueries({ queryKey: ["reminder-rules"] }); setOpen(false); setEditing(null); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
   const delMut = useMutation({
     mutationFn: (id: string) => apiFetch(`/reminder-rules/${id}`, { method: "DELETE" }),
-    onSuccess: () => { toast({ title: "Deleted" }); qc.invalidateQueries({ queryKey: ["reminder-rules"] }); setDelId(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Deleted" }); qc.invalidateQueries({ queryKey: ["reminder-rules"] }); setDelId(null); },
   });
   const runMut = useMutation({
     mutationFn: (id: string) => apiFetch<{ success: boolean; data: { sent: number } }>(`/reminder-rules/${id}/run`, { method: "POST" }),
-    onSuccess: (res) => { toast({ title: `Sent ${res.data?.sent ?? 0} reminders` }); qc.invalidateQueries({ queryKey: ["reminder-logs"] }); },
+    onSuccess: (res) => { toast({ variant: "success", title: `Sent ${res.data?.sent ?? 0} reminders` }); qc.invalidateQueries({ queryKey: ["reminder-logs"] }); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
 

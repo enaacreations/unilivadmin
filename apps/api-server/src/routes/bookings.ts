@@ -10,7 +10,7 @@ import { and, eq, gt, lt, ne, desc, inArray, sql } from "drizzle-orm";
 import { randomInt } from "crypto";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { assertPropertyAccess, scopedPropertyId } from "../lib/authz.js";
+import { assertPropertyAccess, scopedPropertyIds } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 
@@ -64,7 +64,7 @@ function computeInvoice(
 }
 
 // List bookings, optionally filtered by property/room/status/date range.
-router.get("/", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+router.get("/", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const propertyId = req.query["propertyId"] as string | undefined;
     const roomId = req.query["roomId"] as string | undefined;
@@ -73,8 +73,8 @@ router.get("/", authenticate, authorize("RESIDENTS", "view"), async (req, res) =
     const to = parseDate(req.query["to"]);
 
     const conds = [];
-    const scope = scopedPropertyId(req);
-    if (scope) conds.push(eq(bookingsTable.propertyId, scope));
+    const scope = await scopedPropertyIds(req);
+    if (scope) conds.push(inArray(bookingsTable.propertyId, scope));
     if (propertyId) conds.push(eq(bookingsTable.propertyId, propertyId));
     if (roomId) conds.push(eq(bookingsTable.roomId, roomId));
     if (status) conds.push(eq(bookingsTable.status, status as never));
@@ -123,7 +123,7 @@ router.get("/", authenticate, authorize("RESIDENTS", "view"), async (req, res) =
 });
 
 // Availability: list bookings overlapping the requested window per room.
-router.get("/availability", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+router.get("/availability", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const propertyId = req.query["propertyId"] as string | undefined;
     const from = parseDate(req.query["from"]);
@@ -134,7 +134,7 @@ router.get("/availability", authenticate, authorize("RESIDENTS", "view"), async 
         .json({ success: false, error: "propertyId, from and to are required" });
       return;
     }
-    assertPropertyAccess(req, propertyId);
+    await assertPropertyAccess(req, propertyId);
     if (to <= from) {
       res
         .status(400)
@@ -190,7 +190,7 @@ router.get("/availability", authenticate, authorize("RESIDENTS", "view"), async 
   }
 });
 
-router.get("/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+router.get("/:id", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const [row] = await db
       .select()
@@ -200,7 +200,7 @@ router.get("/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res
       res.status(404).json({ success: false, error: "Not found" });
       return;
     }
-    assertPropertyAccess(req, row.propertyId);
+    await assertPropertyAccess(req, row.propertyId);
     let roomNumber: string | null = null;
     if (row.roomId) {
       const [r] = await db
@@ -217,11 +217,11 @@ router.get("/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res
   }
 });
 
-router.post("/", authenticate, authorize("RESIDENTS", "create"), async (req, res) => {
+router.post("/", authenticate, authorize("RESIDENTS", "add_resident"), async (req, res) => {
   try {
     const b = req.body || {};
     const propertyId: string | undefined = b.propertyId;
-    if (propertyId) assertPropertyAccess(req, propertyId);
+    if (propertyId) await assertPropertyAccess(req, propertyId);
     const roomId: string | undefined = b.roomId || undefined;
     const checkIn = parseDate(b.checkInDate);
     const checkOut = parseDate(b.checkOutDate);
@@ -342,7 +342,7 @@ router.post("/", authenticate, authorize("RESIDENTS", "create"), async (req, res
   }
 });
 
-router.put("/:id", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+router.put("/:id", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const b = req.body || {};
     const id = req.params["id"]!;
@@ -354,7 +354,7 @@ router.put("/:id", authenticate, authorize("RESIDENTS", "edit"), async (req, res
       res.status(404).json({ success: false, error: "Not found" });
       return;
     }
-    assertPropertyAccess(req, existing.propertyId);
+    await assertPropertyAccess(req, existing.propertyId);
 
     const checkIn = b.checkInDate ? parseDate(b.checkInDate) : existing.checkInDate;
     const checkOut = b.checkOutDate ? parseDate(b.checkOutDate) : existing.checkOutDate;
@@ -447,7 +447,7 @@ router.put("/:id", authenticate, authorize("RESIDENTS", "edit"), async (req, res
   }
 });
 
-router.delete("/:id", authenticate, authorize("RESIDENTS", "delete"), async (req, res) => {
+router.delete("/:id", authenticate, authorize("RESIDENTS", "delete_resident"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     const [existing] = await db
@@ -458,7 +458,7 @@ router.delete("/:id", authenticate, authorize("RESIDENTS", "delete"), async (req
       res.status(404).json({ success: false, error: "Booking not found" });
       return;
     }
-    assertPropertyAccess(req, existing.propertyId);
+    await assertPropertyAccess(req, existing.propertyId);
     const [row] = await db
       .update(bookingsTable)
       .set({ status: "CANCELLED", updatedAt: new Date() })

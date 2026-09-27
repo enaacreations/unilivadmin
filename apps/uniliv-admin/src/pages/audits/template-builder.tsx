@@ -691,7 +691,7 @@ export default function TemplateBuilder() {
         setSelectedQuestionId(res.data.id);
         openInspector();
       } else {
-        toast({ title: "Question inserted" });
+        toast({ variant: "success", title: "Question inserted" });
       }
       invalidateVersion();
     },

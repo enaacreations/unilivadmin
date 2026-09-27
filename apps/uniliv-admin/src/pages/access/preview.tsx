@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import {
   accessApi, accessKeys, activityApi, activityKeys,
-  type AccessPreview, type PreviewAction, type UserOverride,
+  type AccessPreview, type PreviewAction, type Privilege,
 } from "@/lib/access-api";
 import {
   ScreenHeader, Card, CardHead, Badge, NodeType, Verdict, StatGrid,
@@ -32,8 +32,8 @@ const DENY_LABEL: Record<string, string> = {
   DENY_ROLE_LACKS_CAPABILITY: "Role lacks capability",
   DENY_NO_GRANT: "No grant anywhere",
   DENY_NODE_OUT_OF_SCOPE: "Outside granted scope",
-  DENY_ACTION_NOT_ON_MODULE: "Action not on module",
-  DENY_UNKNOWN_MODULE: "Unknown module",
+  DENY_ACTION_NOT_ON_FUNCTIONALITY: "Action not on functionality",
+  DENY_UNKNOWN_FUNCTIONALITY: "Unknown functionality",
   DENY_DATA_SCOPE: "Data scope too narrow",
 };
 
@@ -81,13 +81,13 @@ function verdictFor(p: AccessPreview, allowedModules: number, totalModules: numb
 }
 
 /** The live exception on one cell, if this person carries one. */
-function liveOverride(list: UserOverride[] | undefined, module: string, action: string) {
-  return list?.find((o) => o.module === module && o.action === action && o.live);
+function liveOverride(list: Privilege[] | undefined, functionality: string, action: string) {
+  return list?.find((o) => o.functionality === functionality && o.action === action && o.live);
 }
 
 type PendingOverride = {
-  module: string;
-  moduleLabel: string;
+  functionality: string;
+  functionalityLabel: string;
   action: string;
   effect: "GRANT" | "DENY" | "INHERIT";
   /** What the role says, so the dialog can name what is actually changing. */
@@ -167,8 +167,8 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
     enabled: !!userId,
   });
   const overrides = useQuery({
-    queryKey: accessKeys.overrides(userId),
-    queryFn: () => accessApi.overrides(userId),
+    queryKey: accessKeys.privileges("USER", userId),
+    queryFn: () => accessApi.privileges("USER", userId).then((d) => d.privileges),
     enabled: !!userId,
   });
   // Shares its cache with the editor below, so mounting both costs one request.
@@ -197,15 +197,22 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
 
   const setOverride = useMutation({
     mutationFn: () =>
-      accessApi.setOverride(userId, {
-        module: pending!.module,
+      accessApi.setPrivilege({
+        subjectType: "USER",
+        subjectId: userId,
+        functionality: pending!.functionality,
         action: pending!.action,
+        // The preview has no property in hand, so its control writes the
+        // "everywhere" rule. Property-scoped rules are set on the user's
+        // Privileges tab, where the place is part of the question.
+        nodeId: null,
         effect: pending!.effect,
         reason: overrideReason,
         expiresAt: expiresAt || null,
       }),
     onSuccess: (_d, _v) => {
       toast({
+        variant: "success",
         title: pending!.effect === "INHERIT" ? "Back to the role" : "Permission changed for this person",
         description: "Recorded on the activity trail with your reason.",
       });
@@ -225,43 +232,35 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
   const liveOverrides = (overrides.data ?? []).filter((o) => o.live);
 
   const properties = (nodes.data ?? []).filter((n) => n.nodeType === "PROPERTY");
-  const modMeta = React.useMemo(
-    () => new Map((manifest.data?.modules ?? []).map((m) => [m.key, m])),
+  /** functionality key → its manifest entry. */
+  const fnMeta = React.useMemo(
+    () => new Map((manifest.data?.functionalities ?? []).map((f) => [f.key, f])),
     [manifest.data],
   );
 
-  /** Group the preview's modules by family, keeping the manifest's order. */
-  const families = React.useMemo(() => {
+  /**
+   * The preview arrives as the tree already — module → functionality → action —
+   * so this only FILTERS it. It used to regroup a flat list by a presentation-only
+   * "family" key, which meant the hierarchy existed here and nowhere else; a
+   * functionality the manifest failed to describe fell into an "Other" bucket
+   * invented on this screen. Now the server owns the shape and a module with no
+   * matching rows simply drops out.
+   */
+  const moduleGroups = React.useMemo(() => {
     const p = preview.data;
-    if (!p || !manifest.data) return [];
+    if (!p) return [];
     const needle = q.trim().toUpperCase();
-    const byFamily = new Map<string, typeof p.modules>();
-    for (const m of p.modules) {
-      const meta = modMeta.get(m.key);
-      // A module the manifest does not describe still belongs somewhere, or it
-      // vanishes from the preview silently — the one outcome this screen must
-      // never produce.
-      const family = meta?.family ?? "Other";
-      if (!meta) {
-        const list = byFamily.get(family) ?? [];
-        list.push(m);
-        byFamily.set(family, list);
-        continue;
-      }
-      const label = (meta.label ?? m.key).toUpperCase();
-      if (needle && !label.includes(needle) && !m.key.includes(needle)) continue;
-      if (deniedOnly && !m.actions.some((a) => !a.allow)) continue;
-      const list = byFamily.get(family) ?? [];
-      list.push(m);
-      byFamily.set(family, list);
-    }
-    const order = manifest.data.families?.length
-      ? manifest.data.families
-      : [...byFamily.keys()].sort();
-    return order
-      .filter((f) => byFamily.has(f))
-      .map((f) => ({ name: f, modules: byFamily.get(f)! }));
-  }, [preview.data, manifest.data, modMeta, q, deniedOnly]);
+    return p.modules
+      .map((m) => ({
+        ...m,
+        functionalities: m.functionalities.filter((f) => {
+          if (needle && !f.label.toUpperCase().includes(needle) && !f.key.includes(needle)) return false;
+          if (deniedOnly && !f.actions.some((a) => !a.allow)) return false;
+          return true;
+        }),
+      }))
+      .filter((m) => m.functionalities.length > 0);
+  }, [preview.data, q, deniedOnly]);
 
   const allowedCount = preview.data?.modules.filter((m) => !m.noAccess).length ?? 0;
   const totalModules = manifest.data?.modules.length ?? 0;
@@ -474,7 +473,7 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
                           )}
                           <button
                             onClick={() =>
-                              setPending({ module: o.module, moduleLabel: o.label, action: o.action, effect: "INHERIT", roleAllows: o.effect === "DENY" })
+                              setPending({ functionality: o.functionality, functionalityLabel: o.label, action: o.action, effect: "INHERIT", roleAllows: o.effect === "DENY" })
                             }
                             className="rounded-[7px] border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--muted)] hover:text-[var(--ink)]"
                           >
@@ -643,36 +642,37 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
               <div className="flex items-center gap-3 text-[10.5px] text-[var(--muted)]">
                 <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-[3px] bg-[var(--accent)]" />allowed</span>
                 <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-[3px] border border-[var(--bd2)]" />denied</span>
-                <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-[3px] bg-[var(--muted-bg)]" />not on module</span>
+                <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-[3px] bg-[var(--muted-bg)]" />not on functionality</span>
               </div>
             </div>
 
-            {families.map((f) => {
-              const open = openFamilies.has(f.name);
-              const held = f.modules.filter((m) => !m.noAccess).length;
+            {moduleGroups.map((mod) => {
+              const open = openFamilies.has(mod.key);
               return (
-                <div key={f.name} className="border-b border-[var(--border)] last:border-b-0">
+                <div key={mod.key} className="border-b border-[var(--border)] last:border-b-0">
                   <button
-                    onClick={() => toggle(openFamilies, f.name, setOpenFamilies)}
+                    onClick={() => toggle(openFamilies, mod.key, setOpenFamilies)}
                     className="flex w-full items-center gap-3 px-[18px] py-3 text-left hover:bg-[var(--muted-bg)]"
                   >
                     {open ? <ChevronDown className="h-3 w-3 text-[var(--ink3)]" /> : <ChevronRight className="h-3 w-3 text-[var(--ink3)]" />}
-                    <span className="flex-1 font-display text-[14.5px] font-semibold">{f.name}</span>
+                    <span className="flex-1 font-display text-[14.5px] font-semibold">{mod.label}</span>
                     <HeatStrip
-                      cells={f.modules.slice(0, 13).map((m) => ({
-                        state: (m.noAccess ? "not-held" : "held") as CellState,
-                        title: m.key,
+                      cells={mod.functionalities.slice(0, 13).map((f) => ({
+                        state: (f.noAccess ? "not-held" : "held") as CellState,
+                        title: f.key,
                       }))}
                     />
+                    {/* Straight from the server's own fold, so the header cannot
+                        disagree with the rows it summarizes. */}
                     <span className="w-14 text-right font-mono text-[11px] text-[var(--muted)]">
-                      {held}/{f.modules.length}
+                      {mod.heldCount}/{mod.totalCount}
                     </span>
                   </button>
 
                   {open && (
                     <div className="border-t border-[var(--border)] bg-[var(--surface)]">
-                      {f.modules.map((m) => {
-                        const meta = modMeta.get(m.key) ?? { key: m.key, label: m.key, family: "Other", actions: m.actions.map((a) => a.action), protected: false };
+                      {mod.functionalities.map((m) => {
+                        const meta = fnMeta.get(m.key) ?? { key: m.key, label: m.label, module: mod.key, actions: m.actions.map((a) => a.action), protected: false };
                         const mOpen = openModules.has(m.key);
                         const denials = [...new Set(m.actions.filter((a) => !a.allow).map((a) => DENY_LABEL[a.reason] ?? a.reason))];
                         return (
@@ -690,7 +690,7 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
                                   const a = m.actions.find((x) => x.action === act);
                                   return {
                                     state: a ? cellStateFor(a, true) : ("unavailable" as CellState),
-                                    title: a ? `${act} — ${a.detail}` : `${act} — not on this module`,
+                                    title: a ? `${act} — ${a.detail}` : `${act} — not on this functionality`,
                                   };
                                 })}
                               />
@@ -730,14 +730,14 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
                                         </div>
                                         {/* Only cells the module actually defines can be overridden —
                                             the server enforces the same ceiling. */}
-                                        {a.reason !== "DENY_ACTION_NOT_ON_MODULE" && a.reason !== "DENY_UNKNOWN_MODULE" && (
+                                        {a.reason !== "DENY_ACTION_NOT_ON_FUNCTIONALITY" && a.reason !== "DENY_UNKNOWN_FUNCTIONALITY" && (
                                           <OverrideControl
                                             current={ov?.effect}
                                             disabled={setOverride.isPending}
                                             onPick={(effect) =>
                                               setPending({
-                                                module: m.key,
-                                                moduleLabel: meta.label,
+                                                functionality: m.key,
+                                                functionalityLabel: meta.label,
                                                 action: a.action,
                                                 effect,
                                                 roleAllows: a.reason === "ALLOW_ROLE_CAPABILITY" || a.reason === "ALLOW_IMPLIED_CAPABILITY",
@@ -762,7 +762,7 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
                 </div>
               );
             })}
-            {families.length === 0 && (
+            {moduleGroups.length === 0 && (
               <div className="px-5 py-9 text-center text-[13px] text-[var(--muted)]">Nothing matches that filter.</div>
             )}
           </Card>
@@ -802,9 +802,9 @@ export default function PreviewScreen({ onGoGrants }: { onGoGrants: () => void }
               {pending.effect === "INHERIT" ? "Remove exception" : "Personal exception"}
             </div>
             <div className="mt-1 font-display text-[17px] font-semibold tracking-[-0.01em] [text-wrap:pretty]">
-              {pending.effect === "GRANT" && `Give ${preview.data.subject.name} ${pending.action} on ${pending.moduleLabel}`}
-              {pending.effect === "DENY" && `Withhold ${pending.action} on ${pending.moduleLabel} from ${preview.data.subject.name}`}
-              {pending.effect === "INHERIT" && `Return ${pending.action} on ${pending.moduleLabel} to the role`}
+              {pending.effect === "GRANT" && `Give ${preview.data.subject.name} ${pending.action} on ${pending.functionalityLabel}`}
+              {pending.effect === "DENY" && `Withhold ${pending.action} on ${pending.functionalityLabel} from ${preview.data.subject.name}`}
+              {pending.effect === "INHERIT" && `Return ${pending.action} on ${pending.functionalityLabel} to the role`}
             </div>
             <p className="mt-2 text-[12px] text-[var(--muted)] [text-wrap:pretty]">
               {pending.effect === "INHERIT"

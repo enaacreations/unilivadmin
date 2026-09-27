@@ -862,7 +862,7 @@ export default function AuditRunner() {
             geo: meta.geo ?? undefined,
           }),
         });
-        toast({ title: "Start photo captured" });
+        toast({ variant: "success", title: "Start photo captured" });
         invalidateRun();
         return;
       }
@@ -878,7 +878,7 @@ export default function AuditRunner() {
             geo: meta.geo ?? undefined,
           }),
         });
-        toast({ title: "Submission proof captured" });
+        toast({ variant: "success", title: "Submission proof captured" });
         invalidateRun();
         qc.invalidateQueries({ queryKey: ["/audits", id, "submit-check"] });
         return;
@@ -916,7 +916,7 @@ export default function AuditRunner() {
           geo: meta.geo ?? undefined,
         }),
       });
-      toast({ title: "Evidence attached" });
+      toast({ variant: "success", title: "Evidence attached" });
       invalidateRun();
     } catch (e) {
       const err = e as ApiError;
@@ -1339,7 +1339,7 @@ export default function AuditRunner() {
           setSheetOpen(o);
           if (!o && submitResult) {
             navigate(`/audits/${id}`);
-            toast({ title: "Audit submitted" });
+            toast({ variant: "success", title: "Audit submitted" });
           }
         }}
       >
@@ -1372,7 +1372,7 @@ export default function AuditRunner() {
                 onClick={() => {
                   setSheetOpen(false);
                   navigate(`/audits/${id}`);
-                  toast({ title: "Audit submitted" });
+                  toast({ variant: "success", title: "Audit submitted" });
                 }}
               >
                 Go to audit

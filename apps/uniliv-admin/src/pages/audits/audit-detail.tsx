@@ -207,7 +207,7 @@ export default function AuditDetail() {
   // Reviewer-side content (Ops Excellence has AUDIT_REVIEW), plus the auditor
   // who took the photos. Everyone else keeps the timestamps in the meta grid.
   const showPresence =
-    (isAssignee || can("AUDIT_REVIEW", "view")) &&
+    (isAssignee || can("AUDIT_REVIEW", "view_review_queue")) &&
     !!(audit.startedAt || audit.startProof || audit.endProof);
   const onSiteSeconds = secondsBetween(audit.startedAt, audit.submittedAt) ?? audit.durationSeconds;
 

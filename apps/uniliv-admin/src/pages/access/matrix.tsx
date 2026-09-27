@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { accessApi, accessKeys, type ManifestModule } from "@/lib/access-api";
+import { accessApi, accessKeys, type ManifestFunctionality } from "@/lib/access-api";
 import { ScreenHeader, Badge, Cell, type CellState } from "./ui";
 import { useCan } from "@/components/access/can";
 
@@ -22,11 +22,22 @@ import { useCan } from "@/components/access/can";
  * overwrite. Every save carries a reason and lands on the tamper-evident chain.
  */
 
-const ACTION_ABBR: Record<string, string> = {
-  view: "vw", create: "cr", edit: "ed", delete: "dl", submit: "sb",
-  approve: "ap", reject: "rj", assign: "as", complete: "cp", verify: "vf",
-  export: "ex", download: "dn", configure: "cf",
-};
+/**
+ * A column heading for a named action, in the space a matrix column has.
+ *
+ * Every row here is the SAME functionality, so the noun in each label repeats
+ * down the header — "View audit, Start audit, Submit audit". This drops that
+ * shared tail and keeps the part that distinguishes them. Two-letter
+ * abbreviations of a shared verb list used to do this job; they cannot survive
+ * 252 distinct actions, and "rc" for "Record answers" was never readable.
+ * The full label and its meaning stay on the hover and in the cell title.
+ */
+function columnHead(action: string, functionality: string): string {
+  const noun = functionality.toLowerCase().split("_").pop() ?? "";
+  const words = action.split("_").filter((w) => w !== noun);
+  const head = (words.length ? words : action.split("_")).join(" ");
+  return head.charAt(0).toUpperCase() + head.slice(1);
+}
 
 type Staged = Map<string, boolean>; // "roleKey|module|action" -> allowed
 const stageKey = (r: string, m: string, a: string) => `${r}|${m}|${a}`;
@@ -47,17 +58,24 @@ export default function MatrixScreen() {
   const roles = useQuery({ queryKey: accessKeys.roles(), queryFn: accessApi.roles });
   const matrix = useQuery({ queryKey: accessKeys.matrix(), queryFn: () => accessApi.matrix() });
 
+  /**
+   * The grid is a role × action matrix for ONE functionality, so the picker
+   * lists functionalities — grouped into their modules, which is how anybody
+   * actually looks for "Dispatch".
+   */
   const modules = manifest.data?.modules ?? [];
+  const functionalities = manifest.data?.functionalities ?? [];
   React.useEffect(() => {
-    if (!selected && modules.length) setSelected(modules[0]!.key);
-  }, [modules, selected]);
+    if (!selected && functionalities.length) setSelected(functionalities[0]!.key);
+  }, [functionalities, selected]);
 
-  const mod: ManifestModule | undefined = modules.find((m) => m.key === selected);
+  const fn: ManifestFunctionality | undefined = functionalities.find((f) => f.key === selected);
+  const fnModule = fn ? modules.find((m) => m.key === fn.module) : undefined;
 
   /** Held cells, indexed for O(1) lookup while rendering ~40 cells. */
   const held = React.useMemo(() => {
     const s = new Set<string>();
-    for (const c of matrix.data?.cells ?? []) s.add(stageKey(c.roleKey, c.module, c.action));
+    for (const c of matrix.data?.cells ?? []) s.add(stageKey(c.roleKey, c.functionality, c.action));
     return s;
   }, [matrix.data]);
 
@@ -66,36 +84,34 @@ export default function MatrixScreen() {
     [roles.data],
   );
 
-  /** Module picker, grouped by family and filtered. */
+  /** Functionality picker, grouped by MODULE and filtered. */
   const picker = React.useMemo(() => {
     const needle = modFilter.trim().toUpperCase();
-    const byFamily = new Map<string, ManifestModule[]>();
-    for (const m of modules) {
-      if (needle && !m.label.toUpperCase().includes(needle) && !m.key.includes(needle)) continue;
-      const list = byFamily.get(m.family) ?? [];
-      list.push(m);
-      byFamily.set(m.family, list);
-    }
-    return (manifest.data?.families ?? [...byFamily.keys()])
-      .filter((f) => byFamily.has(f))
-      .map((f) => ({ name: f, items: byFamily.get(f)! }));
-  }, [modules, modFilter, manifest.data]);
+    return modules
+      .map((m) => ({
+        name: m.label,
+        items: m.functionalities.filter(
+          (f) => !needle || f.label.toUpperCase().includes(needle) || f.key.includes(needle),
+        ),
+      }))
+      .filter((g) => g.items.length > 0);
+  }, [modules, modFilter]);
 
   const cellState = (roleKey: string, action: string): CellState => {
-    if (!mod) return "unavailable";
+    if (!fn) return "unavailable";
     // Without ACCESS_CONTROL:configure the grid is a read-only view. Rendering
     // cells as editable and failing on save would be a worse way to find out.
-    if (!canConfigure) return held.has(stageKey(roleKey, mod.key, action)) ? "held" : "not-held";
-    if (mod.protected) return "protected";
+    if (!canConfigure) return held.has(stageKey(roleKey, fn.key, action)) ? "held" : "not-held";
+    if (fn.protected) return "protected";
     if (computedRoles.has(roleKey)) return "inherited";
-    const k = stageKey(roleKey, mod.key, action);
+    const k = stageKey(roleKey, fn.key, action);
     if (staged.has(k)) return staged.get(k) ? "held" : "not-held";
     return held.has(k) ? "held" : "not-held";
   };
 
   const toggleCell = (roleKey: string, action: string) => {
-    if (!mod) return;
-    const k = stageKey(roleKey, mod.key, action);
+    if (!fn) return;
+    const k = stageKey(roleKey, fn.key, action);
     const current = staged.has(k) ? staged.get(k)! : held.has(k);
     const next = new Map(staged);
     // Toggling back to the stored value un-stages it, so the staged count is
@@ -106,8 +122,8 @@ export default function MatrixScreen() {
   };
 
   const stagedList = [...staged.entries()].map(([k, allowed]) => {
-    const [roleKey, module, action] = k.split("|");
-    return { roleKey: roleKey!, module: module!, action: action!, allowed };
+    const [roleKey, functionality, action] = k.split("|");
+    return { roleKey: roleKey!, functionality: functionality!, action: action!, allowed };
   });
 
   const save = useMutation({
@@ -118,7 +134,7 @@ export default function MatrixScreen() {
         changes: stagedList,
       }),
     onSuccess: (d) => {
-      toast({ title: `Saved ${d.applied} change${d.applied === 1 ? "" : "s"}`, description: `Matrix is now v${d.version}.` });
+      toast({ variant: "success", title: `Saved ${d.applied} change${d.applied === 1 ? "" : "s"}`, description: `Matrix is now v${d.version}.` });
       setStaged(new Map());
       setShowSave(false);
       setReason("");
@@ -177,7 +193,7 @@ export default function MatrixScreen() {
               <Search className="absolute left-2 top-2.5 h-3.5 w-3.5 text-[var(--muted)]" />
               <Input
                 className="h-8 pl-7 text-[12.5px]"
-                placeholder={`Search ${modules.length} modules…`}
+                placeholder={`Search ${functionalities.length} functionalities…`}
                 value={modFilter}
                 onChange={(e) => setModFilter(e.target.value)}
               />
@@ -191,7 +207,7 @@ export default function MatrixScreen() {
                 </div>
                 {g.items.map((m) => {
                   const active = m.key === selected;
-                  const n = (matrix.data?.cells ?? []).filter((c) => c.module === m.key).length;
+                  const n = (matrix.data?.cells ?? []).filter((c) => c.functionality === m.key).length;
                   return (
                     <button
                       key={m.key}
@@ -216,16 +232,21 @@ export default function MatrixScreen() {
 
         {/* ── Grid ──────────────────────────────────────────────────── */}
         <div className="min-w-0 pb-32">
-          {mod && (
+          {fn && (
             <>
               <div className="flex flex-wrap items-start gap-4 border-b border-[var(--border)] px-6 pb-4 pt-[18px]">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="font-display text-[21px] font-semibold tracking-[-0.015em]">{mod.label}</h2>
-                    {mod.protected && <Badge tone="violet">Protected</Badge>}
+                    {/* The module is the eyebrow, so the reader always knows
+                        which of the ten they are inside. */}
+                    <h2 className="font-display text-[21px] font-semibold tracking-[-0.015em]">
+                      <span className="text-[var(--muted)]">{fnModule?.label ?? fn.module} › </span>
+                      {fn.label}
+                    </h2>
+                    {fn.protected && <Badge tone="violet">Protected</Badge>}
                   </div>
                   <div className="mt-1 font-mono text-[11px] text-[var(--muted)]">
-                    {mod.key} · {mod.family} · {mod.actions.length} actions
+                    {fn.key} · {fn.actions.length} actions
                   </div>
                 </div>
                 <div className="ml-auto flex max-w-[420px] flex-wrap gap-3.5 text-[10.5px] text-[var(--muted)]">
@@ -235,9 +256,9 @@ export default function MatrixScreen() {
                 </div>
               </div>
 
-              {mod.protected && (
+              {fn.protected && (
                 <div className="mx-6 mt-4 rounded-[11px] border border-[var(--pop)] bg-[var(--violet-bg)] px-4 py-3 text-[12.5px] text-[var(--muted)] [text-wrap:pretty]">
-                  <span className="font-semibold text-[var(--pop)]">This module is protected.</span>{" "}
+                  <span className="font-semibold text-[var(--pop)]">This functionality is protected.</span>{" "}
                   Only the parity roles hold its cells, and those are computed rather than stored. Nothing here is editable — including by you.
                 </div>
               )}
@@ -283,9 +304,13 @@ export default function MatrixScreen() {
                 <div className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--surface)] px-6 py-2">
                   <div className="min-w-[190px] flex-1 text-[10px] uppercase tracking-[0.06em] text-[var(--ink3)]">Role</div>
                   <div className="flex shrink-0 gap-1.5">
-                    {mod.actions.map((a) => (
-                      <div key={a} title={a} className="w-[26px] text-center font-mono text-[9px] uppercase text-[var(--ink3)]">
-                        {ACTION_ABBR[a] ?? a.slice(0, 2)}
+                    {fn.actions.map((a) => (
+                      <div
+                        key={a.key}
+                        title={`${a.id} — ${a.description}`}
+                        className="w-[72px] truncate text-center text-[9.5px] uppercase tracking-[0.04em] text-[var(--ink3)]"
+                      >
+                        {columnHead(a.key, fn.key)}
                       </div>
                     ))}
                   </div>
@@ -300,21 +325,26 @@ export default function MatrixScreen() {
                       </div>
                       {/* The raw key is dropped: it is the label in SCREAMING_SNAKE,
                           so it repeats the line above it without adding anything.
-                          Rank and holder count stay — they are what tells an admin
-                          whether a change is theoretical or moves twelve people. */}
+                          The holder count stays — it is what tells an admin whether
+                          a change is theoretical or moves twelve people. Rank is
+                          gone with the column; who may assign a role is decided by
+                          ROLE_RANK in code, never by a stored number. */}
                       <div className="truncate font-mono text-[9.5px] text-[var(--ink3)]">
-                        rank {r.rank} · {r.holders} {r.holders === 1 ? "holder" : "holders"}
+                        {r.holders} {r.holders === 1 ? "holder" : "holders"}
                       </div>
                     </div>
                     <div className="flex shrink-0 gap-1.5">
-                      {mod.actions.map((a) => (
-                        <Cell
-                          key={a}
-                          state={cellState(r.key, a)}
-                          mark={cellState(r.key, a) === "held" ? "✓" : ""}
-                          title={`${r.label} · ${mod.key}:${a}`}
-                          onClick={canConfigure ? () => toggleCell(r.key, a) : undefined}
-                        />
+                      {fn.actions.map((a) => (
+                        <div key={a.key} className="flex w-[72px] justify-center">
+                          <Cell
+                            state={cellState(r.key, a.key)}
+                            mark={cellState(r.key, a.key) === "held" ? "✓" : ""}
+                            // The permission id, not `FUNCTIONALITY:verb` — this is
+                            // the string somebody pastes into a ticket.
+                            title={`${r.label} · ${a.id} — ${a.description}`}
+                            onClick={canConfigure ? () => toggleCell(r.key, a.key) : undefined}
+                          />
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -352,7 +382,7 @@ export default function MatrixScreen() {
           <div className="max-h-[88vh] w-[min(620px,100%)] overflow-auto rounded-2xl border border-[var(--bd2)] bg-[var(--card)] shadow-[var(--overlay-shadow)]">
             <div className="border-b border-[var(--border)] px-[22px] pb-3.5 pt-5">
               <div className="font-display text-[19px] font-semibold tracking-[-0.015em]">
-                Save {staged.size} change{staged.size === 1 ? "" : "s"} to {mod?.label}
+                Save {staged.size} change{staged.size === 1 ? "" : "s"} to {fn?.label}
               </div>
               <div className="mt-1 text-[12.5px] text-[var(--muted)]">
                 Written against <span className="font-mono">v{matrix.data?.version}</span> and appended to the access chain. Every save needs a reason.
@@ -362,7 +392,7 @@ export default function MatrixScreen() {
               {stagedList.map((s) => (
                 <div key={`${s.roleKey}|${s.action}`} className="flex items-center gap-2.5 rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-[12.5px]">
                   <Badge tone={s.allowed ? "ok" : "danger"}>{s.allowed ? "grant" : "revoke"}</Badge>
-                  <span className="font-mono text-[11.5px]">{s.module}:{s.action}</span>
+                  <span className="font-mono text-[11.5px]">{s.functionality}:{s.action}</span>
                   <span className="ml-auto text-[11.5px] text-[var(--muted)]">{s.roleKey}</span>
                 </div>
               ))}

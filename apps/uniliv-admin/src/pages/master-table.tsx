@@ -52,9 +52,9 @@ export default function MasterTable() {
   const { toast } = useToast();
   const { can } = usePermissions();
 
-  const canCreate = can("FOOD_SETTINGS", "create");
-  const canEdit = can("FOOD_SETTINGS", "edit");
-  const canDelete = can("FOOD_SETTINGS", "delete");
+  const canCreate = can("FOOD_SETTINGS", "add_food_setting");
+  const canEdit = can("FOOD_SETTINGS", "edit_food_setting");
+  const canDelete = can("FOOD_SETTINGS", "delete_food_setting");
   // Read-only viewers (e.g. AUDIT_READONLY) get no Actions column at all —
   // every control inside it is edit/delete-gated, so it would render empty.
   const showActions = canEdit || canDelete;
@@ -101,7 +101,7 @@ export default function MasterTable() {
   const createMut = useMutation({
     mutationFn: (body: Record<string, unknown>) => mastersApi.create(type, body),
     onSuccess: () => {
-      toast({ title: `${entry?.label?.replace(/s$/, "") ?? "Record"} created` });
+      toast({ variant: "success", title: `${entry?.label?.replace(/s$/, "") ?? "Record"} created` });
       setCreateOpen(false); invalidate();
     },
     onError: (e: any) => toast({ title: e?.message || "Failed to create", variant: "destructive" }),
@@ -111,7 +111,7 @@ export default function MasterTable() {
     mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) =>
       mastersApi.update(type, id, body),
     onSuccess: () => {
-      toast({ title: "Saved" });
+      toast({ variant: "success", title: "Saved" });
       setEditRow(null); invalidate();
     },
     onError: (e: any) => toast({ title: e?.message || "Failed to save", variant: "destructive" }),
@@ -120,7 +120,7 @@ export default function MasterTable() {
   const deleteMut = useMutation({
     mutationFn: (id: string) => mastersApi.remove(type, id),
     onSuccess: () => {
-      toast({ title: "Deleted" });
+      toast({ variant: "success", title: "Deleted" });
       setDeleteRow(null); invalidate();
     },
     onError: (e: any) => toast({ title: e?.message || "Failed to delete", variant: "destructive" }),
@@ -132,6 +132,7 @@ export default function MasterTable() {
     onSuccess: (res) => {
       const verb = res.action === "delete" ? "deleted" : `${res.action}d`;
       toast({
+        variant: "success",
         title: `${res.affected} ${res.affected === 1 ? "record" : "records"} ${verb}`,
         description: res.skipped > 0 ? `${res.skipped} skipped (still in use).` : undefined,
       });

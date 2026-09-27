@@ -22,7 +22,7 @@ import { UserAvatar } from "@/components/ui/user-avatar"
 import { NotificationBell } from "@/components/notification-bell"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { usePermissions } from "@/lib/use-permissions"
-import { moduleForPath, isPublicPath } from "@/lib/permissions"
+import { moduleForPath, functionalityForPath, isPublicPath } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 import { clearLocalDrafts } from "@/lib/form-drafts"
 import { navGroups, canViewHref, type NavGroup, type NavItem } from "@/lib/nav"
@@ -359,7 +359,7 @@ function HeaderUserMenu({ name, email, subtitle, role, phone, onLogout }: {
 export function Layout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation()
   const { setToken } = useAuthStore()
-  const { me, can, role } = usePermissions()
+  const { me, can, canModule, role } = usePermissions()
   const logout = useLogout()
   const queryClient = useQueryClient()
 
@@ -390,16 +390,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   // Two passes over the nav, because "can open" and "shows in the nav" are
   // different questions. `accessibleGroups` keeps every item this persona is
-  // permitted to OPEN (module grant only); `filteredGroups` additionally drops
-  // the items `hideFor` folds out of the nav. hideFor is a nav-visibility choice
-  // — those routes stay reachable — so everything that reasons about ACCESS
-  // (page title, breadcrumb) reads the accessible set, while the sidebar,
-  // launcher and ⌘K palette read the filtered one.
+  // permitted to OPEN; `filteredGroups` additionally drops the items `hideFor`
+  // folds out of the nav. hideFor is a nav-visibility choice — those routes stay
+  // reachable — so everything that reasons about ACCESS (page title, breadcrumb)
+  // reads the accessible set, while the sidebar, launcher and ⌘K palette read
+  // the filtered one.
+  //
+  // Both passes gate the SECTION on the module and each ITEM on its
+  // functionality. The module check is not redundant: a module the persona holds
+  // nothing in is dropped whole, which is what keeps a section from appearing
+  // because of one stray inline-action grant.
   const accessibleGroups = React.useMemo(
     () => navGroups
-      .map((g) => ({ ...g, items: g.items.filter((i) => !i.module || can(i.module, "view")) }))
+      .filter((g) => !g.module || canModule(g.module))
+      .map((g) => ({ ...g, items: g.items.filter((i) => !i.functionality || can(i.functionality)) }))
       .filter((g) => g.items.length > 0),
-    [can],
+    [can, canModule],
   )
 
   const filteredGroups = React.useMemo(
@@ -446,9 +452,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // audit hub items.
   const activeGroup = React.useMemo(() => {
     if (active) return active.group
+    // Resolved by MODULE, so a deep link into a functionality with no nav item
+    // of its own (AUDIT_REGISTER for a conducting persona, say) still highlights
+    // the section it belongs to.
     const mod = moduleForPath(location)
     if (!mod) return null
-    const owner = navGroups.find((g) => g.items.some((i) => i.module === mod))
+    const owner = navGroups.find((g) => g.module === mod)
     if (!owner) return null
     return filteredGroups.find((g) => g.title === owner.title)?.title ?? null
   }, [active, location, filteredGroups])
@@ -597,17 +606,21 @@ export function PageGuard({ children }: { children: React.ReactNode }) {
   const [location] = useLocation()
   const { me, can } = usePermissions()
   const Forbidden = React.lazy(() => import("@/pages/forbidden"))
-  const mod = moduleForPath(location)
+  const f = functionalityForPath(location)
   if (!me) return <>{children}</> // loading — let children render skeleton
 
   // Explicitly public: pre-auth flows, token links, launcher, the 403 itself.
   if (isPublicPath(location)) return <>{children}</>
 
   // FAIL CLOSED. This previously rendered any unmapped path ungated, so a route
-  // added without a PATH_TO_MODULE entry was silently open — and the mapping is
-  // a separate hand-maintained list, which is exactly the kind that drifts.
+  // added without a path mapping was silently open — and the mapping is a
+  // separate hand-maintained list, which is exactly the kind that drifts.
   // routes.test.ts keeps the two in step so this cannot lock out a real page.
-  if (!mod) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
-  if (!can(mod, "view")) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
+  //
+  // Gated on the FUNCTIONALITY, never the module: a page is one capability, and
+  // module-level gating here would open the review queue to anyone holding any
+  // part of Audits.
+  if (!f) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
+  if (!can(f)) return <React.Suspense fallback={null}><Forbidden /></React.Suspense>
   return <>{children}</>
 }

@@ -21,7 +21,7 @@ import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { getPagination, buildMeta } from "./paginate.js";
-import { scopedPropertyId, forbidden, badRequest } from "./authz.js";
+import { scopedPropertyIds, forbidden, badRequest } from "./authz.js";
 
 /**
  * A WHERE fragment restricting `column` to the caller's property, or undefined
@@ -32,9 +32,8 @@ import { scopedPropertyId, forbidden, badRequest } from "./authz.js";
  * a helper that answered "match nothing" for an org-wide caller would silently
  * empty every admin list.
  */
-export function propertyScopeCondition(req: Request, column: PgColumn): SQL | undefined {
-  const scope = scopedPropertyId(req);
-  return scope ? eq(column, scope) : undefined;
+export async function propertyScopeCondition(req: Request, column: PgColumn): Promise<SQL | undefined> {
+  return idSetCondition(column, await scopedPropertyIds(req));
 }
 
 /**
@@ -45,11 +44,11 @@ export function propertyScopeCondition(req: Request, column: PgColumn): SQL | un
  * case that used to sail through. Org-wide callers still pass anything,
  * including null, because for them a null property legitimately means "all".
  */
-export function assertWritableProperty(req: Request, propertyId: string | null | undefined): void {
-  const scope = scopedPropertyId(req);
+export async function assertWritableProperty(req: Request, propertyId: string | null | undefined): Promise<void> {
+  const scope = await scopedPropertyIds(req);
   if (!scope) return;
   if (!propertyId) throw badRequest("propertyId is required", { code: "SCOPE_REQUIRED" });
-  if (propertyId !== scope) throw forbidden("Outside your property scope");
+  if (!scope.includes(propertyId)) throw forbidden("Outside your property scope");
 }
 
 /**
@@ -59,13 +58,24 @@ export function assertWritableProperty(req: Request, propertyId: string | null |
  * This is the create-path idiom already used by residents/rooms/employees,
  * extracted so it stops being re-typed (and occasionally forgotten).
  */
-export function applyWriteScope(
+export async function applyWriteScope(
   req: Request,
   body: Record<string, unknown>,
   key = "propertyId",
-): string | null {
-  const scope = scopedPropertyId(req);
-  if (scope) body[key] = scope;
+): Promise<string | null> {
+  const scope = await scopedPropertyIds(req);
+  if (scope) {
+    const asked = body[key];
+    // A caller who works at several properties must still be able to say WHICH
+    // one they are writing to — forcing the first would silently file a
+    // resident at the wrong building. Only a choice outside the set is refused,
+    // and a caller with exactly one property still gets it filled in for them.
+    if (typeof asked === "string" && asked) {
+      if (!scope.includes(asked)) throw forbidden("Outside your property scope");
+    } else if (scope.length === 1) {
+      body[key] = scope[0];
+    }
+  }
   const value = body[key];
   return typeof value === "string" && value ? value : null;
 }
@@ -82,9 +92,40 @@ export function applyWriteScope(
  * Use `propertyScopeCondition` instead when NULL means "unassigned" — there,
  * excluding NULL is the fail-closed answer.
  */
-export function propertyScopeOrGlobal(req: Request, column: PgColumn): SQL | undefined {
-  const scope = scopedPropertyId(req);
-  return scope ? or(isNull(column), eq(column, scope)) : undefined;
+export async function propertyScopeOrGlobal(req: Request, column: PgColumn): Promise<SQL | undefined> {
+  const scope = await scopedPropertyIds(req);
+  if (scope === null) return undefined;
+  return scope.length ? or(isNull(column), inArray(column, scope)) : isNull(column);
+}
+
+/**
+ * Pin a write to the caller's property, now that "their property" can be
+ * several.
+ *
+ * The old idiom was `if (scope) body.propertyId = scope` — correct while a
+ * scoped caller had exactly one property, and silently wrong the moment they
+ * have two: every row would be filed at whichever one happened to come first.
+ *
+ *   unrestricted      → leave the body alone
+ *   exactly one       → fill it in, as before
+ *   several, named    → keep it, once it is one of theirs
+ *   several, unnamed  → 400. Guessing is the bug this replaces.
+ */
+export function pinWriteProperty(
+  scope: string[] | null,
+  body: Record<string, unknown>,
+  key = "propertyId",
+): void {
+  if (!scope) return;
+  const asked = body[key];
+  if (typeof asked === "string" && asked) {
+    if (!scope.includes(asked)) throw forbidden("Outside your property scope");
+    return;
+  }
+  if (scope.length === 1) { body[key] = scope[0]; return; }
+  throw badRequest("propertyId is required — you work at more than one property", {
+    code: "SCOPE_AMBIGUOUS",
+  });
 }
 
 export interface ScopedListResult<T> {
@@ -110,7 +151,7 @@ export async function scopedList<T extends PgTable>(
   },
 ): Promise<ScopedListResult<T["$inferSelect"]>> {
   const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
-  const scope = propertyScopeCondition(req, opts.nodeColumn);
+  const scope = await propertyScopeCondition(req, opts.nodeColumn);
   const conds = [opts.where, scope].filter(Boolean) as SQL[];
   const where = conds.length ? and(...conds) : undefined;
 
@@ -141,9 +182,10 @@ export async function scopedFindOne<T extends PgTable>(
   id: string,
   nodeColumn: PgColumn,
 ): Promise<T["$inferSelect"] | null> {
-  const scope = scopedPropertyId(req);
+  const scope = await scopedPropertyIds(req);
   const conds = [eq(idColumn, id)];
-  if (scope) conds.push(eq(nodeColumn, scope));
+  const scopeCond = idSetCondition(nodeColumn, scope);
+  if (scopeCond) conds.push(scopeCond);
   const [row] = await db.select().from(table as PgTable).where(and(...conds));
   return (row as T["$inferSelect"] | undefined) ?? null;
 }

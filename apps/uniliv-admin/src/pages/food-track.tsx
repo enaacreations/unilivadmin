@@ -93,7 +93,7 @@ export default function FoodTrack() {
     order?.status === "PLACED" || order?.status === "ACCEPTED";
   const canCancel =
     !!order && isPreDispatch &&
-    (can("FOOD_PLACE_ORDER", "edit") || can("FOOD_KITCHEN_SUMMARY", "edit"));
+    (can("FOOD_PLACE_ORDER", "edit_order") || can("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary"));
 
   const pill = order ? orderStatusPill(order.status) : null;
 

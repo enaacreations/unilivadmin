@@ -80,7 +80,7 @@ function TemplatesPanel({ embedded = false }: { embedded?: boolean }) {
         }),
       }),
     onSuccess: (res) => {
-      toast({ title: "Template created — v1 draft ready" });
+      toast({ variant: "success", title: "Template created — v1 draft ready" });
       setCreateOpen(false);
       qc.invalidateQueries({ queryKey: ["/audit/templates"] });
       // Land straight in the builder for the new v1 draft — "build sections and

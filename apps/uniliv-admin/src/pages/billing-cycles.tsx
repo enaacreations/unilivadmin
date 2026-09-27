@@ -68,20 +68,20 @@ function CyclesTab() {
     mutationFn: (data: CycleForm) => editing
       ? apiFetch(`/billing-cycles/${editing.id}`, { method: "PUT", body: JSON.stringify(data) })
       : apiFetch("/billing-cycles", { method: "POST", body: JSON.stringify(data) }),
-    onSuccess: () => { toast({ title: editing ? "Cycle updated" : "Cycle created" }); qc.invalidateQueries({ queryKey: ["billing-cycles"] }); setOpen(false); setEditing(null); },
+    onSuccess: () => { toast({ variant: "success", title: editing ? "Cycle updated" : "Cycle created" }); qc.invalidateQueries({ queryKey: ["billing-cycles"] }); setOpen(false); setEditing(null); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
 
   const delMut = useMutation({
     mutationFn: (id: string) => apiFetch(`/billing-cycles/${id}`, { method: "DELETE" }),
-    onSuccess: () => { toast({ title: "Deleted" }); qc.invalidateQueries({ queryKey: ["billing-cycles"] }); setDelId(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Deleted" }); qc.invalidateQueries({ queryKey: ["billing-cycles"] }); setDelId(null); },
   });
 
   const runMut = useMutation({
     mutationFn: (id: string) => apiFetch<{ success: boolean; data: BillingRunDto }>(`/billing-cycles/${id}/run`, { method: "POST" }),
     onSuccess: (res) => {
       const r = res.data;
-      toast({ title: `Run completed`, description: `${r.successCount} created • ${r.skippedCount} skipped • ${r.failedCount} failed` });
+      toast({ variant: "success", title: `Run completed`, description: `${r.successCount} created • ${r.skippedCount} skipped • ${r.failedCount} failed` });
       qc.invalidateQueries({ queryKey: ["billing-cycles"] });
       qc.invalidateQueries({ queryKey: ["billing-runs"] });
     },

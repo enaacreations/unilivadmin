@@ -114,7 +114,7 @@ export function GRNFormModal({ open, onOpenChange, prefillPoId, onCreated }: Pro
         photos: [],
       };
       await apiFetch(`/grn`, { method: "POST", body: JSON.stringify(body) });
-      toast({ title: "GRN created", description: "Inventory updated successfully" });
+      toast({ variant: "success", title: "GRN created", description: "Inventory updated successfully" });
       qc.invalidateQueries({ queryKey: ["grn"] });
       qc.invalidateQueries({ queryKey: ["purchase-orders"] });
       qc.invalidateQueries({ queryKey: ["inventory"] });

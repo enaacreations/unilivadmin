@@ -534,7 +534,7 @@ function SendMessageModal({ open, onOpenChange, resident }: { open: boolean; onO
       const href = `sms:${resident.phone}?body=${encodeURIComponent(body)}`;
       window.location.href = href;
     }
-    toast({ title: "Opening your messaging app", description: `Composing a ${channel === "EMAIL" ? "email" : "text"} to ${resident.name}.` });
+    toast({ variant: "info", title: "Opening your messaging app", description: `Composing a ${channel === "EMAIL" ? "email" : "text"} to ${resident.name}.` });
     onOpenChange(false);
   };
 
@@ -631,7 +631,7 @@ function RaiseComplaintModal({ open, onOpenChange, resident }: { open: boolean; 
           slaHours,
         },
       });
-      toast({ title: "Complaint raised", description: `Logged for ${resident.name}.` });
+      toast({ variant: "success", title: "Complaint raised", description: `Logged for ${resident.name}.` });
       qc.invalidateQueries({ queryKey: getGetComplaintsQueryKey() });
       qc.invalidateQueries({ queryKey: getGetComplaintsQueryKey({}) });
       onOpenChange(false);
@@ -706,7 +706,7 @@ function ResidentRemindersTab({ residentId, ledger }: { residentId: string; ledg
     mutationFn: (body: { ruleId: string; ledgerEntryId: string }) =>
       apiFetch(`/reminders/send`, { method: "POST", body: JSON.stringify(body) }),
     onSuccess: () => {
-      toast({ title: "Reminder sent" });
+      toast({ variant: "success", title: "Reminder sent" });
       qc.invalidateQueries({ queryKey: ["reminder-logs", residentId] });
     },
     onError: (e: Error) => toast({ title: e?.message || "Failed", variant: "destructive" }),
@@ -816,13 +816,13 @@ function ResidentWalletTab({ residentId }: { residentId: string }) {
 
   const topupMut = useMutation({
     mutationFn: (body: object) => apiFetch(`/wallet/residents/${residentId}/topup`, { method: "POST", body: JSON.stringify(body) }),
-    onSuccess: () => { toast({ title: "Top-up successful" }); invalidate(); setTopupOpen(false); setTopupAmount(""); setTopupNotes(""); },
+    onSuccess: () => { toast({ variant: "success", title: "Top-up successful" }); invalidate(); setTopupOpen(false); setTopupAmount(""); setTopupNotes(""); },
     onError: (e: Error) => toast({ title: "Top-up failed", description: e.message, variant: "destructive" }),
   });
 
   const adjustMut = useMutation({
     mutationFn: (body: object) => apiFetch(`/wallet/residents/${residentId}/adjust`, { method: "POST", body: JSON.stringify(body) }),
-    onSuccess: () => { toast({ title: "Adjustment applied" }); invalidate(); setAdjustOpen(false); setAdjustAmount(""); setAdjustDesc(""); },
+    onSuccess: () => { toast({ variant: "success", title: "Adjustment applied" }); invalidate(); setAdjustOpen(false); setAdjustAmount(""); setAdjustDesc(""); },
     onError: (e: Error) => toast({ title: "Adjustment failed", description: e.message, variant: "destructive" }),
   });
 
@@ -969,7 +969,7 @@ function AddLedgerModal({ open, onOpenChange, residentId }: { open: boolean; onO
   const onSave = async () => {
     try {
       await mut.mutateAsync({ id: residentId, data: { type, amount: Number(amount), description, dueDate: dueDate || undefined } });
-      toast({ title: "Entry added" });
+      toast({ variant: "success", title: "Entry added" });
       qc.invalidateQueries({ queryKey: getGetResidentLedgerQueryKey(residentId) });
       onOpenChange(false);
     } catch (e: any) {
@@ -1022,7 +1022,7 @@ function AddPaymentModal({ open, onOpenChange, residentId }: { open: boolean; on
   const onSave = async () => {
     try {
       await mut.mutateAsync({ id: residentId, data: { amount: Number(amount), mode, reference: reference || undefined, notes: notes || undefined } });
-      toast({ title: "Payment recorded" });
+      toast({ variant: "success", title: "Payment recorded" });
       qc.invalidateQueries({ queryKey: getGetResidentPaymentsQueryKey(residentId) });
       qc.invalidateQueries({ queryKey: getGetResidentLedgerQueryKey(residentId) });
       onOpenChange(false);
@@ -1093,7 +1093,7 @@ function RecordCollectionModal({ open, onOpenChange, residentId, outstanding }: 
       apiFetch<{ success: boolean; data: { settledCount: number } }>(`/residents/${residentId}/ledger`, { method: "POST", body: JSON.stringify(body) }),
     onSuccess: (res) => {
       const settled = res?.data?.settledCount ?? 0;
-      toast({ title: "Collection recorded", description: settled > 0 ? `Settled ${settled} charge${settled === 1 ? "" : "s"}.` : undefined });
+      toast({ variant: "success", title: "Collection recorded", description: settled > 0 ? `Settled ${settled} charge${settled === 1 ? "" : "s"}.` : undefined });
       qc.invalidateQueries({ queryKey: getGetResidentLedgerQueryKey(residentId) });
       qc.invalidateQueries({ queryKey: getGetResidentPaymentsQueryKey(residentId) });
       onOpenChange(false);
@@ -1184,7 +1184,7 @@ function SharePaymentLinkModal({ open, onOpenChange, resident, outstanding }: { 
       apiFetch<{ success: boolean; data: { shortUrl: string; id: string } }>(`/residents/${resident.id}/payment-link`, { method: "POST", body: JSON.stringify(body) }),
     onSuccess: (res) => {
       setShortUrl(res?.data?.shortUrl ?? null);
-      toast({ title: "Payment link sent", description: "Shared with the selected recipient." });
+      toast({ variant: "success", title: "Payment link sent", description: "Shared with the selected recipient." });
     },
     onError: (e: Error) => {
       if (e?.message === PAYMENTS_NOT_CONFIGURED) {
@@ -1211,7 +1211,7 @@ function SharePaymentLinkModal({ open, onOpenChange, resident, outstanding }: { 
   const copyLink = () => {
     if (shortUrl) {
       navigator.clipboard?.writeText(shortUrl);
-      toast({ title: "Link copied" });
+      toast({ variant: "success", title: "Link copied" });
     }
   };
 

@@ -205,7 +205,7 @@ const createTemplateSchema = z.object({
 router.get(
   "/",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
+  authorize("AUDIT_TEMPLATES", "view_template"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const q = req.query as Record<string, string | undefined>;
@@ -283,7 +283,7 @@ router.get(
 router.post(
   "/",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "create"),
+  authorize("AUDIT_TEMPLATES", "add_template"),
   async (req, res) => {
     const parsed = createTemplateSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid template", parsed.error.flatten());
@@ -334,7 +334,7 @@ router.post(
 router.get(
   "/:id",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
+  authorize("AUDIT_TEMPLATES", "view_template"),
   async (req, res) => {
     const [template] = await db
       .select()
@@ -356,7 +356,7 @@ router.get(
 router.patch(
   "/:id",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const [existing] = await db
       .select()
@@ -394,7 +394,7 @@ router.patch(
 router.get(
   "/versions/:vid",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
+  authorize("AUDIT_TEMPLATES", "view_template"),
   async (req, res) => {
     const [version] = await db
       .select()
@@ -440,7 +440,7 @@ router.get(
 router.post(
   "/:id/versions",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "create"),
+  authorize("AUDIT_TEMPLATES", "add_template"),
   async (req, res) => {
     const templateId = req.params["id"] as string;
     const [template] = await db
@@ -500,7 +500,7 @@ router.post(
 router.post(
   "/:id/archive",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const templateId = req.params["id"] as string;
     const [template] = await db
@@ -558,7 +558,7 @@ const scaleSnapshotSchema = z.object({
 router.patch(
   "/versions/:vid",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const version = await loadVersion(req.params["vid"] as string);
     assertDraftVersion(version);
@@ -594,7 +594,7 @@ router.patch(
 router.post(
   "/versions/:vid/publish",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const version = await loadVersion(req.params["vid"] as string);
     assertTransition(TEMPLATE_VERSION_TRANSITIONS, version.lifecycle as TemplateVersionLifecycle, "PUBLISHED", "TEMPLATE_VERSION");
@@ -683,7 +683,7 @@ for (const action of ["deprecate", "archive"] as const) {
   router.post(
     `/versions/:vid/${action}`,
     authenticate,
-    authorize("AUDIT_TEMPLATES", "edit"),
+    authorize("AUDIT_TEMPLATES", "edit_template"),
     async (req, res) => {
       const version = await loadVersion(req.params["vid"] as string);
       const to = action === "deprecate" ? "DEPRECATED" : "ARCHIVED";
@@ -717,7 +717,7 @@ for (const action of ["deprecate", "archive"] as const) {
 router.get(
   "/versions/:vid/where-used",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
+  authorize("AUDIT_TEMPLATES", "view_template"),
   async (req, res) => {
     const version = await loadVersion(req.params["vid"] as string);
     const schedules = await db
@@ -753,7 +753,7 @@ router.get(
 router.post(
   "/versions/:vid/migrate-schedules",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const fromVersion = await loadVersion(req.params["vid"] as string);
     const toVersion = await loadVersion(String(req.body?.toVersionId ?? ""));
@@ -847,7 +847,7 @@ const bankItemSchema = z.object({
 bankRouter.get(
   "/",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
+  authorize("AUDIT_TEMPLATES", "view_template"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const q = req.query as Record<string, string | undefined>;
@@ -893,7 +893,7 @@ bankRouter.get(
 bankRouter.get(
   "/tags",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
+  authorize("AUDIT_TEMPLATES", "view_template"),
   async (_req, res) => {
     const rows = await db
       .select({ tag: sql<string>`DISTINCT jsonb_array_elements_text(${auditQuestionBankItemsTable.tags}::jsonb)` })
@@ -927,7 +927,7 @@ function jaccard(a: string[], b: string[]): number {
 bankRouter.get(
   "/check-duplicate",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "view"),
+  authorize("AUDIT_TEMPLATES", "view_template"),
   async (req, res) => {
     const prompt = String(req.query["prompt"] ?? "").trim();
     if (!prompt) throw httpError(400, "prompt query param required");
@@ -949,7 +949,7 @@ bankRouter.get(
 bankRouter.post(
   "/",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "create"),
+  authorize("AUDIT_TEMPLATES", "add_template"),
   async (req, res) => {
     const parsed = bankItemSchema.safeParse(req.body);
     if (!parsed.success) throw httpError(400, "Invalid bank item", parsed.error.flatten());
@@ -978,7 +978,7 @@ bankRouter.post(
 bankRouter.patch(
   "/:id",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const [existing] = await db
       .select()
@@ -1010,7 +1010,7 @@ bankRouter.patch(
 bankRouter.post(
   "/:id/archive",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const restore = req.body?.restore === true;
     const [row] = await db
@@ -1041,7 +1041,7 @@ async function loadDraftVersionForSection(sectionId: string) {
 builderRouter.post(
   "/sections",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const versionId = String(req.body?.templateVersionId ?? "");
     const title = String(req.body?.title ?? "").trim();
@@ -1071,7 +1071,7 @@ builderRouter.post(
 builderRouter.patch(
   "/sections/:sid",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const { section } = await loadDraftVersionForSection(req.params["sid"] as string);
     const body = pick(req.body, ["title", "description", "audience", "orderIndex"]);
@@ -1088,7 +1088,7 @@ builderRouter.patch(
 builderRouter.delete(
   "/sections/:sid",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const { section } = await loadDraftVersionForSection(req.params["sid"] as string);
     await db.delete(auditSectionsTable).where(eq(auditSectionsTable.id, section.id));
@@ -1100,7 +1100,7 @@ builderRouter.delete(
 builderRouter.post(
   "/sections/reorder",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const versionId = String(req.body?.templateVersionId ?? "");
     const orderedIds = Array.isArray(req.body?.orderedIds) ? (req.body.orderedIds as string[]) : [];
@@ -1132,7 +1132,7 @@ const questionBodySchema = questionFieldsSchema.extend({
 builderRouter.post(
   "/sections/:sid/questions",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const { section } = await loadDraftVersionForSection(req.params["sid"] as string);
 
@@ -1196,7 +1196,7 @@ builderRouter.post(
 builderRouter.patch(
   "/questions/:qid",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const [question] = await db
       .select()
@@ -1236,7 +1236,7 @@ builderRouter.patch(
 builderRouter.delete(
   "/questions/:qid",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const [question] = await db
       .select()
@@ -1253,7 +1253,7 @@ builderRouter.delete(
 builderRouter.post(
   "/sections/:sid/questions/reorder",
   authenticate,
-  authorize("AUDIT_TEMPLATES", "edit"),
+  authorize("AUDIT_TEMPLATES", "edit_template"),
   async (req, res) => {
     const { section } = await loadDraftVersionForSection(req.params["sid"] as string);
     const orderedIds = Array.isArray(req.body?.orderedIds) ? (req.body.orderedIds as string[]) : [];

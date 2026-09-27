@@ -32,7 +32,7 @@ export default function CourseDetail() {
   const sendReminders = async () => {
     try {
       const res = await apiFetch<any>(`/courses/${id}/remind`, { method: "POST" });
-      toast({ title: `Reminders sent to ${res.data.sent} employee(s)` });
+      toast({ variant: "success", title: `Reminders sent to ${res.data.sent} employee(s)` });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
@@ -158,7 +158,7 @@ function EnrollDialog({ courseId, onClose, onDone, existingIds }: { courseId: st
             if (!selected.size) return;
             try {
               const res = await apiFetch<any>(`/courses/${courseId}/enroll`, { method: "POST", body: JSON.stringify({ employeeIds: Array.from(selected) }) });
-              toast({ title: `${res.data.created} enrolled`, description: res.data.skipped ? `${res.data.skipped} already enrolled` : undefined });
+              toast({ variant: "success", title: `${res.data.created} enrolled`, description: res.data.skipped ? `${res.data.skipped} already enrolled` : undefined });
               onClose(); onDone();
             } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
           }}>Enroll {selected.size}</Button>
@@ -179,7 +179,7 @@ function ContentViewer({ course, enrollment, onClose, onProgress }: { course: an
     setProgress(p);
     try {
       await apiFetch(`/enrollments/${enrollment.id}/progress`, { method: "POST", body: JSON.stringify({ progress: p }) });
-      if (p >= 80) toast({ title: "Marked complete!" });
+      if (p >= 80) toast({ variant: "success", title: "Marked complete!" });
       onProgress();
     } catch { /* progress updates fire frequently; avoid toast spam */ }
   };
@@ -247,7 +247,7 @@ function QuizDialog({ course, enrollmentId, onClose, onDone }: { course: any; en
     try {
       const res = await apiFetch<any>(`/enrollments/${enrollmentId}/quiz`, { method: "POST", body: JSON.stringify({ answers }) });
       setResult(res.data);
-      if (res.data.passed) toast({ title: `Passed — ${res.data.score}%` });
+      if (res.data.passed) toast({ variant: "success", title: `Passed — ${res.data.score}%` });
       else toast({ title: `Did not pass — ${res.data.score}%`, description: `Need ${res.data.passScore}%`, variant: "destructive" });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };

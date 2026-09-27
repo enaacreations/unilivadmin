@@ -37,7 +37,7 @@ export default function Attendance() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { can } = usePermissions();
-  const canEdit = can("EMPLOYEES", "edit");
+  const canEdit = can("EMPLOYEES", "edit_employee");
   const [date, setDate] = React.useState(() => new Date().toISOString().slice(0, 10));
   const [department, setDepartment] = React.useState("ALL");
   const [selected, setSelected] = React.useState<Record<string, boolean>>({});
@@ -81,7 +81,7 @@ export default function Attendance() {
         method: "POST",
         body: JSON.stringify({ employeeIds: ids, date, status: "PRESENT" }),
       });
-      toast({ title: `Marked ${ids.length} present` });
+      toast({ variant: "success", title: `Marked ${ids.length} present` });
       qc.invalidateQueries({ queryKey: ["attendance-by-date", date] });
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -92,14 +92,14 @@ export default function Attendance() {
     try {
       const ids = Object.entries(selected).filter(([, v]) => v).map(([k]) => k);
       if (ids.length === 0) {
-        toast({ title: "Select at least one employee" });
+        toast({ variant: "warning", title: "Select at least one employee" });
         return;
       }
       await apiFetch("/attendance/bulk", {
         method: "POST",
         body: JSON.stringify({ employeeIds: ids, date, status: "PRESENT" }),
       });
-      toast({ title: `Marked ${ids.length} present` });
+      toast({ variant: "success", title: `Marked ${ids.length} present` });
       setSelected({});
       qc.invalidateQueries({ queryKey: ["attendance-by-date", date] });
     } catch (e: any) {

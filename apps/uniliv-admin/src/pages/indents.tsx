@@ -97,7 +97,7 @@ export default function Indents() {
   const approve = async (id: string) => {
     try {
       await apiFetch(`/indents/${id}/approve`, { method: "POST" });
-      toast({ title: "Indent approved" });
+      toast({ variant: "success", title: "Indent approved" });
       qc.invalidateQueries({ queryKey: ["indents"] });
       setDetailIndent(null);
     } catch (e: any) { toast({ title: e?.message || "Failed", variant: "destructive" }); }
@@ -106,7 +106,7 @@ export default function Indents() {
   const submitDraft = async (ind: any) => {
     try {
       await apiFetch(`/indents/${ind.id}`, { method: "PUT", body: JSON.stringify({ status: "SUBMITTED" }) });
-      toast({ title: "Indent submitted" });
+      toast({ variant: "success", title: "Indent submitted" });
       qc.invalidateQueries({ queryKey: ["indents"] });
       setDetailIndent(null);
     } catch (e: any) { toast({ title: e?.message || "Failed", variant: "destructive" }); }
@@ -119,7 +119,7 @@ export default function Indents() {
     }
     try {
       await apiFetch(`/indents/${detailIndent.id}/reject`, { method: "POST", body: JSON.stringify({ reason: rejectReason }) });
-      toast({ title: "Indent rejected" });
+      toast({ variant: "success", title: "Indent rejected" });
       qc.invalidateQueries({ queryKey: ["indents"] });
       setRejectOpen(false);
       setRejectReason("");

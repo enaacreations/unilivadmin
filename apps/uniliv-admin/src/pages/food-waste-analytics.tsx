@@ -217,7 +217,7 @@ export default function FoodWasteAnalytics() {
         foodApi.wasteAnalyticsExportUrl(fmt, widget, buildExportParams()),
         filename,
       );
-      toast({ title: "Export ready", description: filename });
+      toast({ variant: "success", title: "Export ready", description: filename });
     } catch (e: any) {
       toast({ title: e?.message || "Download failed", variant: "destructive" });
     } finally {

@@ -43,6 +43,24 @@ export const roomStatusEnum = pgEnum("room_status", [
   "BLOCKED",
   "OUT_OF_SERVICE",
 ]);
+/**
+ * INTERNAL = staff who work in the estate; EXTERNAL = the people who live in it.
+ *
+ * Added now, ahead of resident logins, because it is the axis every later
+ * decision hangs off (which roles may be held, which screens exist, which login
+ * flow applies) and retrofitting it onto a populated users table is worse than
+ * carrying one unused-for-now column.
+ */
+export const userTypeEnum = pgEnum("user_type", ["INTERNAL", "EXTERNAL"]);
+
+/**
+ * Enum rather than the free text `residents.gender` and `employees.gender` use.
+ * Those two already disagree with each other — the seeds write "Female" in one
+ * and "FEMALE" in the other — and a third spelling on a third table is how a
+ * filter silently returns half the rows.
+ */
+export const genderEnum = pgEnum("gender", ["MALE", "FEMALE", "OTHER", "UNDISCLOSED"]);
+
 export const userRoleEnum = pgEnum("user_role", [
   "SUPER_ADMIN",
   "HR_MANAGER",
@@ -69,6 +87,11 @@ export const userRoleEnum = pgEnum("user_role", [
   // ── Audit & Inspection (FRD §2.2 7-role model) — appended last: pg enums only
   // support adding values, and appending avoids reorder migrations. ──
   "CUSTOMER_EXPERIENCE",
+  // Not a job. The placeholder this column holds for an account created with
+  // basic details before its roles were chosen — `role` is NOT NULL and there
+  // was no value meaning "nothing yet". The matching `roles` row is DISABLED,
+  // so readRoles() resolves it to an empty set and every gate refuses.
+  "UNASSIGNED",
 ]);
 export const residentStatusEnum = pgEnum("resident_status", [
   "ACTIVE",
@@ -264,12 +287,12 @@ export const usersTable = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   role: userRoleEnum("role").notNull(),
   /**
-   * Configurable-role key, joinable to access_roles.key (Access Controls PRD §22).
-   * Nullable until backfilled; readers use `roleKey ?? role`. `role` above stays
-   * the pg enum and is written only when roleKey is one of its 22 values, so the
-   * legacy role taxonomies keep resolving during the transition.
+   * Staff or resident. Drives which roles may be held and (later) which login
+   * flow applies; no resident authenticates yet.
    */
-  roleKey: text("role_key"),
+  userType: userTypeEnum("user_type").default("INTERNAL").notNull(),
+  dob: timestamp("dob"),
+  gender: genderEnum("gender"),
   propertyId: text("property_id"),
   isActive: boolean("is_active").default(true).notNull(),
   /** OTP/login throttling (Persona st.5/6). */

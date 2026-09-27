@@ -31,8 +31,6 @@ const AWAITING_MODULE: Record<string, string> = {
   MENU_APPROVED: "menu rotation has no approval workflow yet (PRD §19)",
   AUDIT_SCORE_CHANGED: "scores are frozen at submit; no post-hoc rescore path exists",
   AUDIT_COMPLETED: "emitted through audit_events' own chain, not the platform trail",
-  USER_CREATED: "still on the legacy writeAuditLog adapter",
-  USER_UPDATED: "still on the legacy writeAuditLog adapter",
   CONFIG_CHANGED: "still on the legacy writeAuditLog adapter",
   WALLET_TXN: "still on the legacy writeAuditLog adapter",
 };

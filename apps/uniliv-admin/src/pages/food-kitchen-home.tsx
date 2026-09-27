@@ -640,8 +640,8 @@ export default function FoodKitchenHome() {
   // Accept/prepare are FOOD_KITCHEN_SUMMARY edit; sending a van is
   // FOOD_DISPATCH edit — mirror the server so view-only roles (auditors,
   // leadership) get a read-only board instead of buttons that 403.
-  const canKitchen = can("FOOD_KITCHEN_SUMMARY", "edit");
-  const canDispatch = can("FOOD_DISPATCH", "edit");
+  const canKitchen = can("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary");
+  const canDispatch = can("FOOD_DISPATCH", "edit_dispatch");
 
   // ── Day navigation: yesterday / today / tomorrow ──────────────────────────
   const [day, setDay] = React.useState(0);

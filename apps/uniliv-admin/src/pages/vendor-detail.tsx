@@ -202,10 +202,10 @@ function RateContractsTab({ vendorId }: { vendorId: string }) {
       const body = { ...form, rate: Number(form.rate) };
       if (editing) {
         await apiFetch(`/vendors/rate-contracts/${editing.id}`, { method: "PUT", body: JSON.stringify(body) });
-        toast({ title: "Rate contract updated" });
+        toast({ variant: "success", title: "Rate contract updated" });
       } else {
         await apiFetch(`/vendors/${vendorId}/rate-contracts`, { method: "POST", body: JSON.stringify(body) });
-        toast({ title: "Rate contract added" });
+        toast({ variant: "success", title: "Rate contract added" });
       }
       qc.invalidateQueries({ queryKey: [`/api/vendors/${vendorId}/rate-contracts`] });
       setOpen(false);
@@ -221,7 +221,7 @@ function RateContractsTab({ vendorId }: { vendorId: string }) {
     if (!confirmDel) return;
     try {
       await apiFetch(`/vendors/rate-contracts/${confirmDel}`, { method: "DELETE" });
-      toast({ title: "Rate contract deleted" });
+      toast({ variant: "success", title: "Rate contract deleted" });
       qc.invalidateQueries({ queryKey: [`/api/vendors/${vendorId}/rate-contracts`] });
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -322,7 +322,7 @@ function ComplianceTab({ vendorId }: { vendorId: string }) {
     setSaving(true);
     try {
       await apiFetch(`/vendors/${vendorId}/documents`, { method: "POST", body: JSON.stringify({ docType, ...form, expiryDate: form.expiryDate || undefined }) });
-      toast({ title: "Document added" });
+      toast({ variant: "success", title: "Document added" });
       qc.invalidateQueries({ queryKey: [`/api/vendors/${vendorId}/documents`] });
       setOpen(false);
       setForm({ fileUrl: "", expiryDate: "", notes: "" });
@@ -337,7 +337,7 @@ function ComplianceTab({ vendorId }: { vendorId: string }) {
     if (!confirmDel) return;
     try {
       await apiFetch(`/vendors/documents/${confirmDel}`, { method: "DELETE" });
-      toast({ title: "Document deleted" });
+      toast({ variant: "success", title: "Document deleted" });
       qc.invalidateQueries({ queryKey: [`/api/vendors/${vendorId}/documents`] });
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });

@@ -89,7 +89,7 @@ async function sodSubjectForAudit(req: import("express").Request): Promise<SodSu
 router.get(
   "/queue",
   authenticate,
-  authorize("AUDIT_REVIEW", "view"),
+  authorize("AUDIT_REVIEW", "view_review_queue"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     // Was every SUBMITTED audit in the company. A REVIEWER grant is scoped by
@@ -137,7 +137,7 @@ router.get(
 router.get(
   "/:id/workspace",
   authenticate,
-  authorize("AUDIT_REVIEW", "view"),
+  authorize("AUDIT_REVIEW", "view_review_queue"),
   async (req, res) => {
     const audit = await loadAudit(req, req.params["id"] as string);
     const [version] = await db
@@ -225,7 +225,7 @@ router.get(
 router.post(
   "/:id/approve",
   authenticate,
-  authorize("AUDIT_REVIEW", "edit"),
+  authorize("AUDIT_REVIEW", "annotate_review"),
   enforceSod({ entity: "audit", action: "approve", load: sodSubjectForAudit }),
   async (req, res) => {
     const audit = await loadAudit(req, req.params["id"] as string);
@@ -274,7 +274,7 @@ router.post(
 router.post(
   "/:id/reject",
   authenticate,
-  authorize("AUDIT_REVIEW", "edit"),
+  authorize("AUDIT_REVIEW", "annotate_review"),
   enforceSod({ entity: "audit", action: "reject", load: sodSubjectForAudit }),
   async (req, res) => {
     const audit = await loadAudit(req, req.params["id"] as string);
@@ -325,7 +325,7 @@ router.post(
 router.post(
   "/:id/reopen",
   authenticate,
-  authorize("AUDIT_REVIEW", "edit"),
+  authorize("AUDIT_REVIEW", "annotate_review"),
   enforceSod({ entity: "audit", action: "verify", load: sodSubjectForAudit }),
   async (req, res) => {
     if (!isSuperAdmin(req.user?.role)) {

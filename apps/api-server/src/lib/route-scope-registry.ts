@@ -93,8 +93,34 @@ export const ROUTE_SCOPE: Record<string, ScopeClass> = {
   'access POST /roles': { exempt: 'admin console; ACCESS_CONTROL:configure + rank and amplification guards' },
   'access PUT /matrix': { exempt: 'admin console; ACCESS_CONTROL:configure + full guard set in matrix-guards.ts' },
   'access GET /grants': { exempt: 'admin console; gated on ACCESS_CONTROL which only the parity roles hold' },
-  'access GET /overrides/:userId': { exempt: 'admin console; gated on ACCESS_CONTROL which only the parity roles hold' },
-  'access PUT /overrides/:userId': { exempt: 'admin console; ACCESS_CONTROL:configure + assertOverrideIsSafe (self, rank, ceiling, protected modules)' },
+  'users GET /:id': { scoped: 'same 404 as a nonexistent user for a property-bound caller' },
+  'users POST /:id/roles': { exempt: 'admin console; USERS:edit + assertCanAssignRole on both the role and the target' },
+  'users DELETE /:id/roles/:roleKey': { exempt: 'admin console; USERS:edit + rank guards + refuses the last role' },
+  'access GET /roles/:key': { exempt: 'admin console; gated on ACCESS_CONTROL which only the parity roles hold' },
+  // Keyed by its own router FILE, not the /access mount it hangs off.
+  // Privilege SETS are an access-console surface, gated on ACCESS_CONTROL — the
+  // same reasoning as the privilege routes below. A set names permissions, never
+  // rows of operational data, so there is nothing here to scope BY property; the
+  // place a set applies at is the assignment's nodeId, which is a value the
+  // admin chooses, not a filter the caller is confined to.
+  'privilege-sets GET /privilege-sets': { exempt: 'admin console; ACCESS_CONTROL:view — the set catalogue, no property data' },
+  'privilege-sets POST /privilege-sets': { exempt: 'admin console; ACCESS_CONTROL:administer — defines a set, grants nothing by itself' },
+  'privilege-sets PUT /privilege-sets/:id': { exempt: 'admin console; ACCESS_CONTROL:administer — edits a set; reach is reported, not scoped' },
+  'privilege-sets POST /privilege-sets/:id/assign': { exempt: 'admin console; ACCESS_CONTROL:administer — runs assertPrivilegeIsSafe per member' },
+  'privilege-sets DELETE /privilege-set-assignments/:id': { exempt: 'admin console; ACCESS_CONTROL:administer — revokes an assignment' },
+  'privilege-sets GET /privilege-sets/held/:subjectId': { exempt: 'admin console; ACCESS_CONTROL:view — one subject\'s sets' },
+  'privilege-sets GET /privilege-sets/:id/holders': { exempt: 'admin console; ACCESS_CONTROL:view — who a set reaches' },
+  'role-impact GET /roles/:key/impact': { exempt: 'admin console; ACCESS_CONTROL:view — read-only preview of who a disable would reach' },
+  'access PUT /roles/:key': { exempt: 'admin console; ACCESS_CONTROL:configure + rank guard on the new rank' },
+  'access POST /roles/:key/disable': { exempt: 'admin console; ACCESS_CONTROL:configure + lockout backstop + mandatory reason' },
+  'access POST /roles/:key/enable': { exempt: 'admin console; ACCESS_CONTROL:configure + mandatory reason' },
+  'access GET /users/:userId/tree': { exempt: 'admin console; ACCESS_CONTROL:view — reads one user\'s roles and the places they were handed out at' },
+  'access GET /users/:userId/grid': { exempt: 'admin console; ACCESS_CONTROL:view — every cell comes from decide(), so it can only show what the gate would do' },
+  'access PUT /users/:userId/grid': { exempt: 'admin console; ACCESS_CONTROL:configure + assertPrivilegeIsSafe + mandatory reason' },
+  'access PUT /users/:userId/role-scope': { exempt: 'admin console; ACCESS_CONTROL:configure + assertGrantIsSafe per node + anchor-level check + mandatory reason' },
+  'access GET /privilege-catalogue': { exempt: 'admin console; ACCESS_CONTROL:view — the permission catalogue, no property data' },
+  'access GET /privileges': { exempt: 'admin console; gated on ACCESS_CONTROL which only the parity roles hold' },
+  'access PUT /privileges': { exempt: 'admin console; ACCESS_CONTROL:configure + assertPrivilegeIsSafe (self, rank, ceiling, protected modules, node reach)' },
   'access GET /clone-access/:fromUserId/:toUserId': { exempt: 'admin console; dry run only, writes nothing' },
   'access POST /clone-access': { exempt: 'admin console; re-runs the grant and override guard sets per copied row' },
   'access GET /manifest': { exempt: 'admin console; gated on ACCESS_CONTROL which only the parity roles hold' },

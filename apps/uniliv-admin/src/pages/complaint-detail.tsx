@@ -67,7 +67,7 @@ export default function ComplaintDetail() {
   const handleUpdateStatus = async (status: string, extra = {}) => {
     try {
       await mutUpdate.mutateAsync({ id, data: { status, ...extra } });
-      toast({ title: `Status updated to ${status}` });
+      toast({ variant: "success", title: `Status updated to ${status}` });
       qc.invalidateQueries({ queryKey: getGetComplaintQueryKey(id) });
       qc.invalidateQueries({ queryKey: ["complaint-timeline", id] });
     } catch(e:any) { toast({ title: "Update failed", variant: "destructive" }); }
@@ -77,7 +77,7 @@ export default function ComplaintDetail() {
     if(!escTo || !escReason) { toast({title: "Select user and reason", variant: "destructive"}); return; }
     try {
       await mutEscalate.mutateAsync({ data: { complaintId: id, escalatedTo: escTo, reason: escReason, level: 1 } });
-      toast({ title: "Complaint Escalated" });
+      toast({ variant: "success", title: "Complaint Escalated" });
       qc.invalidateQueries({ queryKey: getGetComplaintQueryKey(id) });
       qc.invalidateQueries({ queryKey: ["complaint-timeline", id] });
       setEscReason(""); setEscTo("");
@@ -87,7 +87,7 @@ export default function ComplaintDetail() {
   const handleReassign = async (userId: string) => {
     try {
       await mutUpdate.mutateAsync({ id, data: { assignedTo: userId } });
-      toast({ title: "Reassigned" });
+      toast({ variant: "success", title: "Reassigned" });
       qc.invalidateQueries({ queryKey: getGetComplaintQueryKey(id) });
     } catch(e:any) { toast({ title: "Reassign failed", variant: "destructive" }); }
   };

@@ -175,7 +175,7 @@ export default function EmployeeDetail() {
           qc.invalidateQueries({ queryKey: ["emp-exit", id] });
           qc.invalidateQueries({ queryKey: getGetEmployeeQueryKey(id) });
           setTab("exit");
-          toast({ title: "Exit initiated" });
+          toast({ variant: "success", title: "Exit initiated" });
         }}
       />
     </div>
@@ -393,7 +393,7 @@ function AttendanceTab({ employeeId }: { employeeId: string }) {
     try {
       if (rec) await updateMut.mutateAsync({ id: rec.id, data: body });
       else await createMut.mutateAsync({ data: body });
-      toast({ title: "Attendance saved" });
+      toast({ variant: "success", title: "Attendance saved" });
       qc.invalidateQueries({ queryKey: ["emp-attendance", employeeId, year, month] });
       setEditDay(null);
     } catch (e: any) {
@@ -403,7 +403,7 @@ function AttendanceTab({ employeeId }: { employeeId: string }) {
 
   const submitBulk = async () => {
     if (!bulkFrom || !bulkTo) {
-      toast({ title: "Pick both dates" });
+      toast({ variant: "warning", title: "Pick both dates" });
       return;
     }
     try {
@@ -422,7 +422,7 @@ function AttendanceTab({ employeeId }: { employeeId: string }) {
         });
         count++;
       }
-      toast({ title: `Marked ${count} day(s)` });
+      toast({ variant: "success", title: `Marked ${count} day(s)` });
       qc.invalidateQueries({ queryKey: ["emp-attendance", employeeId, year, month] });
       setBulkOpen(false);
     } catch (e: any) {
@@ -593,11 +593,11 @@ function LeaveTab({ employeeId }: { employeeId: string }) {
   const submitApply = aForm.handleSubmit(async (v) => {
     try {
       const days = workingDaysBetween(v.fromDate, v.toDate);
-      if (days <= 0) { toast({ title: "Invalid date range" }); return; }
+      if (days <= 0) { toast({ variant: "warning", title: "Invalid date range" }); return; }
       await createLeave.mutateAsync({
         data: { employeeId, type: v.type, fromDate: v.fromDate, toDate: v.toDate, days, reason: v.reason },
       });
-      toast({ title: "Leave applied" });
+      toast({ variant: "success", title: "Leave applied" });
       qc.invalidateQueries({ queryKey: getGetLeavesQueryKey({ employeeId }) });
       draft.clearDraft();
       setApplyOpen(false);
@@ -609,7 +609,7 @@ function LeaveTab({ employeeId }: { employeeId: string }) {
   const action = async (id: string, status: string) => {
     try {
       await updateLeave.mutateAsync({ id, data: { status } });
-      toast({ title: `Leave ${status.toLowerCase()}` });
+      toast({ variant: "success", title: `Leave ${status.toLowerCase()}` });
       qc.invalidateQueries({ queryKey: getGetLeavesQueryKey({ employeeId }) });
       qc.invalidateQueries({ queryKey: ["leave-balances", employeeId, year] });
     } catch (e: any) {
@@ -760,14 +760,14 @@ function PerformanceTab({ employeeId }: { employeeId: string }) {
   }, [addOpen]);
 
   const submit = async () => {
-    if (!text.trim()) { toast({ title: "Note text required" }); return; }
+    if (!text.trim()) { toast({ variant: "warning", title: "Note text required" }); return; }
     try {
       setSaving(true);
       await apiFetch(`/employees/${employeeId}/performance`, {
         method: "POST",
         body: JSON.stringify({ type, text, date }),
       });
-      toast({ title: "Note added" });
+      toast({ variant: "success", title: "Note added" });
       qc.invalidateQueries({ queryKey: ["emp-performance", employeeId] });
       setAddOpen(false);
     } catch (e: any) {
@@ -910,12 +910,12 @@ function ExitTab({ employeeId }: { employeeId: string; onSwitchTab: (t: string) 
   };
 
   const finalize = async () => {
-    if (!settlement) { toast({ title: "Enter final settlement" }); return; }
+    if (!settlement) { toast({ variant: "warning", title: "Enter final settlement" }); return; }
     try {
       await apiFetch(`/employees/exits/${exit.id}/finalize`, {
         method: "POST", body: JSON.stringify({ finalSettlement: Number(settlement) }),
       });
-      toast({ title: "Exit finalized" });
+      toast({ variant: "success", title: "Exit finalized" });
       qc.invalidateQueries({ queryKey: ["emp-exit", employeeId] });
       qc.invalidateQueries({ queryKey: getGetEmployeeQueryKey(employeeId) });
     } catch (e: any) { toast({ title: e?.message || "Failed", variant: "destructive" }); }
@@ -1013,7 +1013,7 @@ function ExitInitiateModal({
   }, [open]);
 
   const submit = async () => {
-    if (!exitDate) { toast({ title: "Exit date required" }); return; }
+    if (!exitDate) { toast({ variant: "warning", title: "Exit date required" }); return; }
     try {
       setSaving(true);
       await apiFetch(`/employees/${employeeId}/exit`, {

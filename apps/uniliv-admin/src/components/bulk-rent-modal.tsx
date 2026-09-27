@@ -70,7 +70,16 @@ export function BulkRentModal({ open, onOpenChange }: BulkRentModalProps) {
           body: JSON.stringify({ propertyId, month: Number(month), year }),
         }
       );
-      toast({ title: `Rent charged to ${res.data.success} residents (${res.data.failed} failed)` });
+      // A partial run is not a success. The request came back 200, but some
+      // residents were not charged — colouring that green is how a half-done
+      // rent run gets closed and forgotten.
+      toast({
+        variant: res.data.failed ? "warning" : "success",
+        title: res.data.failed
+          ? `Rent charged to ${res.data.success} residents — ${res.data.failed} failed`
+          : `Rent charged to ${res.data.success} residents`,
+        ...(res.data.failed ? { description: "Re-run to retry the ones that failed." } : {}),
+      });
       qc.invalidateQueries({ queryKey: getGetResidentsQueryKey() });
       onOpenChange(false);
     } catch (e: any) {

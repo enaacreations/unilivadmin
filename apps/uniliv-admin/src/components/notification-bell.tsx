@@ -55,12 +55,12 @@ export function NotificationBell() {
       if (pushState === "subscribed") {
         await disablePush();
         setPushState("default");
-        toast({ title: "Desktop notifications turned off" });
+        toast({ variant: "success", title: "Desktop notifications turned off" });
       } else {
         const r = await enablePush();
         if (r.ok) {
           setPushState("subscribed");
-          toast({ title: "Desktop notifications turned on" });
+          toast({ variant: "success", title: "Desktop notifications turned on" });
         } else {
           setPushState(await getPushState());
           toast({

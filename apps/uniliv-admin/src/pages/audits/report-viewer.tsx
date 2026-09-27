@@ -60,7 +60,7 @@ export default function ReportViewer() {
         body: JSON.stringify({ channel: "LINK", ttlHours: ttl }),
       }),
     onSuccess: () => {
-      toast({ title: "Share link created" });
+      toast({ variant: "success", title: "Share link created" });
       setShareOpen(false);
       invalidate();
     },
@@ -71,7 +71,7 @@ export default function ReportViewer() {
     mutationFn: (sid: string) =>
       apiFetch(`/audit/reports/${reportId}/shares/${sid}`, { method: "DELETE" }),
     onSuccess: () => {
-      toast({ title: "Link revoked" });
+      toast({ variant: "success", title: "Link revoked" });
       invalidate();
     },
     onError: (e: Error) => toast({ title: e.message || "Revoke failed", variant: "destructive" }),
@@ -79,7 +79,7 @@ export default function ReportViewer() {
 
   const copyUrl = (url: string) => {
     navigator.clipboard.writeText(absoluteShareUrl(url)).then(
-      () => toast({ title: "Link copied" }),
+      () => toast({ variant: "success", title: "Link copied" }),
       () => toast({ title: "Copy failed", variant: "destructive" }),
     );
   };

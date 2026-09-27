@@ -20,12 +20,11 @@ vi.mock("@workspace/db", async (importOriginal) => {
   return { ...actual, db: fakeDb };
 });
 
-const { accessRolePermissionsTable, accessMatrixVersionTable } = await import("@workspace/db");
+const { roleFunctionalitiesTable, accessMatrixVersionTable } = await import("@workspace/db");
 const { resetDb, seedDb } = await import("./helpers/fake-db.js");
 const { loadMatrix, matrixCan, isManifestCell, SYSTEM_ROLES } = await import("../access/matrix.js");
-const { ROLE_PERMISSIONS, ALL_MODULES, actionsFor, can } = await import("../permissions.js");
-
-const LEGACY = ["view", "create", "edit", "delete"] as const;
+const { ROLE_PERMISSIONS, ALL_FUNCTIONALITIES, namedActionsFor, expandCell, can } =
+  await import("../permissions.js");
 
 /** Expand ROLE_PERMISSIONS into rows exactly as seedMatrix() does. */
 function seedRows() {
@@ -33,10 +32,10 @@ function seedRows() {
   let i = 0;
   for (const [roleKey, matrix] of Object.entries(ROLE_PERMISSIONS)) {
     if (roleKey in SYSTEM_ROLES) continue; // computed, never stored
-    for (const [module, perms] of Object.entries(matrix ?? {})) {
-      for (const [action, allowed] of Object.entries(perms ?? {})) {
-        if (allowed !== true || !isManifestCell(module, action)) continue;
-        rows.push({ id: `c-${i++}`, roleKey, module, action, allowed: true, updatedBy: null });
+    for (const [functionality, cell] of Object.entries(matrix ?? {})) {
+      for (const action of expandCell(functionality as never, cell as never)) {
+        if (!isManifestCell(functionality, action)) continue;
+        rows.push({ id: `c-${i++}`, roleKey, functionality, action, allowed: true, updatedBy: null });
       }
     }
   }
@@ -47,19 +46,22 @@ describe("DB matrix ≡ code matrix", () => {
   beforeEach(async () => {
     resetDb();
     seedDb([
-      [accessRolePermissionsTable, seedRows()],
+      [roleFunctionalitiesTable, seedRows()],
       [accessMatrixVersionTable, [{ id: "singleton", version: 1, updatedBy: null }]],
     ]);
     await loadMatrix();
   });
 
-  it("resolves every role × module × legacy action identically", () => {
+  it("resolves every role × permission identically", () => {
+    // Every declared action of every functionality, not a fixed verb list —
+    // the two copies must agree on the whole surface, including the actions
+    // only some functionalities have.
     const diffs: string[] = [];
     for (const role of Object.keys(ROLE_PERMISSIONS)) {
-      for (const m of ALL_MODULES) {
-        for (const a of LEGACY) {
-          if (can(role as never, m, a) !== matrixCan(role, m, a)) {
-            diffs.push(`${role} ${m}:${a}`);
+      for (const f of ALL_FUNCTIONALITIES) {
+        for (const d of namedActionsFor(f)) {
+          if (can(role as never, f, d.key) !== matrixCan(role, f, d.key)) {
+            diffs.push(`${role} ${f}.${d.key}`);
           }
         }
       }
@@ -70,11 +72,11 @@ describe("DB matrix ≡ code matrix", () => {
   it("computes the system roles rather than storing them", () => {
     // The real lockout backstop: no edit can take these away, because there is
     // nothing to edit. SUPER_ADMIN holds every manifest cell by construction.
-    expect(matrixCan("SUPER_ADMIN", "PROPERTIES", "delete")).toBe(true);
-    expect(matrixCan("OPS_EXCELLENCE", "AUDIT_ADMIN", "configure")).toBe(true);
+    expect(matrixCan("SUPER_ADMIN", "PROPERTIES", "delete_property")).toBe(true);
+    expect(matrixCan("OPS_EXCELLENCE", "AUDIT_ADMIN", "configure_audit_admin")).toBe(true);
     // AUDIT_READONLY is view-everywhere and nothing else.
-    expect(matrixCan("AUDIT_READONLY", "PROPERTIES", "view")).toBe(true);
-    expect(matrixCan("AUDIT_READONLY", "PROPERTIES", "edit")).toBe(false);
+    expect(matrixCan("AUDIT_READONLY", "PROPERTIES", "view_property")).toBe(true);
+    expect(matrixCan("AUDIT_READONLY", "PROPERTIES", "edit_property")).toBe(false);
   });
 
   it("refuses a stored cell outside the manifest ceiling", async () => {
@@ -83,24 +85,26 @@ describe("DB matrix ≡ code matrix", () => {
     // READ, not only at write time.
     resetDb();
     seedDb([
-      [accessRolePermissionsTable, [
-        { id: "x1", roleKey: "WARDEN", module: "NOT_A_MODULE", action: "view", allowed: true },
-        { id: "x2", roleKey: "WARDEN", module: "DASHBOARD", action: "configure", allowed: true },
+      [roleFunctionalitiesTable, [
+        { id: "x1", roleKey: "WARDEN", module: "NOT_A_MODULE", functionality: "view", allowed: true },
+        { id: "x2", roleKey: "WARDEN", module: "DASHBOARD", functionality: "configure", allowed: true },
       ]],
       [accessMatrixVersionTable, [{ id: "singleton", version: 1 }]],
     ]);
     await loadMatrix();
-    expect(matrixCan("WARDEN", "NOT_A_MODULE" as never, "view")).toBe(false);
-    // DASHBOARD has no `configure` in its action set, so the row is inert.
-    expect(actionsFor("DASHBOARD")).not.toContain("configure");
-    expect(matrixCan("WARDEN", "DASHBOARD", "configure")).toBe(false);
+    expect(matrixCan("WARDEN", "NOT_A_MODULE" as never, "view_dashboard")).toBe(false);
+    // A dashboard declares no `configure_*`, so a row naming one is inert —
+    // the ceiling is enforced on READ, not only at write time.
+    expect(namedActionsFor("DASHBOARD").map((d) => d.key)).not.toContain("configure_dashboard");
+    expect(matrixCan("WARDEN", "DASHBOARD", "configure_dashboard")).toBe(false);
   });
 
   it("falls back to the code matrix when the table is empty, never to deny-all", async () => {
     // A fresh database or a failed seed must not lock everyone out.
     resetDb();
-    seedDb([[accessRolePermissionsTable, []], [accessMatrixVersionTable, []]]);
+    seedDb([[roleFunctionalitiesTable, []], [accessMatrixVersionTable, []]]);
     await loadMatrix();
-    expect(matrixCan("WARDEN", "RESIDENTS", "view")).toBe(can("WARDEN" as never, "RESIDENTS", "view"));
+    expect(matrixCan("WARDEN", "RESIDENTS", "view_resident"))
+      .toBe(can("WARDEN" as never, "RESIDENTS", "view_resident"));
   });
 });

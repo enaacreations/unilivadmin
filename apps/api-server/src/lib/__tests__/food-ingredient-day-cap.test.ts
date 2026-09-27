@@ -37,6 +37,10 @@ vi.mock("../../middlewares/auth.js", () => ({
 vi.mock("../../middlewares/authorize.js", () => ({
   authorize: () => (_r: unknown, _s: unknown, n: () => void) => n(),
   authorizeAny: () => (_r: unknown, _s: unknown, n: () => void) => n(),
+  // Route files call on()/reads() at import time to build their gate
+  // pairs, so a stubbed-open gate still has to provide them.
+  on: (f: string, a: string) => [f, a],
+  reads: (fs: readonly string[]) => fs.map((f) => [f, "view"]),
 }));
 
 import * as foodService from "../food-service.js";

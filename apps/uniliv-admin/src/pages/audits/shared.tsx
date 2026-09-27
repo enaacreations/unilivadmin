@@ -333,7 +333,7 @@ export function PublishDialog({
         body: JSON.stringify({ changelogNote: note.trim() }),
       }),
     onSuccess: () => {
-      toast({ title: `v${versionNo ?? ""} published` });
+      toast({ variant: "success", title: `v${versionNo ?? ""} published` });
       onOpenChange(false);
       qc.invalidateQueries({ queryKey: ["/audit/templates"] });
       onPublished?.();

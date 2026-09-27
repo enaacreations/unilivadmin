@@ -129,7 +129,7 @@ export function RentAgreementBanner({
     mutationFn: () => apiFetch(`/residents/${residentId}/agreement`, { method: "POST" }),
     onSuccess: (resp) => {
       qc.invalidateQueries({ queryKey: ["esign", residentId] });
-      toast({ title: "Agreement generated", description: "Signing link copied to clipboard." });
+      toast({ variant: "success", title: "Agreement generated", description: "Signing link copied to clipboard." });
       try { navigator.clipboard?.writeText(resp.data.signerUrl); } catch { /* noop */ }
     },
     onError: (e) => toast({ title: e.message, variant: "destructive" }),
@@ -142,7 +142,7 @@ export function RentAgreementBanner({
   const copyLink = () => {
     if (!signerUrl) return;
     navigator.clipboard?.writeText(signerUrl);
-    toast({ title: "Sign link copied" });
+    toast({ variant: "success", title: "Sign link copied" });
   };
 
   return (
@@ -251,7 +251,7 @@ function CreateEsignModal({
       }),
     onSuccess: (resp) => {
       qc.invalidateQueries({ queryKey: ["esign", residentId] });
-      toast({ title: "Signature requested", description: "Signing link generated." });
+      toast({ variant: "success", title: "Signature requested", description: "Signing link generated." });
       try { navigator.clipboard?.writeText(resp.data.signerUrl); } catch { /* noop */ }
       onOpenChange(false);
     },
@@ -333,14 +333,14 @@ function EsignDetailSheet({ id, onClose }: { id: string; onClose: () => void }) 
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["esign-detail", id] });
       qc.invalidateQueries({ queryKey: ["esign"], exact: false });
-      toast({ title: "Request voided" });
+      toast({ variant: "success", title: "Request voided" });
     },
   });
 
   const copy = () => {
     if (!r?.signerUrl) return;
     navigator.clipboard?.writeText(r.signerUrl);
-    toast({ title: "Link copied" });
+    toast({ variant: "success", title: "Link copied" });
   };
 
   return (

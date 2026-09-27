@@ -353,20 +353,25 @@ export default function FoodDashboard() {
   const { confetti, fire } = useConfetti();
   const now = useNow();
 
-  const canPlace = can("FOOD_PLACE_ORDER", "create");
-  const canConfirm = can("FOOD_CONFIRM_DELIVERY", "edit") || can("FOOD_CONFIRM_DELIVERY", "create");
-  const canWaste = can("FOOD_WASTE_TRACKING", "edit") || can("FOOD_WASTE_TRACKING", "create");
+  const canPlace = can("FOOD_PLACE_ORDER", "draft_order");
+  // Gates the confirm-receipt gate itself (`state === "action-confirm"`), so it
+  // asks for the CERTIFYING action by name. It used to be `edit || create`;
+  // create never existed on this functionality, and edit is amending the
+  // delivery record — a different, weaker thing than certifying receipt, which
+  // is the half of the C3 handover this screen performs.
+  const canConfirm = can("FOOD_CONFIRM_DELIVERY", "confirm_receipt");
+  const canWaste = can("FOOD_WASTE_TRACKING", "edit_waste_tracking") || can("FOOD_WASTE_TRACKING", "add_waste_tracking");
   // Editing a placed order mirrors the server guard on PUT /food/orders/:id
   // (authorize FOOD_PLACE_ORDER "edit"). Cancelling is deliberately NOT offered
   // from this page: a placed order is fixed once the cut-off passes, and before
   // it the answer is to correct the numbers, not to withdraw the meal.
-  const canEditOrder = can("FOOD_PLACE_ORDER", "edit");
-  const canViewReports = can("FOOD_REPORTS", "view");
+  const canEditOrder = can("FOOD_PLACE_ORDER", "edit_order");
+  const canViewReports = can("FOOD_REPORTS", "view_food_report");
   // GET /food/orders(+/:id) is server-gated on FOOD_ALL_ORDERS. Some food
   // personas (FNB supervisor/manager/zonal head, SVP) hold FOOD_DASHBOARD but
   // not FOOD_ALL_ORDERS — for them every order query would 403. Gate the
   // queries and show an honest state instead of silently-empty meal slots.
-  const canReadOrders = can("FOOD_ALL_ORDERS", "view");
+  const canReadOrders = can("FOOD_ALL_ORDERS", "view_order");
 
   /* ── property scope: global store ?? own property ?? sole property ── */
   const { propertyId: storePropertyId, setPropertyId } = useAppStore();

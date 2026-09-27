@@ -212,10 +212,10 @@ export function BookingFormModal({
     try {
       if (isEdit && booking) {
         await updateMut.mutateAsync({ id: booking.id, data: body });
-        toast({ title: "Booking updated" });
+        toast({ variant: "success", title: "Booking updated" });
       } else {
         await createMut.mutateAsync({ data: body });
-        toast({ title: "Booking created" });
+        toast({ variant: "success", title: "Booking created" });
       }
       qc.invalidateQueries({
         queryKey: getGetBookingsQueryKey({ propertyId: property.id }),

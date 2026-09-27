@@ -14,7 +14,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { eq, desc, and } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { scopedPropertyId, forbidden, sendAuthzError } from "../lib/authz.js";
+import { scopedPropertyIds, forbidden, sendAuthzError } from "../lib/authz.js";
 import { enforceSod, type SodSubject } from "../lib/access/sod.js";
 import { newId } from "../lib/id.js";
 import {
@@ -112,13 +112,13 @@ async function residentInScope(
   req: import("express").Request,
   residentId: string,
 ): Promise<boolean> {
-  const scope = scopedPropertyId(req);
+  const scope = await scopedPropertyIds(req);
   if (!scope) return true;
   const [r] = await db
     .select({ propertyId: residentsTable.propertyId })
     .from(residentsTable)
     .where(eq(residentsTable.id, residentId));
-  return !!r && r.propertyId === scope;
+  return !!r && !!r.propertyId && scope.includes(r.propertyId);
 }
 
 /** Same check for a route addressed by kyc/esign row id rather than resident id. */
@@ -126,11 +126,11 @@ async function recordResidentInScope(
   req: import("express").Request,
   residentId: string | null | undefined,
 ): Promise<boolean> {
-  if (!residentId) return !scopedPropertyId(req);
+  if (!residentId) return !await scopedPropertyIds(req);
   return residentInScope(req, residentId);
 }
 
-kycRouter.get("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+kycRouter.get("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     if (!(await residentInScope(req, req.params["id"] as string))) {
       res.status(404).json({ success: false, error: "Not found" }); return;
@@ -149,7 +149,7 @@ kycRouter.get("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "view")
 });
 
 // Create
-kycRouter.post("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+kycRouter.post("/residents/:id/kyc", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     if (!(await residentInScope(req, req.params["id"] as string))) {
       res.status(404).json({ success: false, error: "Not found" }); return;
@@ -227,7 +227,7 @@ async function sodSubjectForKyc(req: import("express").Request): Promise<SodSubj
 kycRouter.post(
   "/kyc/:id/verify",
   authenticate,
-  authorize("RESIDENTS", "edit"),
+  authorize("RESIDENTS", "edit_resident"),
   enforceSod({ entity: "kyc", action: "verify", load: sodSubjectForKyc }),
   async (req, res) => {
   try {
@@ -283,7 +283,7 @@ kycRouter.post(
 }
 );
 
-kycRouter.get("/kyc/:id/events", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+kycRouter.get("/kyc/:id/events", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const id = req.params["id"] as string;
     const [parent] = await db
@@ -317,7 +317,7 @@ kycRouter.get("/kyc/:id/events", authenticate, authorize("RESIDENTS", "view"), a
 // ---------------------------------------------------------------------
 
 // GET /kyc/:id/digilocker/initiate  — authenticated
-kycRouter.get("/kyc/:id/digilocker/initiate", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+kycRouter.get("/kyc/:id/digilocker/initiate", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     if (!isDigiLockerConfigured()) {
       res.status(503).json({ success: false, error: "DigiLocker is not configured" });
@@ -401,7 +401,7 @@ kycRouter.get("/kyc/digilocker/callback", async (req, res) => {
   }
 });
 
-kycRouter.get("/kyc/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+kycRouter.get("/kyc/:id", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const [row] = await db.select().from(kycRequestsTable).where(eq(kycRequestsTable.id, req.params["id"] as string));
     if (!row || !(await recordResidentInScope(req, row.residentId))) {
@@ -557,7 +557,7 @@ export async function createRentAgreementEsign(
 // Generate a Rent Agreement esign request — mounted as
 // POST /residents/:id/agreement. The resident then signs via the existing
 // public /sign/:token flow (no new signing UI). Returns the signerUrl.
-esignRouter.post("/residents/:id/agreement", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+esignRouter.post("/residents/:id/agreement", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     if (!(await residentInScope(req, req.params["id"] as string))) {
       res.status(404).json({ success: false, error: "Not found" }); return;
@@ -590,7 +590,7 @@ esignRouter.post("/residents/:id/agreement", authenticate, authorize("RESIDENTS"
 });
 
 // List for a resident — mounted as /residents/:id/esign
-esignRouter.get("/residents/:id/esign", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+esignRouter.get("/residents/:id/esign", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     if (!(await residentInScope(req, req.params["id"] as string))) {
       res.status(404).json({ success: false, error: "Not found" }); return;
@@ -609,7 +609,7 @@ esignRouter.get("/residents/:id/esign", authenticate, authorize("RESIDENTS", "vi
 });
 
 // Create — mounted as /residents/:id/esign
-esignRouter.post("/residents/:id/esign", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+esignRouter.post("/residents/:id/esign", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     if (!(await residentInScope(req, req.params["id"] as string))) {
       res.status(404).json({ success: false, error: "Not found" }); return;
@@ -663,7 +663,7 @@ esignRouter.post("/residents/:id/esign", authenticate, authorize("RESIDENTS", "e
 });
 
 // Get one with events — mounted as /esign/:id
-esignRouter.get("/esign/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+esignRouter.get("/esign/:id", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const id = req.params["id"] as string;
     const [row] = await db.select().from(esignRequestsTable).where(eq(esignRequestsTable.id, id));
@@ -701,7 +701,7 @@ esignRouter.get("/esign/:id", authenticate, authorize("RESIDENTS", "view"), asyn
 });
 
 // Download signed PDF — mounted as /esign/:id/pdf
-esignRouter.get("/esign/:id/pdf", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+esignRouter.get("/esign/:id/pdf", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const id = req.params["id"] as string;
     const [row] = await db.select().from(esignRequestsTable).where(eq(esignRequestsTable.id, id));
@@ -728,7 +728,7 @@ esignRouter.get("/esign/:id/pdf", authenticate, authorize("RESIDENTS", "view"), 
 });
 
 // Cancel / void — mounted as /esign/:id/void
-esignRouter.post("/esign/:id/void", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+esignRouter.post("/esign/:id/void", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const id = req.params["id"] as string;
     // Check BEFORE writing. This used to UPDATE first and 404 afterwards on a

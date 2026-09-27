@@ -202,7 +202,7 @@ export default function ExecutiveDashboard() {
                     <tbody>
                       {(overdue.data?.data || []).map((r: any) => {
                         const days = r.dueDate ? Math.floor((Date.now() - new Date(r.dueDate).getTime()) / 86400000) : 0;
-                        const go = can("RESIDENTS", "view") && r.residentId ? () => setLocation(`/residents/${r.residentId}`) : undefined;
+                        const go = can("RESIDENTS", "view_resident") && r.residentId ? () => setLocation(`/residents/${r.residentId}`) : undefined;
                         return <tr key={r.id} onClick={go} className={`border-b ${go ? "cursor-pointer hover:bg-muted/40" : ""}`}><td className="py-2">{r.residentName || "—"}</td><td className="tabular-nums">₹{Number(r.amount).toLocaleString()}</td><td className="tabular-nums">{days}</td></tr>;
                       })}
                       {!(overdue.data?.data?.length) && <tr><td colSpan={3} className="py-4 text-center text-muted-foreground">No overdue payments</td></tr>}
@@ -221,7 +221,7 @@ export default function ExecutiveDashboard() {
                     <tbody>
                       {(breached.data?.data || []).map((c: any) => {
                         const age = Math.floor((Date.now() - new Date(c.createdAt).getTime()) / 86400000);
-                        const go = can("COMPLAINTS", "view") ? () => setLocation(`/complaints/${c.id}`) : undefined;
+                        const go = can("COMPLAINT_TICKETS", "view_complaint") ? () => setLocation(`/complaints/${c.id}`) : undefined;
                         return <tr key={c.id} onClick={go} className={`border-b ${go ? "cursor-pointer hover:bg-muted/40" : ""}`}><td className="py-2">{c.ticketNumber || c.id.slice(0,8)}</td><td>{c.category}</td><td className="tabular-nums">{age}</td></tr>;
                       })}
                       {!(breached.data?.data?.length) && <tr><td colSpan={3} className="py-4 text-center text-muted-foreground">No breached complaints</td></tr>}

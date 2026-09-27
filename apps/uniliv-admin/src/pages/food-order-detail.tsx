@@ -177,7 +177,7 @@ export default function FoodOrderDetail() {
     mutationFn: () => foodApi.acceptOrder(id),
     onSuccess: () => {
       invalidate();
-      toast({ title: "Order accepted" });
+      toast({ variant: "success", title: "Order accepted" });
     },
     onError: (e: any) =>
       toast({ title: e?.message || "Failed to accept", variant: "destructive" }),
@@ -187,7 +187,7 @@ export default function FoodOrderDetail() {
     mutationFn: () => foodApi.rejectOrder(id, rejectReason.trim() || undefined),
     onSuccess: () => {
       invalidate();
-      toast({ title: "Order rejected" });
+      toast({ variant: "success", title: "Order rejected" });
       setRejectOpen(false);
       setRejectReason("");
     },
@@ -199,7 +199,7 @@ export default function FoodOrderDetail() {
     mutationFn: () => foodApi.cancelOrder(id, cancelReason.trim() || undefined),
     onSuccess: () => {
       invalidate();
-      toast({ title: "Order cancelled" });
+      toast({ variant: "success", title: "Order cancelled" });
       setCancelOpen(false);
       setCancelReason("");
     },
@@ -224,7 +224,7 @@ export default function FoodOrderDetail() {
       foodApi.editOrderPeople(id, editResidents, editStaff, editNotes.trim() || null),
     onSuccess: () => {
       invalidate();
-      toast({ title: "Order updated" });
+      toast({ variant: "success", title: "Order updated" });
       setEditOpen(false);
     },
     onError: (e: any) =>
@@ -301,20 +301,20 @@ export default function FoodOrderDetail() {
   const dispatch = order.dispatch;
   const kitchen = order.kitchen;
   const canAck =
-    can("FOOD_KITCHEN_SUMMARY", "edit") && order.status === "PLACED";
+    can("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary") && order.status === "PLACED";
   const isPreDispatch =
     order.status === "PLACED" ||
     order.status === "ACCEPTED";
   const canCancel =
     isPreDispatch &&
-    (can("FOOD_PLACE_ORDER", "edit") || can("FOOD_KITCHEN_SUMMARY", "edit"));
+    (can("FOOD_PLACE_ORDER", "edit_order") || can("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary"));
   // Backend permits editing the people count while PLACED, ACCEPTED or DISPATCHED
   // (mirrors the PUT handler). Items are recomputed server-side.
   const canEdit =
     (order.status === "PLACED" ||
       order.status === "ACCEPTED" ||
       order.status === "DISPATCHED") &&
-    can("FOOD_PLACE_ORDER", "edit");
+    can("FOOD_PLACE_ORDER", "edit_order");
 
   return (
     <div className="space-y-6">

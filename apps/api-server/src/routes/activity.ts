@@ -15,7 +15,7 @@ import { and, desc, eq, gte, ilike, inArray, isNotNull, lte, or, sql } from "dri
 import { db, activityEventsTable, usersTable } from "@workspace/db";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { scopedPropertyId, sendAuthzError } from "../lib/authz.js";
+import { scopedPropertyIds, sendAuthzError } from "../lib/authz.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { ACTIVITY_EVENTS, type EventDef } from "../lib/activity/events.js";
 import { resolveLabels } from "../lib/activity/labels.js";
@@ -23,7 +23,7 @@ import { resolveLabels } from "../lib/activity/labels.js";
 const router: IRouter = Router();
 
 /** Filter vocabulary, from the registry — no table scan. */
-router.get("/facets", authenticate, authorize("AUDIT_LOG", "view"), (_req, res) => {
+router.get("/facets", authenticate, authorize("AUDIT_LOG", "view_activity"), (_req, res) => {
   // `satisfies` narrows each entry to its own literal type, so the union has
   // no common `chainKey`. Widen to the declared shape to read it.
   const registry = ACTIVITY_EVENTS as unknown as Record<string, EventDef>;
@@ -44,7 +44,7 @@ router.get("/facets", authenticate, authorize("AUDIT_LOG", "view"), (_req, res) 
   });
 });
 
-router.get("/", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) => {
+router.get("/", authenticate, authorize("AUDIT_LOG", "view_activity"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const q = req.query as Record<string, string | undefined>;
@@ -76,9 +76,9 @@ router.get("/", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) =
     // A property-bound viewer sees their own estate. Rows with no property are
     // org-wide events (a role change, a matrix edit) and stay visible: hiding
     // them would tell a warden that nothing happened when something did.
-    const scope = scopedPropertyId(req);
+    const scope = await scopedPropertyIds(req);
     if (scope) {
-      conds.push(or(eq(activityEventsTable.propertyId, scope), sql`${activityEventsTable.propertyId} is null`)!);
+      conds.push(or(inArray(activityEventsTable.propertyId, scope), sql`${activityEventsTable.propertyId} is null`)!);
     }
 
     const where = conds.length ? and(...conds) : undefined;
@@ -132,7 +132,7 @@ router.get("/", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) =
  * all of history, which is the property that made the audit module's single
  * global chain unusable at platform scale.
  */
-router.get("/verify", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) => {
+router.get("/verify", authenticate, authorize("AUDIT_LOG", "view_activity"), async (req, res) => {
   const chainKey = (req.query["chainKey"] as string | undefined) ?? "ACCESS";
   const rows = await db
     .select({ seq: activityEventsTable.seq, hash: activityEventsTable.hash, prevHash: activityEventsTable.prevHash })

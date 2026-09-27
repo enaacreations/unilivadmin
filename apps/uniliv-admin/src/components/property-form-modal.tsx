@@ -312,7 +312,7 @@ export function PropertyFormModal({
     try {
       const res = await foodApi.geocodeForward(q);
       setCoords({ lat: res.lat, lng: res.lon });
-      toast({ title: "Location found", description: res.displayName });
+      toast({ variant: "success", title: "Location found", description: res.displayName });
     } catch (e: any) {
       toast({
         title: "Location not found",
@@ -340,7 +340,7 @@ export function PropertyFormModal({
       if (res.pincode && /^\d{6}$/.test(res.pincode)) {
         setValue("pincode", res.pincode, { shouldValidate: true, shouldDirty: true });
       }
-      toast({ title: "Address filled", description: res.displayName });
+      toast({ variant: "success", title: "Address filled", description: res.displayName });
     } catch (e: any) {
       toast({
         title: "Address not found",
@@ -397,10 +397,10 @@ export function PropertyFormModal({
     try {
       if (isEdit && property) {
         await updateMut.mutateAsync({ id: property.id, data: body as any });
-        toast({ title: "Property updated" });
+        toast({ variant: "success", title: "Property updated" });
       } else {
         await createMut.mutateAsync({ data: body as any });
-        toast({ title: "Property created" });
+        toast({ variant: "success", title: "Property created" });
       }
       queryClient.invalidateQueries({ queryKey: getGetPropertiesQueryKey() });
       // Tagging a unit-lead changes users.propertyId — refresh assignable list.

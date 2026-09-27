@@ -173,7 +173,7 @@ export default function Employees() {
       if (v.pfNumber) body["pfNumber"] = v.pfNumber;
       if (v.esicNumber) body["esicNumber"] = v.esicNumber;
       await createMut.mutateAsync({ data: body as any });
-      toast({ title: "Employee created" });
+      toast({ variant: "success", title: "Employee created" });
       qc.invalidateQueries({ queryKey: ["employees-stats"] });
       qc.invalidateQueries({ queryKey: getGetEmployeesQueryKey() });
       draft.clearDraft();

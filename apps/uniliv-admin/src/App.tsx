@@ -1,7 +1,7 @@
 import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider, QueryCache } from "@tanstack/react-query";
 import { handleUnauthorized, redirectToLogin } from "@/lib/api-fetch";
-import { Toaster } from "@/components/ui/toaster";
+import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ErrorBoundary } from "@/components/error-boundary";
 import NotFound from "@/pages/not-found";
@@ -48,11 +48,14 @@ import BillingCycles from "@/pages/billing-cycles";
 import Reminders from "@/pages/reminders";
 import Banking from "@/pages/banking";
 import Expenses from "@/pages/expenses";
-import Users from "@/pages/users";
 import Settings from "@/pages/settings";
 import AuditLog from "@/pages/audit-log";
 import AuditAdmin from "@/pages/audits/audit-admin";
 import AccessControl from "@/pages/access-control";
+import UamUsers from "@/pages/uam/users";
+import UamUserDetail from "@/pages/uam/user-detail";
+import UamRoles from "@/pages/uam/roles";
+import UamPrivileges from "@/pages/uam/privileges";
 import AuditTemplates from "@/pages/audits/templates";
 import AuditTemplateDetail from "@/pages/audits/template-detail";
 import TemplateBuilder from "@/pages/audits/template-builder";
@@ -212,7 +215,9 @@ function Router() {
       <Route path="/masters">{() => <ProtectedRoute component={Masters} />}</Route>
       <Route path="/masters/:type">{() => <ProtectedRoute component={MasterTable} />}</Route>
 
-      <Route path="/users">{() => <ProtectedRoute component={Users} />}</Route>
+      {/* The old users table lives on only as a redirect: its job moved into
+          User & Access Management, and two surfaces for one job drift. */}
+      <Route path="/users">{() => <Redirect to="/uam/users" />}</Route>
       <Route path="/settings">{() => <ProtectedRoute component={Settings} />}</Route>
       <Route path="/audit-log">{() => <ProtectedRoute component={AuditLog} />}</Route>
 
@@ -247,6 +252,22 @@ function Router() {
       {/* Admin Console -> Access Control (PRD §30/§31). Gated on the
           ACCESS_CONTROL module, which only the parity roles hold. */}
       <Route path="/access-control">{() => <ProtectedRoute component={AccessControl} />}</Route>
+      {/* User & Access Management. The access-control tabs stay at their own
+          route; these are the CRUD surfaces the tabs never had. */}
+      <Route path="/uam/users">{() => <ProtectedRoute component={UamUsers} />}</Route>
+      <Route path="/uam/users/:id">{(params) => <ProtectedRoute component={() => <UamUserDetail id={params.id} />} />}</Route>
+      <Route path="/uam/roles">{() => <ProtectedRoute component={UamRoles} />}</Route>
+      {/* Privileges are written and read inside a user or a role now; the
+          standalone register was a third path to the same sheet. */}
+      <Route path="/uam/privileges">{() => <ProtectedRoute component={UamPrivileges} />}</Route>
+      {/* The old per-subject deep link: privileges are read on the person or the
+          role they belong to, never on a page of their own. */}
+      <Route path="/uam/privileges/:subject">{() => <Redirect to="/uam/users" />}</Route>
+      {/* The access check is a tab on a person now, not a screen of its own.
+          Old links still resolve rather than 404ing. */}
+      <Route path="/uam/check">{() => <Redirect to="/uam/users" />}</Route>
+      <Route path="/uam/check/:userId">{(params) => <Redirect to={`/uam/users/${params.userId}`} />}</Route>
+      <Route path="/uam/roles/:key">{(params) => <ProtectedRoute component={() => <UamRoles roleKey={params.key} />} />}</Route>
       {/* Runner must precede the :id catch-all (wouter matches in Switch order) */}
       <Route path="/audits/:id/run">{() => <ProtectedRoute component={AuditRunner} />}</Route>
       <Route path="/audits/:id">{() => <ProtectedRoute component={AuditDetail} />}</Route>

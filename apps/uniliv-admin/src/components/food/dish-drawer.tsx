@@ -268,11 +268,12 @@ export function DishDrawer({
       return { dish, rotationSidesRemoved: 0 };
     },
     onSuccess: ({ dish, rotationSidesRemoved }) => {
-      toast({ title: draft?.id ? `${dish.name} updated` : `${dish.name} added` });
+      toast({ variant: "success", title: draft?.id ? `${dish.name} updated` : `${dish.name} added` });
       // Dropping a side rewrites already-planned plates, so say so — the board
       // is a different screen and the change would otherwise go unnoticed.
       if (rotationSidesRemoved > 0) {
         toast({
+          variant: "success",
           title: `Removed from ${rotationSidesRemoved} planned ${rotationSidesRemoved === 1 ? "plate" : "plates"}`,
           description: "Menu Rotation no longer serves the accompaniments you un-paired.",
         });

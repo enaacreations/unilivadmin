@@ -50,7 +50,7 @@ export default function Leaves() {
       { id, data: { status } },
       {
         onSuccess: () => {
-          toast({ title: `Leave ${status.toLowerCase()}` });
+          toast({ variant: "success", title: `Leave ${status.toLowerCase()}` });
           qc.invalidateQueries({ queryKey: getGetLeavesQueryKey() });
         },
         onError: (err: any) => toast({ title: err?.message || "Failed", variant: "destructive" }),

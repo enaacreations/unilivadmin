@@ -192,10 +192,12 @@ export default function ReviewWorkspace() {
     qc.invalidateQueries({ queryKey: ["/audits"] });
   }, [qc]);
 
+  // Every caller is a mutation's onSuccess — approve, reject and reopen are all
+  // the review action SUCCEEDING. "Rejected" is an outcome, not a failure.
   const leaveWithToast = (title: string) => {
     invalidate();
     navigate("/audits/review");
-    toast({ title });
+    toast({ variant: "success", title });
   };
 
   const approveMut = useMutation({
@@ -264,7 +266,7 @@ export default function ReviewWorkspace() {
   const threshold = ws.version?.passThresholdPct != null ? Number(ws.version.passThresholdPct) : null;
   const responseByQ = new Map(ws.responses.map((r) => [r.questionId, r]));
   const sectionScoreById = new Map(ws.sectionScores.map((s) => [s.sectionId, s]));
-  const canReview = can("AUDIT_REVIEW", "edit");
+  const canReview = can("AUDIT_REVIEW", "annotate_review");
   const canReopen =
     ["APPROVED", "CLOSED"].includes(audit.state) &&
     (role === "SUPER_ADMIN" || role === "OPS_EXCELLENCE");

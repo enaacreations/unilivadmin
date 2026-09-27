@@ -131,7 +131,7 @@ export default function Recruitment() {
         id,
         data: { name: c.name, email: c.email, phone: c.phone, stage } as any,
       });
-      toast({ title: `Moved to ${STAGES.find((s) => s.key === stage)?.label || stage}` });
+      toast({ variant: "success", title: `Moved to ${STAGES.find((s) => s.key === stage)?.label || stage}` });
       qc.invalidateQueries({ queryKey: getGetCandidatesQueryKey() });
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });
@@ -147,7 +147,7 @@ export default function Recruitment() {
       };
       if (v.resumeUrl) body.resumeUrl = v.resumeUrl;
       await createCandidate.mutateAsync({ data: body });
-      toast({ title: "Candidate added" });
+      toast({ variant: "success", title: "Candidate added" });
       qc.invalidateQueries({ queryKey: getGetCandidatesQueryKey() });
       cDraft.clearDraft();
       setAddOpen(false);
@@ -161,7 +161,7 @@ export default function Recruitment() {
       await createReq.mutateAsync({
         data: { role: v.role, department: v.department, headcount: Number(v.headcount), status: "OPEN" } as any,
       });
-      toast({ title: "Requisition created" });
+      toast({ variant: "success", title: "Requisition created" });
       qc.invalidateQueries({ queryKey: getGetJobRequisitionsQueryKey() });
       rDraft.clearDraft();
       setReqOpen(false);
@@ -473,7 +473,7 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
         id: candidate.id,
         data: { name: candidate.name, email: candidate.email, phone: candidate.phone, bgvStatus: v } as any,
       });
-      toast({ title: `BGV: ${v}` });
+      toast({ variant: "success", title: `BGV: ${v}` });
       qc.invalidateQueries({ queryKey: ["candidate", candidate.id] });
       qc.invalidateQueries({ queryKey: getGetCandidatesQueryKey() });
     } catch (e: any) {
@@ -511,7 +511,7 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
         method: "POST",
         body: JSON.stringify({ scheduledAt: v.scheduledAt, panel: v.panel, notes: v.notes }),
       });
-      toast({ title: "Interview scheduled" });
+      toast({ variant: "success", title: "Interview scheduled" });
       qc.invalidateQueries({ queryKey: ["candidate", candidate.id] });
       iDraft.clearDraft();
       setInterviewOpen(false);
@@ -527,7 +527,7 @@ function CandidateSlideOver({ candidateId, onClose }: { candidateId: string | nu
         method: "POST",
         body: JSON.stringify({ ctc: Number(v.ctc), joiningDate: v.joiningDate }),
       });
-      toast({ title: "Offer generated" });
+      toast({ variant: "success", title: "Offer generated" });
       qc.invalidateQueries({ queryKey: ["candidate", candidate.id] });
       qc.invalidateQueries({ queryKey: getGetCandidatesQueryKey() });
 

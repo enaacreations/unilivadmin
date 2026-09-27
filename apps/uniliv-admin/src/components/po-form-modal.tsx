@@ -145,7 +145,7 @@ export function POFormModal({ open, onOpenChange, prefill, onCreated }: Props) {
         status: "DRAFT",
       };
       await apiFetch(`/purchase-orders`, { method: "POST", body: JSON.stringify(body) });
-      toast({ title: "Purchase order created" });
+      toast({ variant: "success", title: "Purchase order created" });
       qc.invalidateQueries({ queryKey: ["purchase-orders"] });
       qc.invalidateQueries({ queryKey: ["indents"] });
       onCreated?.();

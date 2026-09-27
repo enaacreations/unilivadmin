@@ -3,7 +3,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { db } from "@workspace/db";
 import {
-  residentsTable, usersTable, roomsTable,
+  residentsTable, usersTable, roomsTable, userRolesTable,
   dishesTable, ingredientsTable, dishIngredientsTable, foodBrandsTable,
   dishSideOptionsTable, foodMenuRotationTable, kitchensTable,
   PREPARATIONS,
@@ -11,7 +11,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { assertCanAssignRole, assertPropertyAccess, scopedPropertyId } from "../lib/authz.js";
+import { assertCanAssignRole, assertPropertyAccess, scopedPropertyIds } from "../lib/authz.js";
 import {
   dishRowSchema, ingredientRowSchema, menuRowSchema, normalizeToken, splitList,
 } from "../lib/bulk-food-rows.js";
@@ -112,14 +112,14 @@ router.post(
   authenticate,
   (req, res, next) => {
     const resource = req.params["resource"];
-    if (resource === "residents") return authorize("RESIDENTS", "create")(req, res, next);
-    if (resource === "users") return authorize("USERS", "create")(req, res, next);
+    if (resource === "residents") return authorize("RESIDENTS", "add_resident")(req, res, next);
+    if (resource === "users") return authorize("USERS", "add_user")(req, res, next);
     // The catalogue tabs are gated separately from the rest of Service Set.
     if (resource === "dishes" || resource === "ingredients") {
-      return authorize("FOOD_CATALOGUE", "create")(req, res, next);
+      return authorize("FOOD_CATALOGUE", "add_service_catalogue")(req, res, next);
     }
     // A menu import REPLACES the slots it names — an edit, not a create.
-    if (resource === "menu") return authorize("FOOD_SETTINGS", "edit")(req, res, next);
+    if (resource === "menu") return authorize("FOOD_SETTINGS", "edit_food_setting")(req, res, next);
     res.status(404).json({ success: false, error: "Unknown bulk resource" });
     return;
   },
@@ -169,7 +169,7 @@ async function handleResidents(
   dryRun: boolean,
   total: number,
 ) {
-  const scope = scopedPropertyId(req);
+  const scope = await scopedPropertyIds(req);
   const kycGate = await isKycGateEnabled();
 
   type Prepared = z.infer<typeof residentRowSchema>;
@@ -186,14 +186,23 @@ async function handleResidents(
     // Property scoping mirrors POST /api/residents: a scoped caller's rows are
     // forced to their own propertyId; reject any row aimed at another property.
     if (scope) {
-      if (row.propertyId && row.propertyId !== scope) {
+      if (row.propertyId && !scope.includes(row.propertyId)) {
         errors.push({ index: i, message: "Outside your property scope" });
         continue;
       }
-      row.propertyId = scope;
+      // Only fill it in when there is one possible answer. A caller who covers
+      // several properties importing a file with no propertyId column would
+      // otherwise have every row silently filed at whichever one sorted first.
+      if (!row.propertyId) {
+        if (scope.length !== 1) {
+          errors.push({ index: i, message: "propertyId is required — you work at more than one property" });
+          continue;
+        }
+        row.propertyId = scope[0];
+      }
     } else {
       try {
-        assertPropertyAccess(req, row.propertyId);
+        await assertPropertyAccess(req, row.propertyId);
       } catch (err) {
         errors.push({ index: i, message: (err as { message?: string }).message || "Outside your property scope" });
         continue;
@@ -336,8 +345,12 @@ async function handleUsers(
   let inserted = 0;
   await db.transaction(async (tx) => {
     for (const { row, passwordHash } of withHashes) {
+      // One id, used for both the user and their first role membership — an
+      // imported user with no membership row falls back to the legacy column
+      // and is invisible to every roles screen.
+      const userId = newId();
       await tx.insert(usersTable).values({
-        id: newId(),
+        id: userId,
         name: row.name,
         email: row.email,
         username: row.username ?? undefined,
@@ -349,6 +362,9 @@ async function handleUsers(
         passwordHash,
         updatedAt: new Date(),
       });
+      await tx.insert(userRolesTable).values({
+        id: newId(), userId, roleKey: row.role, assignedBy: req.user!.id,
+      }).onConflictDoNothing();
       inserted++;
     }
   });

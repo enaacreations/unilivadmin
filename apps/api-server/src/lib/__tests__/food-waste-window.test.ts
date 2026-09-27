@@ -30,6 +30,11 @@ vi.mock("../../middlewares/auth.js", () => ({
 vi.mock("../../middlewares/authorize.js", () => ({
   authorize: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   authorizeAny: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  // The gate is stubbed open here, but the route files still CALL on()/reads()
+  // at import time to build their pairs — so the mock has to provide them or
+  // the module fails to load.
+  on: (f: string, a: string) => [f, a],
+  reads: (fs: readonly string[]) => fs.map((f) => [f, "view"]),
 }));
 
 import { foodRouter } from "../../routes/food.js";

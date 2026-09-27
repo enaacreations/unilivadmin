@@ -15,7 +15,8 @@ import {
 import { eq, sql, ilike, or, and, inArray, asc } from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { pick, assertPropertyAccess, scopedPropertyId } from "../lib/authz.js";
+import { pick, assertPropertyAccess, scopedPropertyIds } from "../lib/authz.js";
+import { pinWriteProperty } from "../lib/scoped-query.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
 import {
@@ -166,7 +167,7 @@ async function enrichResident(r: typeof residentsTable.$inferSelect) {
   return { ...r, monthlyRent: r.monthlyRent ? Number(r.monthlyRent) : null, securityDeposit: r.securityDeposit ? Number(r.securityDeposit) : null, propertyName, roomNumber };
 }
 
-router.get("/", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+router.get("/", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
@@ -174,8 +175,8 @@ router.get("/", authenticate, authorize("RESIDENTS", "view"), async (req, res) =
     const status = req.query["status"] as string | undefined;
 
     const conditions = [];
-    const scope = scopedPropertyId(req);
-    if (scope) conditions.push(eq(residentsTable.propertyId, scope));
+    const scope = await scopedPropertyIds(req);
+    if (scope) conditions.push(inArray(residentsTable.propertyId, scope));
     if (propertyId) conditions.push(eq(residentsTable.propertyId, propertyId));
     if (status) conditions.push(eq(residentsTable.status, status as "ACTIVE" | "CHECKED_OUT" | "NOTICE_PERIOD"));
     if (search) conditions.push(or(ilike(residentsTable.name, `%${search}%`), ilike(residentsTable.email, `%${search}%`), ilike(residentsTable.phone, `%${search}%`))!);
@@ -192,15 +193,15 @@ router.get("/", authenticate, authorize("RESIDENTS", "view"), async (req, res) =
   }
 });
 
-router.post("/", authenticate, authorize("RESIDENTS", "create"), async (req, res) => {
+router.post("/", authenticate, authorize("RESIDENTS", "add_resident"), async (req, res) => {
   try {
     const body = req.body;
     // Property scoping: a scoped caller (WARDEN/UNIT_LEAD) can only create within
     // their own property; org-wide callers must target a property they may access.
-    const scope = scopedPropertyId(req);
-    if (scope) body.propertyId = scope;
+    const scope = await scopedPropertyIds(req);
+    pinWriteProperty(scope, body);
     if (!body.propertyId) { res.status(400).json({ success: false, error: "propertyId is required" }); return; }
-    assertPropertyAccess(req, body.propertyId);
+    await assertPropertyAccess(req, body.propertyId);
     // name/email/phone are NOT NULL and status is a resident_status enum: a
     // missing or unknown value is caller input, so it answers 400 not 500.
     if (
@@ -271,11 +272,11 @@ router.post("/", authenticate, authorize("RESIDENTS", "create"), async (req, res
   }
 });
 
-router.get("/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+router.get("/:id", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const [row] = await db.select().from(residentsTable).where(eq(residentsTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, row.propertyId);
+    await assertPropertyAccess(req, row.propertyId);
     res.json({ success: true, data: await enrichResident(row) });
   } catch (err) {
     if (sendAuthzError(err, res)) return;
@@ -284,11 +285,11 @@ router.get("/:id", authenticate, authorize("RESIDENTS", "view"), async (req, res
   }
 });
 
-router.put("/:id", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+router.put("/:id", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const [existing] = await db.select().from(residentsTable).where(eq(residentsTable.id, req.params["id"]!));
     if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, existing.propertyId);
+    await assertPropertyAccess(req, existing.propertyId);
 
     const body = pick(req.body, [
       "name", "email", "phone", "dob", "gender", "college", "course",
@@ -299,7 +300,7 @@ router.put("/:id", authenticate, authorize("RESIDENTS", "edit"), async (req, res
     // Block a scoped warden from moving a resident into another property: the
     // target propertyId (when changed) must also be within their scope.
     if (body.propertyId !== undefined && body.propertyId !== existing.propertyId) {
-      assertPropertyAccess(req, body.propertyId);
+      await assertPropertyAccess(req, body.propertyId);
     }
     // Same enum/date invariant as the create path — an unknown status or an
     // unparseable date is a 400, not a 22P02 dressed up as a 500.
@@ -344,11 +345,11 @@ router.put("/:id", authenticate, authorize("RESIDENTS", "edit"), async (req, res
   }
 });
 
-router.delete("/:id", authenticate, authorize("RESIDENTS", "delete"), async (req, res) => {
+router.delete("/:id", authenticate, authorize("RESIDENTS", "delete_resident"), async (req, res) => {
   try {
     const [existing] = await db.select().from(residentsTable).where(eq(residentsTable.id, req.params["id"]!));
     if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, existing.propertyId);
+    await assertPropertyAccess(req, existing.propertyId);
     await db.delete(residentsTable).where(eq(residentsTable.id, req.params["id"]!));
     res.json({ success: true, message: "Deleted" });
   } catch (err) {
@@ -359,11 +360,11 @@ router.delete("/:id", authenticate, authorize("RESIDENTS", "delete"), async (req
 });
 
 // Ledger
-router.get("/:id/ledger", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+router.get("/:id/ledger", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, req.params["id"]!));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, resident.propertyId);
+    await assertPropertyAccess(req, resident.propertyId);
     const rows = await db.select().from(ledgerEntriesTable).where(eq(ledgerEntriesTable.residentId, req.params["id"]!)).orderBy(ledgerEntriesTable.createdAt);
     res.json({ success: true, data: rows.map(r => ({ ...r, amount: Number(r.amount) })) });
   } catch (err) {
@@ -381,12 +382,12 @@ router.get("/:id/ledger", authenticate, authorize("RESIDENTS", "view"), async (r
 //       the oldest unpaid charges are auto-marked paid up to the collected amount —
 //       reducing outstanding. Whole-entry settlement only (no partial split). All
 //       in one transaction.
-router.post("/:id/ledger", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+router.post("/:id/ledger", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const residentId = req.params["id"]!;
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, resident.propertyId);
+    await assertPropertyAccess(req, resident.propertyId);
     const body = req.body;
     if (body?.amount == null || Number.isNaN(Number(body.amount)) || Number(body.amount) <= 0) {
       res.status(400).json({ success: false, error: "amount is required and must be a positive number" });
@@ -494,12 +495,12 @@ router.post("/:id/ledger", authenticate, authorize("RESIDENTS", "edit"), async (
 //   { amount?: number, recipients?: Array<'resident'|'guardian'|{phone?,email?}> }
 // Default amount = current outstanding dues. Default recipient = 'resident'.
 // 503 when Razorpay is not configured. Property-scoped.
-router.post("/:id/payment-link", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+router.post("/:id/payment-link", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const residentId = req.params["id"]!;
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, resident.propertyId);
+    await assertPropertyAccess(req, resident.propertyId);
 
     if (!isRazorpayConfigured()) {
       res.status(503).json({ success: false, error: "Payments not configured" });
@@ -559,11 +560,11 @@ router.post("/:id/payment-link", authenticate, authorize("RESIDENTS", "edit"), a
 });
 
 // Payments
-router.get("/:id/payments", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+router.get("/:id/payments", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, req.params["id"]!));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, resident.propertyId);
+    await assertPropertyAccess(req, resident.propertyId);
     const rows = await db.select().from(paymentsTable).where(eq(paymentsTable.residentId, req.params["id"]!)).orderBy(paymentsTable.createdAt);
     res.json({ success: true, data: rows.map(r => ({ ...r, amount: Number(r.amount) })) });
   } catch (err) {
@@ -573,11 +574,11 @@ router.get("/:id/payments", authenticate, authorize("RESIDENTS", "view"), async 
   }
 });
 
-router.post("/:id/payments", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+router.post("/:id/payments", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, req.params["id"]!));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, resident.propertyId);
+    await assertPropertyAccess(req, resident.propertyId);
     const body = req.body;
     if (body?.amount == null || Number.isNaN(Number(body.amount))) {
       res.status(400).json({ success: false, error: "amount is required and must be a number" });
@@ -614,13 +615,13 @@ router.post("/:id/payments", authenticate, authorize("RESIDENTS", "edit"), async
 });
 
 // Check-out resident
-router.post("/:id/checkout", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+router.post("/:id/checkout", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const { checkoutDate, reason, deductions, refundAmount, keyReturned, roomConditionNote } = req.body;
     const residentId = req.params["id"]!;
     const [resident] = await db.select().from(residentsTable).where(eq(residentsTable.id, residentId));
     if (!resident) { res.status(404).json({ success: false, error: "Not found" }); return; }
-    assertPropertyAccess(req, resident.propertyId);
+    await assertPropertyAccess(req, resident.propertyId);
     // An unparseable checkoutDate would be stored as an Invalid Date and fail
     // the whole transaction with a 500; it is caller input, so 400.
     if (reject(res, invalidDate("checkoutDate", checkoutDate))) return;
@@ -670,7 +671,7 @@ router.post("/:id/checkout", authenticate, authorize("RESIDENTS", "edit"), async
 });
 
 // Bulk rent charge for a property + month
-router.post("/bulk-rent", authenticate, authorize("RESIDENTS", "edit"), async (req, res) => {
+router.post("/bulk-rent", authenticate, authorize("RESIDENTS", "edit_resident"), async (req, res) => {
   try {
     const { propertyId, month, year } = req.body;
     if (!propertyId || month == null || year == null) {
@@ -681,7 +682,7 @@ router.post("/bulk-rent", authenticate, authorize("RESIDENTS", "edit"), async (r
     // insert then swallows into `failed` — the caller gets "0 succeeded" with no
     // hint that the request itself was malformed. Reject it instead.
     if (reject(res, invalidInt("month", month, 1, 12), invalidInt("year", year, 2000, 2100))) return;
-    assertPropertyAccess(req, propertyId);
+    await assertPropertyAccess(req, propertyId);
     const monthLabel = new Date(year, month - 1, 1).toLocaleString("en-US", { month: "long", year: "numeric" });
     const dueDate = new Date(year, month - 1, 5);
     const activeResidents = await db.select().from(residentsTable).where(

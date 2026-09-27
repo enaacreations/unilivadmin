@@ -244,7 +244,7 @@ function CreateComplaintModal({ open, onOpenChange }: { open: boolean, onOpenCha
     if(!form.propertyId || !form.category || !form.title || !form.description) { toast({ title: "Fill required fields", variant: "destructive" }); return; }
     try {
       await mut.mutateAsync({ data: form });
-      toast({ title: "Complaint raised" });
+      toast({ variant: "success", title: "Complaint raised" });
       qc.invalidateQueries({ queryKey: getGetComplaintsQueryKey() });
       onOpenChange(false);
     } catch(e: any) {

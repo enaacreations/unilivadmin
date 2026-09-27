@@ -57,7 +57,7 @@ export function AgenciesTab() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { can } = usePermissions();
-  const canManage = can("FOOD_ORG", "edit");
+  const canManage = can("FOOD_ORG", "edit_kitchen_org");
 
   const [search, setSearch] = React.useState("");
   const params = { search: search.trim() || undefined };
@@ -82,18 +82,18 @@ export function AgenciesTab() {
       const b = { name: agForm.name.trim(), phone: agForm.phone.trim() || null, contactName: agForm.contactName.trim() || null, email: agForm.email.trim() || null, isActive: agForm.isActive };
       return agEdit ? foodApi.updateAgency(agEdit.id, b) : foodApi.createAgency(b);
     },
-    onSuccess: () => { toast({ title: agEdit ? "Agency updated" : "Agency created" }); invalidate(); setAgOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: agEdit ? "Agency updated" : "Agency created" }); invalidate(); setAgOpen(false); },
     onError: (e: any) => toast({ title: e?.message || "Could not save agency", variant: "destructive" }),
   });
   const agDelMut = useMutation({
     mutationFn: (id: string) => foodApi.deleteAgency(id),
-    onSuccess: () => { toast({ title: "Agency deactivated" }); invalidate(); setAgDel(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Agency deactivated" }); invalidate(); setAgDel(null); },
     onError: (e: any) => toast({ title: e?.message || "Could not delete agency", variant: "destructive" }),
   });
   // Quick active toggle from the list row.
   const agToggle = useMutation({
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) => foodApi.updateAgency(id, { isActive }),
-    onSuccess: () => { toast({ title: "Agency updated" }); invalidate(); },
+    onSuccess: () => { toast({ variant: "success", title: "Agency updated" }); invalidate(); },
     onError: (e: any) => toast({ title: e?.message || "Could not update agency", variant: "destructive" }),
   });
 
@@ -292,12 +292,12 @@ function LocationsSection({ agencyId, canManage, invalidate }: { agencyId: strin
       };
       return edit ? foodApi.updateAgencyLocation(edit.id, b) : foodApi.createAgencyLocation(agencyId, b);
     },
-    onSuccess: () => { toast({ title: edit ? "Location updated" : "Location added" }); refresh(); setOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: edit ? "Location updated" : "Location added" }); refresh(); setOpen(false); },
     onError: (e: any) => toast({ title: e?.message || "Could not save location", variant: "destructive" }),
   });
   const delMut = useMutation({
     mutationFn: (id: string) => foodApi.deleteAgencyLocation(id),
-    onSuccess: () => { toast({ title: "Location removed" }); refresh(); setDel(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Location removed" }); refresh(); setDel(null); },
     onError: (e: any) => toast({ title: e?.message || "Could not remove location", variant: "destructive" }),
   });
 
@@ -401,12 +401,12 @@ function VehiclesSection({ agencyId, canManage, invalidate }: { agencyId: string
       const b = { vehicleNumber: form.vehicleNumber.trim(), vehicleType: form.vehicleType };
       return edit ? foodApi.updateAgencyVehicle(edit.id, b) : foodApi.createAgencyVehicle(agencyId, b);
     },
-    onSuccess: () => { toast({ title: edit ? "Vehicle updated" : "Vehicle added" }); refresh(); setOpen(false); },
+    onSuccess: () => { toast({ variant: "success", title: edit ? "Vehicle updated" : "Vehicle added" }); refresh(); setOpen(false); },
     onError: (e: any) => toast({ title: e?.message || "Could not save vehicle", variant: "destructive" }),
   });
   const delMut = useMutation({
     mutationFn: (id: string) => foodApi.deleteAgencyVehicle(id),
-    onSuccess: () => { toast({ title: "Vehicle removed" }); refresh(); setDel(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Vehicle removed" }); refresh(); setDel(null); },
     onError: (e: any) => toast({ title: e?.message || "Could not remove vehicle", variant: "destructive" }),
   });
 
@@ -500,7 +500,7 @@ function ServesKitchensSection({ agencyId, canManage }: { agencyId: string; canM
   const save = useMutation({
     mutationFn: () => foodApi.setAgencyKitchens(agencyId, current),
     onSuccess: () => {
-      toast({ title: "Served kitchens updated" });
+      toast({ variant: "success", title: "Served kitchens updated" });
       qc.invalidateQueries({ queryKey: foodKeys.agencyKitchens(agencyId) });
       // Refresh the reverse (kitchen→agencies) views + lookups that embed kitchenIds.
       qc.invalidateQueries({ queryKey: ["food", "kitchen-agencies"] });

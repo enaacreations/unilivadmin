@@ -167,7 +167,7 @@ export function ResidentFormModal({ open, onOpenChange }: ResidentFormModalProps
       };
       Object.keys(body).forEach((k) => body[k] === "" && delete body[k]);
       await createMut.mutateAsync({ data: body });
-      toast({ title: "Resident created" });
+      toast({ variant: "success", title: "Resident created" });
       qc.invalidateQueries({ queryKey: getGetResidentsQueryKey() });
       draft.clearDraft();
       onOpenChange(false);

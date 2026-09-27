@@ -33,7 +33,7 @@ describe("role taxonomies", () => {
   });
 
   it("classifies every role as org-wide or property-scoped", () => {
-    // Membership of ORG_WIDE_ROLES decides whether scopedPropertyId() filters a
+    // Membership of ORG_WIDE_ROLES decides whether scopedPropertyIds() filters a
     // caller at all. A role in neither list is scoped only by accident of
     // having a non-null propertyId.
     const unclassified = ROLES.filter(

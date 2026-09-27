@@ -154,7 +154,7 @@ export default function NewAudit(
         body: JSON.stringify(buildBody()),
       }),
     onSuccess: (res) => {
-      toast({ title: `Audit ${res.data.ticketNo ?? ""} created`.trim() });
+      toast({ variant: "success", title: `Audit ${res.data.ticketNo ?? ""} created`.trim() });
       qc.invalidateQueries({ queryKey: ["/audits"] });
       qc.invalidateQueries({ queryKey: ["/audits/my"] });
       if (onDone) onDone(res.data.id);

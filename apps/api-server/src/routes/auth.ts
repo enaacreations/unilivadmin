@@ -4,13 +4,16 @@
  * repeated bad passwords; OTP limits configured in system_config.
  */
 import { Router, type Response } from "express";
-import { overridesFor, overrideKey } from "../lib/access/overrides.js";
+import { privilegesFor, privilegeOn } from "../lib/access/privileges.js";
+import { rolesFor } from "../lib/access/roles.js";
 import bcrypt from "bcryptjs";
 import { db } from "@workspace/db";
 import { usersTable, refreshTokensTable } from "@workspace/db";
 import { eq, or } from "drizzle-orm";
 import { authenticate, signAccessToken, signRefreshToken } from "../middlewares/auth.js";
-import { can, ALL_MODULES, actionsFor } from "../lib/permissions.js";
+import {
+  can, canAny, ALL_FUNCTIONALITIES, namedActionsFor, functionalitiesOf, MODULE_ORDER,
+} from "../lib/permissions.js";
 import { matrixVersion } from "../lib/access/matrix.js";
 import { resolveAccess } from "../lib/access.js";
 import { authRateLimiter } from "../middlewares/security.js";
@@ -475,16 +478,40 @@ router.get("/me", authenticate, async (req, res) => {
     // order decide() and the gate use. Without this the nav would offer a page
     // the server refuses (or hide one it allows) for exactly the people whose
     // access someone deliberately adjusted.
-    const overrides = await overridesFor(user.id);
+    const roles = await rolesFor(user.id, user.role);
+    const privileges = await privilegesFor(user.id, roles);
+    // Keyed by FUNCTIONALITY — the enforced unit — so the client's can() asks
+    // exactly the question the server answers.
     const capabilities: Record<string, string[]> = {};
-    for (const m of ALL_MODULES) {
-      const held = actionsFor(m).filter((a) => {
-        const effect = overrides.get(overrideKey(m, a));
-        if (effect === "DENY") return false;
-        if (effect === "GRANT") return true;
-        return can(user.role as never, m, a);
+    for (const f of ALL_FUNCTIONALITIES) {
+      const held = namedActionsFor(f).map((d) => d.key).filter((a: string) => {
+        // Null node: this blob is a hint for the nav, which has no property in
+        // hand. Only global rules count — a privilege written for one property
+        // must not light the menu up everywhere.
+        const priv = privilegeOn(privileges, f, a, null);
+        if (priv?.effect === "DENY") return false;
+        if (priv?.effect === "GRANT") return true;
+        return canAny(roles, f, a);
       });
-      if (held.length) capabilities[m] = held;
+      if (held.length) capabilities[f] = held;
+    }
+
+    /**
+     * The MODULE rollup, derived from `capabilities` above — never resolved
+     * separately. It exists so the sidebar and launcher can ask "is there
+     * anything in Audits for this person?" without the client re-deriving the
+     * tree, and it is a fold over the same answers the client already has, so
+     * the two can never disagree.
+     *
+     * A module appearing here says nothing about which screen may be opened.
+     */
+    const modules: Record<string, string[]> = {};
+    for (const m of MODULE_ORDER) {
+      const acts = new Set<string>();
+      for (const f of functionalitiesOf(m)) for (const a of capabilities[f] ?? []) acts.add(a);
+      // The module's action set is the UNION of its functionalities' named
+      // actions — there is no global list to filter against any more.
+      if (acts.size) modules[m] = [...acts];
     }
 
     let scope: {
@@ -493,7 +520,7 @@ router.get("/me", authenticate, async (req, res) => {
     try {
       const access = await resolveAccess({
         id: user.id, email: user.email, role: user.role,
-        propertyId: user.propertyId, roleKey: user.roleKey,
+        propertyId: user.propertyId, roleKey: user.role,
       } as never);
       scope = {
         unrestricted: access.propertyIds === null,
@@ -509,7 +536,10 @@ router.get("/me", authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      data: { ...publicUser(user), access: { version: matrixVersion(), capabilities, scope } },
+      data: {
+        ...publicUser(user), roles,
+        access: { version: matrixVersion(), capabilities, modules, scope },
+      },
     });
   } catch (err) {
     req.log.error(err);

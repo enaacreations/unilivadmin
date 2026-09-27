@@ -100,20 +100,20 @@ function ExpensesTab() {
     mutationFn: (d: CreateExpenseBody) => editing
       ? apiFetch(`/expenses/${editing.id}`, { method: "PUT", body: JSON.stringify(d) })
       : apiFetch("/expenses", { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: editing ? "Updated" : "Submitted for approval" }); qc.invalidateQueries({ queryKey: ["expenses"] }); setOpen(false); setEditing(null); },
+    onSuccess: () => { toast({ variant: "success", title: editing ? "Updated" : "Submitted for approval" }); qc.invalidateQueries({ queryKey: ["expenses"] }); setOpen(false); setEditing(null); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
 
   const transitionMut = useMutation({
     mutationFn: ({ id, action, note }: { id: string; action: TransitionAction; note?: string }) =>
       apiFetch(`/expenses/${id}/transition`, { method: "POST", body: JSON.stringify({ action, note }) }),
-    onSuccess: () => { toast({ title: "Updated" }); qc.invalidateQueries({ queryKey: ["expenses"] }); },
+    onSuccess: () => { toast({ variant: "success", title: "Updated" }); qc.invalidateQueries({ queryKey: ["expenses"] }); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
 
   const delMut = useMutation({
     mutationFn: (id: string) => apiFetch(`/expenses/${id}`, { method: "DELETE" }),
-    onSuccess: () => { toast({ title: "Deleted" }); qc.invalidateQueries({ queryKey: ["expenses"] }); setDelId(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Deleted" }); qc.invalidateQueries({ queryKey: ["expenses"] }); setDelId(null); },
   });
 
   const onFile = (file: File) => {
@@ -290,7 +290,7 @@ function CategoriesTab() {
 
   const saveMut = useMutation({
     mutationFn: (d: { name: string; description: string }) => apiFetch("/expense-categories", { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: "Created" }); qc.invalidateQueries({ queryKey: ["expense-categories"] }); setOpen(false); setForm({ name: "", description: "" }); },
+    onSuccess: () => { toast({ variant: "success", title: "Created" }); qc.invalidateQueries({ queryKey: ["expense-categories"] }); setOpen(false); setForm({ name: "", description: "" }); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
   const delMut = useMutation({

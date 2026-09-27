@@ -5,25 +5,25 @@ import {
   employeesTable, leavesTable, paymentsTable,
   inventoryTable, leadsTable, roomsTable,
 } from "@workspace/db";
-import { sql, eq, and, gte } from "drizzle-orm";
+import { sql, eq, and, gte, inArray} from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { effectivePropertyFilter, scopedPropertyId, sendAuthzError } from "../lib/authz.js";
+import { effectivePropertyFilter, scopedPropertyIds, sendAuthzError } from "../lib/authz.js";
 
 const router = Router();
 
-router.get("/stats", authenticate, authorize("DASHBOARD", "view"), async (req, res) => {
+router.get("/stats", authenticate, authorize("DASHBOARD", "view_dashboard"), async (req, res) => {
   try {
     // The sidebar property selector scopes every metric to one property — but
     // it was only ever a HINT: omitting it showed a property-bound caller the
     // whole estate's occupancy, revenue and complaint counts. Folding the
     // caller's own scope in here cascades through every branch below, since
     // each one already keys off this single value.
-    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
+    const propertyId = await effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
 
-    const propWhere = propertyId ? eq(propertiesTable.id, propertyId) : undefined;
+    const propWhere = propertyId ? inArray(propertiesTable.id, propertyId) : undefined;
     const resActive = propertyId
-      ? and(eq(residentsTable.propertyId, propertyId), eq(residentsTable.status, "ACTIVE"))
+      ? and(inArray(residentsTable.propertyId, propertyId), eq(residentsTable.status, "ACTIVE"))
       : eq(residentsTable.status, "ACTIVE");
 
     const [propCount] = await db.select({ count: sql<number>`count(*)::int` }).from(propertiesTable).where(propWhere);
@@ -33,11 +33,11 @@ router.get("/stats", authenticate, authorize("DASHBOARD", "view"), async (req, r
     const [occupiedBeds] = await db.select({ count: sql<number>`count(*)::int` }).from(residentsTable).where(resActive);
 
     const [openComplaints] = await db.select({ count: sql<number>`count(*)::int` }).from(complaintsTable).where(
-      propertyId ? and(eq(complaintsTable.status, "OPEN"), eq(complaintsTable.propertyId, propertyId)) : eq(complaintsTable.status, "OPEN")
+      propertyId ? and(eq(complaintsTable.status, "OPEN"), inArray(complaintsTable.propertyId, propertyId)) : eq(complaintsTable.status, "OPEN")
     );
     const [critComplaints] = await db.select({ count: sql<number>`count(*)::int` }).from(complaintsTable).where(
       propertyId
-        ? and(eq(complaintsTable.priority, "CRITICAL"), eq(complaintsTable.propertyId, propertyId), sql`status != 'RESOLVED' AND status != 'CLOSED'`)
+        ? and(eq(complaintsTable.priority, "CRITICAL"), inArray(complaintsTable.propertyId, propertyId), sql`status != 'RESOLVED' AND status != 'CLOSED'`)
         : and(eq(complaintsTable.priority, "CRITICAL"), sql`status != 'RESOLVED' AND status != 'CLOSED'`)
     );
 
@@ -46,14 +46,14 @@ router.get("/stats", authenticate, authorize("DASHBOARD", "view"), async (req, r
     // Leaves carry no propertyId of their own — they scope through the employee.
     const [empCount] = await db.select({ count: sql<number>`count(*)::int` }).from(employeesTable).where(
       propertyId
-        ? and(eq(employeesTable.status, "ACTIVE"), eq(employeesTable.propertyId, propertyId))
+        ? and(eq(employeesTable.status, "ACTIVE"), inArray(employeesTable.propertyId, propertyId))
         : eq(employeesTable.status, "ACTIVE")
     );
     const [pendingLeaves] = propertyId
       ? await db.select({ count: sql<number>`count(*)::int` })
           .from(leavesTable)
           .innerJoin(employeesTable, eq(leavesTable.employeeId, employeesTable.id))
-          .where(and(eq(leavesTable.status, "PENDING"), eq(employeesTable.propertyId, propertyId)))
+          .where(and(eq(leavesTable.status, "PENDING"), inArray(employeesTable.propertyId, propertyId)))
       : await db.select({ count: sql<number>`count(*)::int` }).from(leavesTable).where(eq(leavesTable.status, "PENDING"));
 
     const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0,0,0,0);
@@ -71,13 +71,13 @@ router.get("/stats", authenticate, authorize("DASHBOARD", "view"), async (req, r
       .where(and(
         eq(paymentsTable.status, "SUCCESS"),
         gte(paymentsTable.createdAt, startOfMonth),
-        ...(propertyId ? [eq(paymentsTable.propertyId, propertyId)] : []),
+        ...(propertyId ? [inArray(paymentsTable.propertyId, propertyId)] : []),
       ));
     const [pending] = propertyId
       ? await db.select({ total: sql<number>`coalesce(sum(${paymentsTable.amount}::numeric), 0)` })
           .from(paymentsTable)
           .leftJoin(residentsTable, eq(paymentsTable.residentId, residentsTable.id))
-          .where(and(eq(paymentsTable.status, "PENDING"), eq(residentsTable.propertyId, propertyId)))
+          .where(and(eq(paymentsTable.status, "PENDING"), inArray(residentsTable.propertyId, propertyId)))
       : await db.select({ total: sql<number>`coalesce(sum(amount::numeric), 0)` }).from(paymentsTable).where(eq(paymentsTable.status, "PENDING"));
 
     // Deliberately NOT property-filtered: leads are pre-tenancy and inventory is
@@ -115,7 +115,7 @@ router.get("/stats", authenticate, authorize("DASHBOARD", "view"), async (req, r
   }
 });
 
-router.get("/charts", authenticate, authorize("DASHBOARD", "view"), async (req, res) => {
+router.get("/charts", authenticate, authorize("DASHBOARD", "view_dashboard"), async (req, res) => {
   try {
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const now = new Date();
@@ -127,11 +127,11 @@ router.get("/charts", authenticate, authorize("DASHBOARD", "view"), async (req, 
 
     // The only real query on this endpoint (the trends below are placeholder
     // generators), so it is the only one that can leak.
-    const chartScope = scopedPropertyId(req);
+    const chartScope = await scopedPropertyIds(req);
     const complaintsByCategory = await db
       .select({ label: complaintsTable.category, value: sql<number>`count(*)::int` })
       .from(complaintsTable)
-      .where(chartScope ? eq(complaintsTable.propertyId, chartScope) : undefined)
+      .where(chartScope ? inArray(complaintsTable.propertyId, chartScope) : undefined)
       .groupBy(complaintsTable.category);
 
     const revenueTrend = Array.from({ length: 6 }, (_, i) => {

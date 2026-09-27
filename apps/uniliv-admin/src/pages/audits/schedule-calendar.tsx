@@ -36,7 +36,7 @@ export function ScheduleCalendarPanel() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const { can } = usePermissions();
-  const canEdit = can("AUDIT_SCHEDULES", "edit");
+  const canEdit = can("AUDIT_SCHEDULES", "edit_schedule");
   const [month, setMonth] = React.useState(() => startOfMonth(new Date()));
   /** The occurrence a "this and following" edit is being composed for. */
   const [splitting, setSplitting] = React.useState<{ p: CalendarProjection; date: Date } | null>(null);
@@ -78,7 +78,7 @@ export function ScheduleCalendarPanel() {
         body: JSON.stringify({ date }),
       }),
     onSuccess: (_r, v) => {
-      toast({ title: v.action === "skip" ? "Occurrence skipped" : "Occurrence restored" });
+      toast({ variant: "success", title: v.action === "skip" ? "Occurrence skipped" : "Occurrence restored" });
       refresh();
     },
     onError: (e: Error) => toast({ title: e.message || "Could not update", variant: "destructive" }),
@@ -292,7 +292,7 @@ function SplitDialog({
         body: JSON.stringify({ fromDate: toDateKey(date), recurrence: rule }),
       }),
     onSuccess: () => {
-      toast({ title: "Schedule split — the new cadence starts from this date" });
+      toast({ variant: "success", title: "Schedule split — the new cadence starts from this date" });
       onDone();
     },
     onError: (e: Error) => toast({ title: e.message || "Split failed", variant: "destructive" }),

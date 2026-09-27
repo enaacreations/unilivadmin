@@ -118,6 +118,24 @@ export const auditScheduleFrequencyEnum = pgEnum("audit_schedule_frequency", [
 export interface AuditScopeRule {
   level: "ORG" | "ZONE" | "CITY" | "CLUSTER" | "PROPERTY" | "ROOM";
   ids: string[];
+  /**
+   * Optional NARROWING, keyed by the id being narrowed: `{ cl_1: ["p_1"] }`
+   * means "under cluster cl_1, only property p_1".
+   *
+   * ── Absent means live; present means frozen ───────────────────────────
+   * This is the whole semantic. A parent with no entry expands to whatever its
+   * children are AT MATERIALIZATION TIME, which is the point of storing a rule
+   * rather than a target list — a property added to a cluster tomorrow is
+   * audited tomorrow. A parent WITH an entry is pinned to exactly those ids and
+   * stops tracking the estate.
+   *
+   * So narrowing is deliberately the exception: it exists because "this cluster
+   * except the two sites still being fitted out" is a real requirement, and the
+   * alternative — unchecking boxes that silently re-check themselves when the
+   * estate changes — is worse. It is capped (see `validateScope`) because the
+   * map is re-read on every occurrence, forever.
+   */
+  within?: Record<string, string[]>;
 }
 
 /**

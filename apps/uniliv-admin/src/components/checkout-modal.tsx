@@ -77,7 +77,7 @@ export function CheckoutModal({ open, onOpenChange, resident, ledger }: Checkout
     setSettlingWallet(true);
     try {
       await apiFetch(`/wallet/residents/${resident.id}/checkout-refund`, { method: "POST" });
-      toast({ title: `Wallet balance ₹${walletBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })} settled` });
+      toast({ variant: "success", title: `Wallet balance ₹${walletBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })} settled` });
       qc.invalidateQueries({ queryKey: ["checkout-wallet", resident.id] });
       setWalletSettled(true);
     } catch (e: any) {
@@ -101,7 +101,7 @@ export function CheckoutModal({ open, onOpenChange, resident, ledger }: Checkout
           roomConditionNote,
         }),
       });
-      toast({ title: "Resident checked out" });
+      toast({ variant: "success", title: "Resident checked out" });
       qc.invalidateQueries({ queryKey: getGetResidentQueryKey(resident.id) });
       qc.invalidateQueries({ queryKey: getGetResidentLedgerQueryKey(resident.id) });
       qc.invalidateQueries({ queryKey: getGetResidentsQueryKey() });

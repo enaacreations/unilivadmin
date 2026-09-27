@@ -6,13 +6,15 @@ import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
 import {
   pick,
-  scopedPropertyId,
+  scopedPropertyIds,
   effectivePropertyFilter,
   assertPropertyAccess,
   sendAuthzError,
 } from "../lib/authz.js";
+import { pinWriteProperty } from "../lib/scoped-query.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { newId } from "../lib/id.js";
+import { syncOrgNode, removeOrgNode } from "../lib/org-sync.js";
 import { recordActivity, activityCtx } from "../lib/activity/record.js";
 
 /** Writable room columns (server manages id/createdAt/updatedAt). */
@@ -41,20 +43,20 @@ async function occupancyFor(roomIds: string[]): Promise<Map<string | null, numbe
 async function loadRoomInScope(req: import("express").Request, id: string) {
   const [row] = await db.select().from(roomsTable).where(eq(roomsTable.id, id));
   if (!row) return null;
-  const scope = scopedPropertyId(req);
-  if (scope && row.propertyId !== scope) return null;
+  const scope = await scopedPropertyIds(req);
+  if (scope && !scope.includes(row.propertyId)) return null;
   return row;
 }
 
-router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+router.get("/", authenticate, authorize("PROPERTIES", "view_property"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     // Folds the caller's own scope into the optional ?propertyId filter. The old
     // form (`propertyId ? eq(...) : undefined`) returned EVERY property's rooms
     // whenever the caller simply omitted the filter.
-    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
+    const propertyId = await effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
 
-    const where = propertyId ? eq(roomsTable.propertyId, propertyId) : undefined;
+    const where = propertyId ? inArray(roomsTable.propertyId, propertyId) : undefined;
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(roomsTable).where(where);
     const rows = await db.select().from(roomsTable).where(where).limit(limit).offset(offset).orderBy(roomsTable.number);
 
@@ -69,18 +71,22 @@ router.get("/", authenticate, authorize("PROPERTIES", "view"), async (req, res) 
   }
 });
 
-router.post("/", authenticate, authorize("PROPERTIES", "create"), async (req, res) => {
+router.post("/", authenticate, authorize("PROPERTIES", "add_property"), async (req, res) => {
   try {
     const body = pick(req.body, ROOM_FIELDS);
     // Same shape as the resident create path: a scoped caller creates only into
     // their own property, and an org-wide caller must name one they may reach.
     // Previously this accepted whatever propertyId the body carried.
-    const scope = scopedPropertyId(req);
-    if (scope) body.propertyId = scope;
+    const scope = await scopedPropertyIds(req);
+    pinWriteProperty(scope, body);
     if (!body.propertyId) { res.status(400).json({ success: false, error: "propertyId is required" }); return; }
-    assertPropertyAccess(req, body.propertyId);
+    await assertPropertyAccess(req, body.propertyId);
 
     const [row] = await db.insert(roomsTable).values({ ...body, id: newId(), updatedAt: new Date() }).returning();
+    // No grant is ever written at room level, but the full rebuild projects
+    // rooms — so skipping them here would make the incremental tree and the
+    // rebuilt one disagree, which is the drift this pairing exists to avoid.
+    await syncOrgNode("ROOM", row.id);
     res.status(201).json({ success: true, data: { ...row, occupancy: 0 } });
   } catch (err) {
     if (sendAuthzError(err, res)) return;
@@ -89,7 +95,7 @@ router.post("/", authenticate, authorize("PROPERTIES", "create"), async (req, re
   }
 });
 
-router.get("/:id", authenticate, authorize("PROPERTIES", "view"), async (req, res) => {
+router.get("/:id", authenticate, authorize("PROPERTIES", "view_property"), async (req, res) => {
   try {
     const row = await loadRoomInScope(req, req.params["id"]!);
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -102,7 +108,7 @@ router.get("/:id", authenticate, authorize("PROPERTIES", "view"), async (req, re
   }
 });
 
-router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, res) => {
+router.put("/:id", authenticate, authorize("PROPERTIES", "edit_property"), async (req, res) => {
   try {
     const existing = await loadRoomInScope(req, req.params["id"]!);
     if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -111,11 +117,12 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
     // Block a scoped caller from moving a room OUT of their property — without
     // this, edit rights on a room you can see become write access to one you can't.
     if (body.propertyId !== undefined && body.propertyId !== existing.propertyId) {
-      assertPropertyAccess(req, body.propertyId);
+      await assertPropertyAccess(req, body.propertyId);
     }
 
     const [row] = await db.update(roomsTable).set({ ...body, updatedAt: new Date() }).where(eq(roomsTable.id, existing.id)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    await syncOrgNode("ROOM", row.id);
 
     // PRD §29 names "Room status changed" explicitly. Only recorded when the
     // status actually moved — an edit to the capacity is not a status change,
@@ -141,11 +148,12 @@ router.put("/:id", authenticate, authorize("PROPERTIES", "edit"), async (req, re
   }
 });
 
-router.delete("/:id", authenticate, authorize("PROPERTIES", "delete"), async (req, res) => {
+router.delete("/:id", authenticate, authorize("PROPERTIES", "delete_property"), async (req, res) => {
   try {
     const existing = await loadRoomInScope(req, req.params["id"]!);
     if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
     await db.delete(roomsTable).where(eq(roomsTable.id, existing.id));
+    await removeOrgNode(existing.id);
     res.json({ success: true, message: "Deleted" });
   } catch (err) {
     if (sendAuthzError(err, res)) return;

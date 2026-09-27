@@ -61,7 +61,7 @@ export function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
   const [page, setPage] = React.useState(0); // zero-based
   const [pageSize, setPageSize] = React.useState(20);
 
-  const canBulkReassign = can("AUDIT_SCHEDULES", "edit");
+  const canBulkReassign = can("AUDIT_SCHEDULES", "edit_schedule");
 
   // Debounce free-text search (400ms) and reset paging on change.
   React.useEffect(() => {
@@ -121,7 +121,7 @@ export function RegisterPanel({ embedded = false }: { embedded?: boolean }) {
         <RefreshCw className={`mr-2 h-4 w-4 ${listQuery.isFetching ? "animate-spin" : ""}`} />
         Refresh
       </Button>
-      {can("AUDIT_EXECUTION", "create") && (
+      {can("AUDIT_EXECUTION", "start_audit") && (
         <Button size="sm" onClick={() => setNewAuditOpen(true)}>
           <Plus className="mr-2 h-4 w-4" /> New Audit
         </Button>

@@ -123,7 +123,7 @@ export function DishesCatalogue({ canEdit = true, orgWideConfig = true }: { canE
   const del = useMutation({
     mutationFn: (id: string) => foodApi.deleteDish(id),
     onSuccess: () => {
-      toast({ title: "Dish deleted" });
+      toast({ variant: "success", title: "Dish deleted" });
       qc.invalidateQueries({ queryKey: ["food", "dishes"] });
       qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
       setDelTarget(null);

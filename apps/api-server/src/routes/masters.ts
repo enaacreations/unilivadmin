@@ -209,7 +209,7 @@ function isFkViolation(err: unknown): boolean {
 /* ════════════════════════════════════════════════════════════════════════
  * GET /masters — hub: one row per registered master with its live count.
  * ════════════════════════════════════════════════════════════════════════ */
-mastersRouter.get("/", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+mastersRouter.get("/", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const out = [];
     for (const type of MASTER_TYPES) {
@@ -225,7 +225,7 @@ mastersRouter.get("/", authenticate, authorize("FOOD_SETTINGS", "view"), async (
  * GET /masters/:type — list rows. Search across `searchable`; active-only
  * unless ?includeInactive=true.
  * ════════════════════════════════════════════════════════════════════════ */
-mastersRouter.get("/:type", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+mastersRouter.get("/:type", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const def = defOr404(req, res); if (!def) return;
     const q = String(req.query["q"] ?? "").trim();
@@ -248,7 +248,7 @@ mastersRouter.get("/:type", authenticate, authorize("FOOD_SETTINGS", "view"), as
 /* ════════════════════════════════════════════════════════════════════════
  * POST /masters/:type — create.
  * ════════════════════════════════════════════════════════════════════════ */
-mastersRouter.post("/:type", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+mastersRouter.post("/:type", authenticate, authorize("FOOD_SETTINGS", "add_food_setting"), async (req, res) => {
   try {
     const def = defOr404(req, res); if (!def) return;
     if (!validateBody(createSchema(def), req, res)) return;
@@ -285,7 +285,7 @@ mastersRouter.post("/:type", authenticate, authorize("FOOD_SETTINGS", "create"),
 /* ════════════════════════════════════════════════════════════════════════
  * PATCH /masters/:type/:id — update editable cols incl isActive.
  * ════════════════════════════════════════════════════════════════════════ */
-mastersRouter.patch("/:type/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+mastersRouter.patch("/:type/:id", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     const def = defOr404(req, res); if (!def) return;
     if (!validateBody(updateSchema(def), req, res)) return;
@@ -317,7 +317,7 @@ mastersRouter.patch("/:type/:id", authenticate, authorize("FOOD_SETTINGS", "edit
 /* ════════════════════════════════════════════════════════════════════════
  * DELETE /masters/:type/:id — hard delete; FK-blocked → 409 deactivate hint.
  * ════════════════════════════════════════════════════════════════════════ */
-mastersRouter.delete("/:type/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+mastersRouter.delete("/:type/:id", authenticate, authorize("FOOD_SETTINGS", "delete_food_setting"), async (req, res) => {
   try {
     const def = defOr404(req, res); if (!def) return;
     const [row] = await db.delete(def.table).where(eq(col(def, "id"), req.params["id"]!)).returning();
@@ -342,7 +342,7 @@ const bulkSchema = z.object({
   action: z.enum(["activate", "deactivate", "delete"]),
 }).passthrough();
 
-mastersRouter.post("/:type/bulk", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+mastersRouter.post("/:type/bulk", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     const def = defOr404(req, res); if (!def) return;
     if (!validateBody(bulkSchema, req, res)) return;
@@ -380,7 +380,7 @@ mastersRouter.post("/:type/bulk", authenticate, authorize("FOOD_SETTINGS", "edit
  * export-service encoders. Honours the same q/includeInactive filters as list.
  * Filename: masters-<type>-<datestamp>.<fmt>.
  * ════════════════════════════════════════════════════════════════════════ */
-mastersRouter.get("/:type/export.:fmt", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+mastersRouter.get("/:type/export.:fmt", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const def = defOr404(req, res); if (!def) return;
     const fmt = String(req.params["fmt"] ?? "").toLowerCase();

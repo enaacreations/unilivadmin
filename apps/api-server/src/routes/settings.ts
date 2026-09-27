@@ -9,15 +9,20 @@ import { writeAuditLog } from "../lib/wallet-service.js";
 
 export const settingsRouter = Router();
 
+// SLA config and complaint routing belong to Complaint Management, not to the
+// platform Settings screen they happen to be rendered on. Gated on
+// COMPLAINT_ROUTING; every role keeps the SETTINGS level it already had, so
+// moving the gate changed no one's access — see the note on HR_MANAGER in
+// permissions.ts.
 // SLA config
-settingsRouter.get("/sla", authenticate, authorize("SETTINGS", "view"), async (_req, res) => {
+settingsRouter.get("/sla", authenticate, authorize("COMPLAINT_ROUTING", "view_routing_sla"), async (_req, res) => {
   try {
     const rows = await db.select().from(slaConfigTable);
     res.json({ success: true, data: rows });
   } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-settingsRouter.put("/sla/:category", authenticate, authorize("SETTINGS", "edit"), async (req, res) => {
+settingsRouter.put("/sla/:category", authenticate, authorize("COMPLAINT_ROUTING", "edit_routing_sla"), async (req, res) => {
   try {
     const cat = req.params["category"] as string;
     const hours = Number(req.body?.slaHours);
@@ -36,14 +41,14 @@ settingsRouter.put("/sla/:category", authenticate, authorize("SETTINGS", "edit")
 });
 
 // Complaint routing
-settingsRouter.get("/routing", authenticate, authorize("SETTINGS", "view"), async (_req, res) => {
+settingsRouter.get("/routing", authenticate, authorize("COMPLAINT_ROUTING", "view_routing_sla"), async (_req, res) => {
   try {
     const rows = await db.select().from(complaintRoutingTable);
     res.json({ success: true, data: rows });
   } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-settingsRouter.post("/routing", authenticate, authorize("SETTINGS", "edit"), async (req, res) => {
+settingsRouter.post("/routing", authenticate, authorize("COMPLAINT_ROUTING", "edit_routing_sla"), async (req, res) => {
   try {
     const { propertyId, category, assignedTo } = req.body || {};
     if (!propertyId || !category || !assignedTo) { res.status(400).json({ success: false, error: "propertyId, category, assignedTo are required" }); return; }
@@ -53,7 +58,7 @@ settingsRouter.post("/routing", authenticate, authorize("SETTINGS", "edit"), asy
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-settingsRouter.delete("/routing/:id", authenticate, authorize("SETTINGS", "delete"), async (req, res) => {
+settingsRouter.delete("/routing/:id", authenticate, authorize("COMPLAINT_ROUTING", "delete_routing_sla"), async (req, res) => {
   try {
     const routingId = req.params["id"] as string;
     await db.delete(complaintRoutingTable).where(eq(complaintRoutingTable.id, routingId));
@@ -63,7 +68,7 @@ settingsRouter.delete("/routing/:id", authenticate, authorize("SETTINGS", "delet
 });
 
 // Integrations
-settingsRouter.get("/integrations", authenticate, authorize("SETTINGS", "view"), async (_req, res) => {
+settingsRouter.get("/integrations", authenticate, authorize("SETTINGS", "view_setting"), async (_req, res) => {
   try {
     const rows = await db.select().from(integrationStatusTable);
     const map: Record<string, { enabled: boolean; configured: boolean }> = {};
@@ -78,14 +83,14 @@ settingsRouter.get("/integrations", authenticate, authorize("SETTINGS", "view"),
 });
 
 // KYC Gate toggle (uses integration_status row "KYC_GATE")
-settingsRouter.get("/kyc-gate", authenticate, authorize("SETTINGS", "view"), async (_req, res) => {
+settingsRouter.get("/kyc-gate", authenticate, authorize("SETTINGS", "view_setting"), async (_req, res) => {
   try {
     const [row] = await db.select().from(integrationStatusTable).where(eq(integrationStatusTable.name, "KYC_GATE"));
     res.json({ success: true, data: { enabled: !!row?.enabled } });
   } catch (err) { _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-settingsRouter.put("/kyc-gate", authenticate, authorize("SETTINGS", "edit"), async (req, res) => {
+settingsRouter.put("/kyc-gate", authenticate, authorize("SETTINGS", "edit_setting"), async (req, res) => {
   try {
     const enabled = !!req.body?.enabled;
     const [existing] = await db.select().from(integrationStatusTable).where(eq(integrationStatusTable.name, "KYC_GATE"));
@@ -112,7 +117,7 @@ settingsRouter.put("/kyc-gate", authenticate, authorize("SETTINGS", "edit"), asy
 //
 // Response: { success, data: rows[], meta: { total, limit, offset } }
 //   rows ordered by createdAt desc, each carries userName (left-joined).
-settingsRouter.get("/audit-log", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) => {
+settingsRouter.get("/audit-log", authenticate, authorize("AUDIT_LOG", "view_activity"), async (req, res) => {
   try {
     const q = req.query as Record<string, unknown>;
 
@@ -160,7 +165,7 @@ settingsRouter.get("/audit-log", authenticate, authorize("AUDIT_LOG", "view"), a
 
 // Audit-log facets — distinct actions + entities present in the log, for the
 // UI filter dropdowns. SUPER_ADMIN only (same gate as the log itself).
-settingsRouter.get("/audit-log/facets", authenticate, authorize("AUDIT_LOG", "view"), async (req, res) => {
+settingsRouter.get("/audit-log/facets", authenticate, authorize("AUDIT_LOG", "view_activity"), async (req, res) => {
   try {
     const actionRows = await db.selectDistinct({ action: auditLogTable.action }).from(auditLogTable).orderBy(auditLogTable.action);
     const entityRows = await db.selectDistinct({ entity: auditLogTable.entity }).from(auditLogTable).orderBy(auditLogTable.entity);

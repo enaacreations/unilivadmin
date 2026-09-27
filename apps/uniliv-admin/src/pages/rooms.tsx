@@ -44,7 +44,7 @@ function AddRoomModal({ open, onOpenChange }: { open: boolean; onOpenChange: (o:
       await createMut.mutateAsync({
         data: { ...form, wing: form.wing || undefined },
       });
-      toast({ title: "Room created" });
+      toast({ variant: "success", title: "Room created" });
       qc.invalidateQueries({ queryKey: getGetRoomsQueryKey() });
       onOpenChange(false);
     } catch (e: any) {
@@ -111,7 +111,7 @@ function AddRoomModal({ open, onOpenChange }: { open: boolean; onOpenChange: (o:
 
 export default function Rooms() {
   const { can } = usePermissions();
-  const canCreate = can("PROPERTIES", "create");
+  const canCreate = can("PROPERTIES", "add_property");
   const [addOpen, setAddOpen] = React.useState(false);
   const { data: roomsRes, isLoading } = useGetRooms(undefined, { query: { queryKey: getGetRoomsQueryKey() } });
 

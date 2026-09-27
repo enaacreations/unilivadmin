@@ -87,7 +87,7 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
       return d.id ? foodApi.updateIngredient(d.id, body) : foodApi.createIngredient(body);
     },
     onSuccess: (_r, d) => {
-      toast({ title: d.id ? "Ingredient updated" : "Ingredient added" });
+      toast({ variant: "success", title: d.id ? "Ingredient updated" : "Ingredient added" });
       invalidate();
       setDraft(null);
     },
@@ -102,7 +102,7 @@ export function IngredientsGrid({ canEdit = true }: { canEdit?: boolean }) {
 
   const del = useMutation({
     mutationFn: (id: string) => foodApi.deleteIngredient(id),
-    onSuccess: () => { toast({ title: "Ingredient deleted" }); invalidate(); setDelTarget(null); },
+    onSuccess: () => { toast({ variant: "success", title: "Ingredient deleted" }); invalidate(); setDelTarget(null); },
     onError: (e: any) => toast({ title: e?.message || "Could not delete the ingredient", variant: "destructive" }),
   });
 

@@ -116,11 +116,16 @@ export function GenerateFromRule({
     },
     onSuccess: ({ total, failed }) => {
       qc.invalidateQueries({ queryKey: ["food", "menu-rotation"] });
-      if (!total) { toast({ title: "Nothing to generate — no empty meals for this brand" }); return; }
+      // Info, not success: nothing was generated because there was nothing to
+      // generate. Green would claim work that did not happen.
+      if (!total) { toast({ variant: "info", title: "Nothing to generate — no empty meals for this brand" }); return; }
       toast({
         title: `${total - failed} of ${total} meals filled`,
         description: failed ? `${failed} could not be filled — open them on the board to see why.` : undefined,
-        variant: failed ? "destructive" : undefined,
+        // A partial fill is a warning, not a failure — most meals were filled
+        // and the rest are actionable. Falling through to neutral on the happy
+        // path left a completed generation looking like a status line.
+        variant: failed ? "warning" : "success",
       });
     },
     onError: (e: any) => toast({ title: e?.message || "Generation failed", variant: "destructive" }),

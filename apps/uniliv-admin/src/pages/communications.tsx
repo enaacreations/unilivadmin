@@ -151,6 +151,7 @@ function AnnouncementsTab() {
         draft.clearDraft();
         setIsCreateOpen(false);
         toast({
+          variant: "success",
           title:
             targets.length > 1
               ? `Announcement posted to ${succeeded} properties`
@@ -159,13 +160,17 @@ function AnnouncementsTab() {
       } else if (succeeded > 0) {
         // Partial failure — keep the modal open so the admin can retry the rest.
         toast({
-          variant: "destructive",
+          
+          variant: "warning",
+          
           title: `Posted to ${succeeded} of ${targets.length} properties`,
           description: `${failed} ${failed === 1 ? "property" : "properties"} failed. Please retry.`,
         });
       } else {
         toast({
+          
           variant: "destructive",
+          
           title: "Failed to post announcement",
           description: "No properties were updated. Please try again.",
         });
@@ -318,7 +323,7 @@ function BulkMessagesTab({ prefill, onPrefillConsumed }: { prefill: BulkPrefill 
           .filter(Boolean)
           .join(", ");
         toast({
-          variant: "destructive",
+          variant: "success",
           title: `${accepted} of ${total} ${form.channel} messages dispatched`,
           description:
             `${failed} failed` +
@@ -329,6 +334,7 @@ function BulkMessagesTab({ prefill, onPrefillConsumed }: { prefill: BulkPrefill 
         // guaranteed delivery for messages that are still in flight.
         const verb = queued > 0 && sent === 0 ? "queued for delivery" : "dispatched";
         toast({
+          variant: "success",
           title: `${accepted || total} ${form.channel} message${(accepted || total) === 1 ? "" : "s"} ${verb}`,
           description: "Recorded in the Audit Log.",
         });
@@ -454,12 +460,12 @@ function TemplatesTab({ onUseTemplate }: { onUseTemplate: (b: any) => void }) {
 
   const mutCreate = useMutation({
     mutationFn: (data: any) => apiFetch("/message-templates", { method: "POST", body: JSON.stringify(data) }),
-    onSuccess: () => { toast({title: "Template Saved"}); qc.invalidateQueries({queryKey: ["message-templates"]}); setCreateOpen(false); setForm({name:"", channel:"SMS", body:"", variables:[]}); }
+    onSuccess: () => { toast({ variant: "success",title: "Template Saved"}); qc.invalidateQueries({queryKey: ["message-templates"]}); setCreateOpen(false); setForm({name:"", channel:"SMS", body:"", variables:[]}); }
   });
 
   const mutDelete = useMutation({
     mutationFn: (id: string) => apiFetch(`/message-templates/${id}`, { method: "DELETE" }),
-    onSuccess: () => { toast({title: "Deleted"}); qc.invalidateQueries({queryKey: ["message-templates"]}); }
+    onSuccess: () => { toast({ variant: "success",title: "Deleted"}); qc.invalidateQueries({queryKey: ["message-templates"]}); }
   });
 
   const extractVars = (text: string) => {

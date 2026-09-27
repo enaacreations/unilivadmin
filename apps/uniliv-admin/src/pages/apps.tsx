@@ -2,80 +2,58 @@ import * as React from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
-  LayoutDashboard, Building2, Wrench, Users, Truck,
+  LayoutDashboard, Building2, Users, Truck,
   UtensilsCrossed, TrendingUp, Landmark, Settings, LayoutGrid,
-  ClipboardCheck, MapPin,
+  ClipboardCheck, MapPin, MessageSquareWarning, Sparkles, WashingMachine,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { navGroups, type NavItem } from "@/lib/nav";
+import { moduleLabel, MODULE_DESCRIPTION, MODULE_ICON, MODULE_TINT, type Module } from "@/lib/permissions";
 import { usePermissions } from "@/lib/use-permissions";
 import { useAppStore } from "@/lib/store";
 import { foodApi, foodKeys } from "@/lib/food-api";
 
-const MODULE_ICON: Record<string, LucideIcon> = {
-  Overview: LayoutDashboard,
-  Properties: Building2,
-  Operations: Wrench,
-  People: Users,
-  "Supply Chain": Truck,
-  Food: UtensilsCrossed,
-  Audits: ClipboardCheck,
-  Growth: TrendingUp,
-  Finance: Landmark,
-  Settings: Settings,
+/**
+ * Lucide component for each icon NAME the manifest declares.
+ *
+ * The manifest cannot import lucide (permissions.ts is asserted dependency-free
+ * by the parity test), so it names the icon and this resolves it. An unknown
+ * name falls back to the grid glyph rather than breaking the launcher.
+ *
+ * Both this and the tints are keyed by the module KEY, never by its label —
+ * keying them by the nav group's display title is exactly what made every card
+ * render the same grey grid icon the moment "Food" became "Food & Kitchen".
+ */
+const ICONS: Record<string, LucideIcon> = {
+  LayoutDashboard, Building2, MessageSquareWarning, Sparkles, WashingMachine,
+  UtensilsCrossed, ClipboardCheck, Landmark, Users, Truck, TrendingUp,
+  ShieldCheck, Settings,
 };
 
-// One-line purpose per module — shown under the name and searched with it.
-const MODULE_DESC: Record<string, string> = {
-  Overview: "KPIs and the day at a glance",
-  Properties: "Buildings, rooms and beds",
-  Operations: "Rooms, residents and upkeep",
-  People: "Employees, attendance and hiring",
-  "Supply Chain": "Vendors, orders and stock",
-  Food: "Order food, confirm deliveries, track waste",
-  Audits: "Your checks, findings and scores",
-  Growth: "Leads and sales pipeline",
-  Finance: "Ledger, payments and billing",
-  Settings: "Users, roles and configuration",
-};
-
-// Gradient identity per module: [iconGradFrom, iconGradTo, cardTint, cardTint2].
-// Food and Audits come straight from the design prototype; the rest are
-// assigned distinct pairs in the same vivid language.
-const MODULE_TINT: Record<string, [string, string, string, string]> = {
-  Food: ["#FF9A3D", "#F2603C", "#FF9A3D", "#C2459A"],
-  Audits: ["#7C5CFF", "#C2459A", "#9B82FF", "#C2459A"],
-  Overview: ["#3666CF", "#6FA0F0", "#6FA0F0", "#7C5CFF"],
-  Properties: ["#0EA5A5", "#3666CF", "#2CB9B9", "#3666CF"],
-  Operations: ["#0891B2", "#0EA5A5", "#22B8CF", "#0EA5A5"],
-  People: ["#E85D75", "#C2459A", "#E85D75", "#C2459A"],
-  "Supply Chain": ["#D97706", "#E8602C", "#E5A13D", "#E8602C"],
-  Growth: ["#16A34A", "#0EA5A5", "#34C58A", "#0EA5A5"],
-  Finance: ["#157F5B", "#3666CF", "#34A57F", "#3666CF"],
-  Settings: ["#8B7D72", "#5C5049", "#8B7D72", "#5C5049"],
-};
 const FALLBACK_TINT: [string, string, string, string] = ["#FF9A3D", "#F2603C", "#FF9A3D", "#C2459A"];
 
 // Preferred landing page when a module tile is clicked (falls back to the
 // module's first accessible page). Food opens its dashboard, not /home.
-const MODULE_HOME: Record<string, string> = {
-  Food: "/food/dashboard",
+const MODULE_HOME: Partial<Record<Module, string>> = {
+  FOOD: "/food/dashboard",
   // Conducting personas (UL/CM/CX/OE) land on their My Audits home; oversight
   // roles lack AUDIT_EXECUTION so /audits/my isn't in their filtered items and
   // this falls back to their first page (the Audit Dashboard).
-  Audits: "/audits/my",
+  AUDITS: "/audits/my",
 };
 
-type ModuleCard = { title: string; items: NavItem[] };
+type ModuleCard = { key: Module | null; title: string; description?: string; items: NavItem[] };
 
 /** Square gradient-tinted module tile (prototype: aspect-1/1, 58px gradient
  *  icon badge, name in the display face). */
 function ModuleTile({ m }: { m: ModuleCard }) {
-  const Icon = MODULE_ICON[m.title] ?? LayoutGrid;
-  const [gradFrom, gradTo, tint, tint2] = MODULE_TINT[m.title] ?? FALLBACK_TINT;
-  const href = m.items.find((i) => i.href === MODULE_HOME[m.title])?.href ?? m.items[0].href;
+  const Icon = (m.key ? ICONS[MODULE_ICON[m.key]] : undefined) ?? LayoutGrid;
+  const [gradFrom, gradTo, tint, tint2] = (m.key ? MODULE_TINT[m.key] : undefined) ?? FALLBACK_TINT;
+  const home = m.key ? MODULE_HOME[m.key] : undefined;
+  const href = m.items.find((i) => i.href === home)?.href ?? m.items[0].href;
   return (
     <Link href={href}>
       <button
@@ -127,13 +105,13 @@ function useGreeting() {
  *  command palette (Cmd/Ctrl-K). Sourced from the same permission-filtered
  *  nav data as the sidebar. */
 export default function AppLauncher() {
-  const { me, can, role } = usePermissions();
+  const { me, can, canModule, role } = usePermissions();
   const { propertyId } = useAppStore();
   const greeting = useGreeting();
 
   // Property line under the greeting — resolved from the food property cards
   // (food roles can't read /properties). Falls back to the persona label.
-  const canFood = !!me && can("FOOD_DASHBOARD", "view");
+  const canFood = !!me && can("FOOD_DASHBOARD", "view_food_dashboard");
   const { data: myProps } = useQuery({
     queryKey: foodKeys.myProperties(),
     queryFn: () => foodApi.myProperties(),
@@ -154,18 +132,29 @@ export default function AppLauncher() {
     ? [property.name, property.city].filter(Boolean).join(" · ")
     : me?.designation || (me?.role ? me.role.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "");
 
+  /**
+   * One card per MODULE the persona can see something in — which is what the
+   * launcher has always meant, and now says. The card appears when the module
+   * rollup grants anything; its links are the individual functionalities they
+   * may open. A module with a grant but no openable nav item is dropped rather
+   * than rendered as an empty card (that state means the grant is for an inline
+   * action, not a screen).
+   */
   const modules = React.useMemo<ModuleCard[]>(() => {
     return navGroups
+      .filter((g) => !g.module || canModule(g.module))
       .map((g) => ({
-        title: g.title,
+        key: g.module ?? null,
+        title: g.module ? moduleLabel(g.module) : g.title,
+        description: g.module ? MODULE_DESCRIPTION[g.module] : undefined,
         items: g.items.filter((i) =>
           i.href !== "/apps" &&
-          (!i.module || can(i.module, "view")) &&
+          (!i.functionality || can(i.functionality)) &&
           !(role && i.hideFor?.includes(role)),
         ),
       }))
       .filter((m) => m.items.length > 0);
-  }, [can, role]);
+  }, [can, canModule, role]);
 
   return (
     <div className="flex animate-fade-up flex-col gap-7">

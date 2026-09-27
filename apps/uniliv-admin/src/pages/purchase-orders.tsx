@@ -137,7 +137,7 @@ function PODetailSheet({ poId, onClose, onCreateGRN, onSent, propName, toast }: 
     setSending(true);
     try {
       await apiFetch(`/purchase-orders/${poId}/send`, { method: "POST" });
-      toast({ title: `PO sent to ${po?.vendor?.email || "vendor"}` });
+      toast({ variant: "success", title: `PO sent to ${po?.vendor?.email || "vendor"}` });
       onSent();
     } catch (e: any) {
       toast({ title: e?.message || "Failed", variant: "destructive" });

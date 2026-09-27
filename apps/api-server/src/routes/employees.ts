@@ -12,11 +12,12 @@ import {
   pick,
   forbidden,
   badRequest,
-  scopedPropertyId,
+  scopedPropertyIds,
   effectivePropertyFilter,
   assertPropertyAccess,
   sendAuthzError,
 } from "../lib/authz.js";
+import { pinWriteProperty } from "../lib/scoped-query.js";
 import { recordActivity, activityCtx } from "../lib/activity/record.js";
 import { enforceSod } from "../lib/access/sod.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
@@ -42,27 +43,27 @@ const router = Router();
 async function loadEmployeeInScope(req: import("express").Request, id: string) {
   const [row] = await db.select().from(employeesTable).where(eq(employeesTable.id, id));
   if (!row) return null;
-  const scope = scopedPropertyId(req);
-  if (scope && row.propertyId !== scope) return null;
+  const scope = await scopedPropertyIds(req);
+  if (scope && (!row.propertyId || !scope.includes(row.propertyId))) return null;
   return row;
 }
 
 /** 403 unless `employeeId` sits inside the caller's property scope. */
 async function assertEmployeeInScope(req: import("express").Request, employeeId: string | null | undefined): Promise<void> {
-  const scope = scopedPropertyId(req);
+  const scope = await scopedPropertyIds(req);
   if (!scope) return;
   if (!employeeId) throw badRequest("employeeId is required", { code: "SCOPE_REQUIRED" });
   const [row] = await db
     .select({ propertyId: employeesTable.propertyId })
     .from(employeesTable)
     .where(eq(employeesTable.id, employeeId));
-  if (!row || row.propertyId !== scope) throw forbidden("Outside your property scope");
+  if (!row?.propertyId || !scope.includes(row.propertyId)) throw forbidden("Outside your property scope");
 }
 
 /** Employee-table filter for the caller's scope, or undefined when unrestricted. */
-function employeeScopeFilter(req: import("express").Request) {
-  const scope = scopedPropertyId(req);
-  return scope ? eq(employeesTable.propertyId, scope) : undefined;
+async function employeeScopeFilter(req: import("express").Request) {
+  const scope = await scopedPropertyIds(req);
+  return scope ? inArray(employeesTable.propertyId, scope) : undefined;
 }
 
 async function nextEmpCode(): Promise<string> {
@@ -73,18 +74,18 @@ async function nextEmpCode(): Promise<string> {
 }
 
 // Employees
-router.get("/", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+router.get("/", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
     const department = req.query["department"] as string | undefined;
     const status = req.query["status"] as string | undefined;
-    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
+    const propertyId = await effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
 
     const conditions = [];
     if (department) conditions.push(eq(employeesTable.department, department));
     if (status) conditions.push(eq(employeesTable.status, status as "ACTIVE" | "INACTIVE" | "ON_LEAVE" | "EXITED"));
-    if (propertyId) conditions.push(eq(employeesTable.propertyId, propertyId));
+    if (propertyId) conditions.push(inArray(employeesTable.propertyId, propertyId));
     if (search) conditions.push(or(ilike(employeesTable.name, `%${search}%`), ilike(employeesTable.email, `%${search}%`), ilike(employeesTable.employeeCode, `%${search}%`))!);
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -98,7 +99,7 @@ router.get("/", authenticate, authorize("EMPLOYEES", "view"), async (req, res) =
   }
 });
 
-router.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
+router.post("/", authenticate, authorize("EMPLOYEES", "add_employee"), async (req, res) => {
   try {
     const body = pick(req.body, [
       "name", "email", "phone", "dob", "gender", "photo", "department", "designation",
@@ -108,9 +109,9 @@ router.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res
     // Same shape as the resident/room create paths: a scoped caller may only
     // create within their own property; an org-wide caller may leave it unset
     // (a head-office employee legitimately belongs to no property).
-    const createScope = scopedPropertyId(req);
-    if (createScope) body.propertyId = createScope;
-    else if (body.propertyId) assertPropertyAccess(req, body.propertyId);
+    const createScope = await scopedPropertyIds(req);
+    pinWriteProperty(createScope, body);
+    if (!createScope && body.propertyId) await assertPropertyAccess(req, body.propertyId);
     const row = await withUniqueRetry(async () => {
       const [r] = await db.insert(employeesTable).values({
       id: newId(),
@@ -154,7 +155,7 @@ router.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res
   }
 });
 
-router.get("/:id", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+router.get("/:id", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const row = await loadEmployeeInScope(req, req.params["id"]!);
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -165,7 +166,7 @@ router.get("/:id", authenticate, authorize("EMPLOYEES", "view"), async (req, res
   }
 });
 
-router.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res) => {
+router.put("/:id", authenticate, authorize("EMPLOYEES", "edit_employee"), async (req, res) => {
   try {
     const body = pick(req.body, [
       "name", "email", "phone", "dob", "gender", "photo", "department", "designation",
@@ -177,7 +178,7 @@ router.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res
     // Edit rights on an employee you can see must not become write access to one
     // you cannot: a scoped caller may not reassign them to another property.
     if (body["propertyId"] !== undefined && body["propertyId"] !== existing.propertyId) {
-      assertPropertyAccess(req, body["propertyId"] as string | null);
+      await assertPropertyAccess(req, body["propertyId"] as string | null);
     }
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     for (const [k, v] of Object.entries(body)) {
@@ -195,7 +196,7 @@ router.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res
   }
 });
 
-router.delete("/:id", authenticate, authorize("EMPLOYEES", "delete"), async (req, res) => {
+router.delete("/:id", authenticate, authorize("EMPLOYEES", "delete_employee"), async (req, res) => {
   try {
     const existing = await loadEmployeeInScope(req, req.params["id"]!);
     if (!existing) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -208,7 +209,7 @@ router.delete("/:id", authenticate, authorize("EMPLOYEES", "delete"), async (req
 });
 
 // Employee leave balances
-router.get("/:id/leave-balances", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+router.get("/:id/leave-balances", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const year = parseInt(req.query["year"] as string || String(new Date().getFullYear()), 10);
@@ -218,7 +219,7 @@ router.get("/:id/leave-balances", authenticate, authorize("EMPLOYEES", "view"), 
 });
 
 // Employee attendance for a month
-router.get("/:id/attendance", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+router.get("/:id/attendance", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const year = parseInt(req.query["year"] as string || String(new Date().getFullYear()), 10);
@@ -232,7 +233,7 @@ router.get("/:id/attendance", authenticate, authorize("EMPLOYEES", "view"), asyn
 });
 
 // Performance notes
-router.get("/:id/performance", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+router.get("/:id/performance", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const rows = await db.select().from(performanceNotesTable).where(eq(performanceNotesTable.employeeId, req.params["id"]!)).orderBy(performanceNotesTable.date);
@@ -240,7 +241,7 @@ router.get("/:id/performance", authenticate, authorize("EMPLOYEES", "view"), asy
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-router.post("/:id/performance", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
+router.post("/:id/performance", authenticate, authorize("EMPLOYEES", "add_employee"), async (req, res) => {
   try {
     if (!(await loadEmployeeInScope(req, req.params["id"]!))) { res.status(404).json({ success: false, error: "Not found" }); return; }
     const [row] = await db.insert(performanceNotesTable).values({
@@ -252,7 +253,7 @@ router.post("/:id/performance", authenticate, authorize("EMPLOYEES", "create"), 
 });
 
 // Exits
-router.post("/:id/exit", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
+router.post("/:id/exit", authenticate, authorize("EMPLOYEES", "add_employee"), async (req, res) => {
   try {
     const empId = req.params["id"]!;
     const [exit] = await db.insert(exitsTable).values({
@@ -271,7 +272,7 @@ router.post("/:id/exit", authenticate, authorize("EMPLOYEES", "create"), async (
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-router.get("/:id/exit", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+router.get("/:id/exit", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const [exit] = await db.select().from(exitsTable).where(eq(exitsTable.employeeId, req.params["id"]!)).orderBy(sql`${exitsTable.createdAt} DESC`).limit(1);
     if (!exit) { res.json({ success: true, data: null }); return; }
@@ -281,7 +282,7 @@ router.get("/:id/exit", authenticate, authorize("EMPLOYEES", "view"), async (req
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-router.put("/exit-clearances/:cid", authenticate, authorize("EMPLOYEES", "edit"), async (req, res) => {
+router.put("/exit-clearances/:cid", authenticate, authorize("EMPLOYEES", "edit_employee"), async (req, res) => {
   try {
     const [row] = await db.update(exitClearancesTable).set({
       status: req.body.status || "CLEARED", clearedBy: req.user?.id, clearedAt: new Date(),
@@ -290,7 +291,7 @@ router.put("/exit-clearances/:cid", authenticate, authorize("EMPLOYEES", "edit")
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-router.put("/exit-assets/:aid", authenticate, authorize("EMPLOYEES", "edit"), async (req, res) => {
+router.put("/exit-assets/:aid", authenticate, authorize("EMPLOYEES", "edit_employee"), async (req, res) => {
   try {
     const [row] = await db.update(exitAssetsTable).set({ returned: !!req.body.returned })
       .where(eq(exitAssetsTable.id, req.params["aid"]!)).returning();
@@ -298,7 +299,7 @@ router.put("/exit-assets/:aid", authenticate, authorize("EMPLOYEES", "edit"), as
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-router.post("/exits/:eid/finalize", authenticate, authorize("EMPLOYEES", "edit"), async (req, res) => {
+router.post("/exits/:eid/finalize", authenticate, authorize("EMPLOYEES", "edit_employee"), async (req, res) => {
   try {
     const eid = req.params["eid"]!;
     const clearances = await db.select().from(exitClearancesTable).where(eq(exitClearancesTable.exitId, eid));
@@ -314,9 +315,9 @@ router.post("/exits/:eid/finalize", authenticate, authorize("EMPLOYEES", "edit")
 });
 
 // Stats
-router.get("/stats/overview", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+router.get("/stats/overview", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
-    const all = await db.select().from(employeesTable).where(employeeScopeFilter(req));
+    const all = await db.select().from(employeesTable).where(await employeeScopeFilter(req));
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
     const totalActive = all.filter(e => e.status === "ACTIVE").length;
@@ -338,7 +339,7 @@ export { router as employeeRouter };
 // Attendance
 const attendanceRouter = Router();
 
-attendanceRouter.get("/", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+attendanceRouter.get("/", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const employeeId = req.query["employeeId"] as string | undefined;
@@ -346,10 +347,10 @@ attendanceRouter.get("/", authenticate, authorize("EMPLOYEES", "view"), async (r
     // Attendance carries no propertyId — it is scoped through its employee, so
     // the join is what enforces the boundary, not an afterthought filter.
     // (The join also replaces a per-row query for the employee name.)
-    const scope = scopedPropertyId(req);
+    const scope = await scopedPropertyIds(req);
     const conds = [];
     if (employeeId) conds.push(eq(attendanceTable.employeeId, employeeId));
-    if (scope) conds.push(eq(employeesTable.propertyId, scope));
+    if (scope) conds.push(inArray(employeesTable.propertyId, scope));
     const where = conds.length ? and(...conds) : undefined;
 
     const [countResult] = await db
@@ -373,7 +374,7 @@ attendanceRouter.get("/", authenticate, authorize("EMPLOYEES", "view"), async (r
 });
 
 // Bulk mark attendance
-attendanceRouter.post("/bulk", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
+attendanceRouter.post("/bulk", authenticate, authorize("EMPLOYEES", "add_employee"), async (req, res) => {
   try {
     const { employeeIds, date, status } = req.body;
     if (!Array.isArray(employeeIds) || !date || !status) {
@@ -409,14 +410,14 @@ attendanceRouter.post("/bulk", authenticate, authorize("EMPLOYEES", "create"), a
 });
 
 // Attendance for a specific date (all employees)
-attendanceRouter.get("/by-date", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+attendanceRouter.get("/by-date", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const date = req.query["date"] as string;
     if (!date) { res.status(400).json({ success: false, error: "date required" }); return; }
     const d = new Date(date);
     const start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const end = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
-    const employees = await db.select().from(employeesTable).where(and(eq(employeesTable.status, "ACTIVE"), employeeScopeFilter(req)));
+    const employees = await db.select().from(employeesTable).where(and(eq(employeesTable.status, "ACTIVE"), await employeeScopeFilter(req)));
     const records = await db.select().from(attendanceTable).where(and(gte(attendanceTable.date, start), lte(attendanceTable.date, end)));
     const byEmp: Record<string, typeof attendanceTable.$inferSelect> = {};
     for (const r of records) byEmp[r.employeeId] = r;
@@ -429,13 +430,13 @@ attendanceRouter.get("/by-date", authenticate, authorize("EMPLOYEES", "view"), a
 });
 
 // Export attendance CSV for a month
-attendanceRouter.get("/export-csv", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+attendanceRouter.get("/export-csv", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const year = parseInt(req.query["year"] as string || String(new Date().getFullYear()), 10);
     const month = parseInt(req.query["month"] as string || String(new Date().getMonth() + 1), 10);
     const start = new Date(year, month - 1, 1);
     const end = new Date(year, month, 1);
-    const employees = await db.select().from(employeesTable).where(employeeScopeFilter(req));
+    const employees = await db.select().from(employeesTable).where(await employeeScopeFilter(req));
     const records = await db.select().from(attendanceTable).where(and(gte(attendanceTable.date, start), lte(attendanceTable.date, end)));
     const daysInMonth = new Date(year, month, 0).getDate();
     const map: Record<string, Record<number, string>> = {};
@@ -457,7 +458,7 @@ attendanceRouter.get("/export-csv", authenticate, authorize("EMPLOYEES", "view")
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-attendanceRouter.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
+attendanceRouter.post("/", authenticate, authorize("EMPLOYEES", "add_employee"), async (req, res) => {
   try {
     const body = req.body;
     await assertEmployeeInScope(req, body.employeeId);
@@ -479,7 +480,7 @@ attendanceRouter.post("/", authenticate, authorize("EMPLOYEES", "create"), async
   }
 });
 
-attendanceRouter.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res) => {
+attendanceRouter.put("/:id", authenticate, authorize("EMPLOYEES", "edit_employee"), async (req, res) => {
   try {
     const body = pick(req.body, ["employeeId", "date", "status", "inTime", "outTime", "notes"]) as Record<string, any>;
     const [current] = await db.select().from(attendanceTable).where(eq(attendanceTable.id, req.params["id"]!));
@@ -597,7 +598,7 @@ attendanceRouter.post("/check-out", authenticate, async (req, res) => {
  * requires the previous value on an attendance change, and an edit that
  * overwrote first would leave nothing to record.
  */
-attendanceRouter.post("/:id/correction", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+attendanceRouter.post("/:id/correction", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const [row] = await db.select().from(attendanceTable).where(eq(attendanceTable.id, req.params["id"]!));
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -629,7 +630,7 @@ attendanceRouter.post("/:id/correction", authenticate, authorize("EMPLOYEES", "v
 attendanceRouter.post(
   "/:id/approve",
   authenticate,
-  authorize("EMPLOYEES", "edit"),
+  authorize("EMPLOYEES", "edit_employee"),
   enforceSod({
     entity: "attendance",
     action: "approve",
@@ -686,7 +687,7 @@ export { attendanceRouter };
 // Leaves
 const leavesRouter = Router();
 
-leavesRouter.get("/", authenticate, authorize("EMPLOYEES", "view"), async (req, res) => {
+leavesRouter.get("/", authenticate, authorize("EMPLOYEES", "view_employee"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const employeeId = req.query["employeeId"] as string | undefined;
@@ -710,7 +711,7 @@ leavesRouter.get("/", authenticate, authorize("EMPLOYEES", "view"), async (req, 
   }
 });
 
-leavesRouter.post("/", authenticate, authorize("EMPLOYEES", "create"), async (req, res) => {
+leavesRouter.post("/", authenticate, authorize("EMPLOYEES", "add_employee"), async (req, res) => {
   try {
     const body = req.body;
     const [row] = await db.insert(leavesTable).values({
@@ -731,7 +732,7 @@ leavesRouter.post("/", authenticate, authorize("EMPLOYEES", "create"), async (re
   }
 });
 
-leavesRouter.put("/:id", authenticate, authorize("EMPLOYEES", "edit"), async (req, res) => {
+leavesRouter.put("/:id", authenticate, authorize("EMPLOYEES", "edit_employee"), async (req, res) => {
   try {
     const body = pick(req.body, ["type", "fromDate", "toDate", "days", "reason", "status", "approvedBy"]) as Record<string, any>;
     const [prev] = await db.select().from(leavesTable).where(eq(leavesTable.id, req.params["id"]!));
@@ -777,7 +778,7 @@ export { leavesRouter };
 // Recruitment
 const recruitmentRouter = Router();
 
-recruitmentRouter.get("/job-requisitions", authenticate, authorize("RECRUITMENT", "view"), async (req, res) => {
+recruitmentRouter.get("/job-requisitions", authenticate, authorize("RECRUITMENT", "view_recruitment"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const [countResult] = await db.select({ count: sql<number>`count(*)::int` }).from(jobRequisitionsTable);
@@ -793,7 +794,7 @@ recruitmentRouter.get("/job-requisitions", authenticate, authorize("RECRUITMENT"
   }
 });
 
-recruitmentRouter.post("/job-requisitions", authenticate, authorize("RECRUITMENT", "create"), async (req, res) => {
+recruitmentRouter.post("/job-requisitions", authenticate, authorize("RECRUITMENT", "add_recruitment"), async (req, res) => {
   try {
     const body = pick(req.body, ["role", "department", "headcount", "status"]);
     const [row] = await db.insert(jobRequisitionsTable).values({ id: newId(), ...body, updatedAt: new Date() } as typeof jobRequisitionsTable.$inferInsert).returning();
@@ -804,7 +805,7 @@ recruitmentRouter.post("/job-requisitions", authenticate, authorize("RECRUITMENT
   }
 });
 
-recruitmentRouter.get("/candidates", authenticate, authorize("RECRUITMENT", "view"), async (req, res) => {
+recruitmentRouter.get("/candidates", authenticate, authorize("RECRUITMENT", "view_recruitment"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const search = req.query["search"] as string | undefined;
@@ -824,7 +825,7 @@ recruitmentRouter.get("/candidates", authenticate, authorize("RECRUITMENT", "vie
   }
 });
 
-recruitmentRouter.post("/candidates", authenticate, authorize("RECRUITMENT", "create"), async (req, res) => {
+recruitmentRouter.post("/candidates", authenticate, authorize("RECRUITMENT", "add_recruitment"), async (req, res) => {
   try {
     const body = pick(req.body, ["jobRequisitionId", "name", "email", "phone", "resumeUrl", "source", "stage", "bgvStatus", "offerStatus", "notes"]);
     const [row] = await db.insert(candidatesTable).values({ id: newId(), ...body, updatedAt: new Date() } as typeof candidatesTable.$inferInsert).returning();
@@ -835,7 +836,7 @@ recruitmentRouter.post("/candidates", authenticate, authorize("RECRUITMENT", "cr
   }
 });
 
-recruitmentRouter.put("/candidates/:id", authenticate, authorize("RECRUITMENT", "edit"), async (req, res) => {
+recruitmentRouter.put("/candidates/:id", authenticate, authorize("RECRUITMENT", "edit_recruitment"), async (req, res) => {
   try {
     const body = pick(req.body, ["jobRequisitionId", "name", "email", "phone", "resumeUrl", "source", "stage", "bgvStatus", "offerStatus", "notes"]);
     const [row] = await db.update(candidatesTable).set({ ...body, updatedAt: new Date() }).where(eq(candidatesTable.id, req.params["id"]!)).returning();
@@ -847,7 +848,7 @@ recruitmentRouter.put("/candidates/:id", authenticate, authorize("RECRUITMENT", 
   }
 });
 
-recruitmentRouter.get("/candidates/:id", authenticate, authorize("RECRUITMENT", "view"), async (req, res) => {
+recruitmentRouter.get("/candidates/:id", authenticate, authorize("RECRUITMENT", "view_recruitment"), async (req, res) => {
   try {
     const [c] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, req.params["id"]!));
     if (!c) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -857,7 +858,7 @@ recruitmentRouter.get("/candidates/:id", authenticate, authorize("RECRUITMENT", 
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-recruitmentRouter.post("/candidates/:id/interviews", authenticate, authorize("RECRUITMENT", "create"), async (req, res) => {
+recruitmentRouter.post("/candidates/:id/interviews", authenticate, authorize("RECRUITMENT", "add_recruitment"), async (req, res) => {
   try {
     const [row] = await db.insert(interviewsTable).values({
       id: newId(), candidateId: req.params["id"]!, scheduledAt: new Date(req.body.scheduledAt),
@@ -867,7 +868,7 @@ recruitmentRouter.post("/candidates/:id/interviews", authenticate, authorize("RE
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-recruitmentRouter.post("/candidates/:id/offers", authenticate, authorize("RECRUITMENT", "create"), async (req, res) => {
+recruitmentRouter.post("/candidates/:id/offers", authenticate, authorize("RECRUITMENT", "add_recruitment"), async (req, res) => {
   try {
     const [row] = await db.insert(offersTable).values({
       id: newId(), candidateId: req.params["id"]!, ctc: req.body.ctc?.toString(), joiningDate: new Date(req.body.joiningDate),

@@ -66,7 +66,7 @@ function VersionsTab({
         body: JSON.stringify(body ?? {}),
       }),
     onSuccess: (_res, vars) => {
-      toast({ title: `Version ${vars.action.replace(/-/g, " ")} done` });
+      toast({ variant: "success", title: `Version ${vars.action.replace(/-/g, " ")} done` });
       invalidate();
     },
     onError: (e: Error) => toast({ title: e.message || "Action failed", variant: "destructive" }),
@@ -79,7 +79,7 @@ function VersionsTab({
         body: JSON.stringify({ fromVersionId }),
       }),
     onSuccess: () => {
-      toast({ title: "New draft created" });
+      toast({ variant: "success", title: "New draft created" });
       invalidate();
     },
     onError: (e: Error) => toast({ title: e.message || "Draft failed", variant: "destructive" }),
@@ -97,7 +97,7 @@ function VersionsTab({
         }),
       }),
     onSuccess: () => {
-      toast({ title: "Version settings saved" });
+      toast({ variant: "success", title: "Version settings saved" });
       setSettingsVersion(null);
       invalidate();
     },
@@ -312,7 +312,7 @@ function WhereUsedTab({
         { method: "POST", body: JSON.stringify({ toVersionId: migrateTo }) },
       ),
     onSuccess: (res) => {
-      toast({ title: `${res.data.migrated} schedule(s) migrated` });
+      toast({ variant: "success", title: `${res.data.migrated} schedule(s) migrated` });
       setConfirmOpen(false);
       setMigrateTo("");
       qc.invalidateQueries({ queryKey: ["/audit/templates/where-used"] });
@@ -478,7 +478,7 @@ export default function AuditTemplateDetail() {
         }),
       }),
     onSuccess: () => {
-      toast({ title: "Template updated" });
+      toast({ variant: "success", title: "Template updated" });
       setEditOpen(false);
       invalidate();
     },
@@ -492,7 +492,7 @@ export default function AuditTemplateDetail() {
         body: JSON.stringify(restore ? { restore: true } : {}),
       }),
     onSuccess: () => {
-      toast({ title: template?.archivedAt ? "Template restored" : "Template archived" });
+      toast({ variant: "success", title: template?.archivedAt ? "Template restored" : "Template archived" });
       invalidate();
     },
     onError: (e: Error) => toast({ title: e.message || "Action failed", variant: "destructive" }),

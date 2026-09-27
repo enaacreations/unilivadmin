@@ -18,11 +18,11 @@ import {
   notificationsTable,
   usersTable,
 } from "@workspace/db";
-import { and, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, isNull, lte, or, sql, inArray} from "drizzle-orm";
 import { authenticate } from "../middlewares/auth.js";
 import { authorize } from "../middlewares/authorize.js";
-import { effectivePropertyFilter, scopedPropertyId, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
-import { propertyScopeOrGlobal } from "../lib/scoped-query.js";
+import { effectivePropertyFilter, scopedPropertyIds, assertPropertyAccess, sendAuthzError } from "../lib/authz.js";
+import { propertyScopeOrGlobal, pinWriteProperty} from "../lib/scoped-query.js";
 import { newId } from "../lib/id.js";
 import { logger } from "../lib/logger.js";
 import { badRequest, httpError } from "../lib/authz.js";
@@ -33,14 +33,14 @@ export const financeRouter: Router = Router();
 // ───────────────────────────────────────────────────────
 // Billing cycles
 // ───────────────────────────────────────────────────────
-financeRouter.get("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "view"), async (_req, res) => {
+financeRouter.get("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "view_recurring_billing"), async (_req, res) => {
   try {
     // A NULL propertyId is an ORG-WIDE cycle that bills this caller's property
     // too, so it must stay visible — hiding it would leave a warden unable to
     // see the cycle actually charging their residents. Other properties' cycles
     // are excluded.
     const rows = await db.select().from(billingCyclesTable)
-      .where(propertyScopeOrGlobal(_req, billingCyclesTable.propertyId))
+      .where(await propertyScopeOrGlobal(_req, billingCyclesTable.propertyId))
       .orderBy(desc(billingCyclesTable.createdAt));
     const enriched = await Promise.all(rows.map(async (r) => {
       let propertyName: string | null = null;
@@ -54,15 +54,15 @@ financeRouter.get("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "
   } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "create"), async (req, res) => {
+financeRouter.post("/billing-cycles", authenticate, authorize("BILLING_CYCLES", "add_recurring_billing"), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.name) { res.status(400).json({ success: false, error: "name required" }); return; }
     // A scoped caller gets their own property pinned, and cannot mint the
     // NULL (= org-wide) cycle that would bill every property in the company.
-    const cycleScope = scopedPropertyId(req);
-    if (cycleScope) b.propertyId = cycleScope;
-    else if (b.propertyId) assertPropertyAccess(req, b.propertyId);
+    const cycleScope = await scopedPropertyIds(req);
+    pinWriteProperty(cycleScope, b);
+    if (!cycleScope && b.propertyId) await assertPropertyAccess(req, b.propertyId);
     const [row] = await db.insert(billingCyclesTable).values({
       id: newId(),
       name: b.name,
@@ -80,11 +80,11 @@ financeRouter.post("/billing-cycles", authenticate, authorize("BILLING_CYCLES", 
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.put("/billing-cycles/:id", authenticate, authorize("BILLING_CYCLES", "edit"), async (req, res) => {
+financeRouter.put("/billing-cycles/:id", authenticate, authorize("BILLING_CYCLES", "edit_recurring_billing"), async (req, res) => {
   try {
     const b = req.body || {};
     const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (req.body?.propertyId !== undefined) assertPropertyAccess(req, req.body.propertyId);
+    if (req.body?.propertyId !== undefined) await assertPropertyAccess(req, req.body.propertyId);
     for (const k of ["name", "propertyId", "cadence", "dayOfMonth", "customDays", "ledgerType", "descriptionTemplate", "isActive"]) {
       if (b[k] !== undefined) updates[k] = b[k];
     }
@@ -94,14 +94,14 @@ financeRouter.put("/billing-cycles/:id", authenticate, authorize("BILLING_CYCLES
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.delete("/billing-cycles/:id", authenticate, authorize("BILLING_CYCLES", "delete"), async (req, res) => {
+financeRouter.delete("/billing-cycles/:id", authenticate, authorize("BILLING_CYCLES", "delete_recurring_billing"), async (req, res) => {
   try {
     await db.delete(billingCyclesTable).where(eq(billingCyclesTable.id, req.params["id"]!));
     res.json({ success: true });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.get("/billing-runs", authenticate, authorize("BILLING_CYCLES", "view"), async (req, res) => {
+financeRouter.get("/billing-runs", authenticate, authorize("BILLING_CYCLES", "view_recurring_billing"), async (req, res) => {
   try {
     const cycleId = req.query["cycleId"] as string | undefined;
     const where = cycleId ? eq(billingRunsTable.cycleId, cycleId) : undefined;
@@ -110,7 +110,7 @@ financeRouter.get("/billing-runs", authenticate, authorize("BILLING_CYCLES", "vi
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/billing-cycles/:id/run", authenticate, authorize("BILLING_CYCLES", "create"), async (req, res) => {
+financeRouter.post("/billing-cycles/:id/run", authenticate, authorize("BILLING_CYCLES", "add_recurring_billing"), async (req, res) => {
   try {
     const [cycle] = await db.select().from(billingCyclesTable).where(eq(billingCyclesTable.id, req.params["id"]!));
     if (!cycle) { res.status(404).json({ success: false, error: "Cycle not found" }); return; }
@@ -221,14 +221,14 @@ async function runBillingCycle(cycle: typeof billingCyclesTable.$inferSelect, tr
 // ───────────────────────────────────────────────────────
 // Reminder rules
 // ───────────────────────────────────────────────────────
-financeRouter.get("/reminder-rules", authenticate, authorize("REMINDERS", "view"), async (_req, res) => {
+financeRouter.get("/reminder-rules", authenticate, authorize("REMINDERS", "view_reminder"), async (_req, res) => {
   try {
     const rows = await db.select().from(reminderRulesTable).orderBy(reminderRulesTable.offsetDays);
     res.json({ success: true, data: rows });
   } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/reminder-rules", authenticate, authorize("REMINDERS", "create"), async (req, res) => {
+financeRouter.post("/reminder-rules", authenticate, authorize("REMINDERS", "add_reminder"), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.name || !b.templateBody) { res.status(400).json({ success: false, error: "name and templateBody required" }); return; }
@@ -247,7 +247,7 @@ financeRouter.post("/reminder-rules", authenticate, authorize("REMINDERS", "crea
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.put("/reminder-rules/:id", authenticate, authorize("REMINDERS", "edit"), async (req, res) => {
+financeRouter.put("/reminder-rules/:id", authenticate, authorize("REMINDERS", "edit_reminder"), async (req, res) => {
   try {
     const b = req.body || {};
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -260,14 +260,14 @@ financeRouter.put("/reminder-rules/:id", authenticate, authorize("REMINDERS", "e
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.delete("/reminder-rules/:id", authenticate, authorize("REMINDERS", "delete"), async (req, res) => {
+financeRouter.delete("/reminder-rules/:id", authenticate, authorize("REMINDERS", "delete_reminder"), async (req, res) => {
   try {
     await db.delete(reminderRulesTable).where(eq(reminderRulesTable.id, req.params["id"]!));
     res.json({ success: true });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.get("/reminder-logs", authenticate, authorize("REMINDERS", "view"), async (req, res) => {
+financeRouter.get("/reminder-logs", authenticate, authorize("REMINDERS", "view_reminder"), async (req, res) => {
   try {
     const residentId = req.query["residentId"] as string | undefined;
     const where = residentId ? eq(reminderLogsTable.residentId, residentId) : undefined;
@@ -281,7 +281,7 @@ financeRouter.get("/reminder-logs", authenticate, authorize("REMINDERS", "view")
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/reminder-rules/:id/run", authenticate, authorize("REMINDERS", "create"), async (req, res) => {
+financeRouter.post("/reminder-rules/:id/run", authenticate, authorize("REMINDERS", "add_reminder"), async (req, res) => {
   try {
     const [rule] = await db.select().from(reminderRulesTable).where(eq(reminderRulesTable.id, req.params["id"]!));
     if (!rule) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -291,7 +291,7 @@ financeRouter.post("/reminder-rules/:id/run", authenticate, authorize("REMINDERS
 });
 
 // Manually re-send a reminder for a specific ledger entry.
-financeRouter.post("/reminders/send", authenticate, authorize("REMINDERS", "create"), async (req, res) => {
+financeRouter.post("/reminders/send", authenticate, authorize("REMINDERS", "add_reminder"), async (req, res) => {
   try {
     const { ruleId, ledgerEntryId } = req.body || {};
     if (!ruleId || !ledgerEntryId) { res.status(400).json({ success: false, error: "ruleId & ledgerEntryId required" }); return; }
@@ -451,14 +451,14 @@ async function runReminderRule(rule: typeof reminderRulesTable.$inferSelect, tri
 // ───────────────────────────────────────────────────────
 // Bank reconciliation
 // ───────────────────────────────────────────────────────
-financeRouter.get("/bank-imports", authenticate, authorize("BANKING", "view"), async (_req, res) => {
+financeRouter.get("/bank-imports", authenticate, authorize("BANKING", "view_banking"), async (_req, res) => {
   try {
     const rows = await db.select().from(bankImportsTable).orderBy(desc(bankImportsTable.createdAt));
     res.json({ success: true, data: rows });
   } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/bank-imports", authenticate, authorize("BANKING", "create"), async (req, res) => {
+financeRouter.post("/bank-imports", authenticate, authorize("BANKING", "add_banking"), async (req, res) => {
   try {
     const { fileName, accountLabel, csv } = req.body || {};
     if (!fileName || !csv) { res.status(400).json({ success: false, error: "fileName and csv required" }); return; }
@@ -503,7 +503,7 @@ financeRouter.post("/bank-imports", authenticate, authorize("BANKING", "create")
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.get("/bank-imports/:id/lines", authenticate, authorize("BANKING", "view"), async (req, res) => {
+financeRouter.get("/bank-imports/:id/lines", authenticate, authorize("BANKING", "view_banking"), async (req, res) => {
   try {
     const rows = await db.select().from(bankStatementLinesTable).where(eq(bankStatementLinesTable.importId, req.params["id"]!)).orderBy(bankStatementLinesTable.txnDate);
     const enriched = await Promise.all(rows.map(async (r) => {
@@ -518,7 +518,7 @@ financeRouter.get("/bank-imports/:id/lines", authenticate, authorize("BANKING", 
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/bank-lines/:id/confirm", authenticate, authorize("BANKING", "create"), async (req, res) => {
+financeRouter.post("/bank-lines/:id/confirm", authenticate, authorize("BANKING", "add_banking"), async (req, res) => {
   try {
     const { residentId, ledgerEntryId } = req.body || {};
     const [line] = await db.select().from(bankStatementLinesTable).where(eq(bankStatementLinesTable.id, req.params["id"]!));
@@ -619,7 +619,7 @@ financeRouter.post("/bank-lines/:id/confirm", authenticate, authorize("BANKING",
   }
 });
 
-financeRouter.post("/bank-lines/:id/ignore", authenticate, authorize("BANKING", "edit"), async (req, res) => {
+financeRouter.post("/bank-lines/:id/ignore", authenticate, authorize("BANKING", "edit_banking"), async (req, res) => {
   try {
     await db.update(bankStatementLinesTable).set({ status: "IGNORED" }).where(eq(bankStatementLinesTable.id, req.params["id"]!));
     res.json({ success: true });
@@ -715,14 +715,14 @@ async function suggestMatch(amount: number, reference: string | null, descriptio
 // ───────────────────────────────────────────────────────
 // Expense management
 // ───────────────────────────────────────────────────────
-financeRouter.get("/expense-categories", authenticate, authorize("EXPENSES", "view"), async (_req, res) => {
+financeRouter.get("/expense-categories", authenticate, authorize("EXPENSES", "view_expense"), async (_req, res) => {
   try {
     const rows = await db.select().from(expenseCategoriesTable).orderBy(expenseCategoriesTable.name);
     res.json({ success: true, data: rows });
   } catch (err) { if (sendAuthzError(err, res)) return; _req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/expense-categories", authenticate, authorize("EXPENSES", "create"), async (req, res) => {
+financeRouter.post("/expense-categories", authenticate, authorize("EXPENSES", "add_expense"), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.name) { res.status(400).json({ success: false, error: "name required" }); return; }
@@ -733,23 +733,22 @@ financeRouter.post("/expense-categories", authenticate, authorize("EXPENSES", "c
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.delete("/expense-categories/:id", authenticate, authorize("EXPENSES", "delete"), async (req, res) => {
+financeRouter.delete("/expense-categories/:id", authenticate, authorize("EXPENSES", "delete_expense"), async (req, res) => {
   try {
     await db.delete(expenseCategoriesTable).where(eq(expenseCategoriesTable.id, req.params["id"]!));
     res.json({ success: true });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.get("/expenses", authenticate, authorize("EXPENSES", "view"), async (req, res) => {
+financeRouter.get("/expenses", authenticate, authorize("EXPENSES", "view_expense"), async (req, res) => {
   try {
-    const propertyId = effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
+    const propertyId = await effectivePropertyFilter(req, req.query["propertyId"] as string | undefined);
     const status = req.query["status"] as string | undefined;
     const categoryId = req.query["categoryId"] as string | undefined;
     const search = req.query["search"] as string | undefined;
     const conds = [];
-    if (propertyId) conds.push(eq(expensesTable.propertyId, propertyId));
     // An expense with no property is a head-office cost, not one of theirs.
-    else if (scopedPropertyId(req)) conds.push(eq(expensesTable.propertyId, scopedPropertyId(req)!));
+    if (propertyId) conds.push(inArray(expensesTable.propertyId, propertyId));
     if (status) conds.push(eq(expensesTable.status, status));
     if (categoryId) conds.push(eq(expensesTable.categoryId, categoryId));
     if (search) conds.push(or(ilike(expensesTable.vendor, `%${search}%`), ilike(expensesTable.description, `%${search}%`))!);
@@ -778,15 +777,15 @@ financeRouter.get("/expenses", authenticate, authorize("EXPENSES", "view"), asyn
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/expenses", authenticate, authorize("EXPENSES", "create"), async (req, res) => {
+financeRouter.post("/expenses", authenticate, authorize("EXPENSES", "add_expense"), async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.amount || !b.expenseDate) { res.status(400).json({ success: false, error: "amount and expenseDate required" }); return; }
     // Pin to the caller's property so a scoped user cannot book a cost against
     // another property (or against head office, which their list cannot see).
-    const expScope = scopedPropertyId(req);
-    if (expScope) b.propertyId = expScope;
-    else if (b.propertyId) assertPropertyAccess(req, b.propertyId);
+    const expScope = await scopedPropertyIds(req);
+    pinWriteProperty(expScope, b);
+    if (!expScope && b.propertyId) await assertPropertyAccess(req, b.propertyId);
     const [row] = await db.insert(expensesTable).values({
       id: newId(),
       categoryId: b.categoryId || null,
@@ -808,11 +807,11 @@ financeRouter.post("/expenses", authenticate, authorize("EXPENSES", "create"), a
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.put("/expenses/:id", authenticate, authorize("EXPENSES", "edit"), async (req, res) => {
+financeRouter.put("/expenses/:id", authenticate, authorize("EXPENSES", "edit_expense"), async (req, res) => {
   try {
     const b = req.body || {};
     const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (req.body?.propertyId !== undefined) assertPropertyAccess(req, req.body.propertyId);
+    if (req.body?.propertyId !== undefined) await assertPropertyAccess(req, req.body.propertyId);
     for (const k of ["categoryId", "propertyId", "vendor", "description", "reference", "attachment"]) {
       if (b[k] !== undefined) updates[k] = b[k];
     }
@@ -827,7 +826,7 @@ financeRouter.put("/expenses/:id", authenticate, authorize("EXPENSES", "edit"), 
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.post("/expenses/:id/transition", authenticate, authorize("EXPENSES", "edit"), async (req, res) => {
+financeRouter.post("/expenses/:id/transition", authenticate, authorize("EXPENSES", "edit_expense"), async (req, res) => {
   try {
     const { action, note } = req.body || {};
     const valid = ["APPROVED", "REJECTED", "PAID"];
@@ -860,14 +859,14 @@ financeRouter.post("/expenses/:id/transition", authenticate, authorize("EXPENSES
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.delete("/expenses/:id", authenticate, authorize("EXPENSES", "delete"), async (req, res) => {
+financeRouter.delete("/expenses/:id", authenticate, authorize("EXPENSES", "delete_expense"), async (req, res) => {
   try {
     await db.delete(expensesTable).where(eq(expensesTable.id, req.params["id"]!));
     res.json({ success: true });
   } catch (err) { if (sendAuthzError(err, res)) return; req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-financeRouter.get("/expenses/:id/events", authenticate, authorize("EXPENSES", "view"), async (req, res) => {
+financeRouter.get("/expenses/:id/events", authenticate, authorize("EXPENSES", "view_expense"), async (req, res) => {
   try {
     const rows = await db.select().from(expenseEventsTable).where(eq(expenseEventsTable.expenseId, req.params["id"]!)).orderBy(desc(expenseEventsTable.createdAt));
     res.json({ success: true, data: rows });
@@ -930,13 +929,15 @@ export async function runDueReminders() {
 }
 
 // Surface a touch-up: enriched ledger summary used by exec dashboard
-financeRouter.get("/finance-summary", authenticate, authorize("LEDGER", "view"), async (_req, res) => {
+financeRouter.get("/finance-summary", authenticate, authorize("LEDGER", "view_ledger"), async (_req, res) => {
   try {
     // Summed org-wide before this: a property-bound caller read the whole
     // company's paid and pending expense totals off their own summary card.
-    const sumScope = scopedPropertyId(_req);
+    const sumScope = await scopedPropertyIds(_req);
     const expenseScope = (st: string) =>
-      sumScope ? and(eq(expensesTable.status, st), eq(expensesTable.propertyId, sumScope)) : eq(expensesTable.status, st);
+      sumScope
+        ? and(eq(expensesTable.status, st), inArray(expensesTable.propertyId, sumScope))
+        : eq(expensesTable.status, st);
     const [expense] = await db.select({ sum: sql<number>`COALESCE(SUM(amount::numeric),0)::float` }).from(expensesTable).where(expenseScope("PAID"));
     const [pending] = await db.select({ sum: sql<number>`COALESCE(SUM(amount::numeric),0)::float` }).from(expensesTable).where(expenseScope("SUBMITTED"));
     const [reminderTotal] = await db.select({ count: sql<number>`count(*)::int` }).from(reminderLogsTable);
@@ -945,7 +946,7 @@ financeRouter.get("/finance-summary", authenticate, authorize("LEDGER", "view"),
 });
 
 // Reminder count for a single resident (used by resident detail page)
-financeRouter.get("/residents/:id/reminder-count", authenticate, authorize("RESIDENTS", "view"), async (req, res) => {
+financeRouter.get("/residents/:id/reminder-count", authenticate, authorize("RESIDENTS", "view_resident"), async (req, res) => {
   try {
     const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(reminderLogsTable).where(eq(reminderLogsTable.residentId, req.params["id"]!));
     res.json({ success: true, data: { count: row?.count ?? 0 } });

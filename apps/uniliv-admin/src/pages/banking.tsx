@@ -32,7 +32,7 @@ export default function BankingPage() {
 
   const uploadMut = useMutation({
     mutationFn: (d: BankImportForm) => apiFetch("/bank-imports", { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => { toast({ title: "Statement imported" }); qc.invalidateQueries({ queryKey: ["bank-imports"] }); setUploadOpen(false); setForm({ fileName: "", accountLabel: "", csv: "" }); },
+    onSuccess: () => { toast({ variant: "success", title: "Statement imported" }); qc.invalidateQueries({ queryKey: ["bank-imports"] }); setUploadOpen(false); setForm({ fileName: "", accountLabel: "", csv: "" }); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
 
@@ -104,7 +104,7 @@ function ReconcilePanel({ importId }: { importId: string }) {
   const confirmMut = useMutation({
     mutationFn: ({ id, residentId }: { id: string; residentId?: string }) =>
       apiFetch(`/bank-lines/${id}/confirm`, { method: "POST", body: JSON.stringify(residentId ? { residentId } : {}) }),
-    onSuccess: () => { toast({ title: "Reconciled" }); qc.invalidateQueries({ queryKey: ["bank-lines", importId] }); qc.invalidateQueries({ queryKey: ["bank-imports"] }); },
+    onSuccess: () => { toast({ variant: "success", title: "Reconciled" }); qc.invalidateQueries({ queryKey: ["bank-lines", importId] }); qc.invalidateQueries({ queryKey: ["bank-imports"] }); },
     onError: (e: Error) => toast({ title: e.message || "Failed", variant: "destructive" }),
   });
   const ignoreMut = useMutation({

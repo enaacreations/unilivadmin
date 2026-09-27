@@ -48,13 +48,14 @@ import { and, eq, or, ilike, sql, desc, asc, gte, lte, lt, inArray, notInArray, 
 import { getObjectUrl, isStorageConfigured } from "@workspace/storage";
 import { canTransition } from "../lib/order-transitions.js";
 import { authenticate, authorize as requireRoles } from "../middlewares/auth.js";
-import { authorize, authorizeAny } from "../middlewares/authorize.js";
+import { authorize, authorizeAny, on, reads } from "../middlewares/authorize.js";
 import { enforceSod } from "../lib/access/sod.js";
 import { can, type UserRole } from "../lib/permissions.js";
 import { getPagination, buildMeta } from "../lib/paginate.js";
 import { isSuperAdmin } from "../lib/authz.js";
 import { logger } from "../lib/logger.js";
 import { newId } from "../lib/id.js";
+import { syncOrgNode } from "../lib/org-sync.js";
 import {
   resolveAccessiblePropertyIds,
   resolveAccessibleKitchenIds,
@@ -650,7 +651,7 @@ async function expectedDeliveryAt(brand: string, mealType: string, serviceDate: 
  * Meal config & cut-off windows (Persona st.11, st.27)
  * ════════════════════════════════════════════════════════════════════════ */
 
-foodOpsRouter.get("/meal-config", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodOpsRouter.get("/meal-config", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     // Same shape as its sibling /meal-windows: naming a property narrows to that
     // property's rows PLUS the org-wide defaults they override, so the caller can
@@ -676,7 +677,7 @@ const updateMealConfigSchema = z.object({
   propertyId: zId.nullish(),
 }).passthrough();
 
-foodOpsRouter.put("/meal-config/:mealType", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodOpsRouter.put("/meal-config/:mealType", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(updateMealConfigSchema, req, res)) return;
     // L6: the path param is cast to the meal-type enum below, so an unknown value
@@ -758,7 +759,7 @@ foodOpsRouter.put("/meal-config/:mealType", authenticate, authorize("FOOD_SETTIN
  * global rows are the seeded meal-type enum, and removing one would leave the
  * meal with no configuration anywhere rather than resetting it.
  */
-foodOpsRouter.delete("/meal-config/:mealType", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodOpsRouter.delete("/meal-config/:mealType", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     const mealType = req.params["mealType"] as string;
     if (!(MEAL_TYPES as readonly string[]).includes(mealType)) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -781,7 +782,7 @@ foodOpsRouter.delete("/meal-config/:mealType", authenticate, authorize("FOOD_SET
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodOpsRouter.get("/meal-windows", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodOpsRouter.get("/meal-windows", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     // L6: an unknown brand listed as "no windows configured" instead of saying
     // the brand does not exist. Read gate (retired brands stay inspectable).
@@ -806,7 +807,7 @@ const createMealWindowSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodOpsRouter.post("/meal-windows", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodOpsRouter.post("/meal-windows", authenticate, authorize("FOOD_SETTINGS", "add_food_setting"), async (req, res) => {
   try {
     if (!validateBody(createMealWindowSchema, req, res)) return;
     const b = req.body || {};
@@ -843,7 +844,7 @@ const updateMealWindowSchema = z.object({
   leadTimeMinutes: z.coerce.number().optional(),
 }).passthrough();
 
-foodOpsRouter.put("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodOpsRouter.put("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(updateMealWindowSchema, req, res)) return;
     const b = req.body || {};
@@ -871,7 +872,7 @@ foodOpsRouter.put("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS", 
   }
 });
 
-foodOpsRouter.delete("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodOpsRouter.delete("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS", "delete_food_setting"), async (req, res) => {
   try {
     // H4: same scope guard as the write above — a bare delete by path id let a
     // kitchen-restricted caller drop another property's (or the brand's) window.
@@ -886,7 +887,7 @@ foodOpsRouter.delete("/meal-windows/:id", authenticate, authorize("FOOD_SETTINGS
 });
 
 /* ── Single cut-off per brand (applies to all meals; property-overridable) ── */
-foodOpsRouter.get("/cutoff-config", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodOpsRouter.get("/cutoff-config", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     // L6: sibling of the /meal-windows filter — an unknown brand is a 400, not
     // an empty list that reads as "this brand has no cut-off configured".
@@ -906,7 +907,7 @@ const createCutoffSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodOpsRouter.post("/cutoff-config", authenticate, authorize("FOOD_SETTINGS", "create"), async (req, res) => {
+foodOpsRouter.post("/cutoff-config", authenticate, authorize("FOOD_SETTINGS", "add_food_setting"), async (req, res) => {
   try {
     if (!validateBody(createCutoffSchema, req, res)) return;
     const b = req.body || {};
@@ -946,7 +947,7 @@ const updateCutoffSchema = z.object({
   isActive: z.boolean().optional(),
 }).passthrough();
 
-foodOpsRouter.put("/cutoff-config/:id", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodOpsRouter.put("/cutoff-config/:id", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(updateCutoffSchema, req, res)) return;
     const b = req.body || {};
@@ -971,7 +972,7 @@ foodOpsRouter.put("/cutoff-config/:id", authenticate, authorize("FOOD_SETTINGS",
   }
 });
 
-foodOpsRouter.delete("/cutoff-config/:id", authenticate, authorize("FOOD_SETTINGS", "delete"), async (req, res) => {
+foodOpsRouter.delete("/cutoff-config/:id", authenticate, authorize("FOOD_SETTINGS", "delete_food_setting"), async (req, res) => {
   try {
     // H4: same scope guard as the write above — deleting a property's cut-off
     // silently re-opens ordering for it on the brand-wide default.
@@ -988,7 +989,7 @@ foodOpsRouter.delete("/cutoff-config/:id", authenticate, authorize("FOOD_SETTING
 /** Resolved cut-off info for placing orders on a given date (single cut-off, all meals). */
 // H4: any-of — the order-placement screen needs this to know whether the window
 // is still open, and the settings screen to preview what it just configured.
-foodOpsRouter.get("/cutoffs", authenticate, authorizeAny(["FOOD_PLACE_ORDER", "FOOD_SETTINGS"], "view"), async (req, res) => {
+foodOpsRouter.get("/cutoffs", authenticate, authorizeAny([on("FOOD_PLACE_ORDER", "view_order_form"), on("FOOD_SETTINGS", "view_food_setting")]), async (req, res) => {
   try {
     // L6: an unknown brand fell through to the org-wide default cut-off and was
     // reported as that brand's window — a deadline for a brand nobody sells.
@@ -1041,7 +1042,7 @@ foodOpsRouter.get("/cutoffs", authenticate, authorizeAny(["FOOD_PLACE_ORDER", "F
 /** Read the current global food defaults. Gated on the same module that owns the
  *  Food Settings page these two values are edited from (H4 — it was open to any
  *  authenticated user, food or not). */
-foodOpsRouter.get("/system-config/food-defaults", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodOpsRouter.get("/system-config/food-defaults", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const defaultCutoff = await getDefaultCutoffTime();
     const rawWindow = await getSystemConfigValue<number>(FOOD_WASTE_WINDOW_KEY, 60);
@@ -1141,7 +1142,7 @@ const menuRuleSettingsSchema = z.object({
  * `?kitchenId=` walks property → kitchen → org default. No scope returns the
  * org-wide values, which is what the kitchen-level rotation board reads.
  */
-foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SETTINGS", "view"), async (req, res) => {
+foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SETTINGS", "view_food_setting"), async (req, res) => {
   try {
     const propertyId = (req.query["propertyId"] as string) || null;
     const kitchenId = (req.query["kitchenId"] as string) || null;
@@ -1173,7 +1174,7 @@ foodOpsRouter.get("/system-config/menu-rules", authenticate, authorize("FOOD_SET
  * they belong with the rules themselves. Reading them stays open to anyone who
  * can see Service Set — the rotation board honours them.
  */
-foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CATALOGUE", "edit"), async (req, res) => {
+foodOpsRouter.put("/system-config/menu-rules", authenticate, authorize("FOOD_CATALOGUE", "edit_service_catalogue"), async (req, res) => {
   try {
     if (!validateBody(menuRuleSettingsSchema, req, res)) return;
     // H4: same invariant as meal-config — these two switches live in system_config
@@ -1428,7 +1429,7 @@ async function deniedKitchenWrite(req: any, res: any, kitchenId: string, body: R
   return false;
 }
 
-foodOpsRouter.get("/kitchens", authenticate, authorizeAny([...KITCHEN_MASTER_READERS], "view"), async (req, res) => {
+foodOpsRouter.get("/kitchens", authenticate, authorizeAny(reads(KITCHEN_MASTER_READERS)), async (req, res) => {
   try {
     // L6: `active === "true"` reads ANY other value as false, so `?active=1`
     // quietly returned the DEACTIVATED rows. Two-value allowlist; absent still
@@ -1465,7 +1466,7 @@ const createKitchenSchema = z.object({
 
 // HIGH: creating a kitchen adds a node to the org spine (and a new pincode
 // catchment) — FOOD_ORG, like every other spine write. See the block above.
-foodOpsRouter.post("/kitchens", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodOpsRouter.post("/kitchens", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createKitchenSchema, req, res)) return;
     const b = req.body || {};
@@ -1476,6 +1477,9 @@ foodOpsRouter.post("/kitchens", authenticate, authorize("FOOD_ORG", "create"), a
       contactName: b.contactName ?? null, contactPhone: b.contactPhone ?? null, contactEmail: b.contactEmail ?? null,
       cityId: b.cityId ?? null, clusterId: b.clusterId ?? null, isActive: b.isActive !== false, updatedAt: new Date(),
     }).returning();
+    // Keep the access tree in step — an unprojected kitchen is one no city or
+    // zone grant can expand to, so nobody managing that branch would see it.
+    await syncOrgNode("KITCHEN", row!.id);
     auditConfig(req, "FOOD_CONFIG_CREATED", "food_kitchen", row!.id, { after: row });
     res.status(201).json({ success: true, data: row });
   } catch (err) {
@@ -1504,7 +1508,7 @@ const updateKitchenSchema = z.object({
 
 // HIGH: any-of so an org-wide FOOD_ORG administrator and a kitchen-scoped
 // FOOD_SETTINGS manager both reach it — the narrowing is PER ENTITY, inside.
-foodOpsRouter.put("/kitchens/:id", authenticate, authorizeAny(["FOOD_ORG", "FOOD_SETTINGS"], "edit"), async (req, res) => {
+foodOpsRouter.put("/kitchens/:id", authenticate, authorizeAny([on("FOOD_ORG", "edit_kitchen_org"), on("FOOD_SETTINGS", "edit_food_setting")]), async (req, res) => {
   try {
     if (!validateBody(updateKitchenSchema, req, res)) return;
     const b = req.body || {};
@@ -1518,6 +1522,8 @@ foodOpsRouter.put("/kitchens/:id", authenticate, authorizeAny(["FOOD_ORG", "FOOD
     const [before] = await db.select().from(kitchensTable).where(eq(kitchensTable.id, req.params["id"]!));
     const [row] = await db.update(kitchensTable).set(u as never).where(eq(kitchensTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    // cityId is the parent in the org tree, so this edit can MOVE the node.
+    await syncOrgNode("KITCHEN", row.id);
     auditConfig(req, "FOOD_CONFIG_UPDATED", "food_kitchen", row.id, { before, after: row });
     res.json({ success: true, data: row });
   } catch (err) {
@@ -1529,7 +1535,7 @@ foodOpsRouter.put("/kitchens/:id", authenticate, authorizeAny(["FOOD_ORG", "FOOD
 
 // HIGH: soft-deleting a kitchen takes out every property it serves — an org-wide
 // act, so FOOD_ORG like the create above. See the block above.
-foodOpsRouter.delete("/kitchens/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodOpsRouter.delete("/kitchens/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     // LOW: record the row that was ACTUALLY there, not a synthetic
     // `{ isActive: true }`. Every other delete in this file reads its prior row,
@@ -1539,6 +1545,9 @@ foodOpsRouter.delete("/kitchens/:id", authenticate, authorize("FOOD_ORG", "delet
     const [before] = await db.select().from(kitchensTable).where(eq(kitchensTable.id, req.params["id"]!));
     const [row] = await db.update(kitchensTable).set({ isActive: false, updatedAt: new Date() }).where(eq(kitchensTable.id, req.params["id"]!)).returning();
     if (!row) { res.status(404).json({ success: false, error: "Not found" }); return; }
+    // A soft delete, so the node stays and goes inactive with it — deleting it
+    // would strand the closure rows that reference it.
+    await syncOrgNode("KITCHEN", row.id);
     auditConfig(req, "FOOD_CONFIG_DELETED", "food_kitchen", row.id, { before, after: row });
     res.json({ success: true, data: row });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
@@ -1554,7 +1563,7 @@ foodOpsRouter.delete("/kitchens/:id", authenticate, authorize("FOOD_ORG", "delet
  * and block submission. Any-of: the property form (PROPERTIES) is the caller, the
  * food config screens are the other legitimate reader.
  */
-foodOpsRouter.get("/kitchen-by-pincode", authenticate, authorizeAny(["PROPERTIES", "FOOD_SETTINGS", "FOOD_ORG"], "view"), async (req, res) => {
+foodOpsRouter.get("/kitchen-by-pincode", authenticate, authorizeAny([on("PROPERTIES", "view_property"), on("FOOD_SETTINGS", "view_food_setting"), on("FOOD_ORG", "view_kitchen_org")]), async (req, res) => {
   try {
     const pincode = String(req.query["pincode"] ?? "").trim();
     if (!/^\d{6}$/.test(pincode)) {
@@ -1581,7 +1590,7 @@ foodOpsRouter.get("/kitchen-by-pincode", authenticate, authorizeAny(["PROPERTIES
 
 // H4: same reader set as the kitchen master — the brand list seeds the org tree,
 // the property form and every food config screen.
-foodOpsRouter.get("/brands", authenticate, authorizeAny([...KITCHEN_MASTER_READERS], "view"), async (req, res) => {
+foodOpsRouter.get("/brands", authenticate, authorizeAny(reads(KITCHEN_MASTER_READERS)), async (req, res) => {
   try {
     // L6: `active === "true"` reads ANY other value as false, so `?active=1`
     // quietly returned the DEACTIVATED rows. Two-value allowlist; absent still
@@ -1605,7 +1614,7 @@ const createBrandSchema = z.object({
 // is nothing to narrow and org-wide authority is the only honest gate (the same
 // call deniedGlobalConfig makes for the singleton settings). FOOD_ORG, which is
 // also the module gating the only screen that calls this. See the block above.
-foodOpsRouter.post("/brands", authenticate, authorize("FOOD_ORG", "create"), async (req, res) => {
+foodOpsRouter.post("/brands", authenticate, authorize("FOOD_ORG", "add_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(createBrandSchema, req, res)) return;
     const b = req.body || {};
@@ -1633,7 +1642,7 @@ const updateBrandSchema = z.object({
 
 // HIGH: `isActive:false` here is a NETWORK-WIDE config disable — it takes the
 // brand off every property's ordering screen at once. Org-wide only (FOOD_ORG).
-foodOpsRouter.put("/brands/:id", authenticate, authorize("FOOD_ORG", "edit"), async (req, res) => {
+foodOpsRouter.put("/brands/:id", authenticate, authorize("FOOD_ORG", "edit_kitchen_org"), async (req, res) => {
   try {
     if (!validateBody(updateBrandSchema, req, res)) return;
     const b = req.body || {};
@@ -1649,7 +1658,7 @@ foodOpsRouter.put("/brands/:id", authenticate, authorize("FOOD_ORG", "edit"), as
 });
 
 // HIGH: same network-wide reach as the PUT above — org-wide only (FOOD_ORG).
-foodOpsRouter.delete("/brands/:id", authenticate, authorize("FOOD_ORG", "delete"), async (req, res) => {
+foodOpsRouter.delete("/brands/:id", authenticate, authorize("FOOD_ORG", "delete_kitchen_org"), async (req, res) => {
   try {
     // LOW: the REAL prior row, not a synthetic `{ isActive: true }` — see the
     // matching note on DELETE /kitchens/:id.
@@ -1662,7 +1671,7 @@ foodOpsRouter.delete("/brands/:id", authenticate, authorize("FOOD_ORG", "delete"
 });
 
 /** Full org tree: City → Kitchen → Property (with brand + active-guest counts). */
-foodOpsRouter.get("/hierarchy", authenticate, authorize("FOOD_DASHBOARD", "view"), async (req, res) => {
+foodOpsRouter.get("/hierarchy", authenticate, authorize("FOOD_DASHBOARD", "view_food_dashboard"), async (req, res) => {
   try {
     // H8: FOOD_DASHBOARD:view is held by property-bound roles too, so the tree is
     // scoped — it used to hand every caller the entire property master. It is
@@ -1729,7 +1738,7 @@ async function loadAssignableProperty(req: any, res: any): Promise<typeof proper
 
 const assignBrandSchema = z.object({ brand: z.union([z.string().max(128), z.null()]).optional() });
 
-foodOpsRouter.post("/properties/:id/assign-brand", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodOpsRouter.post("/properties/:id/assign-brand", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(assignBrandSchema, req, res)) return;
     const prop = await loadAssignableProperty(req, res);
@@ -1752,7 +1761,7 @@ foodOpsRouter.post("/properties/:id/assign-brand", authenticate, authorize("FOOD
 
 const assignKitchenSchema = z.object({ kitchenId: z.union([z.string().max(128), z.null()]).optional() });
 
-foodOpsRouter.post("/properties/:id/assign-kitchen", authenticate, authorize("FOOD_SETTINGS", "edit"), async (req, res) => {
+foodOpsRouter.post("/properties/:id/assign-kitchen", authenticate, authorize("FOOD_SETTINGS", "edit_food_setting"), async (req, res) => {
   try {
     if (!validateBody(assignKitchenSchema, req, res)) return;
     const prop = await loadAssignableProperty(req, res);
@@ -1805,7 +1814,7 @@ async function notifyForOrder(order: typeof foodOrdersTable.$inferSelect, event:
   });
 }
 
-foodOpsRouter.post("/orders/:id/accept", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit"), async (req, res) => {
+foodOpsRouter.post("/orders/:id/accept", authenticate, authorize("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary"), async (req, res) => {
   try {
     const order = await loadOrderForActor(req, res); if (!order) return;
     if (order.status !== "PLACED") { res.status(422).json({ success: false, error: "Only PLACED orders can be accepted" }); return; }
@@ -1846,7 +1855,7 @@ const rejectOrderSchema = z.object({ reason: zText.nullish() }).passthrough();
 foodOpsRouter.post(
   "/orders/:id/reject",
   authenticate,
-  authorize("FOOD_KITCHEN_SUMMARY", "edit"),
+  authorize("FOOD_KITCHEN_SUMMARY", "edit_kitchen_summary"),
   // Rejecting is the KITCHEN declining the unit's order. A unit lead withdrawing
   // their own order is a CANCEL, which has its own route and its own rules —
   // routing it through reject would skip those, so the placer is refused here.
@@ -2168,7 +2177,7 @@ export async function createDispatchForOrders(
   return trip!;
 }
 
-foodOpsRouter.get("/dispatches", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
+foodOpsRouter.get("/dispatches", authenticate, authorize("FOOD_DISPATCH", "view_dispatch_queue"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
     // Org-wide roles see all; scoped roles only see trips that include an accessible order.
@@ -2205,7 +2214,7 @@ const ACTIVE_TRIP_STATUSES = ["LOADING", "IN_TRANSIT", "PARTIAL"] as const;
 /* C6: vehicle IDs currently committed to an active dispatch (for the create form
  * to grey out busy vehicles). Declared BEFORE "/dispatches/:id" so Express does
  * not match "active-vehicles" as an :id. */
-foodOpsRouter.get("/dispatches/active-vehicles", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
+foodOpsRouter.get("/dispatches/active-vehicles", authenticate, authorize("FOOD_DISPATCH", "view_dispatch_queue"), async (req, res) => {
   try {
     const rows = await db.select({ vehicleId: foodDispatchesTable.vehicleId }).from(foodDispatchesTable)
       .where(and(isNotNull(foodDispatchesTable.vehicleId), inArray(foodDispatchesTable.status, [...ACTIVE_TRIP_STATUSES])));
@@ -2214,7 +2223,7 @@ foodOpsRouter.get("/dispatches/active-vehicles", authenticate, authorize("FOOD_D
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodOpsRouter.get("/dispatches/:id", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
+foodOpsRouter.get("/dispatches/:id", authenticate, authorize("FOOD_DISPATCH", "view_dispatch_queue"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     const [row] = await db.select({
@@ -2290,7 +2299,7 @@ const createDispatchSchema = z.object({
   departNow: z.boolean().nullish(),
 }).passthrough();
 
-foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+foodOpsRouter.post("/dispatches", authenticate, authorize("FOOD_DISPATCH", "edit_dispatch"), async (req, res) => {
   try {
     if (!validateBody(createDispatchSchema, req, res)) return;
     const b = req.body || {};
@@ -2454,7 +2463,7 @@ function canConfirmDelivery(req: any): boolean {
 // message is preserved for unknown values.
 const dispatchStatusSchema = z.object({ status: z.string().max(32), note: zText.nullish() }).passthrough();
 
-foodOpsRouter.patch("/dispatches/:id/status", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+foodOpsRouter.patch("/dispatches/:id/status", authenticate, authorize("FOOD_DISPATCH", "edit_dispatch"), async (req, res) => {
   try {
     if (!validateBody(dispatchStatusSchema, req, res)) return;
     const target = req.body?.status as string;
@@ -2564,7 +2573,7 @@ const dispatchOrderDeliverySchema = z.object({
   markTripDelivered: z.boolean().nullish(),
 }).passthrough();
 
-foodOpsRouter.patch("/dispatches/:id/orders/:orderId", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+foodOpsRouter.patch("/dispatches/:id/orders/:orderId", authenticate, authorize("FOOD_DISPATCH", "edit_dispatch"), async (req, res) => {
   try {
     if (!validateBody(dispatchOrderDeliverySchema, req, res)) return;
     const id = req.params["id"]!;
@@ -2673,7 +2682,7 @@ foodOpsRouter.patch("/dispatches/:id/orders/:orderId", authenticate, authorize("
  * ────────────────────────────────────────────────────────────────────────── */
 const cancelDispatchSchema = z.object({ reason: zText.nullish() }).passthrough();
 
-foodOpsRouter.post("/dispatches/:id/cancel", authenticate, authorize("FOOD_DISPATCH", "edit"), async (req, res) => {
+foodOpsRouter.post("/dispatches/:id/cancel", authenticate, authorize("FOOD_DISPATCH", "edit_dispatch"), async (req, res) => {
   try {
     if (!validateBody(cancelDispatchSchema, req, res)) return;
     const id = req.params["id"]!;
@@ -2786,7 +2795,7 @@ foodOpsRouter.post("/dispatches/:id/cancel", authenticate, authorize("FOOD_DISPA
 });
 
 /* Audit timeline for a dispatch (food_dispatch_events + actor names). */
-foodOpsRouter.get("/dispatches/:id/events", authenticate, authorize("FOOD_DISPATCH", "view"), async (req, res) => {
+foodOpsRouter.get("/dispatches/:id/events", authenticate, authorize("FOOD_DISPATCH", "view_dispatch_queue"), async (req, res) => {
   try {
     const id = req.params["id"]!;
     const ids = await resolveAccessiblePropertyIds(req.user!);
@@ -2838,7 +2847,7 @@ const orderBatchSchema = z.object({
   notes: zText.nullish(),
 }).passthrough();
 
-foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER", "create"), async (req, res) => {
+foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER", "draft_order"), async (req, res) => {
   try {
     if (!validateBody(orderBatchSchema, req, res)) return;
     const b = req.body || {};
@@ -3128,7 +3137,7 @@ foodOpsRouter.post("/order-batches", authenticate, authorize("FOOD_PLACE_ORDER",
 });
 
 /** Per-item order preview: resolved menu + per-resident rule + default qty (editable grid). */
-foodOpsRouter.get("/order-preview", authenticate, authorize("FOOD_PLACE_ORDER", "view"), async (req, res) => {
+foodOpsRouter.get("/order-preview", authenticate, authorize("FOOD_PLACE_ORDER", "view_order_form"), async (req, res) => {
   try {
     const propertyId = req.query["propertyId"] as string | undefined;
     if (!propertyId) { res.status(400).json({ success: false, error: "propertyId required" }); return; }
@@ -3168,7 +3177,7 @@ foodOpsRouter.get("/order-preview", authenticate, authorize("FOOD_PLACE_ORDER", 
 
 // H4: gated like its sibling POST /menu/share (the share dialog is the caller);
 // FOOD_SETTINGS is the other legitimate reader (menu preview from the config tab).
-foodOpsRouter.get("/menu/full", authenticate, authorizeAny(["FOOD_PLACE_ORDER", "FOOD_SETTINGS"], "view"), async (req, res) => {
+foodOpsRouter.get("/menu/full", authenticate, authorizeAny([on("FOOD_PLACE_ORDER", "view_order_form"), on("FOOD_SETTINGS", "view_food_setting")]), async (req, res) => {
   try {
     // L6: an unknown brand resolved no rotation row, so the menu came back empty
     // and the screen said "no menu for this day" instead of "no such brand".
@@ -3228,7 +3237,7 @@ const menuShareSchema = z.object({
  */
 const MENU_SHARE_TTL_DAYS = 7;
 
-foodOpsRouter.post("/menu/share", authenticate, authorize("FOOD_PLACE_ORDER", "view"), async (req, res) => {
+foodOpsRouter.post("/menu/share", authenticate, authorize("FOOD_PLACE_ORDER", "view_order_form"), async (req, res) => {
   try {
     if (!validateBody(menuShareSchema, req, res)) return;
     const b = req.body || {};
@@ -3326,7 +3335,7 @@ foodOpsRouter.post("/menu/share", authenticate, authorize("FOOD_PLACE_ORDER", "v
  * scope as the share that created it: whoever may share a property's menu may
  * withdraw a share of it. Idempotent: re-revoking keeps the first instant.
  */
-foodOpsRouter.post("/menu/shares/:id/revoke", authenticate, authorize("FOOD_PLACE_ORDER", "view"), async (req, res) => {
+foodOpsRouter.post("/menu/shares/:id/revoke", authenticate, authorize("FOOD_PLACE_ORDER", "view_order_form"), async (req, res) => {
   try {
     const [share] = await db.select().from(foodMenuSharesTable).where(eq(foodMenuSharesTable.id, req.params["id"]!));
     if (!share) { res.status(404).json({ success: false, error: "Not found" }); return; }
@@ -3618,7 +3627,7 @@ const wastePctOfReceived = (wasted: unknown, received: unknown) =>
 const wastePctOfOrdered = (wasted: unknown, ordered: unknown) =>
   Number(ordered) > 0 ? Math.round((Number(wasted) / Number(ordered)) * 1000) / 10 : 0;
 
-foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
+foodOpsRouter.get("/analytics", authenticate, authorize("FOOD_REPORTS", "view_food_report"), async (req, res) => {
   try {
     // L6: `brand` filters the order scope below and `period` picks the window —
     // an unrecognised value for either answered 200 with the wrong dataset
@@ -3842,7 +3851,7 @@ async function wasteAnalyticsScope(req: any): Promise<{
   return { where: and(...conds), fromYmd, toYmd, granularity };
 }
 
-foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
+foodOpsRouter.get("/waste-analytics", authenticate, authorize("FOOD_REPORTS", "view_food_report"), async (req, res) => {
   try {
     if (await invalidWasteFilters(req, res)) return;
     const { where, fromYmd, toYmd, granularity } = await wasteAnalyticsScope(req);
@@ -4189,7 +4198,7 @@ foodOpsRouter.get("/waste-analytics/export.:fmt", authenticate, requireRoles("SU
  * collections roll-up — and stubs renewals/newSignups (no data model yet).
  * ════════════════════════════════════════════════════════════════════════ */
 
-foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
+foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "view_food_report"), async (req, res) => {
   try {
     // L6: this surface speaks HOME_PERIODS (week|month|fq|fy), not the reports'
     // vocabulary — an unrecognised key silently fell through to the week branch.
@@ -4418,7 +4427,7 @@ foodOpsRouter.get("/home-analytics", authenticate, authorize("FOOD_REPORTS", "vi
  * confirmed" = orders that reached DELIVERED (per-item receivedQty is the proof-
  * of-receipt captured at Confirm Delivery, same convention as food-order-detail).
  * ════════════════════════════════════════════════════════════════════════ */
-foodOpsRouter.get("/reports/variance", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
+foodOpsRouter.get("/reports/variance", authenticate, authorize("FOOD_REPORTS", "view_food_report"), async (req, res) => {
   try {
     // L6: same window vocabulary as its siblings. (This report deliberately has
     // no brand filter — the card on the screen says so — so there is no brand
@@ -4552,7 +4561,7 @@ async function loadServiceTimeResolver(): Promise<(brand: string, mealType: stri
  * Only DELIVERED orders with a deliveredAt are counted; orders whose meal has no
  * configured serviceTime can't be measured and are skipped (excluded from totals).
  */
-foodOpsRouter.get("/reports/on-time", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
+foodOpsRouter.get("/reports/on-time", authenticate, authorize("FOOD_REPORTS", "view_food_report"), async (req, res) => {
   try {
     // L6: `brand` narrows the scope below — an unknown code reported a flawless
     // 0-of-0 on-time record rather than admitting the brand does not exist.
@@ -4617,7 +4626,7 @@ foodOpsRouter.get("/reports/on-time", authenticate, authorize("FOOD_REPORTS", "v
  * GET /food/settings/ontime-tolerance — read the global on-time tolerance (min).
  * Gated on the report it labels (H4 — it was open to any authenticated user).
  */
-foodOpsRouter.get("/settings/ontime-tolerance", authenticate, authorizeAny(["FOOD_REPORTS", "FOOD_SETTINGS"], "view"), async (req, res) => {
+foodOpsRouter.get("/settings/ontime-tolerance", authenticate, authorizeAny([on("FOOD_REPORTS", "view_food_report"), on("FOOD_SETTINGS", "view_food_setting")]), async (req, res) => {
   try {
     res.json({ success: true, data: { minutes: await getOntimeToleranceMinutes() } });
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
@@ -4661,7 +4670,7 @@ foodOpsRouter.put("/settings/ontime-tolerance", authenticate, async (req, res) =
 foodOpsRouter.get(
   "/settings/order-headroom",
   authenticate,
-  authorizeAny(["FOOD_PLACE_ORDER", "FOOD_ALL_ORDERS", "FOOD_DASHBOARD", "FOOD_SETTINGS"], "view"),
+  authorizeAny([on("FOOD_PLACE_ORDER", "view_order_form"), on("FOOD_ALL_ORDERS", "view_order"), on("FOOD_DASHBOARD", "view_food_dashboard"), on("FOOD_SETTINGS", "view_food_setting")]),
   async (req, res) => {
     try {
       const pct = await getOrderHeadroomPct();
@@ -4715,7 +4724,7 @@ foodOpsRouter.put("/settings/order-headroom", authenticate, async (req, res) => 
  * with an optional single-meal filter. Mirrors /reports/variance scoping; the
  * date bucket is the IST calendar day of serviceDate.
  * ════════════════════════════════════════════════════════════════════════ */
-foodOpsRouter.get("/reports/variance-by-day", authenticate, authorize("FOOD_REPORTS", "view"), async (req, res) => {
+foodOpsRouter.get("/reports/variance-by-day", authenticate, authorize("FOOD_REPORTS", "view_food_report"), async (req, res) => {
   try {
     // L6: mealType is already gated below; `period` is its window sibling.
     if (invalidWindowParams(req, res, REPORT_PERIODS)) return;
@@ -5187,7 +5196,7 @@ async function targetProperty(req: any): Promise<string | null> {
 }
 
 /** Per-property cards for every property the signed-in user can access (unit-lead "My Properties"). */
-foodOpsRouter.get("/my-properties", authenticate, authorize("FOOD_DASHBOARD", "view"), async (req, res) => {
+foodOpsRouter.get("/my-properties", authenticate, authorize("FOOD_DASHBOARD", "view_food_dashboard"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const where = ids === null ? undefined : (ids.length ? inArray(propertiesTable.id, ids) : sql`false`);
@@ -5296,7 +5305,7 @@ foodOpsRouter.get("/my-properties", authenticate, authorize("FOOD_DASHBOARD", "v
  * Powers the multi-property "Next Orders" command centre so a unit lead sees, in
  * one place, exactly which properties still need an order placed.
  */
-foodOpsRouter.get("/next-orders", authenticate, authorize("FOOD_PLACE_ORDER", "view"), async (req, res) => {
+foodOpsRouter.get("/next-orders", authenticate, authorize("FOOD_PLACE_ORDER", "view_order_form"), async (req, res) => {
   try {
     const ids = await resolveAccessiblePropertyIds(req.user!);
     const where = ids === null ? undefined : (ids.length ? inArray(propertiesTable.id, ids) : sql`false`);
@@ -5423,7 +5432,7 @@ foodOpsRouter.get("/next-orders", authenticate, authorize("FOOD_PLACE_ORDER", "v
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodOpsRouter.get("/property-overview", authenticate, authorize("FOOD_DASHBOARD", "view"), async (req, res) => {
+foodOpsRouter.get("/property-overview", authenticate, authorize("FOOD_DASHBOARD", "view_food_dashboard"), async (req, res) => {
   try {
     const propertyId = await targetProperty(req);
     if (!propertyId) { res.json({ success: true, data: null }); return; }
@@ -5448,7 +5457,7 @@ foodOpsRouter.get("/property-overview", authenticate, authorize("FOOD_DASHBOARD"
   } catch (err) { req.log.error(err); res.status(500).json({ success: false, error: "Internal server error" }); }
 });
 
-foodOpsRouter.get("/revenue", authenticate, authorize("FOOD_DASHBOARD", "view"), async (req, res) => {
+foodOpsRouter.get("/revenue", authenticate, authorize("FOOD_DASHBOARD", "view_food_dashboard"), async (req, res) => {
   try {
     const propertyId = await targetProperty(req);
     if (!propertyId) { res.json({ success: true, data: { months: [] } }); return; }
@@ -5519,7 +5528,7 @@ async function fetchGuests(req: any, res: any): Promise<{ where: any } | null> {
   return { where: and(...conds) };
 }
 
-foodOpsRouter.get("/guests", authenticate, authorize("FOOD_DASHBOARD", "view"), async (req, res) => {
+foodOpsRouter.get("/guests", authenticate, authorize("FOOD_DASHBOARD", "view_food_dashboard"), async (req, res) => {
   try {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const guard = await fetchGuests(req, res); if (!guard) return;

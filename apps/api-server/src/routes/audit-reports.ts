@@ -43,7 +43,7 @@ const router: IRouter = Router();
 router.get(
   "/",
   authenticate,
-  authorize("AUDIT_REPORTS", "view"),
+  authorize("AUDIT_REPORTS", "view_audit_report"),
   async (req, res) => {
     const { page, limit, offset } = getPagination(req.query as Record<string, unknown>);
     const access = await resolveAuditAccess(req.user!);
@@ -98,7 +98,7 @@ router.get(
 router.get(
   "/filter-properties",
   authenticate,
-  authorize("AUDIT_REPORTS", "view"),
+  authorize("AUDIT_REPORTS", "view_audit_report"),
   async (req, res) => {
     const access = await resolveAuditAccess(req.user!);
     const scope = scopeAuditsCondition(access);
@@ -115,7 +115,7 @@ router.get(
 router.get(
   "/:id",
   authenticate,
-  authorize("AUDIT_REPORTS", "view"),
+  authorize("AUDIT_REPORTS", "view_audit_report"),
   async (req, res) => {
     const [report] = await db
       .select()
@@ -150,7 +150,7 @@ router.get(
 router.post(
   "/:id/generate",
   authenticate,
-  authorize("AUDIT_REPORTS", "edit"),
+  authorize("AUDIT_REPORTS", "edit_audit_report"),
   async (req, res) => {
     const [report] = await db
       .select()
@@ -171,7 +171,7 @@ router.post(
 router.post(
   "/:id/shares",
   authenticate,
-  authorize("AUDIT_REPORTS", "view"),
+  authorize("AUDIT_REPORTS", "view_audit_report"),
   async (req, res) => {
     const [report] = await db
       .select()
@@ -229,7 +229,7 @@ router.post(
 router.delete(
   "/:id/shares/:sid",
   authenticate,
-  authorize("AUDIT_REPORTS", "view"),
+  authorize("AUDIT_REPORTS", "view_audit_report"),
   async (req, res) => {
     const [share] = await db
       .update(auditReportSharesTable)
@@ -259,7 +259,7 @@ const NAMED_REPORTS = [
 router.get(
   "/named/:key",
   authenticate,
-  authorize("AUDIT_REPORTS", "view"),
+  authorize("AUDIT_REPORTS", "view_audit_report"),
   async (req, res) => {
     const key = req.params["key"] as (typeof NAMED_REPORTS)[number];
     if (!NAMED_REPORTS.includes(key)) throw httpError(404, "Unknown report");
@@ -405,7 +405,7 @@ router.get(
 router.get(
   "/dashboard/summary",
   authenticate,
-  authorize("AUDIT_DASHBOARD", "view"),
+  authorize("AUDIT_DASHBOARD", "view_audit_dashboard"),
   async (req, res) => {
     const q = req.query as Record<string, string | undefined>;
     const access = await resolveAuditAccess(req.user!);

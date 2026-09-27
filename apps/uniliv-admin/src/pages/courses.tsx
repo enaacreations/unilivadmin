@@ -71,7 +71,7 @@ export default function Courses() {
   const onCreate = form.handleSubmit(async (values) => {
     try {
       await apiFetch("/courses", { method: "POST", body: JSON.stringify(values) });
-      toast({ title: "Course created" });
+      toast({ variant: "success", title: "Course created" });
       draft.clearDraft();
       setOpen(false); form.reset({ title: "", category: "Onboarding", contentType: "VIDEO", isMandatory: false, passScore: 70, targetRoles: [] });
       qc.invalidateQueries({ queryKey: ["courses"] });

@@ -11,8 +11,7 @@ import {
   CAPABILITY_CONFLICTS,
   staticConflicts,
   assertNotSelfApproval,
-  type SodSubject,
-} from "../access/sod.js";
+  type SodSubject, crossRoleConflicts, assertNoCrossRoleConflict } from "../access/sod.js";
 
 const subject = (actors: Record<string, string | null>): SodSubject => ({
   type: "audit", id: "a-1", actors,
@@ -22,8 +21,8 @@ describe("static capability conflicts", () => {
   it("declares the ship-vs-receive rule the food module documents in prose", () => {
     const rule = CAPABILITY_CONFLICTS.find((r) => r.id === "FOOD_SHIP_VS_RECEIVE");
     expect(rule).toBeDefined();
-    expect(rule!.a.module).toBe("FOOD_DISPATCH");
-    expect(rule!.b.module).toBe("FOOD_CONFIRM_DELIVERY");
+    expect(rule!.a.functionality).toBe("FOOD_DISPATCH");
+    expect(rule!.b.functionality).toBe("FOOD_CONFIRM_DELIVERY");
     // The rationale is not decoration: it is what the matrix editor will show
     // an admin about to create the violation.
     expect(rule!.rationale).toMatch(/certifies receipt/i);
@@ -98,5 +97,40 @@ describe("assertNotSelfApproval", () => {
         overrideReason: "trust me",
       }),
     ).toThrow(/Separation of duties/);
+  });
+});
+
+describe("cross-role separation of duties", () => {
+  // The hole multi-role opened: each role is innocent, the pair is not.
+  const holds = (roleKey: string, functionality: string, perm: string) =>
+    (roleKey === "SHIPPER" && functionality === "FOOD_DISPATCH" && perm === "edit") ||
+    (roleKey === "RECEIVER" && functionality === "FOOD_CONFIRM_DELIVERY" && perm === "edit");
+
+  it("passes a role that holds only one half", () => {
+    expect(crossRoleConflicts(["SHIPPER"], holds as never)).toEqual([]);
+    expect(crossRoleConflicts(["RECEIVER"], holds as never)).toEqual([]);
+  });
+
+  it("catches the pair split across two roles", () => {
+    const v = crossRoleConflicts(["SHIPPER", "RECEIVER"], holds as never);
+    expect(v).toHaveLength(1);
+    expect(v[0]!.id).toBe("FOOD_SHIP_VS_RECEIVE");
+    // It names both sides, so the refusal says which two roles collided.
+    expect(new Set(v[0]!.via)).toEqual(new Set(["SHIPPER", "RECEIVER"]));
+  });
+
+  it("refuses the assignment that would complete the pair", () => {
+    expect(() => assertNoCrossRoleConflict(["SHIPPER", "RECEIVER"], holds as never)).toThrow(/separation of duties/i);
+    expect(() => assertNoCrossRoleConflict(["SHIPPER"], holds as never)).not.toThrow();
+  });
+
+  it("waives the rule only when EVERY held role is exempt", () => {
+    const parityHolds = (rk: string, m: string, p: string) =>
+      rk === "SUPER_ADMIN" ? m.startsWith("FOOD_") && p === "edit" : holds(rk, m, p);
+    // Parity alone: exempt.
+    expect(crossRoleConflicts(["SUPER_ADMIN"], parityHolds as never)).toEqual([]);
+    // Parity PLUS an ordinary role is not a licence — the person is not
+    // operating as the break-glass role merely by also having it.
+    expect(crossRoleConflicts(["SUPER_ADMIN", "RECEIVER"], parityHolds as never)).toHaveLength(1);
   });
 });

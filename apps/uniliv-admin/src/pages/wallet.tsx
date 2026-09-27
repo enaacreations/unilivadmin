@@ -133,8 +133,8 @@ export default function WalletPage() {
   const lowCount = allWallets.filter((w) => w.isLowBalance && !w.isNegative).length;
   const inactiveCount = allWallets.filter((w) => !w.walletEnabled).length;
 
-  const canEdit = can("WALLET", "edit");
-  const canCreate = can("WALLET", "create");
+  const canEdit = can("WALLET", "edit_wallet");
+  const canCreate = can("WALLET", "add_wallet");
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey });
 
@@ -145,7 +145,7 @@ export default function WalletPage() {
         body: JSON.stringify({ amount: payload.amount, description: payload.description, notes: payload.notes }),
       }),
     onSuccess: () => {
-      toast({ title: "Top-up successful" });
+      toast({ variant: "success", title: "Top-up successful" });
       invalidate();
       setTopupOpen(false);
       setTopupAmount("");
@@ -165,7 +165,7 @@ export default function WalletPage() {
       }),
     onSuccess: (res) => {
       setTopupLinkUrl(res?.data?.shortUrl ?? null);
-      toast({ title: "Top-up link sent", description: "Shared with the resident." });
+      toast({ variant: "success", title: "Top-up link sent", description: "Shared with the resident." });
     },
     onError: (err: Error) => {
       if (err?.message === PAYMENTS_NOT_CONFIGURED) { setTopupLinkNotConfigured(true); return; }
@@ -180,7 +180,7 @@ export default function WalletPage() {
         body: JSON.stringify({ type: payload.type, amount: payload.amount, description: payload.description }),
       }),
     onSuccess: () => {
-      toast({ title: "Adjustment applied" });
+      toast({ variant: "success", title: "Adjustment applied" });
       invalidate();
       setAdjustOpen(false);
       setAdjustAmount("");
@@ -434,7 +434,7 @@ export default function WalletPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => { navigator.clipboard?.writeText(topupLinkUrl); toast({ title: "Link copied" }); }}
+                onClick={() => { navigator.clipboard?.writeText(topupLinkUrl); toast({ variant: "success", title: "Link copied" }); }}
               >
                 <Copy className="w-3.5 h-3.5 mr-1" /> Copy link
               </Button>

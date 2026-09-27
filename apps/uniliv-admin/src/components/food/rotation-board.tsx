@@ -324,7 +324,7 @@ export function RotationBoard({
         dayOfWeek: v.day, mealType: v.meal, items: plateToItems(v.plate),
       }),
     onSuccess: (_r, v) => {
-      toast({ title: `${DAY_LABEL[v.day]} ${MEAL_LABEL[v.meal]} saved` });
+      toast({ variant: "success", title: `${DAY_LABEL[v.day]} ${MEAL_LABEL[v.meal]} saved` });
       invalidate();
       setSel(null);
     },
@@ -343,7 +343,7 @@ export function RotationBoard({
           variant: "destructive",
         });
       } else {
-        toast({ title: label });
+        toast({ variant: "success", title: label });
       }
       if (targetWeek !== week) setWeek(targetWeek);
     },
@@ -399,7 +399,7 @@ export function RotationBoard({
         if (filled.length !== current.length) writes.push({ dayOfWeek: day, mealType: meal, plate: filled });
       }
     }
-    if (!writes.length) { toast({ title: "Nothing to fill — every meal already meets its rule" }); return; }
+    if (!writes.length) { toast({ variant: "info", title: "Nothing to fill — every meal already meets its rule" }); return; }
     bulkWrite.mutate({ targetWeek: week, writes, label: `Filled ${writes.length} meal${writes.length === 1 ? "" : "s"}` });
   };
 
@@ -435,7 +435,7 @@ export function RotationBoard({
       .filter(Boolean).join("-") + `.${fmt}`;
     try {
       await apiDownload(fmt === "pdf" ? foodApi.rotationExportPdfUrl(p) : foodApi.rotationExportCsvUrl(p), name);
-      toast({ title: "Export ready", description: name });
+      toast({ variant: "success", title: "Export ready", description: name });
     } catch (e: any) {
       toast({ title: e?.message || "Export failed", variant: "destructive" });
     }

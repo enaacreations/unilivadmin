@@ -126,10 +126,10 @@ export function IndentFormModal({ open, onOpenChange, indent, prefillItem, onSav
       };
       if (indent?.id) {
         await apiFetch(`/indents/${indent.id}`, { method: "PUT", body: JSON.stringify(body) });
-        toast({ title: status === "DRAFT" ? "Draft saved" : "Indent submitted" });
+        toast({ variant: "success", title: status === "DRAFT" ? "Draft saved" : "Indent submitted" });
       } else {
         await apiFetch(`/indents`, { method: "POST", body: JSON.stringify(body) });
-        toast({ title: status === "DRAFT" ? "Draft saved" : "Indent submitted for approval" });
+        toast({ variant: "success", title: status === "DRAFT" ? "Draft saved" : "Indent submitted for approval" });
       }
       qc.invalidateQueries({ queryKey: ["indents"] });
       onSaved?.();

@@ -72,7 +72,7 @@ export default function PropertyLeads() {
   const onCreate = form.handleSubmit(async (values) => {
     try {
       await apiFetch("/property-leads", { method: "POST", body: JSON.stringify(values) });
-      toast({ title: "Property lead added" });
+      toast({ variant: "success", title: "Property lead added" });
       draft.clearDraft();
       setOpen(false); form.reset();
       qc.invalidateQueries({ queryKey: ["plead"] });
@@ -181,7 +181,7 @@ function PropertyLeadDetail({ id, onClose }: { id: string; onClose: () => void }
       await apiFetch(`/property-leads/${id}`, { method: "PUT", body: JSON.stringify({ stage }) });
       qc.invalidateQueries({ queryKey: ["plead"] });
       qc.invalidateQueries({ queryKey: ["plead-d", id] });
-      toast({ title: "Stage updated" });
+      toast({ variant: "success", title: "Stage updated" });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
@@ -189,7 +189,7 @@ function PropertyLeadDetail({ id, onClose }: { id: string; onClose: () => void }
     try {
       await apiFetch(`/property-leads/${id}`, { method: "PUT", body: JSON.stringify({ viabilityData: via }) });
       qc.invalidateQueries({ queryKey: ["plead-d", id] });
-      toast({ title: "Viability saved" });
+      toast({ variant: "success", title: "Viability saved" });
     } catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 

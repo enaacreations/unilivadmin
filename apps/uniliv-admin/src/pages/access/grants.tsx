@@ -88,7 +88,7 @@ export default function GrantsScreen() {
         expiresAt: expiresAt || null,
       }),
     onSuccess: () => {
-      toast({ title: "Grant created" });
+      toast({ variant: "success", title: "Grant created" });
       setShowNew(false); reset();
       void qc.invalidateQueries({ queryKey: ["access"] });
     },
@@ -106,7 +106,7 @@ export default function GrantsScreen() {
   const revoke = useMutation({
     mutationFn: () => accessApi.revokeGrant(revoking!.id, revokeReason),
     onSuccess: () => {
-      toast({ title: "Grant revoked", description: "Recorded on the activity trail." });
+      toast({ variant: "success", title: "Grant revoked", description: "Recorded on the activity trail." });
       setRevoking(null); setRevokeReason("");
       void qc.invalidateQueries({ queryKey: ["access"] });
     },
@@ -116,7 +116,7 @@ export default function GrantsScreen() {
   const restore = useMutation({
     mutationFn: (g: AccessGrantRow) => accessApi.restoreGrant(g.id, "Restored from the grants screen"),
     onSuccess: () => {
-      toast({ title: "Grant restored" });
+      toast({ variant: "success", title: "Grant restored" });
       void qc.invalidateQueries({ queryKey: ["access"] });
     },
     onError: (e) => toast({ title: "Could not restore", description: (e as Error).message, variant: "destructive" }),

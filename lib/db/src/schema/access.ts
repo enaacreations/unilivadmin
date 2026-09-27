@@ -87,25 +87,21 @@ export const orgNodeTypeEnum = pgEnum("org_node_type", [
 export const orgPathKindEnum = pgEnum("org_path_kind", ["TREE", "SERVES"]);
 
 /**
- * PRD §23's 13 actions. The legacy four come FIRST and keep their exact spelling
- * so `Permission ⊂ Action` holds and every existing authorize(module, "view")
- * call compiles unchanged.
+ * Actions are NAMED PER FUNCTIONALITY, not drawn from one global list.
+ *
+ * "Create a property" and "start an audit" are not the same verb wearing two
+ * hats, and `FOOD_CONFIRM_DELIVERY.delete` was never a thing anyone could do —
+ * a shared enum of thirteen verbs made both look like ordinary cells. The
+ * per-functionality manifest (FUNCTIONALITY_ACTIONS in
+ * apps/api-server/src/lib/permissions.ts) is the source of truth, and it is
+ * code-owned, so:
+ *
+ *   - a functionality naming a new action is a code change, never a migration
+ *   - a stored action the manifest does not name is INERT, not a grant
+ *
+ * Stored as text for exactly the reason `functionality` is. See the header
+ * comment in permissions.ts: module (10) → functionality (56) → named action.
  */
-export const accessActionEnum = pgEnum("access_action", [
-  "view",
-  "create",
-  "edit",
-  "delete",
-  "submit",
-  "approve",
-  "reject",
-  "assign",
-  "complete",
-  "verify",
-  "export",
-  "download",
-  "configure",
-]);
 
 /**
  * The axis PRD §24 collapses into its scope list (G3).
@@ -131,7 +127,7 @@ export const accessDataScopeEnum = pgEnum("access_data_scope", [
  * expiry: an override without either is how an org loses track of who can do
  * what.
  */
-export const accessOverrideEffectEnum = pgEnum("access_override_effect", ["GRANT", "DENY"]);
+export const privilegeEffectEnum = pgEnum("privilege_effect", ["GRANT", "DENY"]);
 
 /** A grant attaches to one user, or to every holder of a role. */
 export const accessSubjectTypeEnum = pgEnum("access_subject_type", ["USER", "ROLE"]);
@@ -264,7 +260,6 @@ export const accessGrantsTable = pgTable(
     grantedBy: text("granted_by"),
     grantedAt: timestamp("granted_at").defaultNow().notNull(),
     /** Stamped by the expiry sweep so it does not re-emit the same event. */
-    expiryEventAt: timestamp("expiry_event_at"),
   },
   (t) => [
     index("access_grants_subject_idx").on(t.subjectType, t.subjectId),
@@ -282,21 +277,91 @@ export const accessGrantsTable = pgTable(
   ],
 );
 
+/**
+ * Role MEMBERSHIP — the many-to-many that replaces users.role.
+ *
+ * Deliberately NOT folded into access_grants, even though a grant already has
+ * the shape (subject × role × node). A grant with a null nodeId means
+ * ORGANIZATION-WIDE SCOPE, and assertGrantIsSafe restricts that to parity roles
+ * — so expressing "this person is a Warden" as a grant would make ordinary role
+ * assignment a super-admin-only action.
+ *
+ * Membership stays global; the property axis lives on access_privileges, which
+ * is where the requirement actually puts it ("propertyId → functionality").
+ * That split also leaves access_grants untouched, so the '*' sentinel keeps
+ * working — it simply now reads as "the subject's own role SET".
+ */
+export const userRolesTable = pgTable(
+  "user_roles",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    /** access_roles.key. Text, so a new role is never a pg enum migration. */
+    roleKey: text("role_key").notNull(),
+    /* Same validity window as a grant: "acting City Head until the 30th" should
+     * not depend on someone remembering to take it away. */
+    effectiveFrom: timestamp("effective_from").defaultNow().notNull(),
+    expiresAt: timestamp("expires_at"),
+    assignedBy: text("assigned_by"),
+    assignedAt: timestamp("assigned_at").defaultNow().notNull(),
+    /*
+     * Revoked, not deleted.
+     *
+     * A hard DELETE erased the fact that someone ever held the role — and
+     * "did she have Warden in March?" is exactly the question asked after an
+     * incident. The row survives with the answer attached: who turned it off,
+     * when, and the reason they gave.
+     *
+     * readRoles() filters on isActive, so a revoked row grants nothing the
+     * moment it flips. Re-granting the same role reuses this row (the unique
+     * index makes that the only option) rather than inserting a second one.
+     */
+    isActive: boolean("is_active").default(true).notNull(),
+    revokedAt: timestamp("revoked_at"),
+    revokedBy: text("revoked_by"),
+    revokedReason: text("revoked_reason"),
+  },
+  (t) => [
+    uniqueIndex("user_roles_uq").on(t.userId, t.roleKey),
+    index("user_roles_user_idx").on(t.userId),
+  ],
+);
+
 /* ── Roles and the capability matrix (hybrid: ceiling in code, cells in data) ── */
 
-export const accessRolesTable = pgTable("access_roles", {
+export const rolesTable = pgTable("roles", {
   /** SCREAMING_SNAKE, joinable to users.role_key. e.g. "WARDEN", "AUDIT.AUDITOR". */
   key: text("key").primaryKey(),
   label: text("label").notNull(),
   description: text("description"),
   /**
-   * null for a platform role (users.role). Non-null names the module a role
-   * belongs to — this is how audit_role_grants' ADMIN/SCHEDULER/AUDITOR/AUDITEE/
-   * REVIEWER/VIEWER become data instead of a second parallel enum.
+   * null for a platform role (users.role). Non-null names the MODULE a role
+   * belongs to — a key from the `Module` union, e.g. "AUDITS". This is how
+   * audit_role_grants' ADMIN/SCHEDULER/AUDITOR/AUDITEE/REVIEWER/VIEWER become
+   * data instead of a second parallel enum.
+   *
+   * Module keys are disjoint from functionality keys by construction, so this
+   * column is never ambiguous about which level it names.
    */
   scopeModule: text("scope_module"),
   /** Replaces ROLE_RANK in lib/authz.ts — the third of four role taxonomies. */
   rank: integer("rank").default(0).notNull(),
+  /**
+   * The org level this role is HANDED OUT at — not a place, a level.
+   *
+   * A role never names a property (that is a per-user fact), but it does know
+   * the rung it is granted on: a Cluster Manager is given a CLUSTER, a Zonal
+   * Head a ZONE, a Unit Lead a PROPERTY. Attaching the role to a user asks for
+   * a node of exactly this type, and everything beneath it resolves through the
+   * closure table — so properties added to that cluster later are covered with
+   * no re-tagging.
+   *
+   * null = the role carries no place at all (SUPER_ADMIN, FINANCE, HR_MANAGER —
+   * the "independent" ones). Those users are org-wide or placed ad hoc.
+   */
+  anchorLevel: orgNodeTypeEnum("anchor_level"),
   /**
    * The built-ins whose cells are COMPUTED, never stored (SUPER_ADMIN,
    * OPS_EXCELLENCE, AUDIT_READONLY). The matrix editor refuses every write
@@ -310,58 +375,118 @@ export const accessRolesTable = pgTable("access_roles", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-export const accessRolePermissionsTable = pgTable(
-  "access_role_permissions",
+export const roleFunctionalitiesTable = pgTable(
+  "role_functionalities",
   {
     id: text("id").primaryKey(),
     /** Plain text, not an FK: must survive a role rename debate, and the
      *  push-force-while-serving deploy model punishes FK churn. */
     roleKey: text("role_key").notNull(),
-    /** Plain text, NOT an enum — adding a module must never need a DB migration. */
-    module: text("module").notNull(),
-    action: accessActionEnum("action").notNull(),
+    /**
+     * The functionality — the middle level of the vocabulary, and the unit that
+     * is actually enforced. Plain text, NOT an enum: adding a functionality must
+     * never need a DB migration, and the code-owned manifest
+     * (ALL_FUNCTIONALITIES) is the ceiling that keeps a stale row inert.
+     *
+     * The MODULE it belongs to is deliberately NOT stored. It is derived from
+     * the manifest (moduleOf), so there is no second copy to drift, and a
+     * functionality moving between modules is a code change with no data
+     * migration. Storing the parent would also make a module-level wildcard
+     * tempting, which would silently grant functionalities added later.
+     */
+    functionality: text("functionality").notNull(),
+    action: text("action").notNull(),
     allowed: boolean("allowed").default(true).notNull(),
     updatedBy: text("updated_by"),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
-    uniqueIndex("access_role_permissions_uq").on(t.roleKey, t.module, t.action),
-    index("access_role_permissions_role_idx").on(t.roleKey),
+    uniqueIndex("role_functionalities_uq").on(t.roleKey, t.functionality, t.action),
+    index("role_functionalities_role_idx").on(t.roleKey),
   ],
 );
 
 /**
- * Per-EMPLOYEE overrides on top of the role matrix.
+ * PRIVILEGES — property-scoped exceptions on top of the role matrix.
  *
- * The role answers "what may a warden do?"; this answers "what may THIS warden
- * do that other wardens may not?". Inheritance is preserved for everything not
- * listed here, which is the whole point: editing the WARDEN row still reaches
- * every warden, including the ones carrying an override on a different cell.
+ * The matrix answers "what may a WARDEN do?" globally. This answers the two
+ * questions it cannot:
  *
- * Resolution order in decide(): DENY beats GRANT beats the role. A row is
- * therefore the ONLY way one person's answer differs from their role's, which
- * keeps "why can she do this?" a one-query question.
+ *   "what may THIS warden do that other wardens may not?"      (subjectType USER)
+ *   "what may a warden do AT THIS PROPERTY specifically?"      (nodeId)
  *
- * Deliberately NOT soft-deleted. Clearing an override means the person returns
- * to their role's answer, and a revoked_at row that no longer affects anything
- * would still show up in every "who has exceptions?" review. The history lives
- * on the hash-chained ACCESS stream, which is the copy that must survive.
+ * which together make the requirement expressible: one Unit Lead with one
+ * functionality at property A and a different one at property B — two rows,
+ * same person, same role, different nodeId.
+ *
+ * Generalizes the old access_user_permissions in two directions at once:
+ * subjectType (so a ROLE can carry scoped privileges too, not just a person)
+ * and nodeId (so any privilege can be pinned to a place).
+ *
+ * Resolution order in decide(): more specific wins — user beats role, node
+ * beats global — and at equal specificity DENY beats GRANT. A node privilege
+ * applies to everything beneath that node, with the NEAREST ancestor winning,
+ * so a property rule overrides a city rule.
+ *
+ * Deliberately NOT soft-deleted. Clearing a privilege returns the subject to
+ * the layer beneath it, and a revoked row that no longer affects anything would
+ * still show up in every "who has exceptions?" review. The history that must
+ * survive lives on the hash-chained ACCESS stream.
  */
-export const accessUserPermissionsTable = pgTable(
-  "access_user_permissions",
+export const privilegesTable = pgTable(
+  "privileges",
   {
     id: text("id").primaryKey(),
-    userId: text("user_id")
-      .notNull()
-      .references(() => usersTable.id, { onDelete: "cascade" }),
-    /** Plain text, mirroring access_role_permissions — a new module is never a migration. */
-    module: text("module").notNull(),
-    action: accessActionEnum("action").notNull(),
-    effect: accessOverrideEffectEnum("effect").notNull(),
+    subjectType: accessSubjectTypeEnum("subject_type").notNull(),
+    /** users.id when USER; access_roles.key when ROLE. */
+    subjectId: text("subject_id").notNull(),
+    /**
+     * WHICH ROLE this exception hangs under, or '*' for "regardless of role".
+     *
+     * Default '*' mirrors access_grants.role_key and is what every pre-existing
+     * row means. A named role makes the exception legible on the screen it is
+     * edited from — the per-property CRUD grid sits UNDER a role in the user's
+     * Roles tab, so "delete complaints at Koramangala" is really "…as their
+     * Unit Lead". It also makes the row die with the membership instead of
+     * outliving it as an exception nobody can source.
+     *
+     * NOT NULL with a sentinel rather than nullable: Postgres treats NULLs as
+     * distinct in a unique index, so a nullable column here would let ten
+     * conflicting rules coexist on the same cell — the same trap the paired
+     * partial uniques below already exist to close.
+     */
+    roleKey: text("role_key").default("*").notNull(),
+    /** Plain text, mirroring role_functionalities — a new functionality is never a migration. */
+    functionality: text("functionality").notNull(),
+    action: text("action").notNull(),
+    /** null = everywhere the subject can already reach. */
+    nodeId: text("node_id").references(() => orgNodesTable.id),
+    effect: privilegeEffectEnum("effect").notNull(),
     /** NOT NULL: an exception nobody can account for later is the failure mode. */
     reason: text("reason").notNull(),
-    /* Same validity window as a grant, so "cover for two weeks" is expressible
-     * without anyone having to remember to take it away. */
+    /**
+     * The APPROVAL this exception was granted on — typically an exported email.
+     *
+     * `reason` is what the granter typed; this is the evidence behind it, which
+     * is what an auditor asks for. Stored as an object key rather than a URL
+     * because a URL goes stale and a signed one leaks: the key is resolved to a
+     * short-lived link at read time, by whoever is allowed to read it.
+     *
+     * Nullable — most privileges are routine cover and need no paperwork.
+     */
+    approvalKey: text("approval_key"),
+    approvalFilename: text("approval_filename"),
+    approvalSize: integer("approval_size"),
+    approvalUploadedBy: text("approval_uploaded_by"),
+    approvalUploadedAt: timestamp("approval_uploaded_at"),
+    /**
+     * The set this privilege came from, when it was not written by hand.
+     *
+     * Rows expanded from a set carry it so the set can be re-expanded, and so
+     * "why does this person have this?" answers "from the Night Audit Cover set"
+     * rather than presenting it as somebody's individual decision.
+     */
+    fromSetId: text("from_set_id"),
     effectiveFrom: timestamp("effective_from").defaultNow().notNull(),
     expiresAt: timestamp("expires_at"),
     grantedBy: text("granted_by"),
@@ -369,12 +494,124 @@ export const accessUserPermissionsTable = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
-    // One live answer per cell per person. No partial predicate needed, because
-    // clearing an override deletes the row rather than revoking it.
-    uniqueIndex("access_user_permissions_uq").on(t.userId, t.module, t.action),
-    index("access_user_permissions_user_idx").on(t.userId),
+    // Two paired PARTIAL uniques rather than one: Postgres treats NULLs as
+    // distinct in a unique index, so a plain unique including node_id would
+    // happily accept ten conflicting "everywhere" rules for the same cell.
+    // Same shape access_grants already uses for the same reason.
+    uniqueIndex("privileges_node_uq")
+      .on(t.subjectType, t.subjectId, t.roleKey, t.functionality, t.action, t.nodeId)
+      .where(sql`node_id is not null`),
+    uniqueIndex("privileges_global_uq")
+      .on(t.subjectType, t.subjectId, t.roleKey, t.functionality, t.action)
+      .where(sql`node_id is null`),
+    index("privileges_subject_idx").on(t.subjectType, t.subjectId),
+    index("privileges_node_idx").on(t.nodeId),
   ],
 );
+
+
+/* ── Privilege sets ───────────────────────────────────────────────────────── */
+
+/**
+ * A NAMED GROUP of primitive privileges — "Night audit cover", "Kitchen
+ * close-out".
+ *
+ * The unit people actually reason about. Nobody asks for
+ * `audits.audit_execution.close_audit`; they ask to let somebody cover the night
+ * audit, which is six permissions that must travel together. Granting them one
+ * at a time is how a person ends up with five of the six and a bug that looks
+ * like a bug.
+ *
+ * ── Live reference, not a copy ────────────────────────────────────────────
+ * Assigning a set stores a POINTER (see `userPrivilegeSetsTable`), and the
+ * resolver expands it at read time. Editing a set therefore changes everyone
+ * holding it, which is the whole point: when a permission is added to "Night
+ * audit cover", the people covering the night audit get it. The cost is that an
+ * edit is a wide change, so the UI says how many people it reaches before it
+ * saves — the same warning a role edit gets, for the same reason.
+ */
+export const privilegeSetsTable = pgTable(
+  "privilege_sets",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    /** Stable, human-typed: `night-audit-cover`. Referenced in tickets. */
+    key: text("key").notNull(),
+    name: text("name").notNull(),
+    /** What this set is FOR — shown wherever it is offered, so it is not optional. */
+    description: text("description").notNull(),
+    /**
+     * GRANT sets add; DENY sets take away. One effect for the whole set: a set
+     * mixing both reads as a rule nobody can predict, and the two halves would
+     * resolve at different points in the ladder anyway.
+     */
+    effect: privilegeEffectEnum("effect").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("privilege_sets_key_uq").on(t.key)],
+);
+
+/** One primitive permission inside a set. */
+export const privilegeSetItemsTable = pgTable(
+  "privilege_set_items",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    setId: text("set_id").notNull().references(() => privilegeSetsTable.id, { onDelete: "cascade" }),
+    /** Text for the same reason everywhere else: a new functionality is never a migration. */
+    functionality: text("functionality").notNull(),
+    action: text("action").notNull(),
+  },
+  (t) => [
+    uniqueIndex("privilege_set_items_uq").on(t.setId, t.functionality, t.action),
+    index("privilege_set_items_set_idx").on(t.setId),
+  ],
+);
+
+/**
+ * A set assigned to a subject — a person or a role — optionally at one place.
+ *
+ * Deliberately the same shape as a privilege: subject, role it hangs under,
+ * node, validity window and a reason. A set is a bundle of privileges, so the
+ * things that qualify one qualify all of them, and the resolver can expand a
+ * row here into privileges without inventing any of those fields.
+ */
+export const privilegeSetAssignmentsTable = pgTable(
+  "privilege_set_assignments",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    setId: text("set_id").notNull().references(() => privilegeSetsTable.id, { onDelete: "cascade" }),
+    subjectType: accessSubjectTypeEnum("subject_type").notNull(),
+    /** users.id when USER; access_roles.key when ROLE. */
+    subjectId: text("subject_id").notNull(),
+    roleKey: text("role_key").default("*").notNull(),
+    /** null = everywhere the subject can already reach. */
+    nodeId: text("node_id").references(() => orgNodesTable.id),
+    reason: text("reason").notNull(),
+    approvalKey: text("approval_key"),
+    approvalFilename: text("approval_filename"),
+    approvalSize: integer("approval_size"),
+    effectiveFrom: timestamp("effective_from").defaultNow().notNull(),
+    expiresAt: timestamp("expires_at"),
+    grantedBy: text("granted_by"),
+    grantedAt: timestamp("granted_at").defaultNow().notNull(),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (t) => [
+    uniqueIndex("privilege_set_assignments_node_uq")
+      .on(t.setId, t.subjectType, t.subjectId, t.roleKey, t.nodeId)
+      .where(sql`node_id is not null and revoked_at is null`),
+    uniqueIndex("privilege_set_assignments_global_uq")
+      .on(t.setId, t.subjectType, t.subjectId, t.roleKey)
+      .where(sql`node_id is null and revoked_at is null`),
+    index("privilege_set_assignments_subject_idx").on(t.subjectType, t.subjectId),
+  ],
+);
+
+export type PrivilegeSet = typeof privilegeSetsTable.$inferSelect;
+export type PrivilegeSetItem = typeof privilegeSetItemsTable.$inferSelect;
+export type PrivilegeSetAssignment = typeof privilegeSetAssignmentsTable.$inferSelect;
 
 /**
  * Single row, id = 'singleton'. Bumped in the same transaction as any matrix or
@@ -393,8 +630,11 @@ export const accessMatrixVersionTable = pgTable("access_matrix_version", {
 
 export type OrgNodeType = (typeof orgNodeTypeEnum.enumValues)[number];
 export type OrgPathKind = (typeof orgPathKindEnum.enumValues)[number];
-export type AccessAction = (typeof accessActionEnum.enumValues)[number];
+/** A named action key, e.g. `add_property`. Validated against the manifest, not the DB. */
+export type AccessAction = string;
 export type AccessDataScope = (typeof accessDataScopeEnum.enumValues)[number];
 export type AccessSubjectType = (typeof accessSubjectTypeEnum.enumValues)[number];
 export type AccessAssignmentKind = (typeof accessAssignmentKindEnum.enumValues)[number];
-export type AccessOverrideEffect = (typeof accessOverrideEffectEnum.enumValues)[number];
+export type AccessOverrideEffect = (typeof privilegeEffectEnum.enumValues)[number];
+export type AccessPrivilege = typeof privilegesTable.$inferSelect;
+export type UserRoleRow = typeof userRolesTable.$inferSelect;

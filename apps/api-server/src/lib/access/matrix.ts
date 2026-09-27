@@ -1,8 +1,13 @@
 /**
- * The role × module × action matrix, as data (PRD §22/§25/§30).
+ * The role × functionality × action matrix, as data (PRD §22/§25/§30).
+ *
+ * A CELL is (role, functionality, action) — never (role, module, action). The
+ * module is derived from the functionality by the code manifest, so it is not
+ * stored here and cannot drift from it. See the vocabulary note at the top of
+ * ../permissions.ts.
  *
  * HYBRID, deliberately. The *vocabulary and ceiling* stay in code — which
- * modules and actions exist, and which cells may ever be granted. Only WHICH
+ * functionalities and actions exist, and which cells may ever be granted. Only WHICH
  * cells a role holds becomes editable. Fully DB-driven would turn privilege
  * escalation into a single authenticated POST; today it takes a code review by
  * someone who reads ROLE_PERMISSIONS' hundred lines of load-bearing comments,
@@ -18,12 +23,13 @@
  * rather than silently widening or narrowing access.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { db, accessRolePermissionsTable, accessRolesTable, accessMatrixVersionTable } from "@workspace/db";
+import { db, roleFunctionalitiesTable, rolesTable, accessMatrixVersionTable } from "@workspace/db";
 import { logger } from "../logger.js";
 import { newId } from "../id.js";
 import {
-  ROLE_PERMISSIONS, ALL_MODULES, actionsFor, IMPLIES,
-  type Action, type Module, type UserRole,
+  ROLE_PERMISSIONS, ALL_FUNCTIONALITIES, actionDef, readActionOf, expandCell,
+  namedActionsFor,
+  type Cell, type NamedAction, type Functionality, type Module, type UserRole,
 } from "../permissions.js";
 
 /** Roles whose cells are COMPUTED, never stored — the real lockout backstop. */
@@ -37,7 +43,7 @@ export const SYSTEM_ROLES: Record<string, "ALL" | "VIEW"> = {
  * MODULE roles — the personas that live inside one module, not across the app.
  *
  * These are what a grant's `roleKey` names when it is not the `*` sentinel:
- * "AUDIT.AUDITOR" confers access inside the audit module only, and deliberately
+ * "AUDIT.AUDITOR" confers access inside the AUDITS module only, and deliberately
  * does not widen the general scope. The audit module has carried them as an
  * enum (`audit_module_role`) since it shipped; this is the same vocabulary as
  * rows, so the grant UI can offer and label them instead of asking an admin to
@@ -51,30 +57,90 @@ export const SYSTEM_ROLES: Record<string, "ALL" | "VIEW"> = {
  * In code for the same reason the matrix ceiling is: adding a module persona is
  * a decision that deserves a code review, not an admin form.
  */
-export const MODULE_ROLES: Array<{ key: string; label: string; module: string; rank: number; description: string }> = [
-  { key: "AUDIT.ADMIN", label: "Audit Admin", module: "AUDIT_ADMIN", rank: 80, description: "Configures audit types, templates and grants" },
-  { key: "AUDIT.SCHEDULER", label: "Audit Scheduler", module: "AUDIT_ADMIN", rank: 50, description: "Plans and schedules audit runs" },
+/*
+ * `module` is a MODULE key, and now actually is one. Two of these rows used to
+ * say "AUDIT_ADMIN" — a functionality — while the other four said "AUDITS",
+ * which under the flat vocabulary were the same kind of string and so nobody
+ * noticed. A module persona is scoped to the module; which functionalities it
+ * confers inside it is the adapter's business.
+ */
+export const MODULE_ROLES: Array<{ key: string; label: string; module: Module; rank: number; description: string }> = [
+  { key: "AUDIT.ADMIN", label: "Audit Admin", module: "AUDITS", rank: 80, description: "Configures audit types, templates and grants" },
+  { key: "AUDIT.SCHEDULER", label: "Audit Scheduler", module: "AUDITS", rank: 50, description: "Plans and schedules audit runs" },
   { key: "AUDIT.AUDITOR", label: "Auditor", module: "AUDITS", rank: 20, description: "Conducts audits at the granted nodes" },
   { key: "AUDIT.REVIEWER", label: "Audit Reviewer", module: "AUDITS", rank: 50, description: "Reviews and signs off completed audits" },
   { key: "AUDIT.AUDITEE", label: "Auditee", module: "AUDITS", rank: 20, description: "The audited party — sees their own results" },
   { key: "AUDIT.VIEWER", label: "Audit Viewer", module: "AUDITS", rank: 20, description: "Read-only access to audit results" },
 ];
 
+/**
+ * Roles that exist but are DISABLED on purpose.
+ *
+ * RESIDENT is the external-user role the Uniliv team asked for. Residents are
+ * records today, not principals — no credentials, no session, no link to users
+ * — so the role is seeded inactive: readRoles joins on isActive, which means it
+ * grants nothing and cannot be assigned by accident before the authentication
+ * work that would make it mean something.
+ */
+export const SEEDED_DISABLED_ROLES: Array<{ key: string; label: string; description: string; rank: number }> = [
+  {
+    key: "RESIDENT",
+    label: "Resident",
+    description: "External user — a person living in the estate. Disabled until resident authentication exists.",
+    rank: 0,
+  },
+  {
+    // The placeholder for an account created before its roles were decided.
+    //
+    // `users.role` is NOT NULL and is still the legacy primary, so an account
+    // with no memberships needs SOMETHING in that column — and every existing
+    // candidate was wrong: the roles with no stored cells are SUPER_ADMIN,
+    // OPS_EXCELLENCE and the audit personas, whose cells are COMPUTED rather
+    // than absent. Defaulting to one of those would have handed a brand-new
+    // empty account the whole estate.
+    //
+    // Disabled on purpose: readRoles() filters on isActive, so this resolves to
+    // an empty role set and grants nothing, and it never appears in a picker.
+    key: "UNASSIGNED",
+    label: "Unassigned",
+    description: "Holds nothing. Given to an account created before its roles were chosen, and replaced by the first real role assigned.",
+    rank: 0,
+  },
+];
+
 /** A module role is scoped to one module; a platform role is not. */
 export const isModuleRole = (key: string) => key.includes(".");
 
-type Cells = Map<string, Set<string>>; // roleKey -> "MODULE:action"
+type Cells = Map<string, Set<string>>; // roleKey -> "FUNCTIONALITY:action"
 interface Snapshot { cells: Cells; version: number; source: "db" | "code" }
 
 let snapshot: Snapshot | null = null;
 
-const cellKey = (m: string, a: string) => `${m}:${a}`;
+/**
+ * A cell is keyed by the NAMED action, whichever spelling it arrived in.
+ *
+ * Both vocabularies reach this file: stored rows say `add_property`, the code
+ * matrix in ROLE_PERMISSIONS says `create`, and a caller may pass either. If the
+ * key were taken verbatim, the two would land in different buckets and a role
+ * would hold a cell nobody can look up — which is exactly what happened when the
+ * stored rows were renamed and the resolver kept asking for verbs: every
+ * non-system role resolved to zero permissions.
+ */
+const cellKey = (f: string, a: string) =>
+  `${f}:${actionDef(f as Functionality, a)?.key ?? a}`;
 
-/** The ceiling: a cell outside the manifest can never be granted. */
-export function isManifestCell(module: string, action: string): boolean {
+/**
+ * The ceiling: a cell outside the manifest can never be granted.
+ *
+ * Asks the named manifest, which also resolves a legacy verb — so a row written
+ * before the rename is still a valid cell, while one the manifest has dropped
+ * (`FOOD_DISPATCH.delete`) is not, and is filtered out of the snapshot rather
+ * than silently granting.
+ */
+export function isManifestCell(functionality: string, action: string): boolean {
   return (
-    (ALL_MODULES as readonly string[]).includes(module) &&
-    (actionsFor(module as Module) as readonly string[]).includes(action)
+    (ALL_FUNCTIONALITIES as readonly string[]).includes(functionality) &&
+    actionDef(functionality as Functionality, action) != null
   );
 }
 
@@ -83,9 +149,12 @@ function codeSnapshot(): Snapshot {
   const cells: Cells = new Map();
   for (const [role, matrix] of Object.entries(ROLE_PERMISSIONS)) {
     const set = new Set<string>();
-    for (const [module, perms] of Object.entries(matrix ?? {})) {
-      for (const [action, allowed] of Object.entries(perms ?? {})) {
-        if (allowed === true) set.add(cellKey(module, action));
+    for (const [functionality, cell] of Object.entries(matrix ?? {})) {
+      // A cell is a LEVEL (FULL/VIEW) or an explicit list; expandCell resolves
+      // either through the manifest, so the snapshot holds named actions and
+      // nothing here has to know what a level means.
+      for (const action of expandCell(functionality as Functionality, cell as Cell)) {
+        set.add(cellKey(functionality, action));
       }
     }
     cells.set(role, set);
@@ -103,12 +172,12 @@ export async function loadMatrix(): Promise<Snapshot> {
   try {
     const rows = await db
       .select({
-        roleKey: accessRolePermissionsTable.roleKey,
-        module: accessRolePermissionsTable.module,
-        action: accessRolePermissionsTable.action,
+        roleKey: roleFunctionalitiesTable.roleKey,
+        functionality: roleFunctionalitiesTable.functionality,
+        action: roleFunctionalitiesTable.action,
       })
-      .from(accessRolePermissionsTable)
-      .where(eq(accessRolePermissionsTable.allowed, true));
+      .from(roleFunctionalitiesTable)
+      .where(eq(roleFunctionalitiesTable.allowed, true));
 
     if (rows.length === 0) {
       // Empty table = not seeded yet. Fall back rather than deny everything.
@@ -121,12 +190,12 @@ export async function loadMatrix(): Promise<Snapshot> {
 
     const cells: Cells = new Map();
     for (const r of rows) {
-      // Enforce the ceiling on READ too. A stale row for a module that has since
-      // been removed, or an action no longer valid for it, must not grant
-      // anything just because it survived in the table.
-      if (!isManifestCell(r.module, r.action)) continue;
+      // Enforce the ceiling on READ too. A stale row for a functionality that
+      // has since been removed, or an action no longer valid for it, must not
+      // grant anything just because it survived in the table.
+      if (!isManifestCell(r.functionality, r.action)) continue;
       const set = cells.get(r.roleKey) ?? new Set<string>();
-      set.add(cellKey(r.module, r.action));
+      set.add(cellKey(r.functionality, r.action));
       cells.set(r.roleKey, set);
     }
     const [v] = await db.select({ version: accessMatrixVersionTable.version }).from(accessMatrixVersionTable).limit(1);
@@ -152,31 +221,55 @@ export function matrixSource(): "db" | "code" {
 }
 
 /**
- * Does `roleKey` hold `module:action`?
+ * Does `roleKey` hold `functionality:action`?
  *
  * Resolution order: system roles are computed; then the exact cell; then any
- * action that IMPLIES the requested one. Implication only ever widens, along
+ * action that implies the requested one. Implication only ever widens, along
  * documented edges (approve ⇒ view, export ⇒ download) — nothing else.
  */
-export function matrixCan(roleKey: string | undefined, module: Module, action: Action): boolean {
+export function matrixCan(roleKey: string | undefined, functionality: Functionality, action: NamedAction): boolean {
   if (!roleKey) return false;
 
   const system = SYSTEM_ROLES[roleKey];
-  if (system === "ALL") return isManifestCell(module, action);
-  if (system === "VIEW") return action === "view" && isManifestCell(module, action);
+  if (system === "ALL") return isManifestCell(functionality, action);
+  // A read-only system role holds the functionality's READ action, whatever it
+  // is named — `view_property`, `view_dispatch_queue` — so it is identified by
+  // POSITION (the first action a functionality declares), never by spelling.
+  if (system === "VIEW") {
+    return action === readActionOf(functionality) && isManifestCell(functionality, action);
+  }
 
   const set = current().cells.get(roleKey);
   if (!set) return false;
-  if (set.has(cellKey(module, action))) return true;
+  if (set.has(cellKey(functionality, action))) return true;
 
-  for (const [holder, implied] of Object.entries(IMPLIES)) {
-    if (implied?.includes(action) && set.has(cellKey(module, holder))) return true;
+  // One implication: holding ANY action on a functionality implies its READ.
+  // You cannot approve or submit a thing you may not look at. Stated the same
+  // way in decide(); it only ever widens toward the read, never to a write.
+  if (action === readActionOf(functionality)) {
+    return namedActionsFor(functionality).some((d) => set.has(cellKey(functionality, d.key)));
   }
   return false;
 }
 
 /**
- * Seed `access_roles` + `access_role_permissions` from the code matrix.
+ * Does ANY of these roles hold `functionality:action`?
+ *
+ * The union fold that makes multi-role work. Union rather than intersection
+ * because roles are additive by nature: someone given both WARDEN and
+ * CITY_HEAD was given both on purpose, and an intersection would leave them
+ * able to do only what both happen to share — which is nobody's intent and
+ * would silently strip access on the day a second role is assigned.
+ *
+ * See roles.ts for the one behaviour this changes: AUDIT_READONLY can no longer
+ * cap a user who also holds an operational role.
+ */
+export function matrixCanAny(roleKeys: string[], functionality: Functionality, action: NamedAction): boolean {
+  return roleKeys.some((r) => matrixCan(r, functionality, action));
+}
+
+/**
+ * Seed `roles` + `role_functionalities` from the code matrix.
  *
  * Idempotent. System roles get a row in `access_roles` (so the editor can list
  * them) but NO permission rows — their cells are computed, which is what makes
@@ -190,7 +283,7 @@ export async function seedMatrix(actorId: string | null = null): Promise<{
 
   for (const roleKey of Object.keys(ROLE_PERMISSIONS)) {
     await db
-      .insert(accessRolesTable)
+      .insert(rolesTable)
       .values({
         key: roleKey,
         label: roleKey.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -203,14 +296,12 @@ export async function seedMatrix(actorId: string | null = null): Promise<{
     if (roleKey in SYSTEM_ROLES) { report.skippedSystem++; continue; }
 
     const matrix = ROLE_PERMISSIONS[roleKey as UserRole] ?? {};
-    for (const [module, perms] of Object.entries(matrix)) {
-      for (const [action, allowed] of Object.entries(perms ?? {})) {
-        if (allowed !== true) continue;
-        if (!isManifestCell(module, action)) continue;
+    for (const [functionality, cell] of Object.entries(matrix)) {
+      for (const action of expandCell(functionality as Functionality, cell as Cell)) {
         await db
-          .insert(accessRolePermissionsTable)
+          .insert(roleFunctionalitiesTable)
           .values({
-            id: newId(), roleKey, module, action: action as Action,
+            id: newId(), roleKey, functionality, action,
             allowed: true, updatedBy: actorId,
           })
           .onConflictDoNothing();
@@ -224,11 +315,19 @@ export async function seedMatrix(actorId: string | null = null): Promise<{
   // roles that no screen could name.
   for (const r of MODULE_ROLES) {
     await db
-      .insert(accessRolesTable)
+      .insert(rolesTable)
       .values({
         key: r.key, label: r.label, description: r.description,
-        scopeModule: r.module, rank: r.rank, isSystem: false,
+        scopeModule: r.module, isSystem: false,
       })
+      .onConflictDoNothing();
+    report.roles++;
+  }
+
+  for (const r of SEEDED_DISABLED_ROLES) {
+    await db
+      .insert(rolesTable)
+      .values({ key: r.key, label: r.label, description: r.description, isSystem: false, isActive: false })
       .onConflictDoNothing();
     report.roles++;
   }
@@ -256,19 +355,21 @@ export async function bumpMatrixVersion(actorId: string | null): Promise<number>
 }
 
 /** Cells currently held by a role, for the editor and the guard checks. */
-export async function cellsForRole(roleKey: string): Promise<Array<{ module: string; action: string }>> {
+export async function cellsForRole(roleKey: string): Promise<Array<{ functionality: string; action: string }>> {
   if (roleKey in SYSTEM_ROLES) {
-    const all: Array<{ module: string; action: string }> = [];
-    for (const m of ALL_MODULES) {
-      for (const a of actionsFor(m)) {
-        if (SYSTEM_ROLES[roleKey] === "VIEW" && a !== "view") continue;
-        all.push({ module: m, action: a });
+    const all: Array<{ functionality: string; action: string }> = [];
+    for (const f of ALL_FUNCTIONALITIES) {
+      for (const d of namedActionsFor(f)) {
+        // A read-only system role holds each functionality's READ action —
+        // the one it declares first. See readActionOf().
+        if (SYSTEM_ROLES[roleKey] === "VIEW" && d.key !== readActionOf(f)) continue;
+        all.push({ functionality: f, action: d.key });
       }
     }
     return all;
   }
   return db
-    .select({ module: accessRolePermissionsTable.module, action: accessRolePermissionsTable.action })
-    .from(accessRolePermissionsTable)
-    .where(and(eq(accessRolePermissionsTable.roleKey, roleKey), eq(accessRolePermissionsTable.allowed, true)));
+    .select({ functionality: roleFunctionalitiesTable.functionality, action: roleFunctionalitiesTable.action })
+    .from(roleFunctionalitiesTable)
+    .where(and(eq(roleFunctionalitiesTable.roleKey, roleKey), eq(roleFunctionalitiesTable.allowed, true)));
 }
