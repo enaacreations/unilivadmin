@@ -17,3 +17,17 @@ They were an early secondary convenience for a manual `psql` runner and were
 module, agencies, composition rules, etc.). Do **not** provision a database from
 them — they will not match `src/schema/*`. They are retained only for historical
 reference. Use `drizzle-kit push --force` instead.
+
+### The one exception: column RENAMES
+
+`push` has no rename detection outside an interactive prompt, so on a rename it
+DROPS the old column and ADDs the new one — discarding the data. A rename
+therefore gets an explicit, dated `*.sql` file here that must be run **before**
+`push` on any environment that predates it. `push` then reports "No changes
+detected", which is the check that the two agree.
+
+These files are live and maintained, unlike the deprecated numbered ones above:
+
+| File | What it renames |
+|---|---|
+| `2026-09-26_access_axis_rename.sql` | The access axis: `role_functionalities` / `privileges` gain `functionality` + `action` in place of `module` + `functionality`, matching the Module → Functionality → Action vocabulary. Also restores the `roles.rank` column lost in an earlier table rename. |
