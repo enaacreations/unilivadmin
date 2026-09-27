@@ -238,7 +238,7 @@ export function WhatItAllows({ role, modules }: { role: RoleDetail; modules: Man
       <div className="flex flex-wrap items-center gap-2.5">
         <span className="uam-badge uam-badge-warn">Editing</span>
         <span className="text-[13.5px]" style={{ color: "var(--ink2)" }}>
-          Tick a permission to turn it on or off. Nothing is saved until you say so.
+          Switch a permission on or off. Nothing is saved until you say so.
         </span>
       </div>
 

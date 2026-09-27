@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { X, Check } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { accessApi, accessKeys, type PrivilegeSet } from "@/lib/access-api";
 import { UamSeg } from "./shell";
@@ -260,27 +261,39 @@ export function PrivilegeSetSheet({ set, onClose }: { set: PrivilegeSet | null; 
                           <label
                             key={a.key}
                             htmlFor={id}
-                            className="flex items-start gap-2.5 py-2"
+                            className="flex items-center gap-2.5 py-2"
                             style={i ? { borderTop: "1px solid var(--line)", cursor: "pointer" } : { cursor: "pointer" }}
                           >
+                            {/* A checkbox here, not a switch. This is choosing
+                                what goes IN the set — a selection out of a
+                                list — whereas a switch states whether a subject
+                                has a permission. The set itself grants nothing
+                                until it is assigned. */}
                             <input
                               id={id}
                               type="checkbox"
                               checked={has(f.key, a.key)}
                               onChange={() => toggle(f.key, a.key)}
-                              style={{ width: 16, height: 16, marginTop: 2, accentColor: "var(--accent)" }}
+                              style={{ width: 16, height: 16, flexShrink: 0, accentColor: "var(--accent)" }}
                             />
-                            <span className="flex min-w-0 flex-col gap-0.5">
-                              <span className="flex flex-wrap items-baseline gap-x-2">
-                                <span className="text-[14px]">{a.label}</span>
-                                <span className="text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
-                                  {a.id}
-                                </span>
+                            <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                              {/* The meaning hangs off the NAME, as it does on
+                                  every other permission list — one row pattern
+                                  across the module. */}
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span
+                                    className="text-[14px]"
+                                    style={{ textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, textDecorationColor: "var(--line)" }}
+                                  >
+                                    {a.label}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-[280px]">{a.description}</TooltipContent>
+                              </Tooltip>
+                              <span className="text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
+                                {a.id}
                               </span>
-                              {/* The one line saying what it allows, beside the
-                                  box — this is the sentence somebody is
-                                  agreeing to. */}
-                              <span className="text-[12.5px]" style={{ color: "var(--ink3)" }}>{a.description}</span>
                             </span>
                           </label>
                         );

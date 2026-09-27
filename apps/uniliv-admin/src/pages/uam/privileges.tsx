@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, FileText, Users2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { accessApi, accessKeys, type CataloguePermission, type PrivilegeSet } from "@/lib/access-api";
 import { UamPage, UamEmpty } from "./shell";
@@ -176,16 +177,27 @@ function PermissionRow({ p, first }: { p: CataloguePermission; first: boolean })
       {/* min-w-0 with a flex BASIS rather than a min-width: a 260px floor
           could not shrink, so at a narrow pane the right-hand column was
           squeezed to nothing and its text ran back over the permission id. */}
-      <span className="flex min-w-0 flex-1 basis-[260px] flex-col gap-0.5">
-        <span className="flex flex-wrap items-baseline gap-x-2">
-          <span className="text-[14px] font-medium">{p.label}</span>
-          {/* break-all: an id is one unbroken token, so it overflows instead of
-              wrapping unless it is allowed to break mid-word. */}
-          <span className="break-all text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
-            {p.id}
-          </span>
+      <span className="flex min-w-0 flex-1 basis-[260px] flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        {/* Read-only catalogue: no switch here, because nothing on this screen
+            is granted to anyone — it lists what the system CAN grant. The
+            meaning still hangs off the name, as it does on the lists that do
+            toggle, so the two read the same way. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className="text-[14px] font-medium"
+              style={{ textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, textDecorationColor: "var(--line)" }}
+            >
+              {p.label}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-[280px]">{p.description}</TooltipContent>
+        </Tooltip>
+        {/* break-all: an id is one unbroken token, so it overflows instead of
+            wrapping unless it is allowed to break mid-word. */}
+        <span className="break-all text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
+          {p.id}
         </span>
-        <span className="text-[12.5px]" style={{ color: "var(--ink3)" }}>{p.description}</span>
       </span>
 
       <span className="flex shrink-0 flex-col items-end gap-0.5 text-[12.5px]">

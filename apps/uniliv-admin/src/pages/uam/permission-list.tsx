@@ -1,5 +1,7 @@
 import * as React from "react";
 import { Lock } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { actionLabel, actionMeaning, actionsOf, permissionId, resourceId } from "./words";
 import "./uam.css";
 
@@ -131,61 +133,72 @@ export function PermissionList({
                   return (
                     <li
                       key={a}
-                      className="flex items-start gap-3 px-4 py-2.5"
+                      className="flex items-center gap-3 px-4 py-2.5"
                       style={{ borderTop: "1px solid var(--line)" }}
                     >
-                      <input
+                      {/* A switch, not a tick.
+                          A permission is a thing that is ON or OFF for this
+                          subject, and a switch says which state it is in from
+                          across the row; an unticked box and a disabled box
+                          look the same at a glance. Read-only rows keep the
+                          switch so the state still reads, and disable it. */}
+                      <Switch
                         id={id}
-                        type="checkbox"
                         checked={cell?.on ?? false}
-                        readOnly={readOnly}
                         disabled={readOnly}
-                        onChange={(e) => onToggle?.(g.key, a, e.target.checked)}
-                        title={cell?.title}
-                        style={{
-                          width: 16, height: 16, marginTop: 2, flexShrink: 0,
+                        onCheckedChange={(next) => onToggle?.(g.key, a, next)}
+                        className="mt-0.5 shrink-0"
+                        style={
                           // An exception is the one thing worth colouring
-                          // differently: it is the tick somebody wrote by hand,
+                          // differently: it is the state somebody set by hand,
                           // not the one the role brought.
-                          accentColor: cell?.exception ? "var(--warn)" : "var(--accent)",
-                          cursor: readOnly ? "default" : "pointer",
-                          opacity: readOnly && !cell?.on ? 0.45 : 1,
-                        }}
+                          cell?.exception && cell.on
+                            ? { backgroundColor: "var(--warn)" }
+                            : undefined
+                        }
+                        aria-label={`${actionLabel(g.key, a)} — ${actionMeaning(g.key, a)}`}
                       />
+
                       {/* A <label> is deliberately NOT wrapped around the whole
                           row: the row carries its own <span>s, and a label that
                           contains them forwards a click on the descriptive text
-                          to the checkbox — which is how reading a permission
+                          to the control — which is how reading a permission
                           came to toggle it. */}
-                      <label htmlFor={id} className="flex min-w-0 flex-1 flex-col gap-0.5" style={{ cursor: readOnly ? "default" : "pointer" }}>
-                        <span className="flex flex-wrap items-baseline gap-x-2">
-                          <span
-                            className="text-[14px]"
-                            style={stale ? { textDecoration: "line-through", color: "var(--ink3)" } : undefined}
-                          >
-                            {actionLabel(g.key, a)}
-                          </span>
-                          <span className="text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
-                            {permissionId(sec.key, g.key, a)}
-                          </span>
-                          {cell?.exception && (
-                            <span className="text-[11.5px] font-medium" style={{ color: "var(--warn)" }}>
-                              exception
+                      <label htmlFor={id} className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5" style={{ cursor: readOnly ? "default" : "pointer" }}>
+                        {/* The meaning lives on the NAME, because the name is
+                            the thing you are unsure about. It is also on the
+                            switch's aria-label, so it is not hover-only for a
+                            screen reader. */}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="text-[14px]"
+                              style={stale
+                                ? { textDecoration: "line-through", color: "var(--ink3)" }
+                                : { textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, textDecorationColor: "var(--line)" }}
+                            >
+                              {actionLabel(g.key, a)}
                             </span>
-                          )}
-                          {stale && (
-                            <span className="text-[11.5px]" style={{ color: "var(--warn)" }}>
-                              no longer defined — granted, but nothing enforces it
-                            </span>
-                          )}
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-[280px]">
+                            {actionMeaning(g.key, a)}
+                            {cell?.title ? <span className="mt-1 block opacity-80">{cell.title}</span> : null}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <span className="text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
+                          {permissionId(sec.key, g.key, a)}
                         </span>
-                        {/* The one line saying what it allows, on the screen
-                            rather than behind a hover: a tooltip is invisible on
-                            a touch screen and unscannable on any screen, and
-                            this is the sentence somebody is agreeing to. */}
-                        <span className="text-[12.5px]" style={{ color: "var(--ink3)" }}>
-                          {actionMeaning(g.key, a)}
-                        </span>
+                        {cell?.exception && (
+                          <span className="text-[11.5px] font-medium" style={{ color: "var(--warn)" }}>
+                            exception
+                          </span>
+                        )}
+                        {stale && (
+                          <span className="text-[11.5px]" style={{ color: "var(--warn)" }}>
+                            no longer defined — granted, but nothing enforces it
+                          </span>
+                        )}
                       </label>
                     </li>
                   );
