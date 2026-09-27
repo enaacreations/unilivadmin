@@ -14,7 +14,7 @@ import { CopyAccessDialog } from "./copy-access";
 import { ProfileEditSheet } from "./profile-editor";
 import { actionList, actionMeaning, permissionId, untilWords } from "./words";
 import { HeldSets } from "./held-sets";
-import { RoleTree, PlacesSheet } from "./role-tree";
+import { RoleTree, PlacesSheet, GeneralPlacements } from "./role-tree";
 
 /**
  * One person — four tabs, because access decomposes into four questions and
@@ -33,7 +33,12 @@ import { RoleTree, PlacesSheet } from "./role-tree";
  * Roles stays the landing tab even though Profile now leads: identity is the
  * context you read the rest against, but access is what this screen is for.
  */
-const TABS = ["Profile", "Roles", "Privileges", "Access", "History"] as const;
+/**
+ * Entities sits between Profile and Roles because it is a fact about the
+ * PERSON — where they work regardless of what they hold — and reading it
+ * before the roles is what makes each role's own placements legible.
+ */
+const TABS = ["Profile", "Entities", "Roles", "Privileges", "Access", "History"] as const;
 
 export default function UserDetailScreen({ id }: { id: string }) {
   const qc = useQueryClient();
@@ -211,6 +216,8 @@ export default function UserDetailScreen({ id }: { id: string }) {
           );
         })}
       </div>
+
+      {tab === "Entities" && <GeneralPlacements userId={id} />}
 
       {tab === "Roles" && (
         <>

@@ -58,46 +58,8 @@ export function RoleTree({
     return <UamEmpty title="No roles" text="They can sign in and do nothing at all until they hold at least one role." />;
   }
 
-  /**
-   * Placements made for the PERSON, not under any role.
-   *
-   * A `*` grant applies whatever the person holds, so the server returns it
-   * under every role — which put a property chip inside a role badged "given a
-   * kitchen" and left a small "all roles" badge to explain the contradiction.
-   * It is one placement, so it is shown once, above the roles it applies to.
-   *
-   * Deduped by node: the same `*` grant arrives once per role held.
-   */
-  const general = [...new Map(
-    roles.flatMap((r) => r.anchors.filter((a) => !a.scopedToRole).map((a) => [a.id, a] as const)),
-  ).values()];
-
   return (
     <div className="flex flex-col gap-3">
-      {general.length > 0 && (
-        <div className="uam-card overflow-hidden">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3" style={{ borderBottom: "1px solid var(--line)" }}>
-            <span className="text-[15px] font-semibold">Works here, whatever their role</span>
-            <span className="uam-badge" title="Given to the person rather than under one of their roles, so it applies to all of them.">
-              all roles
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 px-4 py-2.5">
-            {general.map((a) => (
-              <span key={a.id} className="uam-chip" style={{ cursor: "default" }}>
-                <MapPin className="h-3.5 w-3.5" style={{ color: "var(--ink3)" }} />
-                {a.name}
-                <span style={{ color: "var(--ink3)" }}>{a.nodeType.toLowerCase()}</span>
-              </span>
-            ))}
-          </div>
-          <p className="m-0 px-4 pb-3 text-[12.5px]" style={{ color: "var(--ink3)" }}>
-            Every role below reaches these places too. "Change places" on a role only edits that
-            role's own placements, never these.
-          </p>
-        </div>
-      )}
-
       {roles.map((r) => (
         <RoleBlock key={r.roleKey} userId={userId} role={r} action={action} onChangePlaces={() => setScoping(r)} />
       ))}
@@ -113,6 +75,71 @@ export function RoleTree({
           onClose={() => setScoping(null)}
         />
       )}
+    </div>
+  );
+}
+
+
+/**
+ * The entities a person is placed at REGARDLESS of role.
+ *
+ * A `*` grant is made against the person, not under any one role, so the server
+ * returns it beneath every role they hold. Rendering it there put a property
+ * chip inside a role badged "given a kitchen" and left a small badge to resolve
+ * the contradiction. It is one placement about one person, so it belongs on its
+ * own tab rather than repeated under each role it happens to apply to.
+ *
+ * Deduped by node: the same grant arrives once per role held.
+ */
+export function GeneralPlacements({ userId }: { userId: string }) {
+  const tree = useQuery({
+    queryKey: accessKeys.userTree(userId),
+    queryFn: () => accessApi.userTree(userId),
+  });
+
+  if (tree.isLoading) return <Skeleton className="h-32 w-full rounded-xl" />;
+
+  const roles = tree.data?.roles ?? [];
+  const general = [...new Map(
+    roles.flatMap((r) => r.anchors.filter((a) => !a.scopedToRole).map((a) => [a.id, a] as const)),
+  ).values()];
+
+  if (!general.length) {
+    return (
+      <UamEmpty
+        title="No entities of their own"
+        text="They reach only what their roles reach. That is the ordinary state — an entity here applies to every role they hold, now and in future, which is a wider grant than a role placement."
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="uam-lede m-0 text-[14px]">
+        Places given to this person rather than under one of their roles, so every role they hold
+        reaches them — including any role assigned later.
+      </p>
+
+      <div className="uam-card overflow-hidden">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3" style={{ borderBottom: "1px solid var(--line)" }}>
+          <span className="text-[15px] font-semibold">Works here, whatever their role</span>
+          <span className="uam-badge" title="Given to the person rather than under one of their roles, so it applies to all of them.">
+            all roles
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5">
+          {general.map((a) => (
+            <span key={a.id} className="uam-chip" style={{ cursor: "default" }}>
+              <MapPin className="h-3.5 w-3.5" style={{ color: "var(--ink3)" }} />
+              {a.name}
+              <span style={{ color: "var(--ink3)" }}>{a.nodeType.toLowerCase()}</span>
+            </span>
+          ))}
+        </div>
+        <p className="m-0 px-4 pb-3 text-[12.5px]" style={{ color: "var(--ink3)" }}>
+          "Change places" on a role only edits that role's own placements, never these.
+        </p>
+      </div>
     </div>
   );
 }
