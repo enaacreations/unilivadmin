@@ -287,7 +287,7 @@ const CLUSTERS = [
 type FoodUserRole =
   | "OPS_EXCELLENCE" | "SENIOR_VICE_PRESIDENT" | "ZONAL_HEAD" | "CITY_HEAD"
   | "CLUSTER_MANAGER" | "UNIT_LEAD" | "FNB_SUPERVISOR" | "FNB_MANAGER"
-  | "FNB_ZONAL_HEAD";
+  | "FNB_MANAGER";
 
 interface SeedUser {
   id: string;
@@ -308,7 +308,7 @@ const FOOD_USERS: SeedUser[] = [
   { id: "user_food_unit2",     name: "Karan Verma",        email: "unitlead2@uniliv.com",    role: "UNIT_LEAD",             propertyIndex: 1 },
   { id: "user_food_fnbsup",    name: "Anjali Nair",        email: "fnbsupervisor@uniliv.com",role: "FNB_SUPERVISOR",        propertyIndex: null },
   { id: "user_food_fnbmgr",    name: "Rahul Iyer",         email: "fnbmanager@uniliv.com",   role: "FNB_MANAGER",           propertyIndex: null },
-  { id: "user_food_fnbzonal",  name: "Deepak Joshi",       email: "fnbzonal@uniliv.com",     role: "FNB_ZONAL_HEAD",        propertyIndex: null },
+  { id: "user_food_fnbzonal",  name: "Deepak Joshi",       email: "fnbzonal@uniliv.com",     role: "FNB_MANAGER",        propertyIndex: null },
 ];
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -590,7 +590,7 @@ async function main() {
           propertyId: propIds[(u.propertyIndex ?? 0) % propIds.length]!,
         });
         break;
-      case "FNB_ZONAL_HEAD":
+      case "FNB_MANAGER":
         // F&B zonal oversight maps to a zone.
         addScope({ userId: u.id, scopeLevel: "ZONE", zoneId: firstZone });
         break;

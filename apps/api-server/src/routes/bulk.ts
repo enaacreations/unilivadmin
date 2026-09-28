@@ -82,7 +82,7 @@ const userRowSchema = z
     isActive: z.coerce.boolean().nullish(),
   })
   .refine(
-    (r) => !(["UNIT_LEAD", "WARDEN"].includes(r.role) && !r.propertyId),
+    (r) => !(["UNIT_LEAD", "UNIT_LEAD"].includes(r.role) && !r.propertyId),
     { message: "propertyId is required for UNIT_LEAD/WARDEN", path: ["propertyId"] },
   );
 

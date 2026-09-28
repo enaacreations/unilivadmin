@@ -73,7 +73,7 @@ const ROLES_AT_RISK = [
   "CITY_HEAD",
   "CLUSTER_MANAGER",
   "FNB_SUPERVISOR",
-  "FNB_ZONAL_HEAD",
+  "FNB_MANAGER",
   "KITCHEN_MANAGER",
 ] as const;
 

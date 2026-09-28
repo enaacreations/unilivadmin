@@ -86,17 +86,17 @@ describe("DB matrix ≡ code matrix", () => {
     resetDb();
     seedDb([
       [roleFunctionalitiesTable, [
-        { id: "x1", roleKey: "WARDEN", module: "NOT_A_MODULE", functionality: "view", allowed: true },
-        { id: "x2", roleKey: "WARDEN", module: "DASHBOARD", functionality: "configure", allowed: true },
+        { id: "x1", roleKey: "UNIT_LEAD", module: "NOT_A_MODULE", functionality: "view", allowed: true },
+        { id: "x2", roleKey: "UNIT_LEAD", module: "DASHBOARD", functionality: "configure", allowed: true },
       ]],
       [accessMatrixVersionTable, [{ id: "singleton", version: 1 }]],
     ]);
     await loadMatrix();
-    expect(matrixCan("WARDEN", "NOT_A_MODULE" as never, "view_dashboard")).toBe(false);
+    expect(matrixCan("UNIT_LEAD", "NOT_A_MODULE" as never, "view_dashboard")).toBe(false);
     // A dashboard declares no `configure_*`, so a row naming one is inert —
     // the ceiling is enforced on READ, not only at write time.
     expect(namedActionsFor("DASHBOARD").map((d) => d.key)).not.toContain("configure_dashboard");
-    expect(matrixCan("WARDEN", "DASHBOARD", "configure_dashboard")).toBe(false);
+    expect(matrixCan("UNIT_LEAD", "DASHBOARD", "configure_dashboard")).toBe(false);
   });
 
   it("falls back to the code matrix when the table is empty, never to deny-all", async () => {
@@ -104,7 +104,7 @@ describe("DB matrix ≡ code matrix", () => {
     resetDb();
     seedDb([[roleFunctionalitiesTable, []], [accessMatrixVersionTable, []]]);
     await loadMatrix();
-    expect(matrixCan("WARDEN", "RESIDENTS", "view_resident"))
-      .toBe(can("WARDEN" as never, "RESIDENTS", "view_resident"));
+    expect(matrixCan("UNIT_LEAD", "RESIDENTS", "view_resident"))
+      .toBe(can("UNIT_LEAD" as never, "RESIDENTS", "view_resident"));
   });
 });

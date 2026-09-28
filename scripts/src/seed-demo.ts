@@ -250,7 +250,7 @@ async function main() {
   const userRows: UserRow[] = [];
   const EMP_USER_ROLES = [
     "OPERATIONS_MANAGER", "HR_MANAGER", "FINANCE", "SALES_EXECUTIVE",
-    "PROCUREMENT_MANAGER", "KITCHEN_MANAGER", "WARDEN", "AUDIT_READONLY",
+    "PROCUREMENT_MANAGER", "KITCHEN_MANAGER", "UNIT_LEAD", "AUDIT_READONLY",
   ] as const;
   for (let i = 0; i < 30; i++) {
     userRows.push({

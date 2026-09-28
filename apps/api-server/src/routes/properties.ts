@@ -73,7 +73,7 @@ const PROPERTY_FIELDS = [
 ] as const;
 
 /** Roles that can be tagged as a property's unit-lead in the property form. */
-const UNIT_LEAD_ROLES = ["UNIT_LEAD", "WARDEN"] as const;
+const UNIT_LEAD_ROLES = ["UNIT_LEAD", "UNIT_LEAD"] as const;
 
 /** 3-letter uppercase abbrev of a city (letters only, padded). */
 function cityAbbrev(city: string): string {

@@ -103,7 +103,7 @@ async function main() {
     { id: salesUserId,   name: "Dev Malhotra",   email: "sales@uniliv.com",   role: "SALES_EXECUTIVE" as const,       passwordHash: adminHash, isActive: true, updatedAt: new Date() },
     { id: procUserId,    name: "Ramesh Hegde",   email: "proc@uniliv.com",    role: "PROCUREMENT_MANAGER" as const,   passwordHash: adminHash, isActive: true, updatedAt: new Date() },
     { id: kitchenUserId, name: "Anita Desai",    email: "kitchen@uniliv.com", role: "KITCHEN_MANAGER" as const,       passwordHash: adminHash, isActive: true, updatedAt: new Date() },
-    { id: wardenUserId,  name: "Suresh Kumar",   email: "warden@uniliv.com",  role: "WARDEN" as const,                passwordHash: adminHash, isActive: true, updatedAt: new Date() },
+    { id: wardenUserId,  name: "Suresh Kumar",   email: "warden@uniliv.com",  role: "UNIT_LEAD" as const,                passwordHash: adminHash, isActive: true, updatedAt: new Date() },
     { id: id(),          name: "Vikram Bose",    email: "vikram@uniliv.com",  role: "OPERATIONS_MANAGER" as const,    passwordHash: adminHash, isActive: true, updatedAt: new Date() },
     { id: id(),          name: "Kavya Nambiar",  email: "kavya@uniliv.com",   role: "AUDIT_READONLY" as const,        passwordHash: adminHash, isActive: true, updatedAt: new Date() },
   ]);
@@ -315,7 +315,7 @@ async function main() {
       id: id(), title: announcementTitles[i]!,
       content: `Dear residents, ${announcementTitles[i]}. Please note and plan accordingly. For queries, contact the warden.`,
       propertyId: i % 3 === 0 ? null : propIds[i % 5]!,
-      targetRoles: ["WARDEN","OPERATIONS_MANAGER"],
+      targetRoles: ["UNIT_LEAD","OPERATIONS_MANAGER"],
       createdBy: adminId,
     }).onConflictDoNothing();
   }
@@ -763,7 +763,7 @@ async function main() {
     await db.insert(coursesTable).values({
       id: cId, title: c.title, description: `${c.title} for all UNILIV staff.`,
       category: c.cat, contentType: c.type, isMandatory: c.mandatory,
-      isActive: true, targetRoles: ["WARDEN","OPERATIONS_MANAGER"], durationMinutes: 30 + crsIds.length * 5,
+      isActive: true, targetRoles: ["UNIT_LEAD","OPERATIONS_MANAGER"], durationMinutes: 30 + crsIds.length * 5,
       updatedAt: new Date(),
     }).onConflictDoNothing();
   }

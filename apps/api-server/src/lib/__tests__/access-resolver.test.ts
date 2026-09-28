@@ -97,7 +97,7 @@ function grant(over: Record<string, unknown> = {}) {
 }
 
 const user = (over: Record<string, unknown> = {}) =>
-  ({ id: "u1", email: "w@x.com", role: "WARDEN", propertyId: null, ...over }) as never;
+  ({ id: "u1", email: "w@x.com", role: "UNIT_LEAD", propertyId: null, ...over }) as never;
 
 function seed(grants: Array<Record<string, unknown>>, opts: { inactive?: string[] } = {}) {
   const { nodes, closure } = buildFixture(opts);
@@ -218,7 +218,7 @@ describe("resolveAccess", () => {
   });
 
   it("resolves a grant reaching the user through their ROLE", async () => {
-    seed([grant({ subjectType: "ROLE", subjectId: "WARDEN", nodeId: "cluster-c1" })]);
+    seed([grant({ subjectType: "ROLE", subjectId: "UNIT_LEAD", nodeId: "cluster-c1" })]);
     const a = await resolveAccess(user());
     expect(sorted(a.propertyIds)).toEqual(["prop-a", "prop-b"]);
   });

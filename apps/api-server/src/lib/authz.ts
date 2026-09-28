@@ -24,10 +24,13 @@ const ORG_WIDE_ROLES = new Set<string>([
   "FINANCE",
   "HR_MANAGER",
   "PROCUREMENT_MANAGER",
-  "KITCHEN_MANAGER",
-  "PROJECTS_MANAGER",
-  "PROPERTY_ACQUISITION",
-  "SALES_EXECUTIVE",
+  // The functional admins in the role list are "All properties" by scope.
+  "RM_MANAGER",
+  "HOUSEKEEPING_MANAGER",
+  "CUSTOMER_EXPERIENCE",
+  "CARE_DESK_AGENT",
+  "SALES_ADMIN",
+  "FINANCE_EXECUTIVE",
   // Food org/regional roles manage many properties; the food module does its own
   // hierarchy-based scoping, so treat them as org-wide for the generic helper.
   "OPS_EXCELLENCE",
@@ -37,7 +40,7 @@ const ORG_WIDE_ROLES = new Set<string>([
   "ZONAL_HEAD",
   "FNB_SUPERVISOR",
   "FNB_MANAGER",
-  "FNB_ZONAL_HEAD",
+  "FNB_MANAGER",
   // Customer Experience conducts ad-hoc CX audits across the estate, and its
   // audit grant is org-wide. It was in NEITHER this set nor ROLE_RANK, so it
   // was unrestricted only by accident (a null propertyId makes
@@ -104,31 +107,35 @@ export const ROLE_RANK: Record<string, number> = {
   SUPER_ADMIN: 100,
   // B3-24: OPS_EXCELLENCE has full super-admin parity, so it ranks alongside it.
   OPS_EXCELLENCE: 100,
-  // ── Tier 3: org-wide leadership / cross-property heads ───────────────────
+  // ── Tier 3: org-wide leadership / functional admins ─────────────────────
   SENIOR_VICE_PRESIDENT: 80,
   AUDIT_READONLY: 80,
+  OPERATIONS_MANAGER: 80,
   FINANCE: 80,
   HR_MANAGER: 80,
-  OPERATIONS_MANAGER: 80,
   PROCUREMENT_MANAGER: 80,
-  PROJECTS_MANAGER: 80,
-  PROPERTY_ACQUISITION: 80,
-  FNB_ZONAL_HEAD: 80,
   ZONAL_HEAD: 80,
+  // The functional admins own their domain across every property, which is a
+  // tier-3 reach even though each one is narrow.
+  RM_MANAGER: 80,
+  HOUSEKEEPING_MANAGER: 80,
+  CUSTOMER_EXPERIENCE: 80,
+  SALES_ADMIN: 80,
   // ── Tier 2: mid-level / regional managers ────────────────────────────────
   CITY_HEAD: 50,
   CLUSTER_MANAGER: 50,
+  SALES_MANAGER: 50,
   FNB_MANAGER: 50,
   FNB_SUPERVISOR: 50,
-  // Specialist estate-wide auditor: broader reach than a property role, far
-  // narrower capability than the tier-3 leadership roles.
-  CUSTOMER_EXPERIENCE: 50,
+  FINANCE_EXECUTIVE: 50,
+  // Org-wide by scope, but junior: raises and routes, does not close.
+  CARE_DESK_AGENT: 50,
   // ── Tier 1: property / line roles ────────────────────────────────────────
-  WARDEN: 20,
   UNIT_LEAD: 20,
+  RM_SUPERVISOR: 20,
+  HOUSEKEEPING_SUPERVISOR: 20,
   SALES_EXECUTIVE: 20,
   KITCHEN_MANAGER: 20,
-  VENDOR_RESTRICTED: 20,
 };
 
 /**

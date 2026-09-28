@@ -1,4 +1,29 @@
-# Role taxonomy — proposed mapping, for review before anything is applied
+# Role taxonomy — APPLIED
+
+Applied on 2026-09-29 in `lib/db/migrations/2026-09-29_role_taxonomy.sql`, with
+the code matrix in `permissions.ts` (both copies) as the source of the cells.
+The three decisions below were answered: F&B Supervisor kept separate, the three
+thin roles widened, anchor levels set from the Scope column.
+
+Result: **24 business roles**, plus `OPS_EXCELLENCE` (break-glass, unlisted) and
+`UNASSIGNED` (the default before a role is assigned). 497 permission cells, up
+from 316 — the rise is the nine new roles plus the three widenings.
+
+Nobody lost access. Two roles retired into survivors and their holders moved:
+`WARDEN` → `UNIT_LEAD` (1), `FNB_ZONAL_HEAD` → `F&B Admin` (1).
+
+## One consequence worth knowing
+
+`UNIT_LEAD` was a FOOD role (`FOOD_*`, `AUDIT_*`) and `WARDEN` was the
+property-operations role. They were different jobs that happened to share a
+scope. With one property-level role in the new list it has to carry both, so
+Unit Lead is now the union — which means **former Wardens gain the food set and
+existing Unit Leads gain the operations set**. That is a two-way widening, not a
+rename. Split it into two roles if the two jobs are meant to stay apart.
+
+---
+
+## The original proposal, for reference
 
 Your list is 23 roles. The system has 32. This is **not a trim**: nine of your
 roles do not exist, seven existing roles with live holders are absent from your

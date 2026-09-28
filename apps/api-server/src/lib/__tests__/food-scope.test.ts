@@ -158,7 +158,7 @@ describe("resolveAccessiblePropertyIds — null means ALL, [] means NOTHING", ()
  * role outside ALWAYS_GLOBAL, whatever its title.
  */
 describe("no grants means no properties — revoking can never escalate", () => {
-  it.each(["ZONAL_HEAD", "CITY_HEAD", "CLUSTER_MANAGER", "FNB_ZONAL_HEAD", "FNB_SUPERVISOR"])(
+  it.each(["ZONAL_HEAD", "CITY_HEAD", "CLUSTER_MANAGER", "FNB_MANAGER", "FNB_SUPERVISOR"])(
     "%s with zero scope rows returns [] and NOT null",
     async (role) => {
       seed([]);
@@ -315,7 +315,7 @@ describe("each scope level resolves to its exact property set", () => {
       grant({ scopeLevel: "KITCHEN", kitchenId: "K-DEL" }),
       grant({ scopeLevel: "PROPERTY", propertyId: "p-blr-2" }),
     ]);
-    expect(sorted(await resolveAccessiblePropertyIds(user("FNB_ZONAL_HEAD")))).toEqual([
+    expect(sorted(await resolveAccessiblePropertyIds(user("FNB_MANAGER")))).toEqual([
       "p-blr-2",
       "p-del-1",
     ]);

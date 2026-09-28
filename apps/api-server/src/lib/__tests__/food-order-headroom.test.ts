@@ -103,7 +103,7 @@ describe("PUT /food/settings/order-headroom", () => {
   });
 
   it("refuses every role without super-admin parity", async () => {
-    for (const role of ["UNIT_LEAD", "FNB_MANAGER", "WARDEN", "AUDIT_READONLY"]) {
+    for (const role of ["UNIT_LEAD", "FNB_MANAGER", "UNIT_LEAD", "AUDIT_READONLY"]) {
       const res = await put(role, { pct: 500 });
       expect(res.status, `${role} must not move the org-wide ordering ceiling`).toBe(403);
     }

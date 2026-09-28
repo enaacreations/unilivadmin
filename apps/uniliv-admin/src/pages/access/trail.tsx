@@ -125,7 +125,7 @@ function ListValue({ items, render }: { items: unknown[]; render: (v: unknown, i
  * One before/after value, rendered for a human.
  *
  * This table is the answer to "what actually changed?", so raw JSON is a
- * non-answer — `[{"roleKey":"WARDEN","module":"DASHBOARD",…}]` makes the reader
+ * non-answer — `[{"roleKey":"UNIT_LEAD","module":"DASHBOARD",…}]` makes the reader
  * parse a payload to learn something the row could simply have said. So:
  *
  *  - an id becomes the name the server resolved for it (raw id on hover — it is

@@ -243,7 +243,7 @@ describe("RBAC matrix — food separation of duties (C3)", () => {
   });
 
   it("keeps the kitchen roles on the shipping side", () => {
-    for (const role of ["FNB_SUPERVISOR", "FNB_MANAGER", "FNB_ZONAL_HEAD"] as UserRole[]) {
+    for (const role of ["FNB_SUPERVISOR", "FNB_MANAGER"] as UserRole[]) {
       expect(granted(BACKEND_MOD, role, "FOOD_DISPATCH", "mark_dispatched")).toBe(true);
       expect(granted(BACKEND_MOD, role, "FOOD_CONFIRM_DELIVERY", "confirm_receipt")).toBe(false);
     }
@@ -263,7 +263,14 @@ describe("RBAC matrix — the former menu-planning personas", () => {
   // These two roles owned that page, so they are the ones whose cells the
   // removal touched — both assertions below are about what must NOT come back
   // with a future kitchen feature.
+  //
+  // KITCHEN_MANAGER has since become "F&B Store" — a central kitchen and store
+  // that receives goods against its own indents — so the reason this test
+  // demanded ("must not be reinstated without one") now exists for it, and it
+  // holds INDENTS and GRN deliberately. It stays in the PROPERTIES assertion
+  // below, which is about a different and still-live leak.
   const OWNERS: UserRole[] = ["KITCHEN_MANAGER", "FNB_MANAGER"];
+  const INDENT_OWNERS: UserRole[] = ["FNB_MANAGER"];
 
   it("does NOT give the former menu-planning owners the PROPERTIES module", () => {
     // PROPERTIES:view also opens /properties/assignable-unit-leads, which has no
@@ -279,7 +286,7 @@ describe("RBAC matrix — the former menu-planning personas", () => {
     // They held INDENTS:create solely for POST /menu-plans/:id/generate-indent,
     // which minted a procurement document. That route is gone, so the grant has
     // no remaining purpose and must not be reinstated without one.
-    for (const role of OWNERS) {
+    for (const role of INDENT_OWNERS) {
       expect(granted(BACKEND_MOD, role, "INDENTS", "add_indent")).toBe(false);
       expect(granted(BACKEND_MOD, role, "INDENTS", "view_indent")).toBe(false);
       expect(granted(BACKEND_MOD, role, "INDENTS", "edit_indent")).toBe(false);

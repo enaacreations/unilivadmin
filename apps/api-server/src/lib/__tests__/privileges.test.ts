@@ -50,9 +50,9 @@ const map = (...entries: Array<[string, ResolvedPrivilege]>): PrivilegeMap => {
 
 const access = (over: Partial<EffectiveAccess> = {}): EffectiveAccess => ({
   userId: "u1",
-  role: "WARDEN",
-  roleKey: "WARDEN",
-  roleKeys: ["WARDEN"],
+  role: "UNIT_LEAD",
+  roleKey: "UNIT_LEAD",
+  roleKeys: ["UNIT_LEAD"],
   isGlobalAdmin: false,
   nodeIds: ["prop-a", "prop-b"],
   propertyIds: ["prop-a", "prop-b"],
@@ -67,7 +67,7 @@ const access = (over: Partial<EffectiveAccess> = {}): EffectiveAccess => ({
 describe("the privilege ladder", () => {
   it("lets a user privilege beat a role privilege on the same cell", () => {
     const p = map(
-      priv({ functionality: "COMPLAINT_TICKETS", action: "assign_complaint", effect: "DENY", fromUser: false, subjectId: "WARDEN" }),
+      priv({ functionality: "COMPLAINT_TICKETS", action: "assign_complaint", effect: "DENY", fromUser: false, subjectId: "UNIT_LEAD" }),
       priv({ functionality: "COMPLAINT_TICKETS", action: "assign_complaint", effect: "GRANT", fromUser: true }),
     );
     expect(privilegeOn(p, "COMPLAINT_TICKETS", "assign_complaint", null)?.effect).toBe("GRANT");
@@ -148,7 +148,7 @@ describe("privileges in decide()", () => {
       access({
         privileges: map(priv({
           functionality: "LEDGER", action: "edit_ledger", effect: "GRANT",
-          fromUser: false, subjectId: "WARDEN", nodeId: "prop-a",
+          fromUser: false, subjectId: "UNIT_LEAD", nodeId: "prop-a",
         })),
       }),
       { functionality: "LEDGER", action: "edit_ledger", nodeId: "prop-a" },
@@ -162,7 +162,7 @@ describe("privileges in decide()", () => {
       access({
         privileges: map(priv({
           functionality: "RESIDENTS", action: "view_resident", effect: "DENY",
-          fromUser: false, subjectId: "WARDEN",
+          fromUser: false, subjectId: "UNIT_LEAD",
         })),
       }),
       { functionality: "RESIDENTS", action: "view_resident" },
@@ -219,18 +219,18 @@ describe("multi-role capability is a union", () => {
     });
     expect(single.allow).toBe(false);
 
-    const both = decide(access({ roleKeys: ["KITCHEN_MANAGER", "WARDEN"], roleKey: "WARDEN" }), {
+    const both = decide(access({ roleKeys: ["KITCHEN_MANAGER", "UNIT_LEAD"], roleKey: "UNIT_LEAD" }), {
       functionality: "RESIDENTS", action: "edit_resident",
     });
     expect(both.allow).toBe(true);
   });
 
   it("names every held role when it refuses", () => {
-    const d = decide(access({ roleKeys: ["WARDEN", "KITCHEN_MANAGER"] }), {
+    const d = decide(access({ roleKeys: ["UNIT_LEAD", "KITCHEN_MANAGER"] }), {
       functionality: "PROPERTIES", action: "delete_property",
     });
     expect(d.allow).toBe(false);
-    expect(d.detail).toContain("WARDEN");
+    expect(d.detail).toContain("UNIT_LEAD");
     expect(d.detail).toContain("KITCHEN_MANAGER");
   });
 });

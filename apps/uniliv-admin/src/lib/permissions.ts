@@ -1,13 +1,23 @@
 export type UserRole =
-  | "SUPER_ADMIN" | "HR_MANAGER" | "OPERATIONS_MANAGER" | "PROCUREMENT_MANAGER"
-  | "KITCHEN_MANAGER" | "PROJECTS_MANAGER" | "PROPERTY_ACQUISITION" | "FINANCE"
-  | "SALES_EXECUTIVE" | "WARDEN" | "VENDOR_RESTRICTED" | "AUDIT_READONLY"
-  // Food Ordering & Kitchen Operations roles (PRD §3)
-  | "UNIT_LEAD" | "CLUSTER_MANAGER" | "CITY_HEAD" | "ZONAL_HEAD"
-  | "OPS_EXCELLENCE" | "SENIOR_VICE_PRESIDENT"
-  | "FNB_SUPERVISOR" | "FNB_MANAGER" | "FNB_ZONAL_HEAD"
-  // Audit & Inspection (FRD §2.2 7-role model): CX team conducts ad-hoc CX audits
-  | "CUSTOMER_EXPERIENCE";
+  // The 24 roles the business names, plus the break-glass role below.
+  | "SUPER_ADMIN" | "OPERATIONS_MANAGER" | "SENIOR_VICE_PRESIDENT"
+  | "ZONAL_HEAD" | "CITY_HEAD" | "CLUSTER_MANAGER" | "UNIT_LEAD"
+  | "RM_MANAGER" | "RM_SUPERVISOR"
+  | "HOUSEKEEPING_MANAGER" | "HOUSEKEEPING_SUPERVISOR"
+  | "CUSTOMER_EXPERIENCE" | "CARE_DESK_AGENT"
+  | "FNB_MANAGER" | "FNB_SUPERVISOR" | "KITCHEN_MANAGER"
+  | "FINANCE" | "FINANCE_EXECUTIVE" | "PROCUREMENT_MANAGER"
+  | "SALES_ADMIN" | "SALES_MANAGER" | "SALES_EXECUTIVE"
+  | "HR_MANAGER" | "AUDIT_READONLY"
+  /**
+   * Break-glass, and deliberately NOT in the business list.
+   *
+   * Holds every permission by rule and cannot be edited, which is what makes it
+   * the lockout backstop: `assertAccessControlReachable` counts it when deciding
+   * whether a change would leave nobody able to administer access. It is never
+   * offered in a role picker.
+   */
+  | "OPS_EXCELLENCE";
 
 /* ════════════════════════════════════════════════════════════════════════════
  * THE ACCESS VOCABULARY — three levels, in one place.
@@ -840,27 +850,22 @@ const VE = FULL;
 type RoleMatrix = Partial<Record<Functionality, Cell>>;
 
 export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
-  // Break-glass parity role: deliberately holds BOTH FOOD_DISPATCH:edit and
-  // FOOD_CONFIRM_DELIVERY:edit. Every operational role keeps those two apart
-  // (see the separation-of-duties note on the kitchen roles below).
   SUPER_ADMIN: Object.fromEntries(ALL_FUNCTIONALITIES.map(m => [m, FULL])) as RoleMatrix,
   // COMPLAINT_ROUTING mirrors this role's SETTINGS level, because the routing
   // and SLA endpoints used to be gated on SETTINGS and moving them must not
-  // change who can reach them. Dropping it is a product call, not a refactor.
-  HR_MANAGER: { DASHBOARD: VIEW, EMPLOYEES: FULL, RECRUITMENT: FULL, LND: FULL, USERS: FULL, SETTINGS: VIEW, COMPLAINT_ROUTING: VIEW },
-  OPERATIONS_MANAGER: { DASHBOARD: VIEW, PROPERTIES: FULL, RESIDENTS: FULL, COMPLAINT_TICKETS: FULL, LAUNDRY_BATCHES: FULL, COMMUNICATIONS: FULL, FACILITY: FULL, ELECTRICITY: FULL, RESIDENT_ATTENDANCE: FULL, IOT: FULL, WALLET: VIEW },
-  PROCUREMENT_MANAGER: { DASHBOARD: VIEW, VENDORS: FULL, INDENTS: FULL, PURCHASE_ORDERS: FULL, GRN: FULL, INVENTORY: FULL },
-  // Recipes / Menu Planning were removed product-wide, so this role is left
-  // with the inventory read it always had alongside them. The INDENTS
-  // create-only grant went with them: its only purpose was
-  // POST /menu-plans/:id/generate-indent, and that route no longer exists.
-  KITCHEN_MANAGER: { DASHBOARD: VIEW, INVENTORY: VIEW },
-  PROJECTS_MANAGER: { DASHBOARD: VIEW, PROPERTY_LEADS: FULL, LEDGER: VIEW, PAYMENTS: VIEW, INDENTS: VIEW, PURCHASE_ORDERS: VIEW },
-  PROPERTY_ACQUISITION: { DASHBOARD: VIEW, PROPERTY_LEADS: FULL },
-  FINANCE: { DASHBOARD: VIEW, EXECUTIVE_DASHBOARD: VIEW, RESIDENTS: VIEW, LEDGER: FULL, PAYMENTS: FULL, WALLET: FULL, BILLING_CYCLES: FULL, REMINDERS: FULL, BANKING: FULL, EXPENSES: FULL, INDENTS: VIEW, PURCHASE_ORDERS: VIEW },
-  SALES_EXECUTIVE: { DASHBOARD: VIEW, SALES_LEADS: FULL, SALES_DASHBOARD: VIEW, PROPERTY_LEADS: VIEW },
-  WARDEN: { DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: FULL, COMPLAINT_TICKETS: FULL, LAUNDRY_BATCHES: FULL, COMMUNICATIONS: ["view_communication", "add_communication"], RESIDENT_ATTENDANCE: FULL, FACILITY: VIEW, ELECTRICITY: VIEW, IOT: VIEW, WALLET: VIEW },
-  VENDOR_RESTRICTED: { DASHBOARD: VIEW },
+  // change who can reach them. Dropping it is a product call, not a refactor.,
+  OPS_EXCELLENCE: Object.fromEntries(ALL_FUNCTIONALITIES.map(m => [m, FULL])) as RoleMatrix,
+  // SVP holds strictly LESS food access than ZONAL_HEAD below it. That is
+  // intent, not drift: FOOD_MODULE_TEST_CASES.md §0.3 spells this seat out as
+  // "dispatch VIEW, kitchen-summary VIEW, place/confirm/waste VIEW, reports
+  // VIEW; **no FOOD_ALL_ORDERS**" — an executive summary viewer, never an
+  // order-level operator (FOOD_ALL_ORDERS is the row-level register, which
+  // ZONAL_HEAD/CITY_HEAD hold V·E because they work individual orders).
+  // The other apparent gap, FOOD_RECEIVE_UPDATE, confers nothing either way:
+  // it and FOOD_DELIVERY_TRACKING are PRD placeholders that gate zero routes
+  // and zero screens (no references outside this file on either side), so
+  // widening them would buy no capability. Do not close either gap by copying
+  // ZONAL_HEAD's row.,
   AUDIT_READONLY: Object.fromEntries(ALL_FUNCTIONALITIES.map(m => [m, VIEW])) as RoleMatrix,
 
   // ── Food Ordering & Kitchen Operations roles (PRD §5 authoritative matrix) ──
@@ -888,7 +893,54 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
   // row, so any holder can widen its own access; it stays a platform-admin
   // functionality. Grant a geo scope instead of this cell.
   //
-  // Ops users
+  // Ops users,
+  // "Admin (Ops Excellence)" in the role list. Deliberately NOT the break-glass
+  // OPS_EXCELLENCE above: that one holds every permission by rule and is the
+  // lockout backstop, so merging this into it would have promoted two ordinary
+  // operations administrators to full system control.
+  OPERATIONS_MANAGER: { DASHBOARD: VIEW, PROPERTIES: FULL, RESIDENTS: FULL, COMPLAINT_TICKETS: FULL, LAUNDRY_BATCHES: FULL, COMMUNICATIONS: FULL, FACILITY: FULL, ELECTRICITY: FULL, RESIDENT_ATTENDANCE: FULL, IOT: FULL, WALLET: VIEW },
+  // "Leadership – View All". Widened from a food+audit viewer to READ on
+  // everything: the scope is all properties, and a leadership view that cannot
+  // see Operations or Finance is not one. Read-only by construction — VIEW_ALL
+  // expands to each functionality's own read action and nothing else.
+  SENIOR_VICE_PRESIDENT: Object.fromEntries(ALL_FUNCTIONALITIES.map(f => [f, VIEW])) as RoleMatrix,
+  ZONAL_HEAD: {
+    FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
+    FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
+    FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
+    // Audit & Inspection: oversight viewer — UL + CM across the zone, no CX (C-2).
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
+  },
+  // B3-24: OPS_EXCELLENCE has FULL super-admin parity across every functionality (incl.
+  // USERS / SETTINGS / AUDIT_LOG / FINANCE), per explicit product decision.
+  // Like SUPER_ADMIN this is the one other role allowed to hold dispatch-edit
+  // and confirm-delivery-edit together; it is break-glass, not an operator seat.,
+  CITY_HEAD: {
+    FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
+    FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
+    FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
+    // Audit & Inspection: oversight viewer — UL + CM for their city, no CX (C-2).
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
+  },
+  CLUSTER_MANAGER: {
+    FOOD_RECEIVE_UPDATE: VE, FOOD_DELIVERY_TRACKING: VE, FOOD_DASHBOARD: VIEW,
+    FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VE, FOOD_DISPATCH: VIEW,
+    FOOD_CONFIRM_DELIVERY: VE, FOOD_WASTE_TRACKING: VE, FOOD_REPORTS: VIEW,
+    // Audit & Inspection: conducts CM + UL audits for the cluster; views CX
+    // read-only (C-1). Fine scoping via audit_role_grants.
+    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
+    // Conducts audits but cannot start or discard them — those are the
+    // scheduler's, and a conductor who can discard can erase a bad result.
+    AUDIT_EXECUTION: ["view_audit", "record_answers"],
+  },
+  // Absorbs the retired WARDEN, whose holder moves here.
+  // The ONE property-level role in the taxonomy, so it carries BOTH halves:
+  // the food and audit set it already had, and the property-operations set from
+  // the retired WARDEN. They were different jobs that happened to share a
+  // scope; with a single property role they have to be one.
+  //
+  // C3 is unaffected: WARDEN held no FOOD_* cells, so the union does not put
+  // dispatch and confirm-receipt in the same role.
   UNIT_LEAD: {
     // Food-focused field role (product decision 08-Jul-2026): the launcher/nav
     // is scoped to Food Ordering + Audits only. The former resident/finance
@@ -903,64 +955,37 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     // Conducts audits but cannot start or discard them — those are the
     // scheduler's, and a conductor who can discard can erase a bad result.
     AUDIT_EXECUTION: ["view_audit", "record_answers"],
+
+    // ── from WARDEN ──
+    DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: FULL, COMPLAINT_TICKETS: FULL, LAUNDRY_BATCHES: FULL, COMMUNICATIONS: ["view_communication", "add_communication"], RESIDENT_ATTENDANCE: FULL, FACILITY: VIEW, ELECTRICITY: VIEW, IOT: VIEW, WALLET: VIEW,
   },
-  CLUSTER_MANAGER: {
-    FOOD_RECEIVE_UPDATE: VE, FOOD_DELIVERY_TRACKING: VE, FOOD_DASHBOARD: VIEW,
-    FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VE, FOOD_DISPATCH: VIEW,
-    FOOD_CONFIRM_DELIVERY: VE, FOOD_WASTE_TRACKING: VE, FOOD_REPORTS: VIEW,
-    // Audit & Inspection: conducts CM + UL audits for the cluster; views CX
-    // read-only (C-1). Fine scoping via audit_role_grants.
+  // Repairs & Maintenance. Complaints org-wide, including the routing and SLA
+  // configuration that decides where a repair ticket lands.
+  RM_MANAGER: { DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: VIEW, COMPLAINT_TICKETS: FULL, COMPLAINT_ROUTING: FULL, COMMUNICATIONS: VIEW },
+  // Works the queue at assigned properties: everything except deleting a
+  // complaint and changing the routing rules, which are the manager's.
+  RM_SUPERVISOR: { DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: VIEW, COMPLAINT_TICKETS: ["view_complaint", "add_complaint", "edit_complaint", "assign_complaint", "close_complaint", "verify_complaint"] },
+  // Same shape as R&M — the two differ by which complaints they are ROUTED,
+  // which is data (category → role), not a different permission set.
+  HOUSEKEEPING_MANAGER: { DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: VIEW, COMPLAINT_TICKETS: FULL, COMPLAINT_ROUTING: FULL, COMMUNICATIONS: VIEW },
+  HOUSEKEEPING_SUPERVISOR: { DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: VIEW, COMPLAINT_TICKETS: ["view_complaint", "add_complaint", "edit_complaint", "assign_complaint", "close_complaint", "verify_complaint"] },
+  // "CX Admin (Care Desk)".
+  CUSTOMER_EXPERIENCE: {
+    // Widened: a care desk with no access to complaints was the reported gap.
+    COMPLAINT_TICKETS: FULL, COMPLAINT_ROUTING: FULL,
+    RESIDENTS: VIEW, PROPERTIES: VIEW, COMMUNICATIONS: FULL, DASHBOARD: VIEW,
+    // Audit & Inspection: the CX team conducts ad-hoc CX audits (FRD §2.2).
     AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
-    // Conducts audits but cannot start or discard them — those are the
-    // scheduler's, and a conductor who can discard can erase a bad result.
-    AUDIT_EXECUTION: ["view_audit", "record_answers"],
+    AUDIT_EXECUTION: ["view_audit", "start_audit", "record_answers"],
   },
-  CITY_HEAD: {
-    FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
-    FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
-    FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
-    // Audit & Inspection: oversight viewer — UL + CM for their city, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
+  // Raises and routes what comes in; closing, verifying and the routing rules
+  // themselves stay with the CX Admin.
+  CARE_DESK_AGENT: {
+    DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: VIEW, COMMUNICATIONS: VIEW,
+    COMPLAINT_TICKETS: ["view_complaint", "add_complaint", "edit_complaint", "assign_complaint"],
+    AUDIT_REGISTER: VIEW,
   },
-  ZONAL_HEAD: {
-    FOOD_RECEIVE_UPDATE: VIEW, FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW,
-    FOOD_ALL_ORDERS: VE, FOOD_PLACE_ORDER: VIEW, FOOD_DISPATCH: VIEW,
-    FOOD_CONFIRM_DELIVERY: VIEW, FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
-    // Audit & Inspection: oversight viewer — UL + CM across the zone, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
-  },
-  // B3-24: OPS_EXCELLENCE has FULL super-admin parity across every functionality (incl.
-  // USERS / SETTINGS / AUDIT_LOG / FINANCE), per explicit product decision.
-  // Like SUPER_ADMIN this is the one other role allowed to hold dispatch-edit
-  // and confirm-delivery-edit together; it is break-glass, not an operator seat.
-  OPS_EXCELLENCE: Object.fromEntries(ALL_FUNCTIONALITIES.map(m => [m, FULL])) as RoleMatrix,
-  // SVP holds strictly LESS food access than ZONAL_HEAD below it. That is
-  // intent, not drift: FOOD_MODULE_TEST_CASES.md §0.3 spells this seat out as
-  // "dispatch VIEW, kitchen-summary VIEW, place/confirm/waste VIEW, reports
-  // VIEW; **no FOOD_ALL_ORDERS**" — an executive summary viewer, never an
-  // order-level operator (FOOD_ALL_ORDERS is the row-level register, which
-  // ZONAL_HEAD/CITY_HEAD hold V·E because they work individual orders).
-  // The other apparent gap, FOOD_RECEIVE_UPDATE, confers nothing either way:
-  // it and FOOD_DELIVERY_TRACKING are PRD placeholders that gate zero routes
-  // and zero screens (no references outside this file on either side), so
-  // widening them would buy no capability. Do not close either gap by copying
-  // ZONAL_HEAD's row.
-  SENIOR_VICE_PRESIDENT: {
-    FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
-    FOOD_KITCHEN_SUMMARY: VIEW, FOOD_DISPATCH: VIEW, FOOD_CONFIRM_DELIVERY: VIEW,
-    FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
-    // Audit & Inspection: executive oversight viewer — UL + CM global, no CX (C-2).
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
-  },
-  // Kitchen users — the SHIPPING side of the separation of duties noted above:
-  // FOOD_DISPATCH V·E with FOOD_CONFIRM_DELIVERY VIEW is deliberate, not an
-  // oversight. These roles load and send the trip; the receiving property
-  // certifies what actually arrived.
-  FNB_SUPERVISOR: {
-    FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
-    FOOD_KITCHEN_SUMMARY: VE, FOOD_DISPATCH: VE, FOOD_CONFIRM_DELIVERY: VIEW,
-    FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
-  },
+  // "F&B Admin". Absorbs the retired FNB_ZONAL_HEAD.
   FNB_MANAGER: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: VE, FOOD_DISPATCH: VE, FOOD_CONFIRM_DELIVERY: VIEW,
@@ -981,18 +1006,47 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     // Keep this in sync with the same block in apps/uniliv-admin/src/lib/permissions.ts.
     FOOD_SETTINGS: VE,
   },
-  FNB_ZONAL_HEAD: {
+  // KEPT SEPARATE on purpose. Folding it into F&B Admin would put dispatch and
+  // confirm-receipt in one role and break the C3 handover rule — the supervisor
+  // ships, somebody else certifies. sod.ts enforces this.
+  FNB_SUPERVISOR: {
     FOOD_DELIVERY_TRACKING: VIEW, FOOD_DASHBOARD: VIEW, FOOD_PLACE_ORDER: VIEW,
     FOOD_KITCHEN_SUMMARY: VE, FOOD_DISPATCH: VE, FOOD_CONFIRM_DELIVERY: VIEW,
     FOOD_WASTE_TRACKING: VIEW, FOOD_REPORTS: VIEW,
   },
-  // ── Audit & Inspection roles (FRD §2.2) ──
-  // CX team conducts ad-hoc "surprise" CX audits only — never scheduled (C-3).
-  CUSTOMER_EXPERIENCE: {
-    AUDIT_DASHBOARD: VIEW, AUDIT_REGISTER: VIEW, AUDIT_REPORTS: VIEW,
-    // Starts and conducts, but still cannot discard.
-    AUDIT_EXECUTION: ["view_audit", "start_audit", "record_answers"],
+  // "F&B Store" — the central kitchen / store.
+  KITCHEN_MANAGER: {
+    DASHBOARD: VIEW,
+    // Widened from a two-cell stub: a central kitchen and store runs the
+    // production board, receives goods against its indents and holds the stock.
+    INVENTORY: FULL, INDENTS: FULL, GRN: FULL,
+    FOOD_KITCHEN_SUMMARY: VIEW, FOOD_RECEIVE_UPDATE: FULL, FOOD_WASTE_TRACKING: FULL,
   },
+  // "Finance Admin".
+  FINANCE: { DASHBOARD: VIEW, EXECUTIVE_DASHBOARD: VIEW, RESIDENTS: VIEW, LEDGER: FULL, PAYMENTS: FULL, WALLET: FULL, BILLING_CYCLES: FULL, REMINDERS: FULL, BANKING: FULL, EXPENSES: FULL, INDENTS: VIEW, PURCHASE_ORDERS: VIEW },
+  FINANCE_EXECUTIVE: {
+    DASHBOARD: VIEW, EXECUTIVE_DASHBOARD: VIEW, RESIDENTS: VIEW,
+    // Records and reconciles; approving a payment and deleting a ledger entry
+    // stay with the Finance Admin.
+    LEDGER: ["view_ledger", "add_ledger", "edit_ledger"],
+    PAYMENTS: ["view_payment", "add_payment", "edit_payment", "verify_payment"],
+    EXPENSES: ["view_expense", "add_expense", "edit_expense", "submit_expense"],
+    WALLET: VIEW, BANKING: VIEW, BILLING_CYCLES: VIEW, REMINDERS: VIEW,
+  },
+  // "Procurement".
+  PROCUREMENT_MANAGER: { DASHBOARD: VIEW, VENDORS: FULL, INDENTS: FULL, PURCHASE_ORDERS: FULL, GRN: FULL, INVENTORY: FULL },
+  // Recipes / Menu Planning were removed product-wide, so this role is left
+  // with the inventory read it always had alongside them. The INDENTS
+  // create-only grant went with them: its only purpose was
+  // POST /menu-plans/:id/generate-indent, and that route no longer exists.,
+  // Owns the pipeline org-wide.
+  SALES_ADMIN: { DASHBOARD: VIEW, PROPERTIES: VIEW, SALES_DASHBOARD: VIEW, SALES_LEADS: FULL, PROPERTY_LEADS: FULL },
+  // The same reach, anchored to a cluster rather than the whole estate — the
+  // difference is WHERE, which is the grant, not the matrix.
+  SALES_MANAGER: { DASHBOARD: VIEW, PROPERTIES: VIEW, SALES_DASHBOARD: VIEW, SALES_LEADS: FULL, PROPERTY_LEADS: FULL },
+  SALES_EXECUTIVE: { DASHBOARD: VIEW, SALES_LEADS: FULL, SALES_DASHBOARD: VIEW, PROPERTY_LEADS: VIEW },
+  // "HR Admin".
+  HR_MANAGER: { DASHBOARD: VIEW, EMPLOYEES: FULL, RECRUITMENT: FULL, LND: FULL, USERS: FULL, SETTINGS: VIEW, COMPLAINT_ROUTING: VIEW },
 };
 
 export function can(role: UserRole | undefined, functionality: Functionality, perm: NamedAction): boolean {

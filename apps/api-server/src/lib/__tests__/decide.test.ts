@@ -12,9 +12,9 @@ import type { EffectiveAccess, DataScope } from "../access.js";
 
 const access = (over: Partial<EffectiveAccess> = {}): EffectiveAccess => ({
   userId: "u1",
-  role: "WARDEN",
-  roleKey: "WARDEN",
-  roleKeys: ["WARDEN"],
+  role: "UNIT_LEAD",
+  roleKey: "UNIT_LEAD",
+  roleKeys: ["UNIT_LEAD"],
   isGlobalAdmin: false,
   nodeIds: ["prop-a"],
   propertyIds: ["prop-a"],

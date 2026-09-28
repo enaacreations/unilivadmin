@@ -16,14 +16,14 @@ describe("activity label id scanning", () => {
     expect(isIdLike(ID.slice(0, 8))).toBe(false);          // the truncated form we render
     expect(isIdLike(`${ID} `)).toBe(false);                 // no partial matching
     expect(isIdLike("Entire organization")).toBe(false);
-    expect(isIdLike("WARDEN")).toBe(false);
+    expect(isIdLike("UNIT_LEAD")).toBe(false);
     expect(isIdLike(42)).toBe(false);
     expect(isIdLike(null)).toBe(false);
   });
 
   it("finds ids in values, arrays and nested objects", () => {
     const found = new Set<string>();
-    collectIds({ atNode: ID, role: "WARDEN", secondary: [ID], meta: { scope: { nodeId: ID } } }, found);
+    collectIds({ atNode: ID, role: "UNIT_LEAD", secondary: [ID], meta: { scope: { nodeId: ID } } }, found);
     expect([...found]).toEqual([ID]);
   });
 

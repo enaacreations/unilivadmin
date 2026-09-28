@@ -22,7 +22,7 @@ const asReq = (role: string, propertyId: string | null): Request =>
   ({ user: { id: "u1", email: "u@x.com", role, propertyId } }) as unknown as Request;
 
 // WARDEN is absent from ORG_WIDE_ROLES, so a WARDEN with a propertyId is scoped.
-const warden = asReq("WARDEN", "prop-a");
+const warden = asReq("UNIT_LEAD", "prop-a");
 // OPERATIONS_MANAGER is in ORG_WIDE_ROLES — unrestricted regardless of propertyId.
 const orgWide = asReq("OPERATIONS_MANAGER", "prop-a");
 
@@ -117,7 +117,7 @@ describe("assertPropertyAccess", () => {
     // propertyId is NOT scoped. Closing that is a data fix (every such user
     // needs a grant) — doing it here would silently take those users from
     // "everything" to "nothing" on every scoped route at once.
-    await expect(assertPropertyAccess(asReq("WARDEN", null), "prop-b")).resolves.toBeUndefined();
+    await expect(assertPropertyAccess(asReq("UNIT_LEAD", null), "prop-b")).resolves.toBeUndefined();
   });
 });
 
@@ -197,7 +197,7 @@ describe("GET /rooms/:id — cross-property isolation", () => {
     ]);
   });
 
-  const wardenUser = { id: "u1", email: "w@x.com", role: "WARDEN", propertyId: "prop-a" };
+  const wardenUser = { id: "u1", email: "w@x.com", role: "UNIT_LEAD", propertyId: "prop-a" };
 
   it("serves a room inside the caller's property", async () => {
     const r = await callRoute(roomsRouter, { method: "GET", url: "/room-a", user: wardenUser });

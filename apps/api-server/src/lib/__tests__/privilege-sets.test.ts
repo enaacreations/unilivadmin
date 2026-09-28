@@ -61,7 +61,7 @@ function seedSet(items: Array<{ functionality: string; action: string }>, extra:
   ]);
 }
 
-const holds = async (action: string, roles: string[] = ["WARDEN"]) => {
+const holds = async (action: string, roles: string[] = ["UNIT_LEAD"]) => {
   const map = await readPrivileges(USER, roles);
   return privilegeOn(map, "AUDIT_EXECUTION" as never, action, null)?.effect;
 };
@@ -135,13 +135,13 @@ describe("privilege sets", () => {
    */
   it("ignores a set scoped to a role the person no longer holds", async () => {
     seedSet([{ functionality: "AUDIT_EXECUTION", action: "start_audit" }], { roleKey: "AUDITOR" });
-    expect(await holds("start_audit", ["WARDEN"])).toBeUndefined();
-    expect(await holds("start_audit", ["WARDEN", "AUDITOR"])).toBe("GRANT");
+    expect(await holds("start_audit", ["UNIT_LEAD"])).toBeUndefined();
+    expect(await holds("start_audit", ["UNIT_LEAD", "AUDITOR"])).toBe("GRANT");
   });
 
   it("names the set in the reason, so the answer to 'why' is the set", async () => {
     seedSet([{ functionality: "AUDIT_EXECUTION", action: "start_audit" }]);
-    const map = await readPrivileges(USER, ["WARDEN"]);
+    const map = await readPrivileges(USER, ["UNIT_LEAD"]);
     expect(privilegeOn(map, "AUDIT_EXECUTION" as never, "start_audit", null)?.reason)
       .toContain("Night audit cover");
   });
