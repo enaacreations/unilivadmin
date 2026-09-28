@@ -131,6 +131,19 @@ docker compose run --rm tools "pnpm --filter @workspace/db run push-force"
 
 This creates all tables on the host Postgres (idempotent on a fresh DB).
 
+**Then provision the roles.** `push` creates the `roles` table; it does not fill
+it, and nothing else does either — a fresh database otherwise comes up with no
+role definitions at all, however many times the seeds run.
+
+```bash
+docker compose run --rm tools "pnpm --filter @workspace/api-server run roles:sync"
+```
+
+Safe to re-run: it upserts each role the code manifest declares and replaces
+that role's permission cells. Roles in the database that the manifest does not
+declare are REPORTED, never deleted — retiring one revokes it from whoever holds
+it, which belongs in a migration with a decision behind it.
+
 > ⚠️ **`push-force` is for a FRESH database only.** `--force` auto-accepts every
 > destructive statement drizzle-kit proposes, without printing a prompt. On a
 > database that already holds rows it will silently **`TRUNCATE payments`** —
@@ -289,6 +302,14 @@ T "pnpm --filter @workspace/scripts run drop:dead-columns -- --yes"
 #     Skipping either leaves `push` proposing a DROP, which step 6 must abort on.
 T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-26_access_axis_rename.sql"
 T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-28_named_actions.sql"
+#     - the role taxonomy: 24 business roles, two retired into survivors so no
+#       holder loses access (WARDEN -> UNIT_LEAD, FNB_ZONAL_HEAD -> F&B Admin)
+T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-29_role_taxonomy.sql"
+
+# 5c. Roles and their cells, from the code manifest. The SQL above moves the
+#     HOLDERS; this writes the DEFINITIONS, and is what a fresh database needs
+#     too. Re-runnable.
+T "pnpm --filter @workspace/api-server run roles:sync"
 
 # 6. Only now is the schema push safe. It must print NO data-loss banner.
 T "pnpm --filter @workspace/db run push"

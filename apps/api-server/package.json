@@ -8,7 +8,8 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "roles:sync": "pnpm exec tsx src/sync-roles.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3",
@@ -46,6 +47,7 @@
     "esbuild-plugin-pino": "^2.3.3",
     "pino-pretty": "^13",
     "thread-stream": "3.1.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "tsx": "catalog:"
   }
 }

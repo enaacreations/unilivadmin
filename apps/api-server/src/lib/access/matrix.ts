@@ -65,12 +65,22 @@ export const SYSTEM_ROLES: Record<string, "ALL" | "VIEW"> = {
  * confers inside it is the adapter's business.
  */
 export const MODULE_ROLES: Array<{ key: string; label: string; module: Module; rank: number; description: string }> = [
-  { key: "AUDIT.ADMIN", label: "Audit Admin", module: "AUDITS", rank: 80, description: "Configures audit types, templates and grants" },
-  { key: "AUDIT.SCHEDULER", label: "Audit Scheduler", module: "AUDITS", rank: 50, description: "Plans and schedules audit runs" },
-  { key: "AUDIT.AUDITOR", label: "Auditor", module: "AUDITS", rank: 20, description: "Conducts audits at the granted nodes" },
-  { key: "AUDIT.REVIEWER", label: "Audit Reviewer", module: "AUDITS", rank: 50, description: "Reviews and signs off completed audits" },
-  { key: "AUDIT.AUDITEE", label: "Auditee", module: "AUDITS", rank: 20, description: "The audited party — sees their own results" },
-  { key: "AUDIT.VIEWER", label: "Audit Viewer", module: "AUDITS", rank: 20, description: "Read-only access to audit results" },
+  /*
+   * EMPTY as of 2026-09-29, deliberately.
+   *
+   * Six AUDIT.* personas lived here — Auditor, Auditee, Reviewer, Scheduler,
+   * Admin, Viewer — on the premise that the Audits module carried its own role
+   * system. It does not. Audit is a MODULE with functionalities and actions
+   * like any other, and the business roles are granted those; who may conduct
+   * or review a particular audit is a per-audit-type grant (see
+   * audit-adapter.ts), not a separate identity.
+   *
+   * The array stays because the CONCEPT is still sound — a persona scoped to
+   * one module, in code because adding one deserves a review rather than an
+   * admin form — and because `generalGrantPredicate` reads it to tell a module
+   * persona's grant from a general one. With none defined, every role is
+   * general, which is the correct answer now.
+   */
 ];
 
 /**
@@ -276,68 +286,60 @@ export function matrixCanAny(roleKeys: string[], functionality: Functionality, a
  * "an admin edits SUPER_ADMIN into powerlessness" impossible by construction.
  */
 export async function seedMatrix(actorId: string | null = null): Promise<{
-  roles: number; cells: number; skippedSystem: number;
+  roles: number; cells: number; skippedSystem: number; unknown: string[];
 }> {
-  const report = { roles: 0, cells: 0, skippedSystem: 0 };
+  const report = { roles: 0, cells: 0, skippedSystem: 0, unknown: [] as string[] };
   const { ROLE_RANK } = await import("../authz.js");
+  const { ROLE_ANCHOR, roleLabel } = await import("../permissions.js");
 
   for (const roleKey of Object.keys(ROLE_PERMISSIONS)) {
+    const definition = {
+      label: roleLabel(roleKey),
+      rank: ROLE_RANK[roleKey] ?? 0,
+      isSystem: roleKey in SYSTEM_ROLES,
+      anchorLevel: ROLE_ANCHOR[roleKey as UserRole] ?? null,
+    };
+    // UPSERT, not insert-or-ignore. The code manifest is the definition of a
+    // role, so a rename or a corrected anchor level has to reach a database that
+    // already has the row — which insert-or-ignore silently would not.
     await db
       .insert(rolesTable)
-      .values({
-        key: roleKey,
-        label: roleKey.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()),
-        rank: ROLE_RANK[roleKey] ?? 0,
-        isSystem: roleKey in SYSTEM_ROLES,
-      })
-      .onConflictDoNothing();
+      .values({ key: roleKey, ...definition })
+      .onConflictDoUpdate({ target: rolesTable.key, set: definition });
     report.roles++;
 
     if (roleKey in SYSTEM_ROLES) { report.skippedSystem++; continue; }
 
+    // Replaced wholesale per role: the matrix IS the role, so a cell removed
+    // from the code must disappear here too. Insert-or-ignore would have let a
+    // revoked permission live on in the database forever.
+    await db.delete(roleFunctionalitiesTable).where(eq(roleFunctionalitiesTable.roleKey, roleKey));
     const matrix = ROLE_PERMISSIONS[roleKey as UserRole] ?? {};
     for (const [functionality, cell] of Object.entries(matrix)) {
       for (const action of expandCell(functionality as Functionality, cell as Cell)) {
         await db
           .insert(roleFunctionalitiesTable)
-          .values({
-            id: newId(), roleKey, functionality, action,
-            allowed: true, updatedBy: actorId,
-          })
+          .values({ id: newId(), roleKey, functionality, action, allowed: true, updatedBy: actorId })
           .onConflictDoNothing();
         report.cells++;
       }
     }
   }
 
-  // Module personas: rows so the grant UI can offer them, but no permission
-  // cells — see MODULE_ROLES. Without these rows, 24 live grants referenced
-  // roles that no screen could name.
-  for (const r of MODULE_ROLES) {
-    await db
-      .insert(rolesTable)
-      .values({
-        key: r.key, label: r.label, description: r.description,
-        scopeModule: r.module, isSystem: false,
-      })
-      .onConflictDoNothing();
-    report.roles++;
+  /*
+   * Roles in the database that the manifest no longer defines are REPORTED,
+   * never deleted.
+   *
+   * Deleting one would revoke it from whoever holds it, silently, during what
+   * is meant to be a provisioning step. Retiring a role is a migration with a
+   * decision behind it (see lib/db/migrations/2026-09-29_role_taxonomy.sql);
+   * this only ever adds and corrects.
+   */
+  const known = new Set(Object.keys(ROLE_PERMISSIONS));
+  for (const row of await db.select({ key: rolesTable.key }).from(rolesTable)) {
+    if (!known.has(row.key) && row.key !== "UNASSIGNED") report.unknown.push(row.key);
   }
 
-  for (const r of SEEDED_DISABLED_ROLES) {
-    await db
-      .insert(rolesTable)
-      .values({ key: r.key, label: r.label, description: r.description, isSystem: false, isActive: false })
-      .onConflictDoNothing();
-    report.roles++;
-  }
-
-  await db
-    .insert(accessMatrixVersionTable)
-    .values({ id: "singleton", version: 1, updatedBy: actorId })
-    .onConflictDoNothing();
-
-  await loadMatrix();
   return report;
 }
 

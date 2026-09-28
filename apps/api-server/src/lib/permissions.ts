@@ -869,6 +869,71 @@ const VE = FULL;
 
 type RoleMatrix = Partial<Record<Functionality, Cell>>;
 
+
+/* ── Role presentation and placement ──────────────────────────────────────── */
+
+/**
+ * The name the business uses. The key is an identifier; this is what a person
+ * reads, and the two are allowed to differ — `OPERATIONS_MANAGER` is "Admin
+ * (Ops Excellence)" on screen.
+ *
+ * Absent means "derive it from the key", which is right for anything whose
+ * business name is just the key in title case.
+ */
+export const ROLE_LABEL: Partial<Record<UserRole, string>> = {
+  SUPER_ADMIN: "Super Admin",
+  OPERATIONS_MANAGER: "Admin (Ops Excellence)",
+  SENIOR_VICE_PRESIDENT: "Leadership – View All",
+  UNIT_LEAD: "Unit Lead",
+  RM_MANAGER: "R&M Manager",
+  RM_SUPERVISOR: "R&M Supervisor",
+  HOUSEKEEPING_MANAGER: "Housekeeping Manager",
+  HOUSEKEEPING_SUPERVISOR: "Housekeeping Supervisor",
+  CUSTOMER_EXPERIENCE: "CX Admin (Care Desk)",
+  CARE_DESK_AGENT: "Care Desk Agent",
+  FNB_MANAGER: "F&B Admin",
+  FNB_SUPERVISOR: "F&B Supervisor",
+  KITCHEN_MANAGER: "F&B Store",
+  FINANCE: "Finance Admin",
+  FINANCE_EXECUTIVE: "Finance Executive",
+  PROCUREMENT_MANAGER: "Procurement",
+  SALES_ADMIN: "Sales Admin",
+  SALES_MANAGER: "Sales Manager",
+  SALES_EXECUTIVE: "Sales Executive",
+  HR_MANAGER: "HR Admin",
+  AUDIT_READONLY: "Viewer",
+  OPS_EXCELLENCE: "Ops Excellence (break-glass)",
+};
+
+/**
+ * What KIND of place a role may be handed out at — the role's contract.
+ *
+ * A Cluster Manager is given a CLUSTER; accepting a property there would create
+ * a second meaning for the same role, which is what this exists to prevent
+ * (`PUT /access/users/:id/role-scope` enforces it).
+ *
+ * Absent means the role carries no place of its own: it applies wherever the
+ * person already works. That is the right answer for the org-wide roles, not an
+ * omission.
+ */
+export const ROLE_ANCHOR: Partial<Record<UserRole, "ZONE" | "CITY" | "CLUSTER" | "PROPERTY" | "KITCHEN">> = {
+  ZONAL_HEAD: "ZONE",
+  CITY_HEAD: "CITY",
+  CLUSTER_MANAGER: "CLUSTER",
+  SALES_MANAGER: "CLUSTER",
+  UNIT_LEAD: "PROPERTY",
+  RM_SUPERVISOR: "PROPERTY",
+  HOUSEKEEPING_SUPERVISOR: "PROPERTY",
+  SALES_EXECUTIVE: "PROPERTY",
+  KITCHEN_MANAGER: "KITCHEN",
+};
+
+/** The label a role should show, falling back to the key in title case. */
+export function roleLabel(key: string): string {
+  return ROLE_LABEL[key as UserRole]
+    ?? key.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
   SUPER_ADMIN: Object.fromEntries(ALL_FUNCTIONALITIES.map(m => [m, FULL])) as RoleMatrix,
   // COMPLAINT_ROUTING mirrors this role's SETTINGS level, because the routing
