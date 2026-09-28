@@ -12,14 +12,23 @@ from 316 — the rise is the nine new roles plus the three widenings.
 Nobody lost access. Two roles retired into survivors and their holders moved:
 `WARDEN` → `UNIT_LEAD` (1), `FNB_ZONAL_HEAD` → `F&B Admin` (1).
 
-## One consequence worth knowing
+## Unit Lead
 
-`UNIT_LEAD` was a FOOD role (`FOOD_*`, `AUDIT_*`) and `WARDEN` was the
-property-operations role. They were different jobs that happened to share a
-scope. With one property-level role in the new list it has to carry both, so
-Unit Lead is now the union — which means **former Wardens gain the food set and
-existing Unit Leads gain the operations set**. That is a two-way widening, not a
-rename. Split it into two roles if the two jobs are meant to stay apart.
+Unit Lead is the PROPERTY role: it runs a property and orders that property's
+food from the kitchen. The food cells are not a second job — ordering, receiving
+and recording waste are what a property does with a central kitchen, which is
+also why it sits on the certifying side of the C3 handover (`confirm_receipt`,
+never `mark_dispatched`).
+
+The retired WARDEN's property-operations cells come back here. That **reverses a
+product decision of 08-Jul-2026** which had stripped this role to Food Ordering
+and Audits alone and removed the resident suite. With one property-level role in
+the list, a role that cannot open a resident or a complaint is not a property
+role — so the removal is undone. Finance is NOT restored: `LEDGER` and
+`PAYMENTS` stay with the finance roles.
+
+The 2 existing Unit Lead holders therefore gain property operations they did not
+have yesterday.
 
 ---
 

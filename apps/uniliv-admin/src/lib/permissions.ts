@@ -933,19 +933,29 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     // scheduler's, and a conductor who can discard can erase a bad result.
     AUDIT_EXECUTION: ["view_audit", "record_answers"],
   },
-  // Absorbs the retired WARDEN, whose holder moves here.
-  // The ONE property-level role in the taxonomy, so it carries BOTH halves:
-  // the food and audit set it already had, and the property-operations set from
-  // the retired WARDEN. They were different jobs that happened to share a
-  // scope; with a single property role they have to be one.
-  //
-  // C3 is unaffected: WARDEN held no FOOD_* cells, so the union does not put
-  // dispatch and confirm-receipt in the same role.
+  /**
+   * The PROPERTY role. It runs a property and orders that property's food.
+   *
+   * The food cells are not a second job bolted on: a unit lead orders food from
+   * the kitchen FOR THEIR PROPERTY, receives it when it arrives, and records
+   * what was wasted. That is why this role sits on the CERTIFYING side of the
+   * C3 handover — it holds `confirm_receipt` and no `mark_dispatched`, because
+   * the party that ships must not be the party that certifies.
+   *
+   * It absorbs the retired WARDEN, whose property-operations cells come back
+   * here. That REVERSES a product decision of 08-Jul-2026 which had stripped
+   * this role to food and audits only (see the note inside). Reversing it is the
+   * point: with one property-level role in the taxonomy, a role that cannot open
+   * a resident or a complaint is not a property role.
+   */
   UNIT_LEAD: {
-    // Food-focused field role (product decision 08-Jul-2026): the launcher/nav
-    // is scoped to Food Ordering + Audits only. The former resident/finance
-    // suite (RESIDENTS, PROPERTIES, LAUNDRY, COMPLAINTS, LEDGER, PAYMENTS,
-    // WALLET) was intentionally removed.
+    // Ordering for their own property, and receiving what arrives.
+    //
+    // Superseded 2026-09-29: a product decision of 08-Jul-2026 had scoped this
+    // role to Food Ordering + Audits alone and removed the resident suite. The
+    // role list restores it as the property role, so that removal is undone in
+    // the block below. LEDGER and PAYMENTS are NOT restored — finance stayed
+    // with the finance roles.
     FOOD_RECEIVE_UPDATE: VE, FOOD_DELIVERY_TRACKING: VE, FOOD_DASHBOARD: VIEW,
     FOOD_ALL_ORDERS: VIEW, FOOD_PLACE_ORDER: VE,
     FOOD_CONFIRM_DELIVERY: VE, FOOD_WASTE_TRACKING: VE, FOOD_REPORTS: VIEW,
@@ -956,7 +966,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, RoleMatrix> = {
     // scheduler's, and a conductor who can discard can erase a bad result.
     AUDIT_EXECUTION: ["view_audit", "record_answers"],
 
-    // ── from WARDEN ──
+    // ── Property operations, restored from the retired WARDEN ──
     DASHBOARD: VIEW, PROPERTIES: VIEW, RESIDENTS: FULL, COMPLAINT_TICKETS: FULL, LAUNDRY_BATCHES: FULL, COMMUNICATIONS: ["view_communication", "add_communication"], RESIDENT_ATTENDANCE: FULL, FACILITY: VIEW, ELECTRICITY: VIEW, IOT: VIEW, WALLET: VIEW,
   },
   // Repairs & Maintenance. Complaints org-wide, including the routing and SLA
