@@ -300,11 +300,16 @@ T "pnpm --filter @workspace/scripts run drop:dead-columns -- --yes"
 #       - the access-axis rename (column renames), if this database predates it
 #       - the named-action rename (enum -> text, plus a value rename in-column)
 #     Skipping either leaves `push` proposing a DROP, which step 6 must abort on.
-T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-26_access_axis_rename.sql"
-T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-28_named_actions.sql"
+#     psql is NOT in the tools image — run these on the HOST, which has it and
+#     reaches the same database over the socket:
+#         set -a && . ./.env.docker && set +a
+#     then, for each file:
+#         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f <file>
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-26_access_axis_rename.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-28_named_actions.sql
 #     - the role taxonomy: 24 business roles, two retired into survivors so no
 #       holder loses access (WARDEN -> UNIT_LEAD, FNB_ZONAL_HEAD -> F&B Admin)
-T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-29_role_taxonomy.sql"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-29_role_taxonomy.sql
 
 # 5c. Roles and their cells, from the code manifest. The SQL above moves the
 #     HOLDERS; this writes the DEFINITIONS, and is what a fresh database needs
@@ -317,6 +322,40 @@ T "pnpm --filter @workspace/db run push"
 # 7. Cut over.
 docker compose up -d
 ```
+
+### If the database predates the access module entirely
+
+Applied to unilivues1 on 2026-09-29 and worth recording, because the documented
+path did not fit and the deviations are not obvious.
+
+That database still had `access_roles`, `access_role_permissions` and
+`access_user_permissions` — the pre-three-level shape, two generations behind
+the rename files above, so `2026-09-26_access_axis_rename.sql` failed on its
+first statement (`type "functionality" does not exist`).
+
+**All three tables were empty.** The rename files exist to carry DATA across a
+rename; with no rows there is nothing to carry. Dropping the three legacy tables
+and letting `push` create the current shape is both simpler and safer, and is
+what was done. Verify emptiness first — the drop script does, and aborts if any
+row appeared.
+
+Three things then blocked `push`, none of them in this runbook:
+
+1. **Orphan enums.** `access_action` and `access_override_effect` outlived their
+   tables, and `push` offered to RENAME one of them into the new `gender` enum
+   rather than create it. `DROP TYPE` both first; a rename there would have been
+   silent and wrong.
+2. **A dead column.** `users.role_key` was NULL on all 61 rows and absent from
+   the schema, so `push` offered to rename it to `user_type` — a role key
+   reinterpreted as an INTERNAL/EXTERNAL enum. Drop it first.
+3. **A duplicate.** One `dishes` row blocked a unique index; `dedupe:food --yes`
+   collapsed it (a config table, which is all `--yes` is allowed to touch).
+
+> **Do not drop `users.role_key` while the OLD build is still serving.** It
+> selects that column by name, so every user query — including login — 500s the
+> moment it goes. Either drop it after the cutover, or add it straight back
+> (`ALTER TABLE users ADD COLUMN IF NOT EXISTS role_key text;`) which restores
+> the old build instantly, and drop it once the new one is live.
 
 **Why each step is where it is**
 
