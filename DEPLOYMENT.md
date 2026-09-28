@@ -281,6 +281,15 @@ T "pnpm --filter @workspace/scripts run migrate:wallet-namespace -- --apply"
 T "pnpm --filter @workspace/scripts run drop:dead-columns"
 T "pnpm --filter @workspace/scripts run drop:dead-columns -- --yes"
 
+# 5b. ACTIONS BECOME NAMED PER FUNCTIONALITY. Two SQL files, in this order,
+#     applied with psql — NOT by push, which cannot express either of them.
+#     Both are idempotent, so re-running is safe.
+#       - the access-axis rename (column renames), if this database predates it
+#       - the named-action rename (enum -> text, plus a value rename in-column)
+#     Skipping either leaves `push` proposing a DROP, which step 6 must abort on.
+T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-26_access_axis_rename.sql"
+T "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f lib/db/migrations/2026-09-28_named_actions.sql"
+
 # 6. Only now is the schema push safe. It must print NO data-loss banner.
 T "pnpm --filter @workspace/db run push"
 
@@ -297,7 +306,8 @@ docker compose up -d
 | 3 | `backfill:user-scopes` | Scope resolution is now fail-closed, and an empty scope answers 200-with-nothing rather than 403, so the loss is silent. **ZONAL_HEAD, CITY_HEAD, CLUSTER_MANAGER, FNB_SUPERVISOR, FNB_ZONAL_HEAD** hold `FOOD_*` modules and lose the food module itself. **KITCHEN_MANAGER holds no `FOOD_*` module at all** (`permissions.ts`: DASHBOARD, RECIPES, MENU_PLANNING, INVENTORY, INDENTS·create) — food ordering 403s for it with or without a grant, so do not expect a scope to open that; what it loses to an empty scope is **Kitchen Operations** (menu plans, production logs, kitchen analytics, recipe feedback) and the property list Menu Planning reads. The script grants only what existing data already states (home property, single cluster ownership, single kitchen contact), and passes only when **every** at-risk account resolves to at least one property — holding a grant is not the test, since a grant on an empty or deactivated geography resolves to nothing. It prints the accounts an operator must grant by hand in **Food → Organization** (which lists KITCHEN_MANAGER — `FOOD_USER_ROLES` now includes it) and exits non-zero until none are left, **including** accounts whose only grants are revoked: those are never re-granted automatically, and the run does not report success while they see nothing. An account with several derivable targets (a manager named on nine clusters) is reported rather than granted all nine; add `--allow-multi-target` to the `--apply` run only if that width is intended. |
 | 4 | `migrate:wallet-namespace` | The old webhook wrote `reference_type = 'RAZORPAY'`; the new one dedupes on `RAZORPAY_PAYMENT` / `RAZORPAY_LINK`. A Razorpay **redelivery of any pre-deploy event** would not match the guard and would credit the wallet a second time. This is the one step that costs real money if skipped, and it must land **before** the new API serves traffic. |
 | 5 | `drop:dead-columns` | `push` proposes `DROP food_orders.preparing_at` (the column behind the dead `PREPARING` state) on every database that holds orders, and it can only propose it behind a data-loss confirmation. That single expected prompt is what made step 6's abort rule impossible to follow — an operator cannot be asked to tell it apart from `TRUNCATE payments` inside the same two-line banner. Dropping it here removes the prompt instead of asking anyone to judge it. The script drops a column only when it is entirely NULL, and exits non-zero (dropping nothing) if it is not. |
-| 6 | `push` | Now has only `SET NOT NULL` and index creation left to do — **no data-loss banner**. If one appears, abort. |
+| 5b | the two access SQL files | `push` cannot rename — not a column, and not a value inside one. It sees the old `action` enum where the schema says text and reconciles by DROPPING and recreating the column, taking every stored permission cell with it. On a populated database that is a data-loss banner, which step 6 must abort on. The files re-spell the cells first: `PROPERTIES.create` becomes `add_property`, `AUDIT_EXECUTION.complete` becomes `close_audit`. They also delete cells the new model has no name for (`DASHBOARD.create`, `FOOD_CONFIRM_DELIVERY.delete`) — on the reference database 330 rows in, 316 out, and all six distinct dropped pairs were gated by zero endpoints. An unmigrated row is not dangerous, it is INERT: `decide()` refuses an action the manifest does not name, so the loss is silent rather than loud, which is why this cannot be left to chance. |
+| 6 | `push` | Now has only `SET NOT NULL`, index creation and the ADDITIVE half of the access release left to do — the `privilege_sets` / `privilege_set_items` / `privilege_set_assignments` tables and the nullable `approval_*` / `from_set_id` columns on `privileges`. **No data-loss banner.** If one appears, abort. |
 
 Every script is idempotent and safe to re-run, and each exits non-zero when it
 leaves work an operator has to finish — so a pipeline stops instead of shipping
