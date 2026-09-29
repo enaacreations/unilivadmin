@@ -2075,6 +2075,777 @@ export interface WalletConfigBody {
   topupNotes?: string | null;
 }
 
+/**
+ * One permission. `key` is the action ("add_property"), `id` the full identifier ("operations.properties.add_property"), and `description` the single line shown wherever the access is granted, listed or explained.
+ */
+export interface NamedAction {
+  key: string;
+  label: string;
+  description: string;
+  id: string;
+}
+
+export interface ManifestFunctionality {
+  key: string;
+  label: string;
+  module: string;
+  protected: boolean;
+  /** The permissions THIS functionality defines — not a shared verb list. */
+  actions: NamedAction[];
+}
+
+export interface ManifestModule {
+  key: string;
+  label: string;
+  description?: string;
+  functionalities: ManifestFunctionality[];
+}
+
+export type AccessManifestResponseData = {
+  modules: ManifestModule[];
+  /** The same set flattened, for the pickers that want one list. */
+  functionalities: ManifestFunctionality[];
+};
+
+export interface AccessManifestResponse {
+  success: boolean;
+  data: AccessManifestResponseData;
+}
+
+export type CataloguePermission = NamedAction & {
+  functionality: string;
+  functionalityLabel?: string;
+  module: string;
+  moduleLabel?: string;
+  action: string;
+  /** The roles whose matrix grants it. Empty means no role does. */
+  roles: string[];
+  /** How many privileges are written against it, in either direction. */
+  exceptions: number;
+};
+
+export type PrivilegeCatalogueResponseData = {
+  permissions: CataloguePermission[];
+  total: number;
+};
+
+export interface PrivilegeCatalogueResponse {
+  success: boolean;
+  data: PrivilegeCatalogueResponseData;
+}
+
+/**
+ * What KIND of place the role may be handed out at.
+ */
+export type AccessRoleAnchorLevel =
+  | (typeof AccessRoleAnchorLevel)[keyof typeof AccessRoleAnchorLevel]
+  | null;
+
+export const AccessRoleAnchorLevel = {
+  ZONE: "ZONE",
+  CITY: "CITY",
+  CLUSTER: "CLUSTER",
+  PROPERTY: "PROPERTY",
+  KITCHEN: "KITCHEN",
+} as const;
+
+export interface RoleHolder {
+  id: string;
+  name: string;
+  email: string;
+  isActive: boolean;
+}
+
+export interface AccessRole {
+  key: string;
+  label: string;
+  description?: string | null;
+  rank?: number;
+  /** Cells are computed by rule and cannot be edited. */
+  isSystem: boolean;
+  isActive: boolean;
+  scopeModule?: string | null;
+  /** What KIND of place the role may be handed out at. */
+  anchorLevel?: AccessRoleAnchorLevel;
+  /** Stored permission count. null for a role resolved by rule. */
+  cells?: number | null;
+  holders?: RoleHolder[];
+}
+
+export interface AccessRolesResponse {
+  success: boolean;
+  data: AccessRole[];
+}
+
+export interface RolePermissionCell {
+  functionality: string;
+  action: string;
+  label?: string;
+  module?: string;
+}
+
+export type PrivilegeSubjectType =
+  (typeof PrivilegeSubjectType)[keyof typeof PrivilegeSubjectType];
+
+export const PrivilegeSubjectType = {
+  USER: "USER",
+  ROLE: "ROLE",
+} as const;
+
+export type PrivilegeEffect =
+  (typeof PrivilegeEffect)[keyof typeof PrivilegeEffect];
+
+export const PrivilegeEffect = {
+  GRANT: "GRANT",
+  DENY: "DENY",
+} as const;
+
+export interface Privilege {
+  id: string;
+  subjectType: PrivilegeSubjectType;
+  subjectId: string;
+  roleKey?: string;
+  functionality: string;
+  action: string;
+  label?: string;
+  module?: string;
+  moduleLabel?: string;
+  actionLabel?: string;
+  actionDescription?: string;
+  permissionId?: string;
+  nodeId?: string | null;
+  nodeName?: string | null;
+  nodeType?: string | null;
+  effect: PrivilegeEffect;
+  reason: string;
+  effectiveFrom?: string;
+  expiresAt?: string | null;
+  /** True when it came from a role the user holds rather than the user. */
+  inherited?: boolean;
+  live: boolean;
+  approvalFilename?: string | null;
+  approvalSize?: number | null;
+  /** Short-lived link, minted per read. The stored key is never sent. */
+  approvalUrl?: string | null;
+}
+
+export type AccessRoleDetail = AccessRole & {
+  permissions?: RolePermissionCell[];
+  privileges?: Privilege[];
+};
+
+export interface AccessRoleDetailResponse {
+  success: boolean;
+  data: AccessRoleDetail;
+}
+
+export type CreateAccessRoleBodyAnchorLevel =
+  | (typeof CreateAccessRoleBodyAnchorLevel)[keyof typeof CreateAccessRoleBodyAnchorLevel]
+  | null;
+
+export const CreateAccessRoleBodyAnchorLevel = {
+  ZONE: "ZONE",
+  CITY: "CITY",
+  CLUSTER: "CLUSTER",
+  PROPERTY: "PROPERTY",
+  KITCHEN: "KITCHEN",
+} as const;
+
+export interface CreateAccessRoleBody {
+  key: string;
+  label?: string;
+  /** Copy this role's permission cells into the new one. */
+  cloneFrom?: string;
+  reason: string;
+  anchorLevel?: CreateAccessRoleBodyAnchorLevel;
+}
+
+export type UpdateAccessRoleBodyAnchorLevel =
+  | (typeof UpdateAccessRoleBodyAnchorLevel)[keyof typeof UpdateAccessRoleBodyAnchorLevel]
+  | null;
+
+export const UpdateAccessRoleBodyAnchorLevel = {
+  ZONE: "ZONE",
+  CITY: "CITY",
+  CLUSTER: "CLUSTER",
+  PROPERTY: "PROPERTY",
+  KITCHEN: "KITCHEN",
+} as const;
+
+export interface UpdateAccessRoleBody {
+  label?: string;
+  description?: string | null;
+  isActive?: boolean;
+  anchorLevel?: UpdateAccessRoleBodyAnchorLevel;
+  reason: string;
+}
+
+export type RoleImpactResponseData = {
+  roleKey: string;
+  label?: string;
+  /** People whose account resolves as this role — the ones a disable strands. */
+  primaryHolders: number;
+  holders: RoleHolder[];
+};
+
+export interface RoleImpactResponse {
+  success: boolean;
+  data: RoleImpactResponseData;
+}
+
+export interface MatrixCell {
+  roleKey: string;
+  functionality: string;
+  action: string;
+  /** True when the role resolves by rule rather than from a stored row. */
+  computed: boolean;
+}
+
+export type AccessMatrixResponseDataSource =
+  (typeof AccessMatrixResponseDataSource)[keyof typeof AccessMatrixResponseDataSource];
+
+export const AccessMatrixResponseDataSource = {
+  db: "db",
+  code: "code",
+} as const;
+
+export type AccessMatrixResponseDataModulesItem = {
+  key: string;
+  label: string;
+  functionalities: ManifestFunctionality[];
+};
+
+export type AccessMatrixResponseData = {
+  version: number;
+  source: AccessMatrixResponseDataSource;
+  modules: AccessMatrixResponseDataModulesItem[];
+  cells: MatrixCell[];
+};
+
+export interface AccessMatrixResponse {
+  success: boolean;
+  data: AccessMatrixResponseData;
+}
+
+export type UpdateAccessMatrixBodyChangesItem = {
+  roleKey: string;
+  functionality: string;
+  action: string;
+  allowed: boolean;
+};
+
+export interface UpdateAccessMatrixBody {
+  /** The version read. A mismatch means somebody else edited first. */
+  version?: number;
+  reason: string;
+  changes: UpdateAccessMatrixBodyChangesItem[];
+}
+
+export interface AccessUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  propertyId?: string | null;
+  isActive: boolean;
+}
+
+export interface AccessUsersResponse {
+  success: boolean;
+  data: AccessUser[];
+}
+
+export type OrgNodeNodeType =
+  (typeof OrgNodeNodeType)[keyof typeof OrgNodeNodeType];
+
+export const OrgNodeNodeType = {
+  ORGANIZATION: "ORGANIZATION",
+  ZONE: "ZONE",
+  CITY: "CITY",
+  CLUSTER: "CLUSTER",
+  PROPERTY: "PROPERTY",
+  KITCHEN: "KITCHEN",
+} as const;
+
+export interface OrgNode {
+  id: string;
+  name: string;
+  nodeType: OrgNodeNodeType;
+  parentId?: string | null;
+  depth?: number;
+  isActive: boolean;
+}
+
+export interface OrgNodesResponse {
+  success: boolean;
+  data: OrgNode[];
+}
+
+export type AccessGrantSubjectType =
+  (typeof AccessGrantSubjectType)[keyof typeof AccessGrantSubjectType];
+
+export const AccessGrantSubjectType = {
+  USER: "USER",
+  ROLE: "ROLE",
+} as const;
+
+export interface AccessGrant {
+  id: string;
+  subjectType: AccessGrantSubjectType;
+  subjectId: string;
+  /** '*' means the placement applies whatever role the person holds. */
+  roleKey: string;
+  nodeId?: string | null;
+  nodeName?: string | null;
+  nodeType?: string | null;
+  /** Expanded through the closure at READ time, so new properties appear on their own. */
+  includeDescendants: boolean;
+  dataScope?: string;
+  assignmentKind?: string;
+  effectiveFrom?: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+}
+
+export interface AccessGrantsResponse {
+  success: boolean;
+  data: AccessGrant[];
+}
+
+export interface AccessGrantResponse {
+  success: boolean;
+  data: AccessGrant;
+}
+
+export type CreateAccessGrantBodySubjectType =
+  (typeof CreateAccessGrantBodySubjectType)[keyof typeof CreateAccessGrantBodySubjectType];
+
+export const CreateAccessGrantBodySubjectType = {
+  USER: "USER",
+  ROLE: "ROLE",
+} as const;
+
+export interface CreateAccessGrantBody {
+  subjectType: CreateAccessGrantBodySubjectType;
+  subjectId: string;
+  roleKey?: string;
+  nodeId: string;
+  includeDescendants?: boolean;
+  dataScope?: string;
+  assignmentKind?: string;
+  expiresAt?: string | null;
+  reason: string;
+}
+
+export interface ReasonBody {
+  reason: string;
+}
+
+export type IdResponseData = {
+  id: string;
+};
+
+export interface IdResponse {
+  success: boolean;
+  data: IdResponseData;
+}
+
+export interface RoleAssignment {
+  roleKey: string;
+  label: string;
+  held: boolean;
+  /** Held AND inside its effective window. */
+  live?: boolean;
+  isActive?: boolean;
+  anchorLevel?: string | null;
+  expiresAt?: string | null;
+}
+
+export interface RoleAssignmentsResponse {
+  success: boolean;
+  data: RoleAssignment[];
+}
+
+export interface UpdateRoleAssignmentsBody {
+  roleKeys: string[];
+  reason: string;
+}
+
+export type PreviewAction = NamedAction & {
+  action: string;
+  allow: boolean;
+  /** Why — ALLOW_ROLE_CAPABILITY, DENY_NO_GRANT, DENY_ROLE_LACKS_CAPABILITY, and so on. */
+  reason: string;
+  detail?: string;
+  via?: string | null;
+};
+
+export type AccessPreviewResponseDataModulesItemFunctionalitiesItem = {
+  key: string;
+  label: string;
+  noAccess?: boolean;
+  actions: PreviewAction[];
+};
+
+export type AccessPreviewResponseDataModulesItem = {
+  key: string;
+  label: string;
+  noAccess?: boolean;
+  heldCount?: number;
+  totalCount?: number;
+  functionalities: AccessPreviewResponseDataModulesItemFunctionalitiesItem[];
+};
+
+export type AccessPreviewResponseData = {
+  subject?: AccessUser;
+  modules: AccessPreviewResponseDataModulesItem[];
+};
+
+export interface AccessPreviewResponse {
+  success: boolean;
+  data: AccessPreviewResponseData;
+}
+
+export interface RoleTreeAnchor {
+  id: string;
+  name: string;
+  nodeType: string;
+  includeDescendants?: boolean;
+  /** False when the placement was made for the PERSON rather than under this role, so it applies to every role they hold. */
+  scopedToRole: boolean;
+}
+
+export type UserRoleTreeResponseDataRolesItemPropertiesItem = {
+  id: string;
+  name: string;
+  viaId?: string;
+  viaName?: string;
+  viaType?: string;
+};
+
+export type UserRoleTreeResponseDataRolesItem = {
+  roleKey: string;
+  label: string;
+  isSystem?: boolean;
+  anchorLevel?: string | null;
+  anchors: RoleTreeAnchor[];
+  /** Every property the anchors reach, resolved through the closure now. */
+  properties: UserRoleTreeResponseDataRolesItemPropertiesItem[];
+};
+
+export type UserRoleTreeResponseData = {
+  roles: UserRoleTreeResponseDataRolesItem[];
+};
+
+export interface UserRoleTreeResponse {
+  success: boolean;
+  data: UserRoleTreeResponseData;
+}
+
+export type GridCell = NamedAction & {
+  action: string;
+  inManifest: boolean;
+  /** What THIS role's matrix gives — what makes one role's grid differ. */
+  roleAllows: boolean;
+  /** What the person actually gets here, across every role plus exceptions. */
+  allowed: boolean;
+  reason?: string;
+  detail?: string;
+};
+
+export type UserPermissionGridResponseDataModulesItemFunctionalitiesItem = {
+  functionality: string;
+  label: string;
+  cells: GridCell[];
+};
+
+export type UserPermissionGridResponseDataModulesItem = {
+  key: string;
+  label: string;
+  functionalities: UserPermissionGridResponseDataModulesItemFunctionalitiesItem[];
+};
+
+export type UserPermissionGridResponseData = {
+  userId: string;
+  roleKey?: string | null;
+  nodeId?: string | null;
+  modules: UserPermissionGridResponseDataModulesItem[];
+};
+
+export interface UserPermissionGridResponse {
+  success: boolean;
+  data: UserPermissionGridResponseData;
+}
+
+export interface SetPermissionCellBody {
+  roleKey?: string;
+  nodeId?: string;
+  functionality: string;
+  action: string;
+  allowed: boolean;
+  reason: string;
+}
+
+export interface SetRoleScopeBody {
+  roleKey: string;
+  nodeIds: string[];
+  reason: string;
+}
+
+/**
+ * The evidence a privilege was granted on — typically an exported email. Sent as a base64 data URL, the same convention audit evidence uses.
+ */
+export interface ApprovalUpload {
+  /** data:<mime>;base64,<payload> */
+  dataUrl: string;
+  filename: string;
+}
+
+export type PrivilegesResponseData = {
+  heldRoles: string[];
+  privileges: Privilege[];
+};
+
+export interface PrivilegesResponse {
+  success: boolean;
+  data: PrivilegesResponseData;
+}
+
+export interface PrivilegeResponse {
+  success: boolean;
+  data: Privilege;
+}
+
+export type SetPrivilegeBodySubjectType =
+  (typeof SetPrivilegeBodySubjectType)[keyof typeof SetPrivilegeBodySubjectType];
+
+export const SetPrivilegeBodySubjectType = {
+  USER: "USER",
+  ROLE: "ROLE",
+} as const;
+
+/**
+ * INHERIT deletes the row — the subject falls back to the layer beneath.
+ */
+export type SetPrivilegeBodyEffect =
+  (typeof SetPrivilegeBodyEffect)[keyof typeof SetPrivilegeBodyEffect];
+
+export const SetPrivilegeBodyEffect = {
+  GRANT: "GRANT",
+  DENY: "DENY",
+  INHERIT: "INHERIT",
+} as const;
+
+export interface SetPrivilegeBody {
+  subjectType: SetPrivilegeBodySubjectType;
+  subjectId: string;
+  functionality: string;
+  action: string;
+  nodeId?: string | null;
+  /** INHERIT deletes the row — the subject falls back to the layer beneath. */
+  effect: SetPrivilegeBodyEffect;
+  reason: string;
+  expiresAt?: string | null;
+  approval?: ApprovalUpload | null;
+}
+
+export type PrivilegeSetItem = NamedAction & {
+  functionality: string;
+  functionalityLabel?: string;
+  module?: string;
+  action: string;
+  /** False when the manifest no longer names it. Shown struck through rather than dropped — a grant nobody can see is a grant nobody will remove. */
+  inManifest: boolean;
+};
+
+export type PrivilegeSetEffect =
+  (typeof PrivilegeSetEffect)[keyof typeof PrivilegeSetEffect];
+
+export const PrivilegeSetEffect = {
+  GRANT: "GRANT",
+  DENY: "DENY",
+} as const;
+
+export interface PrivilegeSet {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  effect: PrivilegeSetEffect;
+  isActive: boolean;
+  createdBy?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  items: PrivilegeSetItem[];
+  /** Live assignments — the blast radius of editing the set. */
+  holders: number;
+}
+
+export interface PrivilegeSetsResponse {
+  success: boolean;
+  data: PrivilegeSet[];
+}
+
+export type PrivilegeSetBodyEffect =
+  (typeof PrivilegeSetBodyEffect)[keyof typeof PrivilegeSetBodyEffect];
+
+export const PrivilegeSetBodyEffect = {
+  GRANT: "GRANT",
+  DENY: "DENY",
+} as const;
+
+export type PrivilegeSetBodyItemsItem = {
+  functionality: string;
+  action: string;
+};
+
+export interface PrivilegeSetBody {
+  key?: string;
+  name: string;
+  description: string;
+  effect: PrivilegeSetBodyEffect;
+  isActive?: boolean;
+  /** May mix actions from any number of functionalities and modules. */
+  items: PrivilegeSetBodyItemsItem[];
+}
+
+export type CreatePrivilegeSetResponseData = {
+  id: string;
+  key: string;
+};
+
+export interface CreatePrivilegeSetResponse {
+  success: boolean;
+  data: CreatePrivilegeSetResponseData;
+}
+
+export type UpdatePrivilegeSetResponseData = {
+  id: string;
+  /** How many people the edit reached. */
+  holders: number;
+};
+
+export interface UpdatePrivilegeSetResponse {
+  success: boolean;
+  data: UpdatePrivilegeSetResponseData;
+}
+
+export type AssignPrivilegeSetBodySubjectType =
+  (typeof AssignPrivilegeSetBodySubjectType)[keyof typeof AssignPrivilegeSetBodySubjectType];
+
+export const AssignPrivilegeSetBodySubjectType = {
+  USER: "USER",
+  ROLE: "ROLE",
+} as const;
+
+export interface AssignPrivilegeSetBody {
+  subjectType: AssignPrivilegeSetBodySubjectType;
+  subjectId: string;
+  roleKey?: string;
+  nodeId?: string | null;
+  reason: string;
+  expiresAt?: string | null;
+  approval?: ApprovalUpload | null;
+}
+
+export type HeldPrivilegeSetEffect =
+  (typeof HeldPrivilegeSetEffect)[keyof typeof HeldPrivilegeSetEffect];
+
+export const HeldPrivilegeSetEffect = {
+  GRANT: "GRANT",
+  DENY: "DENY",
+} as const;
+
+export interface HeldPrivilegeSet {
+  assignmentId: string;
+  setId: string;
+  key: string;
+  name: string;
+  description?: string;
+  effect: HeldPrivilegeSetEffect;
+  isActive?: boolean;
+  roleKey?: string;
+  nodeId?: string | null;
+  reason?: string;
+  expiresAt?: string | null;
+  approvalFilename?: string | null;
+  approvalUrl?: string | null;
+  items: PrivilegeSetItem[];
+}
+
+export interface HeldPrivilegeSetsResponse {
+  success: boolean;
+  data: HeldPrivilegeSet[];
+}
+
+export type PrivilegeSetHoldersResponseDataItemSubjectType =
+  (typeof PrivilegeSetHoldersResponseDataItemSubjectType)[keyof typeof PrivilegeSetHoldersResponseDataItemSubjectType];
+
+export const PrivilegeSetHoldersResponseDataItemSubjectType = {
+  USER: "USER",
+  ROLE: "ROLE",
+} as const;
+
+export type PrivilegeSetHoldersResponseDataItem = {
+  assignmentId: string;
+  subjectType: PrivilegeSetHoldersResponseDataItemSubjectType;
+  subjectId: string;
+  name?: string | null;
+  email?: string | null;
+  nodeId?: string | null;
+  expiresAt?: string | null;
+};
+
+export interface PrivilegeSetHoldersResponse {
+  success: boolean;
+  data: PrivilegeSetHoldersResponseDataItem[];
+}
+
+export type CloneAccessBodyPartsItem =
+  (typeof CloneAccessBodyPartsItem)[keyof typeof CloneAccessBodyPartsItem];
+
+export const CloneAccessBodyPartsItem = {
+  roles: "roles",
+  grants: "grants",
+  privileges: "privileges",
+} as const;
+
+export interface CloneAccessBody {
+  fromUserId: string;
+  toUserId: string;
+  reason: string;
+  /** Which layers to copy — roles, grants, privileges. */
+  parts?: CloneAccessBodyPartsItem[];
+}
+
+export type ClonePlanResponseDataRoles = {
+  incoming?: string[];
+  replacing?: string[];
+};
+
+export type ClonePlanResponseDataGrants = {
+  incoming?: AccessGrant[];
+  replacing?: AccessGrant[];
+};
+
+export type ClonePlanResponseDataPrivileges = {
+  incoming?: Privilege[];
+  replacing?: Privilege[];
+};
+
+export type ClonePlanResponseData = {
+  from?: AccessUser;
+  to?: AccessUser;
+  roles?: ClonePlanResponseDataRoles;
+  grants?: ClonePlanResponseDataGrants;
+  privileges?: ClonePlanResponseDataPrivileges;
+};
+
+export interface ClonePlanResponse {
+  success: boolean;
+  data: ClonePlanResponseData;
+}
+
 export type PageParamParameter = number;
 
 export type LimitParamParameter = number;
@@ -2334,3 +3105,33 @@ export type ToggleResidentWallet200 = {
   success?: boolean;
   data?: ToggleResidentWallet200Data;
 };
+
+export type GetAccessMatrixParams = {
+  roleKey?: string;
+};
+
+export type GetAccessGrantsParams = {
+  subjectId?: string;
+};
+
+export type PreviewUserAccessParams = {
+  nodeId?: string;
+};
+
+export type GetUserPermissionGridParams = {
+  nodeId?: string;
+  roleKey?: string;
+};
+
+export type GetPrivilegesParams = {
+  subjectType: GetPrivilegesSubjectType;
+  subjectId: string;
+};
+
+export type GetPrivilegesSubjectType =
+  (typeof GetPrivilegesSubjectType)[keyof typeof GetPrivilegesSubjectType];
+
+export const GetPrivilegesSubjectType = {
+  USER: "USER",
+  ROLE: "ROLE",
+} as const;

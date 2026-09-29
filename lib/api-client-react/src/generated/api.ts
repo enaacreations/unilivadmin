@@ -17,8 +17,17 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  AccessGrantResponse,
+  AccessGrantsResponse,
+  AccessManifestResponse,
+  AccessMatrixResponse,
+  AccessPreviewResponse,
+  AccessRoleDetailResponse,
+  AccessRolesResponse,
+  AccessUsersResponse,
   AnnouncementResponse,
   AnnouncementsListResponse,
+  AssignPrivilegeSetBody,
   AttendanceListResponse,
   AttendanceResponse,
   AvailabilityResponse,
@@ -35,11 +44,15 @@ import type {
   BulkElectricityReadingsResponse,
   CandidateResponse,
   CandidatesListResponse,
+  CloneAccessBody,
+  ClonePlanResponse,
   ComplaintResponse,
   ComplaintsListResponse,
   ConfirmBankLineBody,
   CourseResponse,
   CoursesListResponse,
+  CreateAccessGrantBody,
+  CreateAccessRoleBody,
   CreateAnnouncementBody,
   CreateAttendanceBody,
   CreateBankImportBody,
@@ -69,6 +82,7 @@ import type {
   CreateLedgerEntryBody,
   CreateOutPassBody,
   CreatePaymentBody,
+  CreatePrivilegeSetResponse,
   CreatePropertyBody,
   CreatePropertyLeadBody,
   CreatePurchaseOrderBody,
@@ -104,6 +118,8 @@ import type {
   FinanceSummaryResponse,
   GRNResponse,
   GRNsListResponse,
+  GetAccessGrantsParams,
+  GetAccessMatrixParams,
   GetAnnouncementsParams,
   GetAttendanceParams,
   GetBillingRunsParams,
@@ -132,6 +148,7 @@ import type {
   GetLeadsParams,
   GetLeavesParams,
   GetOutPassesParams,
+  GetPrivilegesParams,
   GetPropertiesParams,
   GetPropertyLeadsParams,
   GetPurchaseOrdersParams,
@@ -140,10 +157,13 @@ import type {
   GetResidentWalletTransactionsParams,
   GetResidentsParams,
   GetRoomsParams,
+  GetUserPermissionGridParams,
   GetUsersParams,
   GetVendorsParams,
   GetWalletOverviewParams,
   HealthStatus,
+  HeldPrivilegeSetsResponse,
+  IdResponse,
   IndentResponse,
   IndentsListResponse,
   InventoryItemResponse,
@@ -165,17 +185,26 @@ import type {
   LoginResponse,
   MarkResidentAttendanceBody,
   MarkResidentAttendanceResponse,
+  OrgNodesResponse,
   OutPassResponse,
   OutPassesListResponse,
   PaymentResponse,
   PaymentsListResponse,
   PortfolioBreakdownResponse,
+  PreviewUserAccessParams,
+  PrivilegeCatalogueResponse,
+  PrivilegeResponse,
+  PrivilegeSetBody,
+  PrivilegeSetHoldersResponse,
+  PrivilegeSetsResponse,
+  PrivilegesResponse,
   PropertiesListResponse,
   PropertyLeadResponse,
   PropertyLeadsListResponse,
   PropertyResponse,
   PurchaseOrderResponse,
   PurchaseOrdersListResponse,
+  ReasonBody,
   ReminderCountResponse,
   ReminderLogResponse,
   ReminderLogsListResponse,
@@ -185,21 +214,32 @@ import type {
   ResidentAttendanceListResponse,
   ResidentResponse,
   ResidentsListResponse,
+  RoleAssignmentsResponse,
+  RoleImpactResponse,
   RoomResponse,
   RoomsListResponse,
   RunReminderRuleResponse,
   SendReminderBody,
+  SetPermissionCellBody,
+  SetPrivilegeBody,
+  SetRoleScopeBody,
   SuccessResponse,
   ToggleResidentWallet200,
   ToggleResidentWalletBody,
   TransitionExpenseBody,
+  UpdateAccessMatrixBody,
+  UpdateAccessRoleBody,
   UpdateComplaintBody,
   UpdateEnrollmentBody,
   UpdateIotDeviceBody,
   UpdateLeaveBody,
   UpdateOutPassBody,
+  UpdatePrivilegeSetResponse,
+  UpdateRoleAssignmentsBody,
   UpdateUserBody,
+  UserPermissionGridResponse,
   UserResponse,
+  UserRoleTreeResponse,
   UsersListResponse,
   VendorResponse,
   VendorsListResponse,
@@ -14621,3 +14661,2933 @@ export const useUpdateWalletConfig = <
 > => {
   return useMutation(getUpdateWalletConfigMutationOptions(options));
 };
+
+/**
+ * @summary The access vocabulary — every module, functionality and named action
+ */
+export const getGetAccessManifestUrl = () => {
+  return `/api/access/manifest`;
+};
+
+export const getAccessManifest = async (
+  options?: RequestInit,
+): Promise<AccessManifestResponse> => {
+  return customFetch<AccessManifestResponse>(getGetAccessManifestUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAccessManifestQueryKey = () => {
+  return [`/api/access/manifest`] as const;
+};
+
+export const getGetAccessManifestQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAccessManifest>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessManifest>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAccessManifestQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getAccessManifest>>
+  > = ({ signal }) => getAccessManifest({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessManifest>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAccessManifestQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAccessManifest>>
+>;
+export type GetAccessManifestQueryError = ErrorType<unknown>;
+
+/**
+ * @summary The access vocabulary — every module, functionality and named action
+ */
+
+export function useGetAccessManifest<
+  TData = Awaited<ReturnType<typeof getAccessManifest>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessManifest>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAccessManifestQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Every permission the system defines, with what grants it today
+ */
+export const getGetPrivilegeCatalogueUrl = () => {
+  return `/api/access/privilege-catalogue`;
+};
+
+export const getPrivilegeCatalogue = async (
+  options?: RequestInit,
+): Promise<PrivilegeCatalogueResponse> => {
+  return customFetch<PrivilegeCatalogueResponse>(
+    getGetPrivilegeCatalogueUrl(),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetPrivilegeCatalogueQueryKey = () => {
+  return [`/api/access/privilege-catalogue`] as const;
+};
+
+export const getGetPrivilegeCatalogueQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPrivilegeCatalogue>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivilegeCatalogue>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetPrivilegeCatalogueQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPrivilegeCatalogue>>
+  > = ({ signal }) => getPrivilegeCatalogue({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivilegeCatalogue>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPrivilegeCatalogueQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPrivilegeCatalogue>>
+>;
+export type GetPrivilegeCatalogueQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Every permission the system defines, with what grants it today
+ */
+
+export function useGetPrivilegeCatalogue<
+  TData = Awaited<ReturnType<typeof getPrivilegeCatalogue>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivilegeCatalogue>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPrivilegeCatalogueQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Every role, its permissions and who holds it
+ */
+export const getGetAccessRolesUrl = () => {
+  return `/api/access/roles`;
+};
+
+export const getAccessRoles = async (
+  options?: RequestInit,
+): Promise<AccessRolesResponse> => {
+  return customFetch<AccessRolesResponse>(getGetAccessRolesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAccessRolesQueryKey = () => {
+  return [`/api/access/roles`] as const;
+};
+
+export const getGetAccessRolesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAccessRoles>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessRoles>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAccessRolesQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAccessRoles>>> = ({
+    signal,
+  }) => getAccessRoles({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessRoles>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAccessRolesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAccessRoles>>
+>;
+export type GetAccessRolesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Every role, its permissions and who holds it
+ */
+
+export function useGetAccessRoles<
+  TData = Awaited<ReturnType<typeof getAccessRoles>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessRoles>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAccessRolesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Create a role, optionally cloning another's permissions
+ */
+export const getCreateAccessRoleUrl = () => {
+  return `/api/access/roles`;
+};
+
+export const createAccessRole = async (
+  createAccessRoleBody: CreateAccessRoleBody,
+  options?: RequestInit,
+): Promise<AccessRoleDetailResponse> => {
+  return customFetch<AccessRoleDetailResponse>(getCreateAccessRoleUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createAccessRoleBody),
+  });
+};
+
+export const getCreateAccessRoleMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createAccessRole>>,
+    TError,
+    { data: BodyType<CreateAccessRoleBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createAccessRole>>,
+  TError,
+  { data: BodyType<CreateAccessRoleBody> },
+  TContext
+> => {
+  const mutationKey = ["createAccessRole"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createAccessRole>>,
+    { data: BodyType<CreateAccessRoleBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createAccessRole(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateAccessRoleMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createAccessRole>>
+>;
+export type CreateAccessRoleMutationBody = BodyType<CreateAccessRoleBody>;
+export type CreateAccessRoleMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Create a role, optionally cloning another's permissions
+ */
+export const useCreateAccessRole = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createAccessRole>>,
+    TError,
+    { data: BodyType<CreateAccessRoleBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createAccessRole>>,
+  TError,
+  { data: BodyType<CreateAccessRoleBody> },
+  TContext
+> => {
+  return useMutation(getCreateAccessRoleMutationOptions(options));
+};
+
+/**
+ * @summary One role, its permission cells and its holders
+ */
+export const getGetAccessRoleUrl = (key: string) => {
+  return `/api/access/roles/${key}`;
+};
+
+export const getAccessRole = async (
+  key: string,
+  options?: RequestInit,
+): Promise<AccessRoleDetailResponse> => {
+  return customFetch<AccessRoleDetailResponse>(getGetAccessRoleUrl(key), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAccessRoleQueryKey = (key: string) => {
+  return [`/api/access/roles/${key}`] as const;
+};
+
+export const getGetAccessRoleQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAccessRole>>,
+  TError = ErrorType<unknown>,
+>(
+  key: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAccessRole>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAccessRoleQueryKey(key);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAccessRole>>> = ({
+    signal,
+  }) => getAccessRole(key, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!key,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessRole>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAccessRoleQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAccessRole>>
+>;
+export type GetAccessRoleQueryError = ErrorType<unknown>;
+
+/**
+ * @summary One role, its permission cells and its holders
+ */
+
+export function useGetAccessRole<
+  TData = Awaited<ReturnType<typeof getAccessRole>>,
+  TError = ErrorType<unknown>,
+>(
+  key: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAccessRole>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAccessRoleQueryOptions(key, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Rename a role, change its anchor level, or enable/disable it
+ */
+export const getUpdateAccessRoleUrl = (key: string) => {
+  return `/api/access/roles/${key}`;
+};
+
+export const updateAccessRole = async (
+  key: string,
+  updateAccessRoleBody: UpdateAccessRoleBody,
+  options?: RequestInit,
+): Promise<AccessRoleDetailResponse> => {
+  return customFetch<AccessRoleDetailResponse>(getUpdateAccessRoleUrl(key), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateAccessRoleBody),
+  });
+};
+
+export const getUpdateAccessRoleMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAccessRole>>,
+    TError,
+    { key: string; data: BodyType<UpdateAccessRoleBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateAccessRole>>,
+  TError,
+  { key: string; data: BodyType<UpdateAccessRoleBody> },
+  TContext
+> => {
+  const mutationKey = ["updateAccessRole"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateAccessRole>>,
+    { key: string; data: BodyType<UpdateAccessRoleBody> }
+  > = (props) => {
+    const { key, data } = props ?? {};
+
+    return updateAccessRole(key, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateAccessRoleMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateAccessRole>>
+>;
+export type UpdateAccessRoleMutationBody = BodyType<UpdateAccessRoleBody>;
+export type UpdateAccessRoleMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Rename a role, change its anchor level, or enable/disable it
+ */
+export const useUpdateAccessRole = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAccessRole>>,
+    TError,
+    { key: string; data: BodyType<UpdateAccessRoleBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateAccessRole>>,
+  TError,
+  { key: string; data: BodyType<UpdateAccessRoleBody> },
+  TContext
+> => {
+  return useMutation(getUpdateAccessRoleMutationOptions(options));
+};
+
+/**
+ * Read before disabling a role. Counts the people holding it as their primary role and names them, so the decision is made against people rather than a number.
+ * @summary Who a change to this role would reach
+ */
+export const getGetRoleImpactUrl = (key: string) => {
+  return `/api/access/roles/${key}/impact`;
+};
+
+export const getRoleImpact = async (
+  key: string,
+  options?: RequestInit,
+): Promise<RoleImpactResponse> => {
+  return customFetch<RoleImpactResponse>(getGetRoleImpactUrl(key), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetRoleImpactQueryKey = (key: string) => {
+  return [`/api/access/roles/${key}/impact`] as const;
+};
+
+export const getGetRoleImpactQueryOptions = <
+  TData = Awaited<ReturnType<typeof getRoleImpact>>,
+  TError = ErrorType<unknown>,
+>(
+  key: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRoleImpact>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetRoleImpactQueryKey(key);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getRoleImpact>>> = ({
+    signal,
+  }) => getRoleImpact(key, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!key,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getRoleImpact>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetRoleImpactQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getRoleImpact>>
+>;
+export type GetRoleImpactQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Who a change to this role would reach
+ */
+
+export function useGetRoleImpact<
+  TData = Awaited<ReturnType<typeof getRoleImpact>>,
+  TError = ErrorType<unknown>,
+>(
+  key: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRoleImpact>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetRoleImpactQueryOptions(key, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary The role × functionality × action matrix
+ */
+export const getGetAccessMatrixUrl = (params?: GetAccessMatrixParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/access/matrix?${stringifiedParams}`
+    : `/api/access/matrix`;
+};
+
+export const getAccessMatrix = async (
+  params?: GetAccessMatrixParams,
+  options?: RequestInit,
+): Promise<AccessMatrixResponse> => {
+  return customFetch<AccessMatrixResponse>(getGetAccessMatrixUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAccessMatrixQueryKey = (params?: GetAccessMatrixParams) => {
+  return [`/api/access/matrix`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetAccessMatrixQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAccessMatrix>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetAccessMatrixParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAccessMatrix>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAccessMatrixQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAccessMatrix>>> = ({
+    signal,
+  }) => getAccessMatrix(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessMatrix>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAccessMatrixQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAccessMatrix>>
+>;
+export type GetAccessMatrixQueryError = ErrorType<unknown>;
+
+/**
+ * @summary The role × functionality × action matrix
+ */
+
+export function useGetAccessMatrix<
+  TData = Awaited<ReturnType<typeof getAccessMatrix>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetAccessMatrixParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAccessMatrix>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAccessMatrixQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Refused when the change would leave nobody able to administer access, when it would raise a role above the caller's own, or when it touches a protected functionality.
+ * @summary Change permission cells
+ */
+export const getUpdateAccessMatrixUrl = () => {
+  return `/api/access/matrix`;
+};
+
+export const updateAccessMatrix = async (
+  updateAccessMatrixBody: UpdateAccessMatrixBody,
+  options?: RequestInit,
+): Promise<AccessMatrixResponse> => {
+  return customFetch<AccessMatrixResponse>(getUpdateAccessMatrixUrl(), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateAccessMatrixBody),
+  });
+};
+
+export const getUpdateAccessMatrixMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAccessMatrix>>,
+    TError,
+    { data: BodyType<UpdateAccessMatrixBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateAccessMatrix>>,
+  TError,
+  { data: BodyType<UpdateAccessMatrixBody> },
+  TContext
+> => {
+  const mutationKey = ["updateAccessMatrix"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateAccessMatrix>>,
+    { data: BodyType<UpdateAccessMatrixBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return updateAccessMatrix(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateAccessMatrixMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateAccessMatrix>>
+>;
+export type UpdateAccessMatrixMutationBody = BodyType<UpdateAccessMatrixBody>;
+export type UpdateAccessMatrixMutationError = ErrorType<void>;
+
+/**
+ * @summary Change permission cells
+ */
+export const useUpdateAccessMatrix = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAccessMatrix>>,
+    TError,
+    { data: BodyType<UpdateAccessMatrixBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateAccessMatrix>>,
+  TError,
+  { data: BodyType<UpdateAccessMatrixBody> },
+  TContext
+> => {
+  return useMutation(getUpdateAccessMatrixMutationOptions(options));
+};
+
+/**
+ * @summary People, for the access console's subject pickers
+ */
+export const getGetAccessUsersUrl = () => {
+  return `/api/access/users`;
+};
+
+export const getAccessUsers = async (
+  options?: RequestInit,
+): Promise<AccessUsersResponse> => {
+  return customFetch<AccessUsersResponse>(getGetAccessUsersUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAccessUsersQueryKey = () => {
+  return [`/api/access/users`] as const;
+};
+
+export const getGetAccessUsersQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAccessUsers>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessUsers>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAccessUsersQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAccessUsers>>> = ({
+    signal,
+  }) => getAccessUsers({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessUsers>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAccessUsersQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAccessUsers>>
+>;
+export type GetAccessUsersQueryError = ErrorType<unknown>;
+
+/**
+ * @summary People, for the access console's subject pickers
+ */
+
+export function useGetAccessUsers<
+  TData = Awaited<ReturnType<typeof getAccessUsers>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessUsers>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAccessUsersQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary The organization tree — zones, cities, clusters, properties, kitchens
+ */
+export const getGetOrgNodesUrl = () => {
+  return `/api/access/nodes`;
+};
+
+export const getOrgNodes = async (
+  options?: RequestInit,
+): Promise<OrgNodesResponse> => {
+  return customFetch<OrgNodesResponse>(getGetOrgNodesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOrgNodesQueryKey = () => {
+  return [`/api/access/nodes`] as const;
+};
+
+export const getGetOrgNodesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOrgNodes>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getOrgNodes>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetOrgNodesQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getOrgNodes>>> = ({
+    signal,
+  }) => getOrgNodes({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOrgNodes>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOrgNodesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOrgNodes>>
+>;
+export type GetOrgNodesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary The organization tree — zones, cities, clusters, properties, kitchens
+ */
+
+export function useGetOrgNodes<
+  TData = Awaited<ReturnType<typeof getOrgNodes>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getOrgNodes>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOrgNodesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Placements — which subject may act at which node
+ */
+export const getGetAccessGrantsUrl = (params?: GetAccessGrantsParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/access/grants?${stringifiedParams}`
+    : `/api/access/grants`;
+};
+
+export const getAccessGrants = async (
+  params?: GetAccessGrantsParams,
+  options?: RequestInit,
+): Promise<AccessGrantsResponse> => {
+  return customFetch<AccessGrantsResponse>(getGetAccessGrantsUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAccessGrantsQueryKey = (params?: GetAccessGrantsParams) => {
+  return [`/api/access/grants`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetAccessGrantsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAccessGrants>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetAccessGrantsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAccessGrants>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAccessGrantsQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getAccessGrants>>> = ({
+    signal,
+  }) => getAccessGrants(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAccessGrants>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAccessGrantsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAccessGrants>>
+>;
+export type GetAccessGrantsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Placements — which subject may act at which node
+ */
+
+export function useGetAccessGrants<
+  TData = Awaited<ReturnType<typeof getAccessGrants>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetAccessGrantsParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAccessGrants>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAccessGrantsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Place a subject at a node
+ */
+export const getCreateAccessGrantUrl = () => {
+  return `/api/access/grants`;
+};
+
+export const createAccessGrant = async (
+  createAccessGrantBody: CreateAccessGrantBody,
+  options?: RequestInit,
+): Promise<AccessGrantResponse> => {
+  return customFetch<AccessGrantResponse>(getCreateAccessGrantUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createAccessGrantBody),
+  });
+};
+
+export const getCreateAccessGrantMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createAccessGrant>>,
+    TError,
+    { data: BodyType<CreateAccessGrantBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createAccessGrant>>,
+  TError,
+  { data: BodyType<CreateAccessGrantBody> },
+  TContext
+> => {
+  const mutationKey = ["createAccessGrant"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createAccessGrant>>,
+    { data: BodyType<CreateAccessGrantBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createAccessGrant(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateAccessGrantMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createAccessGrant>>
+>;
+export type CreateAccessGrantMutationBody = BodyType<CreateAccessGrantBody>;
+export type CreateAccessGrantMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Place a subject at a node
+ */
+export const useCreateAccessGrant = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createAccessGrant>>,
+    TError,
+    { data: BodyType<CreateAccessGrantBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createAccessGrant>>,
+  TError,
+  { data: BodyType<CreateAccessGrantBody> },
+  TContext
+> => {
+  return useMutation(getCreateAccessGrantMutationOptions(options));
+};
+
+/**
+ * Sets revokedAt rather than deleting, so "who could reach what, when" stays answerable.
+ * @summary Revoke a placement
+ */
+export const getRevokeAccessGrantUrl = (id: string) => {
+  return `/api/access/grants/${id}/revoke`;
+};
+
+export const revokeAccessGrant = async (
+  id: string,
+  reasonBody: ReasonBody,
+  options?: RequestInit,
+): Promise<AccessGrantResponse> => {
+  return customFetch<AccessGrantResponse>(getRevokeAccessGrantUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(reasonBody),
+  });
+};
+
+export const getRevokeAccessGrantMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof revokeAccessGrant>>,
+    TError,
+    { id: string; data: BodyType<ReasonBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof revokeAccessGrant>>,
+  TError,
+  { id: string; data: BodyType<ReasonBody> },
+  TContext
+> => {
+  const mutationKey = ["revokeAccessGrant"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof revokeAccessGrant>>,
+    { id: string; data: BodyType<ReasonBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return revokeAccessGrant(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RevokeAccessGrantMutationResult = NonNullable<
+  Awaited<ReturnType<typeof revokeAccessGrant>>
+>;
+export type RevokeAccessGrantMutationBody = BodyType<ReasonBody>;
+export type RevokeAccessGrantMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Revoke a placement
+ */
+export const useRevokeAccessGrant = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof revokeAccessGrant>>,
+    TError,
+    { id: string; data: BodyType<ReasonBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof revokeAccessGrant>>,
+  TError,
+  { id: string; data: BodyType<ReasonBody> },
+  TContext
+> => {
+  return useMutation(getRevokeAccessGrantMutationOptions(options));
+};
+
+/**
+ * @summary Restore a revoked placement
+ */
+export const getRestoreAccessGrantUrl = (id: string) => {
+  return `/api/access/grants/${id}/restore`;
+};
+
+export const restoreAccessGrant = async (
+  id: string,
+  reasonBody: ReasonBody,
+  options?: RequestInit,
+): Promise<AccessGrantResponse> => {
+  return customFetch<AccessGrantResponse>(getRestoreAccessGrantUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(reasonBody),
+  });
+};
+
+export const getRestoreAccessGrantMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreAccessGrant>>,
+    TError,
+    { id: string; data: BodyType<ReasonBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof restoreAccessGrant>>,
+  TError,
+  { id: string; data: BodyType<ReasonBody> },
+  TContext
+> => {
+  const mutationKey = ["restoreAccessGrant"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof restoreAccessGrant>>,
+    { id: string; data: BodyType<ReasonBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return restoreAccessGrant(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RestoreAccessGrantMutationResult = NonNullable<
+  Awaited<ReturnType<typeof restoreAccessGrant>>
+>;
+export type RestoreAccessGrantMutationBody = BodyType<ReasonBody>;
+export type RestoreAccessGrantMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Restore a revoked placement
+ */
+export const useRestoreAccessGrant = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreAccessGrant>>,
+    TError,
+    { id: string; data: BodyType<ReasonBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof restoreAccessGrant>>,
+  TError,
+  { id: string; data: BodyType<ReasonBody> },
+  TContext
+> => {
+  return useMutation(getRestoreAccessGrantMutationOptions(options));
+};
+
+/**
+ * @summary The roles one person holds
+ */
+export const getGetRoleAssignmentsUrl = (userId: string) => {
+  return `/api/access/assignments/${userId}`;
+};
+
+export const getRoleAssignments = async (
+  userId: string,
+  options?: RequestInit,
+): Promise<RoleAssignmentsResponse> => {
+  return customFetch<RoleAssignmentsResponse>(
+    getGetRoleAssignmentsUrl(userId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetRoleAssignmentsQueryKey = (userId: string) => {
+  return [`/api/access/assignments/${userId}`] as const;
+};
+
+export const getGetRoleAssignmentsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getRoleAssignments>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRoleAssignments>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetRoleAssignmentsQueryKey(userId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getRoleAssignments>>
+  > = ({ signal }) => getRoleAssignments(userId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!userId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getRoleAssignments>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetRoleAssignmentsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getRoleAssignments>>
+>;
+export type GetRoleAssignmentsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary The roles one person holds
+ */
+
+export function useGetRoleAssignments<
+  TData = Awaited<ReturnType<typeof getRoleAssignments>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getRoleAssignments>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetRoleAssignmentsQueryOptions(userId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Replace the roles one person holds
+ */
+export const getUpdateRoleAssignmentsUrl = (userId: string) => {
+  return `/api/access/assignments/${userId}`;
+};
+
+export const updateRoleAssignments = async (
+  userId: string,
+  updateRoleAssignmentsBody: UpdateRoleAssignmentsBody,
+  options?: RequestInit,
+): Promise<RoleAssignmentsResponse> => {
+  return customFetch<RoleAssignmentsResponse>(
+    getUpdateRoleAssignmentsUrl(userId),
+    {
+      ...options,
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(updateRoleAssignmentsBody),
+    },
+  );
+};
+
+export const getUpdateRoleAssignmentsMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateRoleAssignments>>,
+    TError,
+    { userId: string; data: BodyType<UpdateRoleAssignmentsBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateRoleAssignments>>,
+  TError,
+  { userId: string; data: BodyType<UpdateRoleAssignmentsBody> },
+  TContext
+> => {
+  const mutationKey = ["updateRoleAssignments"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateRoleAssignments>>,
+    { userId: string; data: BodyType<UpdateRoleAssignmentsBody> }
+  > = (props) => {
+    const { userId, data } = props ?? {};
+
+    return updateRoleAssignments(userId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateRoleAssignmentsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateRoleAssignments>>
+>;
+export type UpdateRoleAssignmentsMutationBody =
+  BodyType<UpdateRoleAssignmentsBody>;
+export type UpdateRoleAssignmentsMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Replace the roles one person holds
+ */
+export const useUpdateRoleAssignments = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateRoleAssignments>>,
+    TError,
+    { userId: string; data: BodyType<UpdateRoleAssignmentsBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateRoleAssignments>>,
+  TError,
+  { userId: string; data: BodyType<UpdateRoleAssignmentsBody> },
+  TContext
+> => {
+  return useMutation(getUpdateRoleAssignmentsMutationOptions(options));
+};
+
+/**
+ * Denials are returned alongside grants, never omitted: an administrator needs to see that a thing was considered and refused, and why. `nodeId` re-runs the whole matrix at one place.
+ * @summary Everything this person can and cannot do, with a reason for each
+ */
+export const getPreviewUserAccessUrl = (
+  userId: string,
+  params?: PreviewUserAccessParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/access/preview/${userId}?${stringifiedParams}`
+    : `/api/access/preview/${userId}`;
+};
+
+export const previewUserAccess = async (
+  userId: string,
+  params?: PreviewUserAccessParams,
+  options?: RequestInit,
+): Promise<AccessPreviewResponse> => {
+  return customFetch<AccessPreviewResponse>(
+    getPreviewUserAccessUrl(userId, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getPreviewUserAccessQueryKey = (
+  userId: string,
+  params?: PreviewUserAccessParams,
+) => {
+  return [
+    `/api/access/preview/${userId}`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getPreviewUserAccessQueryOptions = <
+  TData = Awaited<ReturnType<typeof previewUserAccess>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  params?: PreviewUserAccessParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof previewUserAccess>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getPreviewUserAccessQueryKey(userId, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof previewUserAccess>>
+  > = ({ signal }) =>
+    previewUserAccess(userId, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!userId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof previewUserAccess>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type PreviewUserAccessQueryResult = NonNullable<
+  Awaited<ReturnType<typeof previewUserAccess>>
+>;
+export type PreviewUserAccessQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Everything this person can and cannot do, with a reason for each
+ */
+
+export function usePreviewUserAccess<
+  TData = Awaited<ReturnType<typeof previewUserAccess>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  params?: PreviewUserAccessParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof previewUserAccess>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getPreviewUserAccessQueryOptions(
+    userId,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Each role this person holds, where it applies, and what that reaches
+ */
+export const getGetUserRoleTreeUrl = (userId: string) => {
+  return `/api/access/users/${userId}/tree`;
+};
+
+export const getUserRoleTree = async (
+  userId: string,
+  options?: RequestInit,
+): Promise<UserRoleTreeResponse> => {
+  return customFetch<UserRoleTreeResponse>(getGetUserRoleTreeUrl(userId), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetUserRoleTreeQueryKey = (userId: string) => {
+  return [`/api/access/users/${userId}/tree`] as const;
+};
+
+export const getGetUserRoleTreeQueryOptions = <
+  TData = Awaited<ReturnType<typeof getUserRoleTree>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getUserRoleTree>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetUserRoleTreeQueryKey(userId);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getUserRoleTree>>> = ({
+    signal,
+  }) => getUserRoleTree(userId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!userId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getUserRoleTree>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetUserRoleTreeQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getUserRoleTree>>
+>;
+export type GetUserRoleTreeQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Each role this person holds, where it applies, and what that reaches
+ */
+
+export function useGetUserRoleTree<
+  TData = Awaited<ReturnType<typeof getUserRoleTree>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getUserRoleTree>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetUserRoleTreeQueryOptions(userId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary What this person may do at one property
+ */
+export const getGetUserPermissionGridUrl = (
+  userId: string,
+  params?: GetUserPermissionGridParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/access/users/${userId}/grid?${stringifiedParams}`
+    : `/api/access/users/${userId}/grid`;
+};
+
+export const getUserPermissionGrid = async (
+  userId: string,
+  params?: GetUserPermissionGridParams,
+  options?: RequestInit,
+): Promise<UserPermissionGridResponse> => {
+  return customFetch<UserPermissionGridResponse>(
+    getGetUserPermissionGridUrl(userId, params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetUserPermissionGridQueryKey = (
+  userId: string,
+  params?: GetUserPermissionGridParams,
+) => {
+  return [
+    `/api/access/users/${userId}/grid`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getGetUserPermissionGridQueryOptions = <
+  TData = Awaited<ReturnType<typeof getUserPermissionGrid>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  params?: GetUserPermissionGridParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getUserPermissionGrid>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetUserPermissionGridQueryKey(userId, params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getUserPermissionGrid>>
+  > = ({ signal }) =>
+    getUserPermissionGrid(userId, params, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!userId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getUserPermissionGrid>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetUserPermissionGridQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getUserPermissionGrid>>
+>;
+export type GetUserPermissionGridQueryError = ErrorType<unknown>;
+
+/**
+ * @summary What this person may do at one property
+ */
+
+export function useGetUserPermissionGrid<
+  TData = Awaited<ReturnType<typeof getUserPermissionGrid>>,
+  TError = ErrorType<unknown>,
+>(
+  userId: string,
+  params?: GetUserPermissionGridParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getUserPermissionGrid>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetUserPermissionGridQueryOptions(
+    userId,
+    params,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Writes a PRIVILEGE, never the role matrix — the matrix is the role's meaning for everyone. When the requested answer already equals what the layers beneath give, the privilege is deleted instead of written.
+ * @summary Turn one permission on or off for one person at one place
+ */
+export const getSetUserPermissionCellUrl = (userId: string) => {
+  return `/api/access/users/${userId}/grid`;
+};
+
+export const setUserPermissionCell = async (
+  userId: string,
+  setPermissionCellBody: SetPermissionCellBody,
+  options?: RequestInit,
+): Promise<SuccessResponse> => {
+  return customFetch<SuccessResponse>(getSetUserPermissionCellUrl(userId), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(setPermissionCellBody),
+  });
+};
+
+export const getSetUserPermissionCellMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setUserPermissionCell>>,
+    TError,
+    { userId: string; data: BodyType<SetPermissionCellBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof setUserPermissionCell>>,
+  TError,
+  { userId: string; data: BodyType<SetPermissionCellBody> },
+  TContext
+> => {
+  const mutationKey = ["setUserPermissionCell"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof setUserPermissionCell>>,
+    { userId: string; data: BodyType<SetPermissionCellBody> }
+  > = (props) => {
+    const { userId, data } = props ?? {};
+
+    return setUserPermissionCell(userId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SetUserPermissionCellMutationResult = NonNullable<
+  Awaited<ReturnType<typeof setUserPermissionCell>>
+>;
+export type SetUserPermissionCellMutationBody = BodyType<SetPermissionCellBody>;
+export type SetUserPermissionCellMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Turn one permission on or off for one person at one place
+ */
+export const useSetUserPermissionCell = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setUserPermissionCell>>,
+    TError,
+    { userId: string; data: BodyType<SetPermissionCellBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof setUserPermissionCell>>,
+  TError,
+  { userId: string; data: BodyType<SetPermissionCellBody> },
+  TContext
+> => {
+  return useMutation(getSetUserPermissionCellMutationOptions(options));
+};
+
+/**
+ * The nodes must match the role's anchor level — a Cluster Manager is given a cluster. Only placements made under this role are replaced; placements made for the person regardless of role are untouched.
+ * @summary Change the places one role applies at for one person
+ */
+export const getSetRoleScopeUrl = (userId: string) => {
+  return `/api/access/users/${userId}/role-scope`;
+};
+
+export const setRoleScope = async (
+  userId: string,
+  setRoleScopeBody: SetRoleScopeBody,
+  options?: RequestInit,
+): Promise<SuccessResponse> => {
+  return customFetch<SuccessResponse>(getSetRoleScopeUrl(userId), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(setRoleScopeBody),
+  });
+};
+
+export const getSetRoleScopeMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setRoleScope>>,
+    TError,
+    { userId: string; data: BodyType<SetRoleScopeBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof setRoleScope>>,
+  TError,
+  { userId: string; data: BodyType<SetRoleScopeBody> },
+  TContext
+> => {
+  const mutationKey = ["setRoleScope"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof setRoleScope>>,
+    { userId: string; data: BodyType<SetRoleScopeBody> }
+  > = (props) => {
+    const { userId, data } = props ?? {};
+
+    return setRoleScope(userId, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SetRoleScopeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof setRoleScope>>
+>;
+export type SetRoleScopeMutationBody = BodyType<SetRoleScopeBody>;
+export type SetRoleScopeMutationError = ErrorType<void>;
+
+/**
+ * @summary Change the places one role applies at for one person
+ */
+export const useSetRoleScope = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setRoleScope>>,
+    TError,
+    { userId: string; data: BodyType<SetRoleScopeBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof setRoleScope>>,
+  TError,
+  { userId: string; data: BodyType<SetRoleScopeBody> },
+  TContext
+> => {
+  return useMutation(getSetRoleScopeMutationOptions(options));
+};
+
+/**
+ * @summary The exceptions written for one subject
+ */
+export const getGetPrivilegesUrl = (params: GetPrivilegesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/access/privileges?${stringifiedParams}`
+    : `/api/access/privileges`;
+};
+
+export const getPrivileges = async (
+  params: GetPrivilegesParams,
+  options?: RequestInit,
+): Promise<PrivilegesResponse> => {
+  return customFetch<PrivilegesResponse>(getGetPrivilegesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPrivilegesQueryKey = (params?: GetPrivilegesParams) => {
+  return [`/api/access/privileges`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetPrivilegesQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPrivileges>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetPrivilegesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPrivileges>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetPrivilegesQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getPrivileges>>> = ({
+    signal,
+  }) => getPrivileges(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivileges>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPrivilegesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPrivileges>>
+>;
+export type GetPrivilegesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary The exceptions written for one subject
+ */
+
+export function useGetPrivileges<
+  TData = Awaited<ReturnType<typeof getPrivileges>>,
+  TError = ErrorType<unknown>,
+>(
+  params: GetPrivilegesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPrivileges>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPrivilegesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * One cell per call. `effect INHERIT` deletes the row so the subject falls back to the layer beneath. An approval file may be attached as evidence.
+ * @summary Grant, deny or clear one permission for one subject
+ */
+export const getSetPrivilegeUrl = () => {
+  return `/api/access/privileges`;
+};
+
+export const setPrivilege = async (
+  setPrivilegeBody: SetPrivilegeBody,
+  options?: RequestInit,
+): Promise<PrivilegeResponse> => {
+  return customFetch<PrivilegeResponse>(getSetPrivilegeUrl(), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(setPrivilegeBody),
+  });
+};
+
+export const getSetPrivilegeMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setPrivilege>>,
+    TError,
+    { data: BodyType<SetPrivilegeBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof setPrivilege>>,
+  TError,
+  { data: BodyType<SetPrivilegeBody> },
+  TContext
+> => {
+  const mutationKey = ["setPrivilege"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof setPrivilege>>,
+    { data: BodyType<SetPrivilegeBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return setPrivilege(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SetPrivilegeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof setPrivilege>>
+>;
+export type SetPrivilegeMutationBody = BodyType<SetPrivilegeBody>;
+export type SetPrivilegeMutationError = ErrorType<void>;
+
+/**
+ * @summary Grant, deny or clear one permission for one subject
+ */
+export const useSetPrivilege = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setPrivilege>>,
+    TError,
+    { data: BodyType<SetPrivilegeBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof setPrivilege>>,
+  TError,
+  { data: BodyType<SetPrivilegeBody> },
+  TContext
+> => {
+  return useMutation(getSetPrivilegeMutationOptions(options));
+};
+
+/**
+ * @summary Named groups of permissions, with their members and reach
+ */
+export const getGetPrivilegeSetsUrl = () => {
+  return `/api/access/privilege-sets`;
+};
+
+export const getPrivilegeSets = async (
+  options?: RequestInit,
+): Promise<PrivilegeSetsResponse> => {
+  return customFetch<PrivilegeSetsResponse>(getGetPrivilegeSetsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetPrivilegeSetsQueryKey = () => {
+  return [`/api/access/privilege-sets`] as const;
+};
+
+export const getGetPrivilegeSetsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPrivilegeSets>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivilegeSets>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetPrivilegeSetsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPrivilegeSets>>
+  > = ({ signal }) => getPrivilegeSets({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivilegeSets>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPrivilegeSetsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPrivilegeSets>>
+>;
+export type GetPrivilegeSetsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Named groups of permissions, with their members and reach
+ */
+
+export function useGetPrivilegeSets<
+  TData = Awaited<ReturnType<typeof getPrivilegeSets>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivilegeSets>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPrivilegeSetsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * A set may mix actions from any number of functionalities and modules. Every member is held to the manifest, so a typo grants nothing.
+ * @summary Create a privilege set
+ */
+export const getCreatePrivilegeSetUrl = () => {
+  return `/api/access/privilege-sets`;
+};
+
+export const createPrivilegeSet = async (
+  privilegeSetBody: PrivilegeSetBody,
+  options?: RequestInit,
+): Promise<CreatePrivilegeSetResponse> => {
+  return customFetch<CreatePrivilegeSetResponse>(getCreatePrivilegeSetUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(privilegeSetBody),
+  });
+};
+
+export const getCreatePrivilegeSetMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createPrivilegeSet>>,
+    TError,
+    { data: BodyType<PrivilegeSetBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createPrivilegeSet>>,
+  TError,
+  { data: BodyType<PrivilegeSetBody> },
+  TContext
+> => {
+  const mutationKey = ["createPrivilegeSet"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createPrivilegeSet>>,
+    { data: BodyType<PrivilegeSetBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createPrivilegeSet(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreatePrivilegeSetMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createPrivilegeSet>>
+>;
+export type CreatePrivilegeSetMutationBody = BodyType<PrivilegeSetBody>;
+export type CreatePrivilegeSetMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Create a privilege set
+ */
+export const useCreatePrivilegeSet = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createPrivilegeSet>>,
+    TError,
+    { data: BodyType<PrivilegeSetBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createPrivilegeSet>>,
+  TError,
+  { data: BodyType<PrivilegeSetBody> },
+  TContext
+> => {
+  return useMutation(getCreatePrivilegeSetMutationOptions(options));
+};
+
+/**
+ * A set is a LIVE REFERENCE: everyone holding it changes with it. The response reports how many people that was.
+ * @summary Rename a set or change what is in it
+ */
+export const getUpdatePrivilegeSetUrl = (id: string) => {
+  return `/api/access/privilege-sets/${id}`;
+};
+
+export const updatePrivilegeSet = async (
+  id: string,
+  privilegeSetBody: PrivilegeSetBody,
+  options?: RequestInit,
+): Promise<UpdatePrivilegeSetResponse> => {
+  return customFetch<UpdatePrivilegeSetResponse>(getUpdatePrivilegeSetUrl(id), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(privilegeSetBody),
+  });
+};
+
+export const getUpdatePrivilegeSetMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updatePrivilegeSet>>,
+    TError,
+    { id: string; data: BodyType<PrivilegeSetBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updatePrivilegeSet>>,
+  TError,
+  { id: string; data: BodyType<PrivilegeSetBody> },
+  TContext
+> => {
+  const mutationKey = ["updatePrivilegeSet"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updatePrivilegeSet>>,
+    { id: string; data: BodyType<PrivilegeSetBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return updatePrivilegeSet(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdatePrivilegeSetMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updatePrivilegeSet>>
+>;
+export type UpdatePrivilegeSetMutationBody = BodyType<PrivilegeSetBody>;
+export type UpdatePrivilegeSetMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Rename a set or change what is in it
+ */
+export const useUpdatePrivilegeSet = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updatePrivilegeSet>>,
+    TError,
+    { id: string; data: BodyType<PrivilegeSetBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updatePrivilegeSet>>,
+  TError,
+  { id: string; data: BodyType<PrivilegeSetBody> },
+  TContext
+> => {
+  return useMutation(getUpdatePrivilegeSetMutationOptions(options));
+};
+
+/**
+ * Stores a POINTER, not a copy — the members are resolved on every request. Each member is checked by the same guard a single privilege gets, so a set cannot be a way around them.
+ * @summary Give a set to a person or a role
+ */
+export const getAssignPrivilegeSetUrl = (id: string) => {
+  return `/api/access/privilege-sets/${id}/assign`;
+};
+
+export const assignPrivilegeSet = async (
+  id: string,
+  assignPrivilegeSetBody: AssignPrivilegeSetBody,
+  options?: RequestInit,
+): Promise<IdResponse> => {
+  return customFetch<IdResponse>(getAssignPrivilegeSetUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(assignPrivilegeSetBody),
+  });
+};
+
+export const getAssignPrivilegeSetMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof assignPrivilegeSet>>,
+    TError,
+    { id: string; data: BodyType<AssignPrivilegeSetBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof assignPrivilegeSet>>,
+  TError,
+  { id: string; data: BodyType<AssignPrivilegeSetBody> },
+  TContext
+> => {
+  const mutationKey = ["assignPrivilegeSet"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof assignPrivilegeSet>>,
+    { id: string; data: BodyType<AssignPrivilegeSetBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return assignPrivilegeSet(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AssignPrivilegeSetMutationResult = NonNullable<
+  Awaited<ReturnType<typeof assignPrivilegeSet>>
+>;
+export type AssignPrivilegeSetMutationBody = BodyType<AssignPrivilegeSetBody>;
+export type AssignPrivilegeSetMutationError = ErrorType<void>;
+
+/**
+ * @summary Give a set to a person or a role
+ */
+export const useAssignPrivilegeSet = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof assignPrivilegeSet>>,
+    TError,
+    { id: string; data: BodyType<AssignPrivilegeSetBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof assignPrivilegeSet>>,
+  TError,
+  { id: string; data: BodyType<AssignPrivilegeSetBody> },
+  TContext
+> => {
+  return useMutation(getAssignPrivilegeSetMutationOptions(options));
+};
+
+/**
+ * @summary Who a set reaches, by name
+ */
+export const getGetPrivilegeSetHoldersUrl = (id: string) => {
+  return `/api/access/privilege-sets/${id}/holders`;
+};
+
+export const getPrivilegeSetHolders = async (
+  id: string,
+  options?: RequestInit,
+): Promise<PrivilegeSetHoldersResponse> => {
+  return customFetch<PrivilegeSetHoldersResponse>(
+    getGetPrivilegeSetHoldersUrl(id),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetPrivilegeSetHoldersQueryKey = (id: string) => {
+  return [`/api/access/privilege-sets/${id}/holders`] as const;
+};
+
+export const getGetPrivilegeSetHoldersQueryOptions = <
+  TData = Awaited<ReturnType<typeof getPrivilegeSetHolders>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPrivilegeSetHolders>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetPrivilegeSetHoldersQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getPrivilegeSetHolders>>
+  > = ({ signal }) => getPrivilegeSetHolders(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getPrivilegeSetHolders>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetPrivilegeSetHoldersQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getPrivilegeSetHolders>>
+>;
+export type GetPrivilegeSetHoldersQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Who a set reaches, by name
+ */
+
+export function useGetPrivilegeSetHolders<
+  TData = Awaited<ReturnType<typeof getPrivilegeSetHolders>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getPrivilegeSetHolders>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetPrivilegeSetHoldersQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary The sets one subject holds
+ */
+export const getGetHeldPrivilegeSetsUrl = (subjectId: string) => {
+  return `/api/access/privilege-sets/held/${subjectId}`;
+};
+
+export const getHeldPrivilegeSets = async (
+  subjectId: string,
+  options?: RequestInit,
+): Promise<HeldPrivilegeSetsResponse> => {
+  return customFetch<HeldPrivilegeSetsResponse>(
+    getGetHeldPrivilegeSetsUrl(subjectId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetHeldPrivilegeSetsQueryKey = (subjectId: string) => {
+  return [`/api/access/privilege-sets/held/${subjectId}`] as const;
+};
+
+export const getGetHeldPrivilegeSetsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getHeldPrivilegeSets>>,
+  TError = ErrorType<unknown>,
+>(
+  subjectId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getHeldPrivilegeSets>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetHeldPrivilegeSetsQueryKey(subjectId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getHeldPrivilegeSets>>
+  > = ({ signal }) =>
+    getHeldPrivilegeSets(subjectId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!subjectId,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getHeldPrivilegeSets>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetHeldPrivilegeSetsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getHeldPrivilegeSets>>
+>;
+export type GetHeldPrivilegeSetsQueryError = ErrorType<unknown>;
+
+/**
+ * @summary The sets one subject holds
+ */
+
+export function useGetHeldPrivilegeSets<
+  TData = Awaited<ReturnType<typeof getHeldPrivilegeSets>>,
+  TError = ErrorType<unknown>,
+>(
+  subjectId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getHeldPrivilegeSets>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetHeldPrivilegeSetsQueryOptions(subjectId, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * Revoked rather than deleted — "who held what, when" is the question this answers.
+ * @summary Take a set back
+ */
+export const getRevokePrivilegeSetAssignmentUrl = (id: string) => {
+  return `/api/access/privilege-set-assignments/${id}`;
+};
+
+export const revokePrivilegeSetAssignment = async (
+  id: string,
+  reasonBody?: ReasonBody,
+  options?: RequestInit,
+): Promise<SuccessResponse> => {
+  return customFetch<SuccessResponse>(getRevokePrivilegeSetAssignmentUrl(id), {
+    ...options,
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(reasonBody),
+  });
+};
+
+export const getRevokePrivilegeSetAssignmentMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof revokePrivilegeSetAssignment>>,
+    TError,
+    { id: string; data: BodyType<ReasonBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof revokePrivilegeSetAssignment>>,
+  TError,
+  { id: string; data: BodyType<ReasonBody> },
+  TContext
+> => {
+  const mutationKey = ["revokePrivilegeSetAssignment"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof revokePrivilegeSetAssignment>>,
+    { id: string; data: BodyType<ReasonBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return revokePrivilegeSetAssignment(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RevokePrivilegeSetAssignmentMutationResult = NonNullable<
+  Awaited<ReturnType<typeof revokePrivilegeSetAssignment>>
+>;
+export type RevokePrivilegeSetAssignmentMutationBody = BodyType<ReasonBody>;
+export type RevokePrivilegeSetAssignmentMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Take a set back
+ */
+export const useRevokePrivilegeSetAssignment = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof revokePrivilegeSetAssignment>>,
+    TError,
+    { id: string; data: BodyType<ReasonBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof revokePrivilegeSetAssignment>>,
+  TError,
+  { id: string; data: BodyType<ReasonBody> },
+  TContext
+> => {
+  return useMutation(getRevokePrivilegeSetAssignmentMutationOptions(options));
+};
+
+/**
+ * @summary Copy one person's access onto another
+ */
+export const getCloneAccessUrl = () => {
+  return `/api/access/clone-access`;
+};
+
+export const cloneAccess = async (
+  cloneAccessBody: CloneAccessBody,
+  options?: RequestInit,
+): Promise<SuccessResponse> => {
+  return customFetch<SuccessResponse>(getCloneAccessUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(cloneAccessBody),
+  });
+};
+
+export const getCloneAccessMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof cloneAccess>>,
+    TError,
+    { data: BodyType<CloneAccessBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof cloneAccess>>,
+  TError,
+  { data: BodyType<CloneAccessBody> },
+  TContext
+> => {
+  const mutationKey = ["cloneAccess"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof cloneAccess>>,
+    { data: BodyType<CloneAccessBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return cloneAccess(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CloneAccessMutationResult = NonNullable<
+  Awaited<ReturnType<typeof cloneAccess>>
+>;
+export type CloneAccessMutationBody = BodyType<CloneAccessBody>;
+export type CloneAccessMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Copy one person's access onto another
+ */
+export const useCloneAccess = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof cloneAccess>>,
+    TError,
+    { data: BodyType<CloneAccessBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof cloneAccess>>,
+  TError,
+  { data: BodyType<CloneAccessBody> },
+  TContext
+> => {
+  return useMutation(getCloneAccessMutationOptions(options));
+};
+
+/**
+ * @summary What copying one person's access onto another would change
+ */
+export const getPreviewCloneAccessUrl = (
+  fromUserId: string,
+  toUserId: string,
+) => {
+  return `/api/access/clone-access/${fromUserId}/${toUserId}`;
+};
+
+export const previewCloneAccess = async (
+  fromUserId: string,
+  toUserId: string,
+  options?: RequestInit,
+): Promise<ClonePlanResponse> => {
+  return customFetch<ClonePlanResponse>(
+    getPreviewCloneAccessUrl(fromUserId, toUserId),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getPreviewCloneAccessQueryKey = (
+  fromUserId: string,
+  toUserId: string,
+) => {
+  return [`/api/access/clone-access/${fromUserId}/${toUserId}`] as const;
+};
+
+export const getPreviewCloneAccessQueryOptions = <
+  TData = Awaited<ReturnType<typeof previewCloneAccess>>,
+  TError = ErrorType<unknown>,
+>(
+  fromUserId: string,
+  toUserId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof previewCloneAccess>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getPreviewCloneAccessQueryKey(fromUserId, toUserId);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof previewCloneAccess>>
+  > = ({ signal }) =>
+    previewCloneAccess(fromUserId, toUserId, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!(fromUserId && toUserId),
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof previewCloneAccess>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type PreviewCloneAccessQueryResult = NonNullable<
+  Awaited<ReturnType<typeof previewCloneAccess>>
+>;
+export type PreviewCloneAccessQueryError = ErrorType<unknown>;
+
+/**
+ * @summary What copying one person's access onto another would change
+ */
+
+export function usePreviewCloneAccess<
+  TData = Awaited<ReturnType<typeof previewCloneAccess>>,
+  TError = ErrorType<unknown>,
+>(
+  fromUserId: string,
+  toUserId: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof previewCloneAccess>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getPreviewCloneAccessQueryOptions(
+    fromUserId,
+    toUserId,
+    options,
+  );
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}

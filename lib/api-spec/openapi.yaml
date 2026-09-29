@@ -32,6 +32,7 @@ tags:
   - name: outPass
   - name: iot
   - name: wallet
+  - name: access
 
 paths:
   /healthz:
@@ -2928,8 +2929,643 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/WalletConfigResponse" }
 
+
+  # ── User & Access Management ────────────────────────────────────────────────
+  # The access model is three levels: module → functionality → action. Only the
+  # middle and inner levels are stored; a MODULE is derived from the code
+  # manifest, so no request or response below carries a module grant.
+  /access/manifest:
+    get:
+      operationId: getAccessManifest
+      tags: [access]
+      summary: The access vocabulary — every module, functionality and named action
+      responses:
+        "200":
+          description: The manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessManifestResponse"
+
+  /access/privilege-catalogue:
+    get:
+      operationId: getPrivilegeCatalogue
+      tags: [access]
+      summary: Every permission the system defines, with what grants it today
+      responses:
+        "200":
+          description: The catalogue
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivilegeCatalogueResponse"
+
+  /access/roles:
+    get:
+      operationId: getAccessRoles
+      tags: [access]
+      summary: Every role, its permissions and who holds it
+      responses:
+        "200":
+          description: Roles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessRolesResponse"
+    post:
+      operationId: createAccessRole
+      tags: [access]
+      summary: Create a role, optionally cloning another's permissions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccessRoleBody"
+      responses:
+        "201":
+          description: Role created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessRoleDetailResponse"
+
+  /access/roles/{key}:
+    get:
+      operationId: getAccessRole
+      tags: [access]
+      summary: One role, its permission cells and its holders
+      parameters:
+        - $ref: "#/components/parameters/RoleKeyParam"
+      responses:
+        "200":
+          description: Role detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessRoleDetailResponse"
+    put:
+      operationId: updateAccessRole
+      tags: [access]
+      summary: Rename a role, change its anchor level, or enable/disable it
+      parameters:
+        - $ref: "#/components/parameters/RoleKeyParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAccessRoleBody"
+      responses:
+        "200":
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessRoleDetailResponse"
+
+  /access/roles/{key}/impact:
+    get:
+      operationId: getRoleImpact
+      tags: [access]
+      summary: Who a change to this role would reach
+      description: >-
+        Read before disabling a role. Counts the people holding it as their
+        primary role and names them, so the decision is made against people
+        rather than a number.
+      parameters:
+        - $ref: "#/components/parameters/RoleKeyParam"
+      responses:
+        "200":
+          description: Impact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleImpactResponse"
+
+  /access/matrix:
+    get:
+      operationId: getAccessMatrix
+      tags: [access]
+      summary: The role × functionality × action matrix
+      parameters:
+        - name: roleKey
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matrix
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessMatrixResponse"
+    put:
+      operationId: updateAccessMatrix
+      tags: [access]
+      summary: Change permission cells
+      description: >-
+        Refused when the change would leave nobody able to administer access,
+        when it would raise a role above the caller's own, or when it touches a
+        protected functionality.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAccessMatrixBody"
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessMatrixResponse"
+        "409":
+          description: Refused — the change would lock everyone out of access control
+
+  /access/users:
+    get:
+      operationId: getAccessUsers
+      tags: [access]
+      summary: People, for the access console's subject pickers
+      responses:
+        "200":
+          description: People
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessUsersResponse"
+
+  /access/nodes:
+    get:
+      operationId: getOrgNodes
+      tags: [access]
+      summary: The organization tree — zones, cities, clusters, properties, kitchens
+      responses:
+        "200":
+          description: Nodes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgNodesResponse"
+
+  /access/grants:
+    get:
+      operationId: getAccessGrants
+      tags: [access]
+      summary: Placements — which subject may act at which node
+      parameters:
+        - name: subjectId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Grants
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessGrantsResponse"
+    post:
+      operationId: createAccessGrant
+      tags: [access]
+      summary: Place a subject at a node
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccessGrantBody"
+      responses:
+        "201":
+          description: Granted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessGrantResponse"
+
+  /access/grants/{id}/revoke:
+    post:
+      operationId: revokeAccessGrant
+      tags: [access]
+      summary: Revoke a placement
+      description: Sets revokedAt rather than deleting, so "who could reach what, when" stays answerable.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReasonBody"
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessGrantResponse"
+
+  /access/grants/{id}/restore:
+    post:
+      operationId: restoreAccessGrant
+      tags: [access]
+      summary: Restore a revoked placement
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReasonBody"
+      responses:
+        "200":
+          description: Restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessGrantResponse"
+
+  /access/assignments/{userId}:
+    get:
+      operationId: getRoleAssignments
+      tags: [access]
+      summary: The roles one person holds
+      parameters:
+        - $ref: "#/components/parameters/UserIdPathParam"
+      responses:
+        "200":
+          description: Assignments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleAssignmentsResponse"
+    put:
+      operationId: updateRoleAssignments
+      tags: [access]
+      summary: Replace the roles one person holds
+      parameters:
+        - $ref: "#/components/parameters/UserIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRoleAssignmentsBody"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleAssignmentsResponse"
+
+  /access/preview/{userId}:
+    get:
+      operationId: previewUserAccess
+      tags: [access]
+      summary: Everything this person can and cannot do, with a reason for each
+      description: >-
+        Denials are returned alongside grants, never omitted: an administrator
+        needs to see that a thing was considered and refused, and why.
+        `nodeId` re-runs the whole matrix at one place.
+      parameters:
+        - $ref: "#/components/parameters/UserIdPathParam"
+        - name: nodeId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: The resolved surface
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessPreviewResponse"
+
+  /access/users/{userId}/tree:
+    get:
+      operationId: getUserRoleTree
+      tags: [access]
+      summary: Each role this person holds, where it applies, and what that reaches
+      parameters:
+        - $ref: "#/components/parameters/UserIdPathParam"
+      responses:
+        "200":
+          description: The tree
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserRoleTreeResponse"
+
+  /access/users/{userId}/grid:
+    get:
+      operationId: getUserPermissionGrid
+      tags: [access]
+      summary: What this person may do at one property
+      parameters:
+        - $ref: "#/components/parameters/UserIdPathParam"
+        - name: nodeId
+          in: query
+          schema: { type: string }
+        - name: roleKey
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: The grid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPermissionGridResponse"
+    put:
+      operationId: setUserPermissionCell
+      tags: [access]
+      summary: Turn one permission on or off for one person at one place
+      description: >-
+        Writes a PRIVILEGE, never the role matrix — the matrix is the role's
+        meaning for everyone. When the requested answer already equals what the
+        layers beneath give, the privilege is deleted instead of written.
+      parameters:
+        - $ref: "#/components/parameters/UserIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetPermissionCellBody"
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /access/users/{userId}/role-scope:
+    put:
+      operationId: setRoleScope
+      tags: [access]
+      summary: Change the places one role applies at for one person
+      description: >-
+        The nodes must match the role's anchor level — a Cluster Manager is
+        given a cluster. Only placements made under this role are replaced;
+        placements made for the person regardless of role are untouched.
+      parameters:
+        - $ref: "#/components/parameters/UserIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetRoleScopeBody"
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "422":
+          description: A node does not match the role's anchor level
+
+  /access/privileges:
+    get:
+      operationId: getPrivileges
+      tags: [access]
+      summary: The exceptions written for one subject
+      parameters:
+        - name: subjectType
+          in: query
+          required: true
+          schema: { type: string, enum: [USER, ROLE] }
+        - name: subjectId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Privileges
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivilegesResponse"
+    put:
+      operationId: setPrivilege
+      tags: [access]
+      summary: Grant, deny or clear one permission for one subject
+      description: >-
+        One cell per call. `effect INHERIT` deletes the row so the subject falls
+        back to the layer beneath. An approval file may be attached as evidence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetPrivilegeBody"
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivilegeResponse"
+        "403":
+          description: Refused — you cannot change your own permissions
+
+  /access/privilege-sets:
+    get:
+      operationId: getPrivilegeSets
+      tags: [access]
+      summary: Named groups of permissions, with their members and reach
+      responses:
+        "200":
+          description: Sets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivilegeSetsResponse"
+    post:
+      operationId: createPrivilegeSet
+      tags: [access]
+      summary: Create a privilege set
+      description: >-
+        A set may mix actions from any number of functionalities and modules.
+        Every member is held to the manifest, so a typo grants nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrivilegeSetBody"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePrivilegeSetResponse"
+
+  /access/privilege-sets/{id}:
+    put:
+      operationId: updatePrivilegeSet
+      tags: [access]
+      summary: Rename a set or change what is in it
+      description: >-
+        A set is a LIVE REFERENCE: everyone holding it changes with it. The
+        response reports how many people that was.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrivilegeSetBody"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdatePrivilegeSetResponse"
+
+  /access/privilege-sets/{id}/assign:
+    post:
+      operationId: assignPrivilegeSet
+      tags: [access]
+      summary: Give a set to a person or a role
+      description: >-
+        Stores a POINTER, not a copy — the members are resolved on every
+        request. Each member is checked by the same guard a single privilege
+        gets, so a set cannot be a way around them.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignPrivilegeSetBody"
+      responses:
+        "201":
+          description: Assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdResponse"
+        "409":
+          description: They already hold this set
+
+  /access/privilege-sets/{id}/holders:
+    get:
+      operationId: getPrivilegeSetHolders
+      tags: [access]
+      summary: Who a set reaches, by name
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "200":
+          description: Holders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivilegeSetHoldersResponse"
+
+  /access/privilege-sets/held/{subjectId}:
+    get:
+      operationId: getHeldPrivilegeSets
+      tags: [access]
+      summary: The sets one subject holds
+      parameters:
+        - name: subjectId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Held sets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldPrivilegeSetsResponse"
+
+  /access/privilege-set-assignments/{id}:
+    delete:
+      operationId: revokePrivilegeSetAssignment
+      tags: [access]
+      summary: Take a set back
+      description: Revoked rather than deleted — "who held what, when" is the question this answers.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReasonBody"
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /access/clone-access:
+    post:
+      operationId: cloneAccess
+      tags: [access]
+      summary: Copy one person's access onto another
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloneAccessBody"
+      responses:
+        "200":
+          description: Copied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /access/clone-access/{fromUserId}/{toUserId}:
+    get:
+      operationId: previewCloneAccess
+      tags: [access]
+      summary: What copying one person's access onto another would change
+      parameters:
+        - name: fromUserId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: toUserId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClonePlanResponse"
+
 components:
   parameters:
+    RoleKeyParam:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+    UserIdPathParam:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
     IdParam:
       name: id
       in: path
@@ -6309,3 +6945,856 @@ components:
         lowBalanceAlert: { type: number, nullable: true }
         isEnabled: { type: boolean, nullable: true }
         topupNotes: { type: string, nullable: true }
+
+    # ── User & Access Management ──────────────────────────────────────────────
+
+    NamedAction:
+      type: object
+      description: >-
+        One permission. `key` is the action ("add_property"), `id` the full
+        identifier ("operations.properties.add_property"), and `description` the
+        single line shown wherever the access is granted, listed or explained.
+      properties:
+        key: { type: string }
+        label: { type: string }
+        description: { type: string }
+        id: { type: string }
+      required: [key, label, description, id]
+
+    ManifestFunctionality:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        module: { type: string }
+        protected: { type: boolean }
+        actions:
+          type: array
+          description: The permissions THIS functionality defines — not a shared verb list.
+          items: { $ref: "#/components/schemas/NamedAction" }
+      required: [key, label, module, actions, protected]
+
+    ManifestModule:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        description: { type: string }
+        functionalities:
+          type: array
+          items: { $ref: "#/components/schemas/ManifestFunctionality" }
+      required: [key, label, functionalities]
+
+    AccessManifestResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            modules:
+              type: array
+              items: { $ref: "#/components/schemas/ManifestModule" }
+            functionalities:
+              type: array
+              description: The same set flattened, for the pickers that want one list.
+              items: { $ref: "#/components/schemas/ManifestFunctionality" }
+          required: [modules, functionalities]
+      required: [success, data]
+
+    CataloguePermission:
+      allOf:
+        - $ref: "#/components/schemas/NamedAction"
+        - type: object
+          properties:
+            functionality: { type: string }
+            functionalityLabel: { type: string }
+            module: { type: string }
+            moduleLabel: { type: string }
+            action: { type: string }
+            roles:
+              type: array
+              description: The roles whose matrix grants it. Empty means no role does.
+              items: { type: string }
+            exceptions:
+              type: integer
+              description: How many privileges are written against it, in either direction.
+          required: [functionality, module, action, roles, exceptions]
+
+    PrivilegeCatalogueResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            permissions:
+              type: array
+              items: { $ref: "#/components/schemas/CataloguePermission" }
+            total: { type: integer }
+          required: [permissions, total]
+      required: [success, data]
+
+    AccessRole:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        description: { type: string, nullable: true }
+        rank: { type: integer }
+        isSystem:
+          type: boolean
+          description: Cells are computed by rule and cannot be edited.
+        isActive: { type: boolean }
+        scopeModule: { type: string, nullable: true }
+        anchorLevel:
+          type: string
+          nullable: true
+          description: What KIND of place the role may be handed out at.
+          enum: [ZONE, CITY, CLUSTER, PROPERTY, KITCHEN]
+        cells:
+          type: integer
+          nullable: true
+          description: Stored permission count. null for a role resolved by rule.
+        holders:
+          type: array
+          items: { $ref: "#/components/schemas/RoleHolder" }
+      required: [key, label, isSystem, isActive]
+
+    RoleHolder:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        isActive: { type: boolean }
+      required: [id, name, email, isActive]
+
+    AccessRolesResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/AccessRole" }
+      required: [success, data]
+
+    RolePermissionCell:
+      type: object
+      properties:
+        functionality: { type: string }
+        action: { type: string }
+        label: { type: string }
+        module: { type: string }
+      required: [functionality, action]
+
+    AccessRoleDetail:
+      allOf:
+        - $ref: "#/components/schemas/AccessRole"
+        - type: object
+          properties:
+            permissions:
+              type: array
+              items: { $ref: "#/components/schemas/RolePermissionCell" }
+            privileges:
+              type: array
+              items: { $ref: "#/components/schemas/Privilege" }
+
+    AccessRoleDetailResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data: { $ref: "#/components/schemas/AccessRoleDetail" }
+      required: [success, data]
+
+    CreateAccessRoleBody:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        cloneFrom:
+          type: string
+          description: Copy this role's permission cells into the new one.
+        reason: { type: string }
+        anchorLevel:
+          type: string
+          nullable: true
+          enum: [ZONE, CITY, CLUSTER, PROPERTY, KITCHEN]
+      required: [key, reason]
+
+    UpdateAccessRoleBody:
+      type: object
+      properties:
+        label: { type: string }
+        description: { type: string, nullable: true }
+        isActive: { type: boolean }
+        anchorLevel:
+          type: string
+          nullable: true
+          enum: [ZONE, CITY, CLUSTER, PROPERTY, KITCHEN]
+        reason: { type: string }
+      required: [reason]
+
+    RoleImpactResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            roleKey: { type: string }
+            label: { type: string }
+            primaryHolders:
+              type: integer
+              description: People whose account resolves as this role — the ones a disable strands.
+            holders:
+              type: array
+              items: { $ref: "#/components/schemas/RoleHolder" }
+          required: [roleKey, primaryHolders, holders]
+      required: [success, data]
+
+    MatrixCell:
+      type: object
+      properties:
+        roleKey: { type: string }
+        functionality: { type: string }
+        action: { type: string }
+        computed:
+          type: boolean
+          description: True when the role resolves by rule rather than from a stored row.
+      required: [roleKey, functionality, action, computed]
+
+    AccessMatrixResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            version: { type: integer }
+            source: { type: string, enum: [db, code] }
+            modules:
+              type: array
+              items:
+                type: object
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  functionalities:
+                    type: array
+                    items: { $ref: "#/components/schemas/ManifestFunctionality" }
+                required: [key, label, functionalities]
+            cells:
+              type: array
+              items: { $ref: "#/components/schemas/MatrixCell" }
+          required: [version, source, modules, cells]
+      required: [success, data]
+
+    UpdateAccessMatrixBody:
+      type: object
+      properties:
+        version:
+          type: integer
+          description: The version read. A mismatch means somebody else edited first.
+        reason: { type: string }
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              roleKey: { type: string }
+              functionality: { type: string }
+              action: { type: string }
+              allowed: { type: boolean }
+            required: [roleKey, functionality, action, allowed]
+      required: [reason, changes]
+
+    AccessUser:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string }
+        propertyId: { type: string, nullable: true }
+        isActive: { type: boolean }
+      required: [id, name, email, role, isActive]
+
+    AccessUsersResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/AccessUser" }
+      required: [success, data]
+
+    OrgNode:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        nodeType:
+          type: string
+          enum: [ORGANIZATION, ZONE, CITY, CLUSTER, PROPERTY, KITCHEN]
+        parentId: { type: string, nullable: true }
+        depth: { type: integer }
+        isActive: { type: boolean }
+      required: [id, name, nodeType, isActive]
+
+    OrgNodesResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/OrgNode" }
+      required: [success, data]
+
+    AccessGrant:
+      type: object
+      properties:
+        id: { type: string }
+        subjectType: { type: string, enum: [USER, ROLE] }
+        subjectId: { type: string }
+        roleKey:
+          type: string
+          description: "'*' means the placement applies whatever role the person holds."
+        nodeId: { type: string, nullable: true }
+        nodeName: { type: string, nullable: true }
+        nodeType: { type: string, nullable: true }
+        includeDescendants:
+          type: boolean
+          description: Expanded through the closure at READ time, so new properties appear on their own.
+        dataScope: { type: string }
+        assignmentKind: { type: string }
+        effectiveFrom: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        revokedAt: { type: string, format: date-time, nullable: true }
+      required: [id, subjectType, subjectId, roleKey, includeDescendants]
+
+    AccessGrantsResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/AccessGrant" }
+      required: [success, data]
+
+    AccessGrantResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data: { $ref: "#/components/schemas/AccessGrant" }
+      required: [success, data]
+
+    CreateAccessGrantBody:
+      type: object
+      properties:
+        subjectType: { type: string, enum: [USER, ROLE] }
+        subjectId: { type: string }
+        roleKey: { type: string }
+        nodeId: { type: string }
+        includeDescendants: { type: boolean }
+        dataScope: { type: string }
+        assignmentKind: { type: string }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        reason: { type: string }
+      required: [subjectType, subjectId, nodeId, reason]
+
+    ReasonBody:
+      type: object
+      properties:
+        reason: { type: string }
+      required: [reason]
+
+    IdResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            id: { type: string }
+          required: [id]
+      required: [success, data]
+
+    RoleAssignment:
+      type: object
+      properties:
+        roleKey: { type: string }
+        label: { type: string }
+        held: { type: boolean }
+        live:
+          type: boolean
+          description: Held AND inside its effective window.
+        isActive: { type: boolean }
+        anchorLevel: { type: string, nullable: true }
+        expiresAt: { type: string, format: date-time, nullable: true }
+      required: [roleKey, label, held]
+
+    RoleAssignmentsResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/RoleAssignment" }
+      required: [success, data]
+
+    UpdateRoleAssignmentsBody:
+      type: object
+      properties:
+        roleKeys:
+          type: array
+          items: { type: string }
+        reason: { type: string }
+      required: [roleKeys, reason]
+
+    PreviewAction:
+      allOf:
+        - $ref: "#/components/schemas/NamedAction"
+        - type: object
+          properties:
+            action: { type: string }
+            allow: { type: boolean }
+            reason:
+              type: string
+              description: Why — ALLOW_ROLE_CAPABILITY, DENY_NO_GRANT, DENY_ROLE_LACKS_CAPABILITY, and so on.
+            detail: { type: string }
+            via: { type: string, nullable: true }
+          required: [action, allow, reason]
+
+    AccessPreviewResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            subject: { $ref: "#/components/schemas/AccessUser" }
+            modules:
+              type: array
+              items:
+                type: object
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  noAccess: { type: boolean }
+                  heldCount: { type: integer }
+                  totalCount: { type: integer }
+                  functionalities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string }
+                        label: { type: string }
+                        noAccess: { type: boolean }
+                        actions:
+                          type: array
+                          items: { $ref: "#/components/schemas/PreviewAction" }
+                      required: [key, label, actions]
+                required: [key, label, functionalities]
+          required: [modules]
+      required: [success, data]
+
+    RoleTreeAnchor:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        nodeType: { type: string }
+        includeDescendants: { type: boolean }
+        scopedToRole:
+          type: boolean
+          description: >-
+            False when the placement was made for the PERSON rather than under
+            this role, so it applies to every role they hold.
+      required: [id, name, nodeType, scopedToRole]
+
+    UserRoleTreeResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            roles:
+              type: array
+              items:
+                type: object
+                properties:
+                  roleKey: { type: string }
+                  label: { type: string }
+                  isSystem: { type: boolean }
+                  anchorLevel: { type: string, nullable: true }
+                  anchors:
+                    type: array
+                    items: { $ref: "#/components/schemas/RoleTreeAnchor" }
+                  properties:
+                    type: array
+                    description: Every property the anchors reach, resolved through the closure now.
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        viaId: { type: string }
+                        viaName: { type: string }
+                        viaType: { type: string }
+                      required: [id, name]
+                required: [roleKey, label, anchors, properties]
+          required: [roles]
+      required: [success, data]
+
+    GridCell:
+      allOf:
+        - $ref: "#/components/schemas/NamedAction"
+        - type: object
+          properties:
+            action: { type: string }
+            inManifest: { type: boolean }
+            roleAllows:
+              type: boolean
+              description: What THIS role's matrix gives — what makes one role's grid differ.
+            allowed:
+              type: boolean
+              description: What the person actually gets here, across every role plus exceptions.
+            reason: { type: string }
+            detail: { type: string }
+          required: [action, inManifest, roleAllows, allowed]
+
+    UserPermissionGridResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            userId: { type: string }
+            roleKey: { type: string, nullable: true }
+            nodeId: { type: string, nullable: true }
+            modules:
+              type: array
+              items:
+                type: object
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  functionalities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        functionality: { type: string }
+                        label: { type: string }
+                        cells:
+                          type: array
+                          items: { $ref: "#/components/schemas/GridCell" }
+                      required: [functionality, label, cells]
+                required: [key, label, functionalities]
+          required: [userId, modules]
+      required: [success, data]
+
+    SetPermissionCellBody:
+      type: object
+      properties:
+        roleKey: { type: string }
+        nodeId: { type: string }
+        functionality: { type: string }
+        action: { type: string }
+        allowed: { type: boolean }
+        reason: { type: string }
+      required: [functionality, action, allowed, reason]
+
+    SetRoleScopeBody:
+      type: object
+      properties:
+        roleKey: { type: string }
+        nodeIds:
+          type: array
+          items: { type: string }
+        reason: { type: string }
+      required: [roleKey, nodeIds, reason]
+
+    ApprovalUpload:
+      type: object
+      description: >-
+        The evidence a privilege was granted on — typically an exported email.
+        Sent as a base64 data URL, the same convention audit evidence uses.
+      properties:
+        dataUrl:
+          type: string
+          description: "data:<mime>;base64,<payload>"
+        filename: { type: string }
+      required: [dataUrl, filename]
+
+    Privilege:
+      type: object
+      properties:
+        id: { type: string }
+        subjectType: { type: string, enum: [USER, ROLE] }
+        subjectId: { type: string }
+        roleKey: { type: string }
+        functionality: { type: string }
+        action: { type: string }
+        label: { type: string }
+        module: { type: string }
+        moduleLabel: { type: string }
+        actionLabel: { type: string }
+        actionDescription: { type: string }
+        permissionId: { type: string }
+        nodeId: { type: string, nullable: true }
+        nodeName: { type: string, nullable: true }
+        nodeType: { type: string, nullable: true }
+        effect: { type: string, enum: [GRANT, DENY] }
+        reason: { type: string }
+        effectiveFrom: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        inherited:
+          type: boolean
+          description: True when it came from a role the user holds rather than the user.
+        live: { type: boolean }
+        approvalFilename: { type: string, nullable: true }
+        approvalSize: { type: integer, nullable: true }
+        approvalUrl:
+          type: string
+          nullable: true
+          description: Short-lived link, minted per read. The stored key is never sent.
+      required: [id, subjectType, subjectId, functionality, action, effect, reason, live]
+
+    PrivilegesResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            heldRoles:
+              type: array
+              items: { type: string }
+            privileges:
+              type: array
+              items: { $ref: "#/components/schemas/Privilege" }
+          required: [heldRoles, privileges]
+      required: [success, data]
+
+    PrivilegeResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data: { $ref: "#/components/schemas/Privilege" }
+      required: [success, data]
+
+    SetPrivilegeBody:
+      type: object
+      properties:
+        subjectType: { type: string, enum: [USER, ROLE] }
+        subjectId: { type: string }
+        functionality: { type: string }
+        action: { type: string }
+        nodeId: { type: string, nullable: true }
+        effect:
+          type: string
+          enum: [GRANT, DENY, INHERIT]
+          description: INHERIT deletes the row — the subject falls back to the layer beneath.
+        reason: { type: string }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        approval:
+          allOf: [{ $ref: "#/components/schemas/ApprovalUpload" }]
+          nullable: true
+      required: [subjectType, subjectId, functionality, action, effect, reason]
+
+    PrivilegeSetItem:
+      allOf:
+        - $ref: "#/components/schemas/NamedAction"
+        - type: object
+          properties:
+            functionality: { type: string }
+            functionalityLabel: { type: string }
+            module: { type: string }
+            action: { type: string }
+            inManifest:
+              type: boolean
+              description: >-
+                False when the manifest no longer names it. Shown struck
+                through rather than dropped — a grant nobody can see is a grant
+                nobody will remove.
+          required: [functionality, action, inManifest]
+
+    PrivilegeSet:
+      type: object
+      properties:
+        id: { type: string }
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        effect: { type: string, enum: [GRANT, DENY] }
+        isActive: { type: boolean }
+        createdBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PrivilegeSetItem" }
+        holders:
+          type: integer
+          description: Live assignments — the blast radius of editing the set.
+      required: [id, key, name, description, effect, isActive, items, holders]
+
+    PrivilegeSetsResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/PrivilegeSet" }
+      required: [success, data]
+
+    PrivilegeSetBody:
+      type: object
+      properties:
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        effect: { type: string, enum: [GRANT, DENY] }
+        isActive: { type: boolean }
+        items:
+          type: array
+          description: May mix actions from any number of functionalities and modules.
+          items:
+            type: object
+            properties:
+              functionality: { type: string }
+              action: { type: string }
+            required: [functionality, action]
+      required: [name, description, effect, items]
+
+    CreatePrivilegeSetResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            id: { type: string }
+            key: { type: string }
+          required: [id, key]
+      required: [success, data]
+
+    UpdatePrivilegeSetResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            id: { type: string }
+            holders:
+              type: integer
+              description: How many people the edit reached.
+          required: [id, holders]
+      required: [success, data]
+
+    AssignPrivilegeSetBody:
+      type: object
+      properties:
+        subjectType: { type: string, enum: [USER, ROLE] }
+        subjectId: { type: string }
+        roleKey: { type: string }
+        nodeId: { type: string, nullable: true }
+        reason: { type: string }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        approval:
+          allOf: [{ $ref: "#/components/schemas/ApprovalUpload" }]
+          nullable: true
+      required: [subjectType, subjectId, reason]
+
+    HeldPrivilegeSet:
+      type: object
+      properties:
+        assignmentId: { type: string }
+        setId: { type: string }
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        effect: { type: string, enum: [GRANT, DENY] }
+        isActive: { type: boolean }
+        roleKey: { type: string }
+        nodeId: { type: string, nullable: true }
+        reason: { type: string }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        approvalFilename: { type: string, nullable: true }
+        approvalUrl: { type: string, nullable: true }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PrivilegeSetItem" }
+      required: [assignmentId, setId, key, name, effect, items]
+
+    HeldPrivilegeSetsResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/HeldPrivilegeSet" }
+      required: [success, data]
+
+    PrivilegeSetHoldersResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              assignmentId: { type: string }
+              subjectType: { type: string, enum: [USER, ROLE] }
+              subjectId: { type: string }
+              name: { type: string, nullable: true }
+              email: { type: string, nullable: true }
+              nodeId: { type: string, nullable: true }
+              expiresAt: { type: string, format: date-time, nullable: true }
+            required: [assignmentId, subjectType, subjectId]
+      required: [success, data]
+
+    CloneAccessBody:
+      type: object
+      properties:
+        fromUserId: { type: string }
+        toUserId: { type: string }
+        reason: { type: string }
+        parts:
+          type: array
+          description: Which layers to copy — roles, grants, privileges.
+          items: { type: string, enum: [roles, grants, privileges] }
+      required: [fromUserId, toUserId, reason]
+
+    ClonePlanResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          properties:
+            from: { $ref: "#/components/schemas/AccessUser" }
+            to: { $ref: "#/components/schemas/AccessUser" }
+            roles:
+              type: object
+              properties:
+                incoming: { type: array, items: { type: string } }
+                replacing: { type: array, items: { type: string } }
+            grants:
+              type: object
+              properties:
+                incoming: { type: array, items: { $ref: "#/components/schemas/AccessGrant" } }
+                replacing: { type: array, items: { $ref: "#/components/schemas/AccessGrant" } }
+            privileges:
+              type: object
+              properties:
+                incoming: { type: array, items: { $ref: "#/components/schemas/Privilege" } }
+                replacing: { type: array, items: { $ref: "#/components/schemas/Privilege" } }
+      required: [success, data]

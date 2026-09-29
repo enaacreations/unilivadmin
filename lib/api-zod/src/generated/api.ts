@@ -4511,3 +4511,1507 @@ export const UpdateWalletConfigResponse = zod.object({
     updatedAt: zod.coerce.date().optional(),
   }),
 });
+
+/**
+ * @summary The access vocabulary — every module, functionality and named action
+ */
+export const GetAccessManifestResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    modules: zod.array(
+      zod.object({
+        key: zod.string(),
+        label: zod.string(),
+        description: zod.string().optional(),
+        functionalities: zod.array(
+          zod.object({
+            key: zod.string(),
+            label: zod.string(),
+            module: zod.string(),
+            protected: zod.boolean(),
+            actions: zod
+              .array(
+                zod
+                  .object({
+                    key: zod.string(),
+                    label: zod.string(),
+                    description: zod.string(),
+                    id: zod.string(),
+                  })
+                  .describe(
+                    'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+                  ),
+              )
+              .describe(
+                "The permissions THIS functionality defines — not a shared verb list.",
+              ),
+          }),
+        ),
+      }),
+    ),
+    functionalities: zod
+      .array(
+        zod.object({
+          key: zod.string(),
+          label: zod.string(),
+          module: zod.string(),
+          protected: zod.boolean(),
+          actions: zod
+            .array(
+              zod
+                .object({
+                  key: zod.string(),
+                  label: zod.string(),
+                  description: zod.string(),
+                  id: zod.string(),
+                })
+                .describe(
+                  'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+                ),
+            )
+            .describe(
+              "The permissions THIS functionality defines — not a shared verb list.",
+            ),
+        }),
+      )
+      .describe("The same set flattened, for the pickers that want one list."),
+  }),
+});
+
+/**
+ * @summary Every permission the system defines, with what grants it today
+ */
+export const GetPrivilegeCatalogueResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    permissions: zod.array(
+      zod
+        .object({
+          key: zod.string(),
+          label: zod.string(),
+          description: zod.string(),
+          id: zod.string(),
+        })
+        .describe(
+          'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+        )
+        .and(
+          zod.object({
+            functionality: zod.string(),
+            functionalityLabel: zod.string().optional(),
+            module: zod.string(),
+            moduleLabel: zod.string().optional(),
+            action: zod.string(),
+            roles: zod
+              .array(zod.string())
+              .describe(
+                "The roles whose matrix grants it. Empty means no role does.",
+              ),
+            exceptions: zod
+              .number()
+              .describe(
+                "How many privileges are written against it, in either direction.",
+              ),
+          }),
+        ),
+    ),
+    total: zod.number(),
+  }),
+});
+
+/**
+ * @summary Every role, its permissions and who holds it
+ */
+export const GetAccessRolesResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      key: zod.string(),
+      label: zod.string(),
+      description: zod.string().nullish(),
+      rank: zod.number().optional(),
+      isSystem: zod
+        .boolean()
+        .describe("Cells are computed by rule and cannot be edited."),
+      isActive: zod.boolean(),
+      scopeModule: zod.string().nullish(),
+      anchorLevel: zod
+        .enum(["ZONE", "CITY", "CLUSTER", "PROPERTY", "KITCHEN"])
+        .nullish()
+        .describe("What KIND of place the role may be handed out at."),
+      cells: zod
+        .number()
+        .nullish()
+        .describe("Stored permission count. null for a role resolved by rule."),
+      holders: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            name: zod.string(),
+            email: zod.string(),
+            isActive: zod.boolean(),
+          }),
+        )
+        .optional(),
+    }),
+  ),
+});
+
+/**
+ * @summary Create a role, optionally cloning another's permissions
+ */
+export const CreateAccessRoleBody = zod.object({
+  key: zod.string(),
+  label: zod.string().optional(),
+  cloneFrom: zod
+    .string()
+    .optional()
+    .describe("Copy this role's permission cells into the new one."),
+  reason: zod.string(),
+  anchorLevel: zod
+    .enum(["ZONE", "CITY", "CLUSTER", "PROPERTY", "KITCHEN"])
+    .nullish(),
+});
+
+/**
+ * @summary One role, its permission cells and its holders
+ */
+export const GetAccessRoleParams = zod.object({
+  key: zod.coerce.string(),
+});
+
+export const GetAccessRoleResponse = zod.object({
+  success: zod.boolean(),
+  data: zod
+    .object({
+      key: zod.string(),
+      label: zod.string(),
+      description: zod.string().nullish(),
+      rank: zod.number().optional(),
+      isSystem: zod
+        .boolean()
+        .describe("Cells are computed by rule and cannot be edited."),
+      isActive: zod.boolean(),
+      scopeModule: zod.string().nullish(),
+      anchorLevel: zod
+        .enum(["ZONE", "CITY", "CLUSTER", "PROPERTY", "KITCHEN"])
+        .nullish()
+        .describe("What KIND of place the role may be handed out at."),
+      cells: zod
+        .number()
+        .nullish()
+        .describe("Stored permission count. null for a role resolved by rule."),
+      holders: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            name: zod.string(),
+            email: zod.string(),
+            isActive: zod.boolean(),
+          }),
+        )
+        .optional(),
+    })
+    .and(
+      zod.object({
+        permissions: zod
+          .array(
+            zod.object({
+              functionality: zod.string(),
+              action: zod.string(),
+              label: zod.string().optional(),
+              module: zod.string().optional(),
+            }),
+          )
+          .optional(),
+        privileges: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              subjectType: zod.enum(["USER", "ROLE"]),
+              subjectId: zod.string(),
+              roleKey: zod.string().optional(),
+              functionality: zod.string(),
+              action: zod.string(),
+              label: zod.string().optional(),
+              module: zod.string().optional(),
+              moduleLabel: zod.string().optional(),
+              actionLabel: zod.string().optional(),
+              actionDescription: zod.string().optional(),
+              permissionId: zod.string().optional(),
+              nodeId: zod.string().nullish(),
+              nodeName: zod.string().nullish(),
+              nodeType: zod.string().nullish(),
+              effect: zod.enum(["GRANT", "DENY"]),
+              reason: zod.string(),
+              effectiveFrom: zod.coerce.date().optional(),
+              expiresAt: zod.coerce.date().nullish(),
+              inherited: zod
+                .boolean()
+                .optional()
+                .describe(
+                  "True when it came from a role the user holds rather than the user.",
+                ),
+              live: zod.boolean(),
+              approvalFilename: zod.string().nullish(),
+              approvalSize: zod.number().nullish(),
+              approvalUrl: zod
+                .string()
+                .nullish()
+                .describe(
+                  "Short-lived link, minted per read. The stored key is never sent.",
+                ),
+            }),
+          )
+          .optional(),
+      }),
+    ),
+});
+
+/**
+ * @summary Rename a role, change its anchor level, or enable/disable it
+ */
+export const UpdateAccessRoleParams = zod.object({
+  key: zod.coerce.string(),
+});
+
+export const UpdateAccessRoleBody = zod.object({
+  label: zod.string().optional(),
+  description: zod.string().nullish(),
+  isActive: zod.boolean().optional(),
+  anchorLevel: zod
+    .enum(["ZONE", "CITY", "CLUSTER", "PROPERTY", "KITCHEN"])
+    .nullish(),
+  reason: zod.string(),
+});
+
+export const UpdateAccessRoleResponse = zod.object({
+  success: zod.boolean(),
+  data: zod
+    .object({
+      key: zod.string(),
+      label: zod.string(),
+      description: zod.string().nullish(),
+      rank: zod.number().optional(),
+      isSystem: zod
+        .boolean()
+        .describe("Cells are computed by rule and cannot be edited."),
+      isActive: zod.boolean(),
+      scopeModule: zod.string().nullish(),
+      anchorLevel: zod
+        .enum(["ZONE", "CITY", "CLUSTER", "PROPERTY", "KITCHEN"])
+        .nullish()
+        .describe("What KIND of place the role may be handed out at."),
+      cells: zod
+        .number()
+        .nullish()
+        .describe("Stored permission count. null for a role resolved by rule."),
+      holders: zod
+        .array(
+          zod.object({
+            id: zod.string(),
+            name: zod.string(),
+            email: zod.string(),
+            isActive: zod.boolean(),
+          }),
+        )
+        .optional(),
+    })
+    .and(
+      zod.object({
+        permissions: zod
+          .array(
+            zod.object({
+              functionality: zod.string(),
+              action: zod.string(),
+              label: zod.string().optional(),
+              module: zod.string().optional(),
+            }),
+          )
+          .optional(),
+        privileges: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              subjectType: zod.enum(["USER", "ROLE"]),
+              subjectId: zod.string(),
+              roleKey: zod.string().optional(),
+              functionality: zod.string(),
+              action: zod.string(),
+              label: zod.string().optional(),
+              module: zod.string().optional(),
+              moduleLabel: zod.string().optional(),
+              actionLabel: zod.string().optional(),
+              actionDescription: zod.string().optional(),
+              permissionId: zod.string().optional(),
+              nodeId: zod.string().nullish(),
+              nodeName: zod.string().nullish(),
+              nodeType: zod.string().nullish(),
+              effect: zod.enum(["GRANT", "DENY"]),
+              reason: zod.string(),
+              effectiveFrom: zod.coerce.date().optional(),
+              expiresAt: zod.coerce.date().nullish(),
+              inherited: zod
+                .boolean()
+                .optional()
+                .describe(
+                  "True when it came from a role the user holds rather than the user.",
+                ),
+              live: zod.boolean(),
+              approvalFilename: zod.string().nullish(),
+              approvalSize: zod.number().nullish(),
+              approvalUrl: zod
+                .string()
+                .nullish()
+                .describe(
+                  "Short-lived link, minted per read. The stored key is never sent.",
+                ),
+            }),
+          )
+          .optional(),
+      }),
+    ),
+});
+
+/**
+ * Read before disabling a role. Counts the people holding it as their primary role and names them, so the decision is made against people rather than a number.
+ * @summary Who a change to this role would reach
+ */
+export const GetRoleImpactParams = zod.object({
+  key: zod.coerce.string(),
+});
+
+export const GetRoleImpactResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    roleKey: zod.string(),
+    label: zod.string().optional(),
+    primaryHolders: zod
+      .number()
+      .describe(
+        "People whose account resolves as this role — the ones a disable strands.",
+      ),
+    holders: zod.array(
+      zod.object({
+        id: zod.string(),
+        name: zod.string(),
+        email: zod.string(),
+        isActive: zod.boolean(),
+      }),
+    ),
+  }),
+});
+
+/**
+ * @summary The role × functionality × action matrix
+ */
+export const GetAccessMatrixQueryParams = zod.object({
+  roleKey: zod.coerce.string().optional(),
+});
+
+export const GetAccessMatrixResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    version: zod.number(),
+    source: zod.enum(["db", "code"]),
+    modules: zod.array(
+      zod.object({
+        key: zod.string(),
+        label: zod.string(),
+        functionalities: zod.array(
+          zod.object({
+            key: zod.string(),
+            label: zod.string(),
+            module: zod.string(),
+            protected: zod.boolean(),
+            actions: zod
+              .array(
+                zod
+                  .object({
+                    key: zod.string(),
+                    label: zod.string(),
+                    description: zod.string(),
+                    id: zod.string(),
+                  })
+                  .describe(
+                    'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+                  ),
+              )
+              .describe(
+                "The permissions THIS functionality defines — not a shared verb list.",
+              ),
+          }),
+        ),
+      }),
+    ),
+    cells: zod.array(
+      zod.object({
+        roleKey: zod.string(),
+        functionality: zod.string(),
+        action: zod.string(),
+        computed: zod
+          .boolean()
+          .describe(
+            "True when the role resolves by rule rather than from a stored row.",
+          ),
+      }),
+    ),
+  }),
+});
+
+/**
+ * Refused when the change would leave nobody able to administer access, when it would raise a role above the caller's own, or when it touches a protected functionality.
+ * @summary Change permission cells
+ */
+export const UpdateAccessMatrixBody = zod.object({
+  version: zod
+    .number()
+    .optional()
+    .describe("The version read. A mismatch means somebody else edited first."),
+  reason: zod.string(),
+  changes: zod.array(
+    zod.object({
+      roleKey: zod.string(),
+      functionality: zod.string(),
+      action: zod.string(),
+      allowed: zod.boolean(),
+    }),
+  ),
+});
+
+export const UpdateAccessMatrixResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    version: zod.number(),
+    source: zod.enum(["db", "code"]),
+    modules: zod.array(
+      zod.object({
+        key: zod.string(),
+        label: zod.string(),
+        functionalities: zod.array(
+          zod.object({
+            key: zod.string(),
+            label: zod.string(),
+            module: zod.string(),
+            protected: zod.boolean(),
+            actions: zod
+              .array(
+                zod
+                  .object({
+                    key: zod.string(),
+                    label: zod.string(),
+                    description: zod.string(),
+                    id: zod.string(),
+                  })
+                  .describe(
+                    'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+                  ),
+              )
+              .describe(
+                "The permissions THIS functionality defines — not a shared verb list.",
+              ),
+          }),
+        ),
+      }),
+    ),
+    cells: zod.array(
+      zod.object({
+        roleKey: zod.string(),
+        functionality: zod.string(),
+        action: zod.string(),
+        computed: zod
+          .boolean()
+          .describe(
+            "True when the role resolves by rule rather than from a stored row.",
+          ),
+      }),
+    ),
+  }),
+});
+
+/**
+ * @summary People, for the access console's subject pickers
+ */
+export const GetAccessUsersResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      name: zod.string(),
+      email: zod.string(),
+      role: zod.string(),
+      propertyId: zod.string().nullish(),
+      isActive: zod.boolean(),
+    }),
+  ),
+});
+
+/**
+ * @summary The organization tree — zones, cities, clusters, properties, kitchens
+ */
+export const GetOrgNodesResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      name: zod.string(),
+      nodeType: zod.enum([
+        "ORGANIZATION",
+        "ZONE",
+        "CITY",
+        "CLUSTER",
+        "PROPERTY",
+        "KITCHEN",
+      ]),
+      parentId: zod.string().nullish(),
+      depth: zod.number().optional(),
+      isActive: zod.boolean(),
+    }),
+  ),
+});
+
+/**
+ * @summary Placements — which subject may act at which node
+ */
+export const GetAccessGrantsQueryParams = zod.object({
+  subjectId: zod.coerce.string().optional(),
+});
+
+export const GetAccessGrantsResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      subjectType: zod.enum(["USER", "ROLE"]),
+      subjectId: zod.string(),
+      roleKey: zod
+        .string()
+        .describe(
+          "'\*' means the placement applies whatever role the person holds.",
+        ),
+      nodeId: zod.string().nullish(),
+      nodeName: zod.string().nullish(),
+      nodeType: zod.string().nullish(),
+      includeDescendants: zod
+        .boolean()
+        .describe(
+          "Expanded through the closure at READ time, so new properties appear on their own.",
+        ),
+      dataScope: zod.string().optional(),
+      assignmentKind: zod.string().optional(),
+      effectiveFrom: zod.coerce.date().optional(),
+      expiresAt: zod.coerce.date().nullish(),
+      revokedAt: zod.coerce.date().nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary Place a subject at a node
+ */
+export const CreateAccessGrantBody = zod.object({
+  subjectType: zod.enum(["USER", "ROLE"]),
+  subjectId: zod.string(),
+  roleKey: zod.string().optional(),
+  nodeId: zod.string(),
+  includeDescendants: zod.boolean().optional(),
+  dataScope: zod.string().optional(),
+  assignmentKind: zod.string().optional(),
+  expiresAt: zod.coerce.date().nullish(),
+  reason: zod.string(),
+});
+
+/**
+ * Sets revokedAt rather than deleting, so "who could reach what, when" stays answerable.
+ * @summary Revoke a placement
+ */
+export const RevokeAccessGrantParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const RevokeAccessGrantBody = zod.object({
+  reason: zod.string(),
+});
+
+export const RevokeAccessGrantResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    subjectType: zod.enum(["USER", "ROLE"]),
+    subjectId: zod.string(),
+    roleKey: zod
+      .string()
+      .describe(
+        "'\*' means the placement applies whatever role the person holds.",
+      ),
+    nodeId: zod.string().nullish(),
+    nodeName: zod.string().nullish(),
+    nodeType: zod.string().nullish(),
+    includeDescendants: zod
+      .boolean()
+      .describe(
+        "Expanded through the closure at READ time, so new properties appear on their own.",
+      ),
+    dataScope: zod.string().optional(),
+    assignmentKind: zod.string().optional(),
+    effectiveFrom: zod.coerce.date().optional(),
+    expiresAt: zod.coerce.date().nullish(),
+    revokedAt: zod.coerce.date().nullish(),
+  }),
+});
+
+/**
+ * @summary Restore a revoked placement
+ */
+export const RestoreAccessGrantParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const RestoreAccessGrantBody = zod.object({
+  reason: zod.string(),
+});
+
+export const RestoreAccessGrantResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    subjectType: zod.enum(["USER", "ROLE"]),
+    subjectId: zod.string(),
+    roleKey: zod
+      .string()
+      .describe(
+        "'\*' means the placement applies whatever role the person holds.",
+      ),
+    nodeId: zod.string().nullish(),
+    nodeName: zod.string().nullish(),
+    nodeType: zod.string().nullish(),
+    includeDescendants: zod
+      .boolean()
+      .describe(
+        "Expanded through the closure at READ time, so new properties appear on their own.",
+      ),
+    dataScope: zod.string().optional(),
+    assignmentKind: zod.string().optional(),
+    effectiveFrom: zod.coerce.date().optional(),
+    expiresAt: zod.coerce.date().nullish(),
+    revokedAt: zod.coerce.date().nullish(),
+  }),
+});
+
+/**
+ * @summary The roles one person holds
+ */
+export const GetRoleAssignmentsParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const GetRoleAssignmentsResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      roleKey: zod.string(),
+      label: zod.string(),
+      held: zod.boolean(),
+      live: zod
+        .boolean()
+        .optional()
+        .describe("Held AND inside its effective window."),
+      isActive: zod.boolean().optional(),
+      anchorLevel: zod.string().nullish(),
+      expiresAt: zod.coerce.date().nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary Replace the roles one person holds
+ */
+export const UpdateRoleAssignmentsParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const UpdateRoleAssignmentsBody = zod.object({
+  roleKeys: zod.array(zod.string()),
+  reason: zod.string(),
+});
+
+export const UpdateRoleAssignmentsResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      roleKey: zod.string(),
+      label: zod.string(),
+      held: zod.boolean(),
+      live: zod
+        .boolean()
+        .optional()
+        .describe("Held AND inside its effective window."),
+      isActive: zod.boolean().optional(),
+      anchorLevel: zod.string().nullish(),
+      expiresAt: zod.coerce.date().nullish(),
+    }),
+  ),
+});
+
+/**
+ * Denials are returned alongside grants, never omitted: an administrator needs to see that a thing was considered and refused, and why. `nodeId` re-runs the whole matrix at one place.
+ * @summary Everything this person can and cannot do, with a reason for each
+ */
+export const PreviewUserAccessParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const PreviewUserAccessQueryParams = zod.object({
+  nodeId: zod.coerce.string().optional(),
+});
+
+export const PreviewUserAccessResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    subject: zod
+      .object({
+        id: zod.string(),
+        name: zod.string(),
+        email: zod.string(),
+        role: zod.string(),
+        propertyId: zod.string().nullish(),
+        isActive: zod.boolean(),
+      })
+      .optional(),
+    modules: zod.array(
+      zod.object({
+        key: zod.string(),
+        label: zod.string(),
+        noAccess: zod.boolean().optional(),
+        heldCount: zod.number().optional(),
+        totalCount: zod.number().optional(),
+        functionalities: zod.array(
+          zod.object({
+            key: zod.string(),
+            label: zod.string(),
+            noAccess: zod.boolean().optional(),
+            actions: zod.array(
+              zod
+                .object({
+                  key: zod.string(),
+                  label: zod.string(),
+                  description: zod.string(),
+                  id: zod.string(),
+                })
+                .describe(
+                  'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+                )
+                .and(
+                  zod.object({
+                    action: zod.string(),
+                    allow: zod.boolean(),
+                    reason: zod
+                      .string()
+                      .describe(
+                        "Why — ALLOW_ROLE_CAPABILITY, DENY_NO_GRANT, DENY_ROLE_LACKS_CAPABILITY, and so on.",
+                      ),
+                    detail: zod.string().optional(),
+                    via: zod.string().nullish(),
+                  }),
+                ),
+            ),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+/**
+ * @summary Each role this person holds, where it applies, and what that reaches
+ */
+export const GetUserRoleTreeParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const GetUserRoleTreeResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    roles: zod.array(
+      zod.object({
+        roleKey: zod.string(),
+        label: zod.string(),
+        isSystem: zod.boolean().optional(),
+        anchorLevel: zod.string().nullish(),
+        anchors: zod.array(
+          zod.object({
+            id: zod.string(),
+            name: zod.string(),
+            nodeType: zod.string(),
+            includeDescendants: zod.boolean().optional(),
+            scopedToRole: zod
+              .boolean()
+              .describe(
+                "False when the placement was made for the PERSON rather than under this role, so it applies to every role they hold.",
+              ),
+          }),
+        ),
+        properties: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              name: zod.string(),
+              viaId: zod.string().optional(),
+              viaName: zod.string().optional(),
+              viaType: zod.string().optional(),
+            }),
+          )
+          .describe(
+            "Every property the anchors reach, resolved through the closure now.",
+          ),
+      }),
+    ),
+  }),
+});
+
+/**
+ * @summary What this person may do at one property
+ */
+export const GetUserPermissionGridParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const GetUserPermissionGridQueryParams = zod.object({
+  nodeId: zod.coerce.string().optional(),
+  roleKey: zod.coerce.string().optional(),
+});
+
+export const GetUserPermissionGridResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    userId: zod.string(),
+    roleKey: zod.string().nullish(),
+    nodeId: zod.string().nullish(),
+    modules: zod.array(
+      zod.object({
+        key: zod.string(),
+        label: zod.string(),
+        functionalities: zod.array(
+          zod.object({
+            functionality: zod.string(),
+            label: zod.string(),
+            cells: zod.array(
+              zod
+                .object({
+                  key: zod.string(),
+                  label: zod.string(),
+                  description: zod.string(),
+                  id: zod.string(),
+                })
+                .describe(
+                  'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+                )
+                .and(
+                  zod.object({
+                    action: zod.string(),
+                    inManifest: zod.boolean(),
+                    roleAllows: zod
+                      .boolean()
+                      .describe(
+                        "What THIS role's matrix gives — what makes one role's grid differ.",
+                      ),
+                    allowed: zod
+                      .boolean()
+                      .describe(
+                        "What the person actually gets here, across every role plus exceptions.",
+                      ),
+                    reason: zod.string().optional(),
+                    detail: zod.string().optional(),
+                  }),
+                ),
+            ),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+/**
+ * Writes a PRIVILEGE, never the role matrix — the matrix is the role's meaning for everyone. When the requested answer already equals what the layers beneath give, the privilege is deleted instead of written.
+ * @summary Turn one permission on or off for one person at one place
+ */
+export const SetUserPermissionCellParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const SetUserPermissionCellBody = zod.object({
+  roleKey: zod.string().optional(),
+  nodeId: zod.string().optional(),
+  functionality: zod.string(),
+  action: zod.string(),
+  allowed: zod.boolean(),
+  reason: zod.string(),
+});
+
+export const SetUserPermissionCellResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string().optional(),
+});
+
+/**
+ * The nodes must match the role's anchor level — a Cluster Manager is given a cluster. Only placements made under this role are replaced; placements made for the person regardless of role are untouched.
+ * @summary Change the places one role applies at for one person
+ */
+export const SetRoleScopeParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const SetRoleScopeBody = zod.object({
+  roleKey: zod.string(),
+  nodeIds: zod.array(zod.string()),
+  reason: zod.string(),
+});
+
+export const SetRoleScopeResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string().optional(),
+});
+
+/**
+ * @summary The exceptions written for one subject
+ */
+export const GetPrivilegesQueryParams = zod.object({
+  subjectType: zod.enum(["USER", "ROLE"]),
+  subjectId: zod.coerce.string(),
+});
+
+export const GetPrivilegesResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    heldRoles: zod.array(zod.string()),
+    privileges: zod.array(
+      zod.object({
+        id: zod.string(),
+        subjectType: zod.enum(["USER", "ROLE"]),
+        subjectId: zod.string(),
+        roleKey: zod.string().optional(),
+        functionality: zod.string(),
+        action: zod.string(),
+        label: zod.string().optional(),
+        module: zod.string().optional(),
+        moduleLabel: zod.string().optional(),
+        actionLabel: zod.string().optional(),
+        actionDescription: zod.string().optional(),
+        permissionId: zod.string().optional(),
+        nodeId: zod.string().nullish(),
+        nodeName: zod.string().nullish(),
+        nodeType: zod.string().nullish(),
+        effect: zod.enum(["GRANT", "DENY"]),
+        reason: zod.string(),
+        effectiveFrom: zod.coerce.date().optional(),
+        expiresAt: zod.coerce.date().nullish(),
+        inherited: zod
+          .boolean()
+          .optional()
+          .describe(
+            "True when it came from a role the user holds rather than the user.",
+          ),
+        live: zod.boolean(),
+        approvalFilename: zod.string().nullish(),
+        approvalSize: zod.number().nullish(),
+        approvalUrl: zod
+          .string()
+          .nullish()
+          .describe(
+            "Short-lived link, minted per read. The stored key is never sent.",
+          ),
+      }),
+    ),
+  }),
+});
+
+/**
+ * One cell per call. `effect INHERIT` deletes the row so the subject falls back to the layer beneath. An approval file may be attached as evidence.
+ * @summary Grant, deny or clear one permission for one subject
+ */
+export const SetPrivilegeBody = zod.object({
+  subjectType: zod.enum(["USER", "ROLE"]),
+  subjectId: zod.string(),
+  functionality: zod.string(),
+  action: zod.string(),
+  nodeId: zod.string().nullish(),
+  effect: zod
+    .enum(["GRANT", "DENY", "INHERIT"])
+    .describe(
+      "INHERIT deletes the row — the subject falls back to the layer beneath.",
+    ),
+  reason: zod.string(),
+  expiresAt: zod.coerce.date().nullish(),
+  approval: zod
+    .object({
+      dataUrl: zod.string().describe("data:<mime>;base64,<payload>"),
+      filename: zod.string(),
+    })
+    .describe(
+      "The evidence a privilege was granted on — typically an exported email. Sent as a base64 data URL, the same convention audit evidence uses.",
+    )
+    .nullish(),
+});
+
+export const SetPrivilegeResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    subjectType: zod.enum(["USER", "ROLE"]),
+    subjectId: zod.string(),
+    roleKey: zod.string().optional(),
+    functionality: zod.string(),
+    action: zod.string(),
+    label: zod.string().optional(),
+    module: zod.string().optional(),
+    moduleLabel: zod.string().optional(),
+    actionLabel: zod.string().optional(),
+    actionDescription: zod.string().optional(),
+    permissionId: zod.string().optional(),
+    nodeId: zod.string().nullish(),
+    nodeName: zod.string().nullish(),
+    nodeType: zod.string().nullish(),
+    effect: zod.enum(["GRANT", "DENY"]),
+    reason: zod.string(),
+    effectiveFrom: zod.coerce.date().optional(),
+    expiresAt: zod.coerce.date().nullish(),
+    inherited: zod
+      .boolean()
+      .optional()
+      .describe(
+        "True when it came from a role the user holds rather than the user.",
+      ),
+    live: zod.boolean(),
+    approvalFilename: zod.string().nullish(),
+    approvalSize: zod.number().nullish(),
+    approvalUrl: zod
+      .string()
+      .nullish()
+      .describe(
+        "Short-lived link, minted per read. The stored key is never sent.",
+      ),
+  }),
+});
+
+/**
+ * @summary Named groups of permissions, with their members and reach
+ */
+export const GetPrivilegeSetsResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      id: zod.string(),
+      key: zod.string(),
+      name: zod.string(),
+      description: zod.string(),
+      effect: zod.enum(["GRANT", "DENY"]),
+      isActive: zod.boolean(),
+      createdBy: zod.string().nullish(),
+      createdAt: zod.coerce.date().optional(),
+      updatedAt: zod.coerce.date().optional(),
+      items: zod.array(
+        zod
+          .object({
+            key: zod.string(),
+            label: zod.string(),
+            description: zod.string(),
+            id: zod.string(),
+          })
+          .describe(
+            'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+          )
+          .and(
+            zod.object({
+              functionality: zod.string(),
+              functionalityLabel: zod.string().optional(),
+              module: zod.string().optional(),
+              action: zod.string(),
+              inManifest: zod
+                .boolean()
+                .describe(
+                  "False when the manifest no longer names it. Shown struck through rather than dropped — a grant nobody can see is a grant nobody will remove.",
+                ),
+            }),
+          ),
+      ),
+      holders: zod
+        .number()
+        .describe("Live assignments — the blast radius of editing the set."),
+    }),
+  ),
+});
+
+/**
+ * A set may mix actions from any number of functionalities and modules. Every member is held to the manifest, so a typo grants nothing.
+ * @summary Create a privilege set
+ */
+export const CreatePrivilegeSetBody = zod.object({
+  key: zod.string().optional(),
+  name: zod.string(),
+  description: zod.string(),
+  effect: zod.enum(["GRANT", "DENY"]),
+  isActive: zod.boolean().optional(),
+  items: zod
+    .array(
+      zod.object({
+        functionality: zod.string(),
+        action: zod.string(),
+      }),
+    )
+    .describe(
+      "May mix actions from any number of functionalities and modules.",
+    ),
+});
+
+/**
+ * A set is a LIVE REFERENCE: everyone holding it changes with it. The response reports how many people that was.
+ * @summary Rename a set or change what is in it
+ */
+export const UpdatePrivilegeSetParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const UpdatePrivilegeSetBody = zod.object({
+  key: zod.string().optional(),
+  name: zod.string(),
+  description: zod.string(),
+  effect: zod.enum(["GRANT", "DENY"]),
+  isActive: zod.boolean().optional(),
+  items: zod
+    .array(
+      zod.object({
+        functionality: zod.string(),
+        action: zod.string(),
+      }),
+    )
+    .describe(
+      "May mix actions from any number of functionalities and modules.",
+    ),
+});
+
+export const UpdatePrivilegeSetResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    id: zod.string(),
+    holders: zod.number().describe("How many people the edit reached."),
+  }),
+});
+
+/**
+ * Stores a POINTER, not a copy — the members are resolved on every request. Each member is checked by the same guard a single privilege gets, so a set cannot be a way around them.
+ * @summary Give a set to a person or a role
+ */
+export const AssignPrivilegeSetParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const AssignPrivilegeSetBody = zod.object({
+  subjectType: zod.enum(["USER", "ROLE"]),
+  subjectId: zod.string(),
+  roleKey: zod.string().optional(),
+  nodeId: zod.string().nullish(),
+  reason: zod.string(),
+  expiresAt: zod.coerce.date().nullish(),
+  approval: zod
+    .object({
+      dataUrl: zod.string().describe("data:<mime>;base64,<payload>"),
+      filename: zod.string(),
+    })
+    .describe(
+      "The evidence a privilege was granted on — typically an exported email. Sent as a base64 data URL, the same convention audit evidence uses.",
+    )
+    .nullish(),
+});
+
+/**
+ * @summary Who a set reaches, by name
+ */
+export const GetPrivilegeSetHoldersParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const GetPrivilegeSetHoldersResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      assignmentId: zod.string(),
+      subjectType: zod.enum(["USER", "ROLE"]),
+      subjectId: zod.string(),
+      name: zod.string().nullish(),
+      email: zod.string().nullish(),
+      nodeId: zod.string().nullish(),
+      expiresAt: zod.coerce.date().nullish(),
+    }),
+  ),
+});
+
+/**
+ * @summary The sets one subject holds
+ */
+export const GetHeldPrivilegeSetsParams = zod.object({
+  subjectId: zod.coerce.string(),
+});
+
+export const GetHeldPrivilegeSetsResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.array(
+    zod.object({
+      assignmentId: zod.string(),
+      setId: zod.string(),
+      key: zod.string(),
+      name: zod.string(),
+      description: zod.string().optional(),
+      effect: zod.enum(["GRANT", "DENY"]),
+      isActive: zod.boolean().optional(),
+      roleKey: zod.string().optional(),
+      nodeId: zod.string().nullish(),
+      reason: zod.string().optional(),
+      expiresAt: zod.coerce.date().nullish(),
+      approvalFilename: zod.string().nullish(),
+      approvalUrl: zod.string().nullish(),
+      items: zod.array(
+        zod
+          .object({
+            key: zod.string(),
+            label: zod.string(),
+            description: zod.string(),
+            id: zod.string(),
+          })
+          .describe(
+            'One permission. `key` is the action (\"add_property\"), `id` the full identifier (\"operations.properties.add_property\"), and `description` the single line shown wherever the access is granted, listed or explained.',
+          )
+          .and(
+            zod.object({
+              functionality: zod.string(),
+              functionalityLabel: zod.string().optional(),
+              module: zod.string().optional(),
+              action: zod.string(),
+              inManifest: zod
+                .boolean()
+                .describe(
+                  "False when the manifest no longer names it. Shown struck through rather than dropped — a grant nobody can see is a grant nobody will remove.",
+                ),
+            }),
+          ),
+      ),
+    }),
+  ),
+});
+
+/**
+ * Revoked rather than deleted — "who held what, when" is the question this answers.
+ * @summary Take a set back
+ */
+export const RevokePrivilegeSetAssignmentParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const RevokePrivilegeSetAssignmentBody = zod.object({
+  reason: zod.string(),
+});
+
+export const RevokePrivilegeSetAssignmentResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string().optional(),
+});
+
+/**
+ * @summary Copy one person's access onto another
+ */
+export const CloneAccessBody = zod.object({
+  fromUserId: zod.string(),
+  toUserId: zod.string(),
+  reason: zod.string(),
+  parts: zod
+    .array(zod.enum(["roles", "grants", "privileges"]))
+    .optional()
+    .describe("Which layers to copy — roles, grants, privileges."),
+});
+
+export const CloneAccessResponse = zod.object({
+  success: zod.boolean(),
+  message: zod.string().optional(),
+});
+
+/**
+ * @summary What copying one person's access onto another would change
+ */
+export const PreviewCloneAccessParams = zod.object({
+  fromUserId: zod.coerce.string(),
+  toUserId: zod.coerce.string(),
+});
+
+export const PreviewCloneAccessResponse = zod.object({
+  success: zod.boolean(),
+  data: zod.object({
+    from: zod
+      .object({
+        id: zod.string(),
+        name: zod.string(),
+        email: zod.string(),
+        role: zod.string(),
+        propertyId: zod.string().nullish(),
+        isActive: zod.boolean(),
+      })
+      .optional(),
+    to: zod
+      .object({
+        id: zod.string(),
+        name: zod.string(),
+        email: zod.string(),
+        role: zod.string(),
+        propertyId: zod.string().nullish(),
+        isActive: zod.boolean(),
+      })
+      .optional(),
+    roles: zod
+      .object({
+        incoming: zod.array(zod.string()).optional(),
+        replacing: zod.array(zod.string()).optional(),
+      })
+      .optional(),
+    grants: zod
+      .object({
+        incoming: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              subjectType: zod.enum(["USER", "ROLE"]),
+              subjectId: zod.string(),
+              roleKey: zod
+                .string()
+                .describe(
+                  "'\*' means the placement applies whatever role the person holds.",
+                ),
+              nodeId: zod.string().nullish(),
+              nodeName: zod.string().nullish(),
+              nodeType: zod.string().nullish(),
+              includeDescendants: zod
+                .boolean()
+                .describe(
+                  "Expanded through the closure at READ time, so new properties appear on their own.",
+                ),
+              dataScope: zod.string().optional(),
+              assignmentKind: zod.string().optional(),
+              effectiveFrom: zod.coerce.date().optional(),
+              expiresAt: zod.coerce.date().nullish(),
+              revokedAt: zod.coerce.date().nullish(),
+            }),
+          )
+          .optional(),
+        replacing: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              subjectType: zod.enum(["USER", "ROLE"]),
+              subjectId: zod.string(),
+              roleKey: zod
+                .string()
+                .describe(
+                  "'\*' means the placement applies whatever role the person holds.",
+                ),
+              nodeId: zod.string().nullish(),
+              nodeName: zod.string().nullish(),
+              nodeType: zod.string().nullish(),
+              includeDescendants: zod
+                .boolean()
+                .describe(
+                  "Expanded through the closure at READ time, so new properties appear on their own.",
+                ),
+              dataScope: zod.string().optional(),
+              assignmentKind: zod.string().optional(),
+              effectiveFrom: zod.coerce.date().optional(),
+              expiresAt: zod.coerce.date().nullish(),
+              revokedAt: zod.coerce.date().nullish(),
+            }),
+          )
+          .optional(),
+      })
+      .optional(),
+    privileges: zod
+      .object({
+        incoming: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              subjectType: zod.enum(["USER", "ROLE"]),
+              subjectId: zod.string(),
+              roleKey: zod.string().optional(),
+              functionality: zod.string(),
+              action: zod.string(),
+              label: zod.string().optional(),
+              module: zod.string().optional(),
+              moduleLabel: zod.string().optional(),
+              actionLabel: zod.string().optional(),
+              actionDescription: zod.string().optional(),
+              permissionId: zod.string().optional(),
+              nodeId: zod.string().nullish(),
+              nodeName: zod.string().nullish(),
+              nodeType: zod.string().nullish(),
+              effect: zod.enum(["GRANT", "DENY"]),
+              reason: zod.string(),
+              effectiveFrom: zod.coerce.date().optional(),
+              expiresAt: zod.coerce.date().nullish(),
+              inherited: zod
+                .boolean()
+                .optional()
+                .describe(
+                  "True when it came from a role the user holds rather than the user.",
+                ),
+              live: zod.boolean(),
+              approvalFilename: zod.string().nullish(),
+              approvalSize: zod.number().nullish(),
+              approvalUrl: zod
+                .string()
+                .nullish()
+                .describe(
+                  "Short-lived link, minted per read. The stored key is never sent.",
+                ),
+            }),
+          )
+          .optional(),
+        replacing: zod
+          .array(
+            zod.object({
+              id: zod.string(),
+              subjectType: zod.enum(["USER", "ROLE"]),
+              subjectId: zod.string(),
+              roleKey: zod.string().optional(),
+              functionality: zod.string(),
+              action: zod.string(),
+              label: zod.string().optional(),
+              module: zod.string().optional(),
+              moduleLabel: zod.string().optional(),
+              actionLabel: zod.string().optional(),
+              actionDescription: zod.string().optional(),
+              permissionId: zod.string().optional(),
+              nodeId: zod.string().nullish(),
+              nodeName: zod.string().nullish(),
+              nodeType: zod.string().nullish(),
+              effect: zod.enum(["GRANT", "DENY"]),
+              reason: zod.string(),
+              effectiveFrom: zod.coerce.date().optional(),
+              expiresAt: zod.coerce.date().nullish(),
+              inherited: zod
+                .boolean()
+                .optional()
+                .describe(
+                  "True when it came from a role the user holds rather than the user.",
+                ),
+              live: zod.boolean(),
+              approvalFilename: zod.string().nullish(),
+              approvalSize: zod.number().nullish(),
+              approvalUrl: zod
+                .string()
+                .nullish()
+                .describe(
+                  "Short-lived link, minted per read. The stored key is never sent.",
+                ),
+            }),
+          )
+          .optional(),
+      })
+      .optional(),
+  }),
+});
