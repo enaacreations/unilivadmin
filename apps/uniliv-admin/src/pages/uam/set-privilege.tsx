@@ -48,7 +48,10 @@ export function SetPrivilegeSheet({
    * Exactly one of these is ever set.
    */
   const [functionality, setFunctionality] = React.useState("");
-  const [action, setAction] = React.useState("");
+  // Several actions of one functionality can be granted at once. The server
+  // still takes one cell per call (PUT /access/privileges is one row by design),
+  // so a multi-action grant is N calls sharing the same reason, place and effect.
+  const [actions, setActions] = React.useState<string[]>([]);
   const [setId, setSetId] = React.useState("");
   const [nodeId, setNodeId] = React.useState<string>(defaultNodeId ?? "");
   const [effect, setEffect] = React.useState<"GRANT" | "DENY">("GRANT");
@@ -98,19 +101,25 @@ export function SetPrivilegeSheet({
     // here reads either, so widening to their union would only make the caller
     // narrow a value it does not want.
     mutationFn: async (): Promise<void> => {
-      await (pickedSet
-        ? accessApi.assignPrivilegeSet(pickedSet.id, {
-            subjectType, subjectId,
-            nodeId: nodeId || null, reason,
-            expiresAt: expiresAt || null,
-            approval,
-          })
-        : accessApi.setPrivilege({
-            subjectType, subjectId, functionality, action,
-            nodeId: nodeId || null, effect, reason,
-            expiresAt: expiresAt || null,
-            approval,
-          }));
+      if (pickedSet) {
+        await accessApi.assignPrivilegeSet(pickedSet.id, {
+          subjectType, subjectId,
+          nodeId: nodeId || null, reason,
+          expiresAt: expiresAt || null,
+          approval,
+        });
+        return;
+      }
+      // One PUT per selected action — the endpoint writes one cell per call on
+      // purpose, so each action becomes its own row carrying the same reason.
+      for (const a of actions) {
+        await accessApi.setPrivilege({
+          subjectType, subjectId, functionality, action: a,
+          nodeId: nodeId || null, effect, reason,
+          expiresAt: expiresAt || null,
+          approval,
+        });
+      }
     },
     onSuccess: () => {
       toast({
@@ -118,7 +127,7 @@ export function SetPrivilegeSheet({
         title: pickedSet ? "Set granted" : "Privilege granted",
         description: pickedSet
           ? `${pickedSet.items.length} ${pickedSet.items.length === 1 ? "permission" : "permissions"}, on the activity trail with your reason.`
-          : "It is on the activity trail with your reason.",
+          : `${actions.length} ${actions.length === 1 ? "permission" : "permissions"} on the activity trail with your reason.`,
       });
       void qc.invalidateQueries({ queryKey: ["uam"] });
       void qc.invalidateQueries({ queryKey: ["access"] });
@@ -127,7 +136,16 @@ export function SetPrivilegeSheet({
     onError: (e) => toast({ title: "Refused", description: (e as Error).message, variant: "destructive" }),
   });
 
-  const ready = subjectId && (setId || (functionality && action)) && reason.trim().length >= 4;
+  const ready = subjectId && (setId || (functionality && actions.length > 0)) && reason.trim().length >= 4;
+  // What is still stopping the grant, in words. A disabled button with no reason
+  // reads as "broken"; naming the gap turns it into a to-do. Ordered the way the
+  // form reads top-down, so the hint points at the next empty field.
+  const missing = [
+    !subjectId && "a person or role",
+    !(setId || functionality) && "what they can do",
+    functionality && actions.length === 0 && "an action to allow",
+    reason.trim().length < 4 && "a reason",
+  ].filter(Boolean) as string[];
   const subjectName =
     subjectType === "USER"
       ? users.data?.find((u) => u.id === subjectId)?.name
@@ -176,7 +194,7 @@ export function SetPrivilegeSheet({
                 const isSet = v.startsWith("set:");
                 setSetId(isSet ? v.slice(4) : "");
                 setFunctionality(isSet ? "" : v);
-                setAction("");
+                setActions([]);
               }}
               placeholder="Pick a set or a functionality…"
               searchPlaceholder="Search sets and functionalities…"
@@ -232,12 +250,17 @@ export function SetPrivilegeSheet({
                 {/* The functionality's OWN permissions, named by the server.
                     Each chip is one permission, not a verb waiting for a noun —
                     "Record answers", "Reassign audit". The chips ARE the
-                    manifest, so a functionality offers exactly what it defines. */}
+                    manifest, so a functionality offers exactly what it defines.
+                    Multi-select: pick any number, each becomes its own row. */}
                 {fn.actions.map((a) => (
                   <button
                     key={a.key}
-                    onClick={() => setAction(a.key)}
-                    className={`uam-chip ${action === a.key ? "uam-chip-on" : ""}`}
+                    onClick={() =>
+                      setActions((prev) =>
+                        prev.includes(a.key) ? prev.filter((k) => k !== a.key) : [...prev, a.key],
+                      )
+                    }
+                    className={`uam-chip ${actions.includes(a.key) ? "uam-chip-on" : ""}`}
                     title={a.description}
                   >
                     {a.label}
@@ -249,14 +272,18 @@ export function SetPrivilegeSheet({
                 "Verify" and "Close" mean nothing on their own, and a tooltip is
                 no use on a touch screen. The identifier underneath is what this
                 privilege will actually be called in a log line or a ticket. */}
-            {fn && action && (
-              <div className="mt-2 flex flex-col gap-0.5">
-                <span className="text-[13px]" style={{ color: "var(--ink2)" }}>
-                  {actionMeaning(fn.key, action)}
-                </span>
-                <span className="text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
-                  {permissionId(fn.module, fn.key, action)}
-                </span>
+            {fn && actions.length > 0 && (
+              <div className="mt-2 flex flex-col gap-2">
+                {actions.map((a) => (
+                  <div key={a} className="flex flex-col gap-0.5">
+                    <span className="text-[13px]" style={{ color: "var(--ink2)" }}>
+                      {actionMeaning(fn.key, a)}
+                    </span>
+                    <span className="text-[11.5px]" style={{ color: "var(--ink3)", fontFamily: "var(--mono)" }}>
+                      {permissionId(fn.module, fn.key, a)}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
           </Field>
@@ -438,7 +465,7 @@ export function SetPrivilegeSheet({
                 <span>
                   {pickedSet
                     ? `${pickedSet.name} (${pickedSet.items.length} ${pickedSet.items.length === 1 ? "permission" : "permissions"})`
-                    : fn ? actionLabel(fn.key, action) : action}
+                    : fn ? actions.map((a) => actionLabel(fn.key, a)).join(", ") : actions.join(", ")}
                 </span>
                 <span style={{ color: "var(--ink3)" }}>
                   {nodeId ? `at ${(nodes.data ?? []).find((n) => n.id === nodeId)?.name}` : "everywhere they work"}
@@ -448,15 +475,21 @@ export function SetPrivilegeSheet({
           )}
         </div>
 
-        <footer className="flex justify-end gap-2 px-5 py-3.5" style={{ borderTop: "1px solid var(--line)" }}>
-          <button onClick={onClose} className="uam-btn h-9 px-3.5">Cancel</button>
-          <button
-            disabled={!ready || save.isPending}
-            onClick={() => save.mutate()}
-            className="uam-btn uam-btn-primary h-9 px-3.5"
-          >
-            {save.isPending ? "Granting…" : "Grant Privilege"}
-          </button>
+        <footer className="flex items-center justify-between gap-3 px-5 py-3.5" style={{ borderTop: "1px solid var(--line)" }}>
+          {/* Why the button is disabled, so it reads as a to-do and not a bug. */}
+          <span className="min-w-0 flex-1 truncate text-[12.5px]" style={{ color: "var(--ink3)" }}>
+            {!ready && missing.length > 0 ? `Still needs ${joinWords(missing)}.` : ""}
+          </span>
+          <div className="flex shrink-0 gap-2">
+            <button onClick={onClose} className="uam-btn h-9 px-3.5">Cancel</button>
+            <button
+              disabled={!ready || save.isPending}
+              onClick={() => save.mutate()}
+              className="uam-btn uam-btn-primary h-9 px-3.5"
+            >
+              {save.isPending ? "Granting…" : "Grant Privilege"}
+            </button>
+          </div>
         </footer>
       </aside>
     </div>
@@ -478,6 +511,12 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
     </div>
   );
+}
+
+/** "a, b and c" — a natural list, so the missing-fields hint reads as a sentence. */
+function joinWords(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
 type ExpiryChoice = "none" | "7" | "30" | "90" | "custom";

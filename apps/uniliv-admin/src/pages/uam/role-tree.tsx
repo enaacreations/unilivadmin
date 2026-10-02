@@ -8,7 +8,7 @@ import {
   type AnchorLevel, type OrgNode, type RoleTreeEntry,
 } from "@/lib/access-api";
 import { UamEmpty } from "./shell";
-import { PermissionList } from "./permission-list";
+import { PermissionList, type PermissionSection } from "./permission-list";
 import { UamSelect } from "./select";
 
 /**
@@ -215,7 +215,7 @@ function RoleBlock({
               <button
                 onClick={() => setOpen(isOpen ? null : p.id)}
                 aria-expanded={isOpen}
-                className="uam-row uam-row-link w-full text-left"
+                className="uam-row w-full cursor-pointer text-left"
               >
                 <ChevronRight
                   className="h-4 w-4 shrink-0 transition-transform"
@@ -252,6 +252,10 @@ function Grid({
   const { toast } = useToast();
   const [pending, setPending] = React.useState<Pending>({});
   const [reason, setReason] = React.useState("");
+  // Which module's permissions fill the right pane. Null until the data lands,
+  // then resolved to the first module below — a stored key that no longer exists
+  // (filtered out this load) falls back the same way.
+  const [activeKey, setActiveKey] = React.useState<string | null>(null);
 
   const grid = useQuery({
     queryKey: accessKeys.userGrid(userId, roleKey, nodeId),
@@ -295,6 +299,52 @@ function Grid({
   const changes = Object.keys(pending).length;
   const ready = changes > 0 && reason.trim().length >= 4;
 
+  // The sections handed to PermissionList, built once so the left rail and the
+  // detail pane read from the same shape. `on` folds the unsaved pending edits
+  // over the saved state; `exception` is a tick that the role alone would not
+  // give — the by-hand override this whole screen exists to surface.
+  const sections: PermissionSection[] = modules.map((mod) => ({
+    key: mod.key,
+    label: mod.label,
+    groups: mod.functionalities.map((f) => ({
+      key: f.functionality,
+      label: f.label,
+      cells: Object.fromEntries(
+        f.cells.map((c) => {
+          const k = cellKey(f.functionality, c.action);
+          const on = k in pending ? pending[k]! : c.allowed;
+          return [c.action, {
+            inManifest: c.inManifest,
+            on,
+            exception: on !== c.roleAllows,
+            title: on !== c.roleAllows
+              ? `Differs from what ${mod.label} gives in this role — ${c.detail || "written for this person here"}`
+              : c.detail,
+          }];
+        }),
+      ),
+    })),
+  }));
+
+  // Per-module tallies for the rail: how many permissions are on, and how many
+  // are exceptions — the one number that tells you which module to open first.
+  const summary = (sec: PermissionSection) => {
+    let on = 0, total = 0, exceptions = 0;
+    for (const g of sec.groups) {
+      for (const cell of Object.values(g.cells)) {
+        if (!cell.inManifest) continue;
+        total++;
+        if (cell.on) on++;
+        if (cell.exception) exceptions++;
+      }
+    }
+    return { on, total, exceptions };
+  };
+
+  // A stored key that survived this load wins; otherwise fall to the first
+  // module, so the pane is never blank while a module exists to show.
+  const active = sections.find((s) => s.key === activeKey) ?? sections[0] ?? null;
+
   return (
     <div className="flex flex-col gap-3 px-4 py-4" style={{ background: "var(--sunk)", borderBottom: "1px solid var(--line)" }}>
       <p className="m-0 text-[12.5px]" style={{ color: "var(--ink3)" }}>
@@ -302,45 +352,65 @@ function Grid({
         exception written for this person, at this property only.
       </p>
 
-      <div className="flex max-h-[460px] flex-col gap-3 overflow-y-auto">
-        <PermissionList
-          sections={modules.map((mod) => ({
-            key: mod.key,
-            label: mod.label,
-            groups: mod.functionalities.map((f) => ({
-              key: f.functionality,
-              label: f.label,
-              cells: Object.fromEntries(
-                f.cells.map((c) => {
-                  const k = cellKey(f.functionality, c.action);
-                  const on = k in pending ? pending[k]! : c.allowed;
-                  return [c.action, {
-                    inManifest: c.inManifest,
-                    on,
-                    // An exception is a tick that does not match what the role
-                    // alone gives — the one written by hand for this person here.
-                    exception: on !== c.roleAllows,
-                    title: on !== c.roleAllows
-                      ? `Differs from what ${mod.label} gives in this role — ${c.detail || "written for this person here"}`
-                      : c.detail,
-                  }];
-                }),
-              ),
-            })),
-          }))}
-          onToggle={(functionality: string, action: string, next: boolean) =>
-            setPending((p) => {
-              const f = modules.flatMap((m) => m.functionalities).find((x) => x.functionality === functionality);
-              const current = f?.cells.find((c) => c.action === action)?.allowed ?? false;
-              const k = cellKey(functionality, action);
-              const copy = { ...p };
-              // Toggling back to where it started is not a change.
-              if (next === current) delete copy[k];
-              else copy[k] = next;
-              return copy;
-            })
-          }
-        />
+      {/* Two panes, not one long scroll: the module list on the left is the
+          index into a table that is otherwise hundreds of rows tall, and it
+          carries the on-count and the exception count so you can see WHERE the
+          overrides are before opening anything. The right pane is one module at
+          a time — the detail for whatever the rail has selected. */}
+      <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(180px, 220px) minmax(0, 1fr)" }}>
+        <div className="uam-card flex max-h-[460px] flex-col overflow-y-auto overflow-x-hidden p-0">
+          {sections.map((sec) => {
+            const s = summary(sec);
+            const isActive = active?.key === sec.key;
+            return (
+              <button
+                key={sec.key}
+                onClick={() => setActiveKey(sec.key)}
+                aria-current={isActive}
+                className="uam-row w-full cursor-pointer flex-col items-start gap-1 text-left"
+                // The selected tab: a solid coral bar plus a faint NEUTRAL fill
+                // (--sunk, a warm grey) — deliberately not --sel/coral-bg, the
+                // skin tone that bled into the page. The bar carries the state;
+                // the grey only lifts the row off the white rail.
+                style={isActive ? {
+                  background: "var(--sunk)",
+                  borderLeft: "3px solid var(--accent-fill)",
+                  paddingLeft: 13,
+                } : undefined}
+              >
+                <span className="flex w-full items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">{sec.label}</span>
+                  {s.exceptions > 0 && (
+                    <span className="uam-badge shrink-0" title={`${s.exceptions} written for this person here`}>
+                      {s.exceptions}
+                    </span>
+                  )}
+                </span>
+                <span className="text-[12px]" style={{ color: "var(--ink3)" }}>
+                  {s.on} of {s.total} on
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex max-h-[460px] flex-col gap-3 overflow-y-auto">
+          <PermissionList
+            sections={active ? [active] : []}
+            onToggle={(functionality: string, action: string, next: boolean) =>
+              setPending((p) => {
+                const f = modules.flatMap((m) => m.functionalities).find((x) => x.functionality === functionality);
+                const current = f?.cells.find((c) => c.action === action)?.allowed ?? false;
+                const k = cellKey(functionality, action);
+                const copy = { ...p };
+                // Toggling back to where it started is not a change.
+                if (next === current) delete copy[k];
+                else copy[k] = next;
+                return copy;
+              })
+            }
+          />
+        </div>
       </div>
 
       {changes > 0 && (

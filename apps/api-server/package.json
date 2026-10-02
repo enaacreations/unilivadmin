@@ -9,7 +9,8 @@
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "roles:sync": "pnpm exec tsx src/sync-roles.ts"
+    "roles:sync": "pnpm exec tsx src/sync-roles.ts",
+    "org:sync": "pnpm exec tsx src/sync-org.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3",
